@@ -93,7 +93,8 @@ func (a *App) toolsFor(mode string) []Tool {
 	return append([]Tool{
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
-	}, history...)
+		pdfTool(), ocrTool(), officeSkillTool(),
+	}, append(browserTools(), history...)...)
 }
 
 // ---------- Schema 辅助 ----------

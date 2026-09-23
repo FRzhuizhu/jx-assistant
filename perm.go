@@ -36,6 +36,8 @@ const (
 	permWorkspace  = "workspace-write" // 工作区内读写（默认）
 	permFull       = "full"            // 完全访问
 	capUnsandboxed = "unsandboxed"     // 能力：允许工作区外执行命令（逐次审批）
+	capBrowser     = "browser"         // 能力：允许操作浏览器（browser_* 工具）
+	capComputer    = "computer"        // 能力：允许操作电脑（computer_* 工具）
 	grantTTL       = 5 * time.Minute   // 授权凭证有效期
 	approvalTTL    = 2 * time.Minute   // 审批等待上限，超时视为拒绝
 )
