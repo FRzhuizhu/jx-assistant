@@ -5,3 +5,6 @@ config.json
 *.exe~
 .zcode/
 node_modules/
+__pycache__/
+data-tamper-test/
+_dsh_session1.jsonl

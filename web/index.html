@@ -46,7 +46,7 @@
     <div class="side-section" id="ws-section">
       <span>工作区</span>
       <div class="ws-tools">
-        <button id="wst-search" title="搜索会话">
+        <button id="wst-search" title="搜索工作任务">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         </button>
         <button id="wst-view" title="排序选项">
@@ -57,7 +57,17 @@
         </button>
       </div>
     </div>
-    <div id="side-search" class="hidden"><input id="side-search-input" placeholder="搜索会话…"></div>
+    <div id="side-search" class="hidden">
+      <input id="side-search-input" placeholder="搜索工作任务">
+      <button id="side-search-close" class="hidden" title="关闭搜索">✕</button>
+    </div>
+    <!-- 搜索结果分屏：上半标题命中，下半聊天记录命中（搜索时占领侧栏） -->
+    <div id="side-search-results" class="hidden">
+      <div class="ssr-head"><span>工作任务</span><span class="ssr-count" id="ssr-title-count"></span></div>
+      <div id="ssr-title" class="ssr-list"></div>
+      <div class="ssr-head"><span>聊天记录</span><span class="ssr-count" id="ssr-content-count"></span></div>
+      <div id="ssr-content" class="ssr-list"></div>
+    </div>
     <div id="session-list"></div>
 
     <div class="sidebar-foot">
@@ -160,19 +170,15 @@
         </button>
         <button class="set-nav-item" data-pane="models">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-          模型服务
+          模型
         </button>
         <button class="set-nav-item" data-pane="context">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
           上下文
         </button>
-        <button class="set-nav-item" data-pane="appearance">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17.5" cy="10.5" r="1.2"/><circle cx="8.5" cy="7.5" r="1.2"/><circle cx="6.5" cy="12.5" r="1.2"/><path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.4A4.6 4.6 0 0 0 22 10.8C22 6 17.5 2 12 2z"/></svg>
-          外观
-        </button>
         <button class="set-nav-item" data-pane="components">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-          组件
+          内置组件
         </button>
         <button class="set-nav-item" data-pane="plugins">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
@@ -186,36 +192,39 @@
       <div class="set-panes">
         <div class="set-pane active" id="set-pane-general">
           <h3>常规</h3>
-          <label>API 地址（baseURL）
-            <input id="set-baseurl" placeholder="https://api.deepseek.com/v1 ，填 mock 启用离线演示">
-          </label>
-          <label>API Key
-            <input id="set-apikey" type="password" placeholder="sk-...">
-          </label>
-          <label>默认工作区
-            <input id="set-workspace" placeholder="D:\path\to\workspace">
-          </label>
-          <label>监听地址
-            <input id="set-bindhost" placeholder="127.0.0.1 或 0.0.0.0（局域网访问）">
-          </label>
-          <label>单次任务最大步数
-            <input id="set-maxsteps" type="number" min="1">
-          </label>
-          <label class="chk"><input id="set-allowshell" type="checkbox"> 允许模型执行 shell 命令</label>
-          <p class="tip">修改监听地址后需重启服务生效，其余配置即时生效。</p>
+          <div class="gen-grid">
+            <label>界面语言
+              <select id="set-lang">
+                <option value="zh">简体中文</option>
+                <option value="en">English（翻译逐步补齐）</option>
+              </select>
+            </label>
+            <label>字体大小
+              <select id="set-fontsize">
+                <option value="0.9">小</option>
+                <option value="1">标准</option>
+                <option value="1.125">大</option>
+                <option value="1.25">特大</option>
+              </select>
+            </label>
+            <label>发送行为
+              <select id="set-sendkey">
+                <option value="enter">Enter 发送，Shift+Enter 换行</option>
+                <option value="ctrl">Ctrl+Enter 发送，Enter 换行</option>
+              </select>
+            </label>
+          </div>
+          <div class="gen-section">
+            <h4>外观</h4>
+            <div id="appearance-slot"></div>
+          </div>
+          <p class="tip">本页设置保存在本机浏览器，改动即时生效。</p>
         </div>
         <div class="set-pane" id="set-pane-models">
-          <h3>模型服务</h3>
-          <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">会话可单独选模型；未配置 Key 的服务填好 Key 后点「拉取」</div>
-            <div id="prov-list"></div>
-            <div class="prov-add">
-              <input id="prov-new-name" placeholder="名称（如 硅基流动）">
-              <input id="prov-new-url" placeholder="baseURL（https://…/v1，OpenAI 兼容）">
-              <input id="prov-new-key" type="password" placeholder="API Key（可选）">
-              <button id="prov-add-btn">添加</button>
-            </div>
-          </div>
+          <h3>模型</h3>
+          <div class="tip-inline" style="margin:0 0 10px">一家提供方配一个 API 密钥，可挂多个模型；预置提供方直接用系统存好的地址，自定义提供方才需要填 API 地址。点击卡片即可展开编辑。</div>
+          <div id="prov-list"></div>
+          <button id="prov-add-card" class="pf-add">＋ 添加提供方</button>
         </div>
         <div class="set-pane" id="set-pane-context">
           <h3>上下文</h3>
@@ -244,12 +253,8 @@
             </div>
           </div>
         </div>
-        <div class="set-pane" id="set-pane-appearance">
-          <h3>外观</h3>
-          <p class="tip-inline" style="margin:0 0 6px">「界面强调色」组件启用后在此显示色板。</p>
-        </div>
         <div class="set-pane" id="set-pane-components">
-          <h3>组件</h3>
+          <h3>内置组件</h3>
           <div class="prov-section">
             <div class="tip-inline" style="margin:0 0 10px">来自 组件/ 的原生外围扩展；开关即时生效，无需刷新</div>
             <div id="component-list"></div>
@@ -278,7 +283,7 @@
           </div>
         </div>
         <div class="set-footer">
-          <p class="tip" style="margin:0">改动在点击「保存」后生效</p>
+          <p class="tip" style="margin:0">「上下文」改动点「保存」生效；「模型」页在各卡片内单独保存；常规页即时生效</p>
           <div class="modal-actions">
             <button id="set-cancel">取消</button>
             <button id="set-save" class="accent">保存</button>
@@ -367,9 +372,10 @@
   </div>
 </div>
 
-<!-- SSH 远程工作区表单（工作目录面板/加号菜单进入；新对话=草稿，已有会话=切换其工作区） -->
+<!-- SSH 远程工作区（两步式：第一步连接配置→保存；第二步浏览远程目录→使用） -->
 <div id="remote-pop" class="popover remote-pop hidden">
-  <div class="perm-col-title">添加远程工作目录</div>
+  <div class="perm-col-title" id="rm-title">添加远程工作目录</div>
+  <div id="rm-step1">
   <div class="remote-form">
     <input id="rm-host" placeholder="主机 host，如 192.168.1.10">
     <input id="rm-port" type="number" placeholder="端口，默认 22">
@@ -380,15 +386,34 @@
     </select>
     <input id="rm-key" placeholder="私钥文件路径（本机），如 C:\Users\me\.ssh\id_ed25519">
     <input id="rm-pass" type="password" placeholder="密码">
-    <input id="rm-dir" placeholder="远程工作目录（绝对路径），如 /home/user/proj">
   </div>
-  <div class="remote-tip">挂载后：文件工具走 SFTP，命令在远程 Linux/Unix 上执行；权限边界换为远程目录。主机指纹首次连接自动记录（TOFU），变更即拒连。</div>
+  <div class="remote-tip">保存后连接服务器选择工作目录；文件工具走 SFTP，命令在远程执行，权限边界换为所选目录。主机指纹首次连接自动记录（TOFU），变更即拒连。</div>
   <div id="rm-result" class="remote-result"></div>
   <div class="remote-actions">
     <button id="rm-clear" class="ghost">恢复本地工作区</button>
     <span class="spacer"></span>
     <button id="rm-test" class="ghost">测试连接</button>
-    <button id="rm-apply" class="accent">使用</button>
+    <button id="rm-save" class="accent">保存</button>
+  </div>
+  </div>
+  <!-- 第二步：浏览远程目录，选中后点「使用」 -->
+  <div id="rm-step2" class="hidden">
+    <div class="rm-path-row">
+      <button id="rm-up" title="上一级">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+      <input id="rm-dir" placeholder="/home/user（也可直接输入路径后回车）">
+      <button id="rm-refresh" title="刷新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+      </button>
+    </div>
+    <div id="rm-dir-list" class="rm-dir-list"></div>
+    <div id="rm-ls-status" class="remote-result"></div>
+    <div class="remote-actions">
+      <button id="rm-back" class="ghost">← 上一步</button>
+      <span class="spacer"></span>
+      <button id="rm-apply" class="accent">使用</button>
+    </div>
   </div>
 </div>
 

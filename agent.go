@@ -145,6 +145,13 @@ func (a *App) appendMessage(sess *SessionMeta, m Message) {
 	_ = a.Store.SaveMeta(sess)
 }
 
+// appendMessageThinking 同 appendMessage，但带上该步的思考过程原文。
+func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) {
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: m, Thinking: thinking, CreatedAt: now()})
+	sess.UpdatedAt = now()
+	_ = a.Store.SaveMeta(sess)
+}
+
 // RunAgent 是核心主循环：组装上下文 → 流式请求模型 → 执行工具 → 回填结果，
 // 循环直到模型不再发起工具调用、用户中断或达到步数上限。
 // 每步的上下文都从存储重建（buildContext 管线：摘要 + 规则压缩视图 + 近期原文）。
@@ -166,12 +173,18 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			emit(Event{Type: "error", Error: "自动压缩失败: " + err.Error()})
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: defs}
+		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
 		var text strings.Builder
+		var reasoning strings.Builder
 		var calls []ToolCall
 		err := StreamChat(ctx, target, req, StreamCallbacks{
 			OnText: func(s string) {
 				text.WriteString(s)
 				emit(Event{Type: "delta", Delta: s})
+			},
+			OnReasoning: func(s string) {
+				reasoning.WriteString(s)
+				emit(Event{Type: "reasoning", Delta: s})
 			},
 			OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
 		})
@@ -185,7 +198,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			// 中断的半截正文也落盘，历史不留空洞
 			if strings.TrimSpace(text.String()) != "" {
-				a.appendMessage(sess, TextMessage("assistant", text.String()+"\n\n（本轮输出中断）"))
+				a.appendMessageThinking(sess, TextMessage("assistant", text.String()+"\n\n（本轮输出中断）"), reasoning.String())
 			}
 			if ctx.Err() == nil {
 				emit(Event{Type: "error", Error: err.Error()})
@@ -195,7 +208,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		if len(calls) == 0 {
 			if strings.TrimSpace(text.String()) != "" {
 				msg := TextMessage("assistant", text.String())
-				a.appendMessage(sess, msg)
+				a.appendMessageThinking(sess, msg, reasoning.String())
 				emit(Event{Type: "message", Message: &msg})
 			}
 			emit(Event{Type: "done"})
@@ -207,7 +220,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		if strings.TrimSpace(text.String()) != "" {
 			am.Content = text.String()
 		}
-		a.appendMessage(sess, am)
+		a.appendMessageThinking(sess, am, reasoning.String())
 		emit(Event{Type: "message", Message: &am})
 
 		interrupted := false

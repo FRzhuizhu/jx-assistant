@@ -25,6 +25,7 @@ type SessionMeta struct {
 	Provider   string           `json:"provider,omitempty"`
 	Model      string           `json:"model,omitempty"`
 	Permission string           `json:"permission,omitempty"`
+	Thinking   string           `json:"thinking,omitempty"` // 思考档位：enabled/disabled/low/medium/high，空=服务端默认
 	PlanMode   bool             `json:"planMode,omitempty"`
 	GoalMode   bool             `json:"goalMode,omitempty"`
 	Tools      []string         `json:"tools,omitempty"`

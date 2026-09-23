@@ -7,7 +7,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +34,7 @@ type StoredMessage struct {
 	CoversUpTo int64  `json:"coversUpTo,omitempty"`
 	Superseded bool   `json:"superseded,omitempty"`
 	CreatedAt  string `json:"createdAt,omitempty"`
+	Thinking   string `json:"thinking,omitempty"` // assistant 该步的思考过程原文
 }
 
 // 消息搜索命中：会话 + 片段。
@@ -73,62 +76,132 @@ func NewStore(dataDir string) (*Store, error) {
 	return s, nil
 }
 
+// migration 是一条数据库结构迁移。sql 按序执行；tolerant 用于
+// 兼容账本引入之前手工升级过的旧库（列已存在视为已应用）。
+type migration struct {
+	id       string
+	sql      []string
+	tolerant bool // 忽略 duplicate column 错误（幂等升级）
+}
+
+func (m migration) checksum() string {
+	h := sha256.New()
+	fmt.Fprint(h, m.id, "\x00", strings.Join(m.sql, "\x00"))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// storeMigrations 是库结构的全部演进史，只允许在末尾追加。
+// 历史条目一经应用即被 checksum 冻结（改动会拒绝启动），
+// 新的结构变化一律新增条目，保持旧库可平滑升级。
+var storeMigrations = []migration{
+	{
+		id: "0001_baseline",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY,
+				title TEXT NOT NULL DEFAULT '',
+				mode TEXT NOT NULL DEFAULT 'task',
+				workspace TEXT NOT NULL DEFAULT '',
+				parent_id TEXT NOT NULL DEFAULT '',
+				provider TEXT NOT NULL DEFAULT '',
+				model TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'idle',
+				created_at TEXT NOT NULL DEFAULT '',
+				updated_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`,
+			`CREATE TABLE IF NOT EXISTS messages (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				seq INTEGER NOT NULL,
+				role TEXT NOT NULL,
+				content TEXT,
+				tool_calls TEXT,
+				tool_call_id TEXT NOT NULL DEFAULT '',
+				kind TEXT NOT NULL DEFAULT 'chat',
+				origin TEXT NOT NULL DEFAULT '',
+				compact TEXT,
+				covers_up_to INTEGER NOT NULL DEFAULT 0,
+				superseded INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL DEFAULT '',
+				UNIQUE(session_id, seq)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq)`,
+			`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+		},
+	},
+	{
+		id:       "0002_session_columns",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE sessions ADD COLUMN permission TEXT NOT NULL DEFAULT 'workspace-write'`,
+			`ALTER TABLE sessions ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE sessions ADD COLUMN goal_mode INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE sessions ADD COLUMN tools TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE sessions ADD COLUMN unread INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE sessions ADD COLUMN remote TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN allowed TEXT NOT NULL DEFAULT ''`,
+	{
+		id:       "0003_thinking",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE messages ADD COLUMN thinking TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE sessions ADD COLUMN thinking TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+}
+
+// createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
+// 已应用的校验 checksum 防止历史被篡改（借鉴 ZCode 的 schema_migration 设计）。
 func (s *Store) createSchema() error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS sessions (
-			id TEXT PRIMARY KEY,
-			title TEXT NOT NULL DEFAULT '',
-			mode TEXT NOT NULL DEFAULT 'task',
-			workspace TEXT NOT NULL DEFAULT '',
-			parent_id TEXT NOT NULL DEFAULT '',
-			provider TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'idle',
-			created_at TEXT NOT NULL DEFAULT '',
-			updated_at TEXT NOT NULL DEFAULT ''
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`,
-		`CREATE TABLE IF NOT EXISTS messages (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-			seq INTEGER NOT NULL,
-			role TEXT NOT NULL,
-			content TEXT,
-			tool_calls TEXT,
-			tool_call_id TEXT NOT NULL DEFAULT '',
-			kind TEXT NOT NULL DEFAULT 'chat',
-			origin TEXT NOT NULL DEFAULT '',
-			compact TEXT,
-			covers_up_to INTEGER NOT NULL DEFAULT 0,
-			superseded INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL DEFAULT '',
-			UNIQUE(session_id, seq)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq)`,
-		`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, q := range stmts {
-		if _, err := s.db.Exec(q); err != nil {
-			return fmt.Errorf("建表失败: %w", err)
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migration (
+			id TEXT PRIMARY KEY,
+			checksum TEXT NOT NULL,
+			applied_at TEXT NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("建迁移账本失败: %w", err)
+	}
+	for _, m := range storeMigrations {
+		var sum string
+		err := s.db.QueryRow(`SELECT checksum FROM schema_migration WHERE id=?`, m.id).Scan(&sum)
+		switch {
+		case err == nil:
+			if sum != m.checksum() {
+				return fmt.Errorf("迁移 %s 与账本 checksum 不一致：历史迁移被改动，拒绝启动", m.id)
+			}
+			continue
+		case err != sql.ErrNoRows:
+			return err
 		}
-	}
-	// 旧库升级：补齐后续版本新增的会话列（已存在则跳过）
-	upgrades := []string{
-		`ALTER TABLE sessions ADD COLUMN permission TEXT NOT NULL DEFAULT 'workspace-write'`,
-		`ALTER TABLE sessions ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE sessions ADD COLUMN goal_mode INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE sessions ADD COLUMN tools TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE sessions ADD COLUMN unread INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE sessions ADD COLUMN remote TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN allowed TEXT NOT NULL DEFAULT ''`,
-	}
-	for _, q := range upgrades {
-		if _, err := s.db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return fmt.Errorf("升级表结构失败: %w", err)
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		ok := true
+		for _, q := range m.sql {
+			if _, err := tx.Exec(q); err != nil {
+				if m.tolerant && strings.Contains(err.Error(), "duplicate column") {
+					continue // 旧库早已手工加过该列
+				}
+				ok = false
+				_ = tx.Rollback()
+				return fmt.Errorf("迁移 %s 失败: %w", m.id, err)
+			}
+		}
+		if !ok {
+			return nil
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migration (id, checksum, applied_at) VALUES (?,?,?)`,
+			m.id, m.checksum(), now()); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -198,7 +271,7 @@ func (s *Store) setMeta(k, v string) error {
 
 // ---------- 会话 ----------
 
-const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, allowed, archived, unread, status, created_at, updated_at`
+const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, allowed, archived, unread, status, created_at, updated_at, thinking`
 
 func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 
@@ -223,16 +296,16 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 			allowed = string(b)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, mode=excluded.mode,
 		workspace=excluded.workspace, parent_id=excluded.parent_id, provider=excluded.provider,
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
 		goal_mode=excluded.goal_mode, tools=excluded.tools, remote=excluded.remote,
 		allowed=excluded.allowed, archived=excluded.archived, unread=excluded.unread,
-		status=excluded.status, updated_at=excluded.updated_at`,
+		status=excluded.status, updated_at=excluded.updated_at, thinking=excluded.thinking`,
 		m.ID, m.Title, m.Mode, m.Workspace, m.ParentID, m.Provider, m.Model,
 		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote, allowed,
-		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt)
+		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt, m.Thinking)
 	return err
 }
 
@@ -249,7 +322,7 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 	var plan, goal, arch, unread int
 	err := sc.Scan(&m.ID, &m.Title, &m.Mode, &m.Workspace, &m.ParentID,
 		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote, &allowed,
-		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt)
+		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Thinking)
 	if err != nil {
 		return nil, err
 	}
@@ -384,10 +457,10 @@ func (s *Store) AppendRow(id string, sm *StoredMessage) error {
 		compact = sm.Compact
 	}
 	_, err := s.db.Exec(`INSERT INTO messages
-		(session_id, seq, role, content, tool_calls, tool_call_id, kind, origin, compact, covers_up_to, superseded, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(session_id, seq, role, content, tool_calls, tool_call_id, kind, origin, compact, covers_up_to, superseded, created_at, thinking)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, sm.Seq, sm.Role, content, toolCalls, sm.ToolCallID, sm.Kind, sm.Origin,
-		compact, sm.CoversUpTo, boolInt(sm.Superseded), sm.CreatedAt)
+		compact, sm.CoversUpTo, boolInt(sm.Superseded), sm.CreatedAt, sm.Thinking)
 	if err != nil {
 		return err
 	}
@@ -402,14 +475,14 @@ func boolInt(b bool) int {
 	return 0
 }
 
-const messageCols = `id, session_id, seq, role, content, tool_calls, tool_call_id, kind, origin, compact, covers_up_to, superseded, created_at`
+const messageCols = `id, session_id, seq, role, content, tool_calls, tool_call_id, kind, origin, compact, covers_up_to, superseded, created_at, thinking`
 
 func scanMessage(sc interface{ Scan(dest ...any) error }) (*StoredMessage, error) {
 	sm := &StoredMessage{}
-	var content, toolCalls, compact sql.NullString
+	var content, toolCalls, compact, thinking sql.NullString
 	var sup int
 	err := sc.Scan(&sm.ID, &sm.SessionID, &sm.Seq, &sm.Role, &content, &toolCalls,
-		&sm.ToolCallID, &sm.Kind, &sm.Origin, &compact, &sm.CoversUpTo, &sup, &sm.CreatedAt)
+		&sm.ToolCallID, &sm.Kind, &sm.Origin, &compact, &sm.CoversUpTo, &sup, &sm.CreatedAt, &thinking)
 	if err != nil {
 		return nil, err
 	}
@@ -421,6 +494,9 @@ func scanMessage(sc interface{ Scan(dest ...any) error }) (*StoredMessage, error
 	}
 	sm.Compact = compact.String
 	sm.Superseded = sup == 1
+	if thinking.Valid {
+		sm.Thinking = thinking.String
+	}
 	return sm, nil
 }
 
@@ -441,6 +517,28 @@ func (s *Store) Messages(id string) ([]Message, error) {
 			continue // 摘要只在组装上下文时按管线注入，不进入普通消息流
 		}
 		out = append(out, sm.Message)
+	}
+	return out, rows.Err()
+}
+
+// MessagesWithSeq 同 Messages 的过滤规则，但保留 seq 等存储元信息，
+// 供前端定位（搜索命中跳转滚动）使用。
+func (s *Store) MessagesWithSeq(id string) ([]*StoredMessage, error) {
+	rows, err := s.db.Query(`SELECT `+messageCols+` FROM messages WHERE session_id=? ORDER BY seq`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*StoredMessage{}
+	for rows.Next() {
+		sm, err := scanMessage(rows)
+		if err != nil {
+			continue
+		}
+		if sm.Kind == "summary" {
+			continue // 摘要只在组装上下文时按管线注入，不进入普通消息流
+		}
+		out = append(out, sm)
 	}
 	return out, rows.Err()
 }

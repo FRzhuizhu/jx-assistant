@@ -62,11 +62,33 @@ type ChatRequest struct {
 	Messages []Message `json:"messages"`
 	Tools    []ToolDef `json:"tools,omitempty"`
 	Stream   bool      `json:"stream"`
+	// 思考控制：DeepSeek/智谱等用 thinking{type}，OpenAI o/gpt-5 系用 reasoning_effort
+	Thinking        *ThinkingCfg `json:"thinking,omitempty"`
+	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
 }
 
-// StreamCallbacks 把流式输出回调给调用方：文本增量与完整的工具调用。
+// ThinkingCfg 是 DeepSeek/GLM 风格的思考开关参数。
+type ThinkingCfg struct {
+	Type string `json:"type"` // enabled | disabled
+}
+
+// ApplyThinking 按档位设置请求的思考参数；空串=不干预（用服务端默认）。
+// enabled/disabled → thinking{type}；low/medium/high → reasoning_effort。
+func (r *ChatRequest) ApplyThinking(level string) {
+	switch level {
+	case "enabled", "disabled":
+		r.Thinking = &ThinkingCfg{Type: level}
+		r.ReasoningEffort = ""
+	case "low", "medium", "high":
+		r.Thinking = nil
+		r.ReasoningEffort = level
+	}
+}
+
+// StreamCallbacks 把流式输出回调给调用方：思考增量、正文增量与完整的工具调用。
 type StreamCallbacks struct {
 	OnText     func(string)
+	OnReasoning func(string)
 	OnToolCall func(ToolCall)
 }
 
@@ -107,6 +129,8 @@ type streamChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content   string `json:"content"`
+			Reasoning string `json:"reasoning"`         // OpenAI 新版/部分网关
+			ReasoningContent string `json:"reasoning_content"` // DeepSeek/GLM 风格
 			ToolCalls []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -142,6 +166,12 @@ func parseSSE(r io.Reader, cb StreamCallbacks) error {
 		for _, ch := range chunk.Choices {
 			if ch.Delta.Content != "" && cb.OnText != nil {
 				cb.OnText(ch.Delta.Content)
+			}
+			// 思考增量：两个字段名都收（reasoning_content / reasoning）
+			if rn := ch.Delta.ReasoningContent; rn != "" && cb.OnReasoning != nil {
+				cb.OnReasoning(rn)
+			} else if rn := ch.Delta.Reasoning; rn != "" && cb.OnReasoning != nil {
+				cb.OnReasoning(rn)
 			}
 			for _, tc := range ch.Delta.ToolCalls {
 				cur := acc[tc.Index]

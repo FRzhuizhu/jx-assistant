@@ -16,6 +16,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -96,6 +98,7 @@ func (r *RemoteWorkspace) Display() string {
 type remoteClient struct {
 	client   *ssh.Client
 	spec     *RemoteWorkspace
+	home     string // 远程用户主目录（懒探测缓存）
 	mu       sync.Mutex
 	sftp     *sftp.Client
 	sftpErr  error
@@ -494,4 +497,83 @@ func filepathAbsOf(p string) string {
 		return abs
 	}
 	return p
+}
+
+// ---------- 目录浏览（前端「选择远程工作目录」用） ----------
+
+// browseKey 对一个连接规格生成稳定的伪会话键，让目录浏览复用连接池，
+// 连续导航不重复拨号。
+func browseKey(spec *RemoteWorkspace) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%s|%s|%s",
+		spec.Host, spec.Port, spec.User, spec.Auth, spec.KeyPath)))
+	return "browse:" + hex.EncodeToString(sum[:8])
+}
+
+// homeDir 探测远程用户主目录（懒执行一次并缓存），探测失败回退 "/"。
+func (c *remoteClient) homeDir() string {
+	c.mu.Lock()
+	if c.home != "" {
+		h := c.home
+		c.mu.Unlock()
+		return h
+	}
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	out, err := c.run(ctx, "/", `printf %s "${HOME:-/root}"`, 6*time.Second)
+	h := strings.TrimSpace(out)
+	if err != nil || h == "" || !strings.HasPrefix(h, "/") {
+		h = "/"
+	}
+	c.mu.Lock()
+	c.home = h
+	c.mu.Unlock()
+	return h
+}
+
+// getBrowseClient 取（或建立）一条用于目录浏览的连接；闲置超 5 分钟的
+// 浏览连接在建立新连接时顺手回收。
+func (a *App) getBrowseClient(spec *RemoteWorkspace) (*remoteClient, error) {
+	key := browseKey(spec)
+	a.remoteMu.Lock()
+	c, ok := a.remotes[key]
+	a.remoteMu.Unlock()
+	if ok {
+		if _, _, err := c.client.SendRequest("keepalive@openssh.com", true, nil); err == nil {
+			c.lastUsed = time.Now()
+			return c, nil
+		}
+		c.close()
+		a.dropRemote(key)
+	}
+	norm, err := spec.normalize()
+	if err != nil {
+		return nil, err
+	}
+	client, err := a.dialSSH(norm, norm.HostKey)
+	if err != nil {
+		return nil, err
+	}
+	nc := &remoteClient{client: client, spec: norm, lastUsed: time.Now(), stop: make(chan struct{})}
+	a.remoteMu.Lock()
+	if existing, busy := a.remotes[key]; busy { // 并发拨号时后来者让位
+		a.remoteMu.Unlock()
+		nc.close()
+		existing.lastUsed = time.Now()
+		return existing, nil
+	}
+	var stale []*remoteClient
+	for k, oc := range a.remotes {
+		if strings.HasPrefix(k, "browse:") && time.Since(oc.lastUsed) > 5*time.Minute {
+			stale = append(stale, oc)
+			delete(a.remotes, k)
+		}
+	}
+	a.remotes[key] = nc
+	a.remoteMu.Unlock()
+	for _, oc := range stale {
+		oc.close()
+	}
+	go nc.keepAlive()
+	return nc, nil
 }

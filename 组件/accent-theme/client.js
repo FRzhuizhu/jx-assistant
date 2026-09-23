@@ -28,7 +28,8 @@
   }
 
   function buildUI() {
-    const card = document.getElementById('set-pane-appearance');
+    // 挂在「常规」页的外观区；兼容旧版「外观」页挂载点
+    const card = document.getElementById('appearance-slot') || document.getElementById('set-pane-appearance');
     if (!card) return;
     const saved = (() => { try { return localStorage.getItem('cx:accent') || ''; } catch (e) { return ''; } })();
 

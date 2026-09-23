@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -22,12 +23,19 @@ var (
 	ole32                           = syscall.NewLazyDLL("ole32.dll")
 	shell32                         = syscall.NewLazyDLL("shell32.dll")
 	kernel32                        = syscall.NewLazyDLL("kernel32.dll")
+	user32                          = syscall.NewLazyDLL("user32.dll")
 	procCoInitializeEx              = ole32.NewProc("CoInitializeEx")
 	procCoUninitialize              = ole32.NewProc("CoUninitialize")
 	procCoCreateInstance            = ole32.NewProc("CoCreateInstance")
 	procCoTaskMemFree               = ole32.NewProc("CoTaskMemFree")
 	procSHCreateItemFromParsingName = shell32.NewProc("SHCreateItemFromParsingName")
 	procLstrlenW                    = kernel32.NewProc("lstrlenW")
+	procGetCurrentProcessID         = kernel32.NewProc("GetCurrentProcessId")
+	procKeybdEvent                  = user32.NewProc("keybd_event")
+	procFindWindowW                 = user32.NewProc("FindWindowW")
+	procSetForegroundWindow         = user32.NewProc("SetForegroundWindow")
+	procBringWindowToTop            = user32.NewProc("BringWindowToTop")
+	procGetWindowThreadProcessId    = user32.NewProc("GetWindowThreadProcessId")
 )
 
 const (
@@ -36,7 +44,7 @@ const (
 	fosPickFolders          = 0x20 // 只选文件夹
 	fosForceFileSystem      = 0x40 // 限定真实文件系统路径
 	sigdnFilesysPath        = 0x80058000
-	hresultCancelled        = 0x800704C9 // ERROR_CANCELLED：用户点了取消
+	hresultCancelled        = 0x800704C7 // ERROR_CANCELLED(1223)：用户点了取消/关闭
 )
 
 // IFileDialog 的 vtable 槽位（0-2 为 IUnknown）
@@ -125,6 +133,8 @@ func pickFolderSTA(startDir, title string) (string, error) {
 		syscall.SyscallN(sivt[2], uintptr(si))
 	}
 
+	raiseDialogToForeground(title) // Show 期间把对话框提到前台（见函数注释）
+
 	if hr, _, _ = syscall.SyscallN(vt[vtShow], uintptr(dlg), 0); hr != 0 {
 		if hr == hresultCancelled {
 			return "", nil
@@ -188,6 +198,45 @@ func parseGUID(s string) (syscall.GUID, error) {
 	g.Data3 = binary.BigEndian.Uint16(b[6:8])
 	copy(g.Data4[:], b[8:16])
 	return g, nil
+}
+
+// raiseDialogToForeground 解决后台进程弹窗不置顶的问题。
+// 本服务不是前台进程，Windows 默认禁止它抢占前台——对话框会被创建但压在
+// 其它窗口后面，用户看来就是“点了没反应”。两步组合：
+//  1. 先模拟一次 ALT 键（keybd_event），让系统认为本进程刚收到用户输入，
+//     解除 SetForegroundWindow 的前台锁；
+//  2. Show 阻塞期间由独立 goroutine 轮询找到对话框窗口并反复尝试提前台
+//     （对话框创建有时机差，第一次尝试可能早于窗口诞生）。
+// 必须在调用 Show 的同一线程执行（KeybdEvent 部分影响的是本线程输入状态）。
+func raiseDialogToForeground(title string) {
+	const (
+		vkMenu          = 0x12
+		keyeventfKeyUp  = 0x0002
+	)
+	procKeybdEvent.Call(vkMenu, 0, 0, 0)
+	procKeybdEvent.Call(vkMenu, 0, keyeventfKeyUp, 0)
+
+	go func() {
+		cls, _ := syscall.UTF16PtrFromString("#32770") // 标准对话框窗口类
+		ttl, err := syscall.UTF16PtrFromString(title)
+		if err != nil {
+			return
+		}
+		pid, _, _ := procGetCurrentProcessID.Call()
+		for i := 0; i < 40; i++ { // 最多 4 秒
+			if h, _, _ := procFindWindowW.Call(
+				uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(ttl))); h != 0 {
+				var wpid uint32
+				procGetWindowThreadProcessId.Call(h, uintptr(unsafe.Pointer(&wpid)))
+				if uint32(wpid) == uint32(pid) {
+					procSetForegroundWindow.Call(h)
+					procBringWindowToTop.Call(h)
+					return
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
 }
 
 // pickFolderSerialized 串行化包装，供 HTTP 处理器调用。

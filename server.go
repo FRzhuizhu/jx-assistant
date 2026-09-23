@@ -104,9 +104,14 @@ func (a *App) sessLock(id string) *sync.Mutex {
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux.HandleFunc("GET /api/search/title", a.handleSearchTitle)
+	mux.HandleFunc("GET /api/search/content", a.handleSearchContent)
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
 	mux.HandleFunc("POST /api/config", a.handleSetConfig)
 	mux.HandleFunc("GET /api/models", a.handleModels)
+	mux.HandleFunc("POST /api/providers", a.handleUpsertProvider)
+	mux.HandleFunc("POST /api/providers/delete", a.handleDeleteProvider)
+	mux.HandleFunc("POST /api/providers/test", a.handleTestProvider)
 	mux.HandleFunc("POST /api/providers/fetch", a.handleFetchModels)
 	mux.HandleFunc("GET /api/sessions", a.handleListSessions)
 	mux.HandleFunc("POST /api/sessions", a.handleCreateSession)
@@ -124,6 +129,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
 	mux.HandleFunc("POST /api/workspace/test", a.handleTestWorkspace)
+	mux.HandleFunc("POST /api/workspace/ls", a.handleWorkspaceLs)
 	mux.HandleFunc("POST /api/sessions/{id}/remote", a.handleSetSessionRemote)
 	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
 	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)
@@ -261,6 +267,109 @@ func maskKey(k string) string {
 	return k[:4] + "****" + k[len(k)-4:]
 }
 
+// likePattern 把用户输入转成逐字（字面）匹配的 LIKE 模式：
+// % _ \ 全部转义，保证搜索词不会被当成通配符。
+func likePattern(q string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(q) + "%"
+}
+
+// 可搜索的会话范围 = 侧栏可见范围：非助理主对话、非子会话、未归档。
+const searchableSessionsSQL = `mode != 'assistant' AND parent_id = '' AND archived = 0`
+
+// handleSearchTitle 按标题逐字搜索工作任务。
+func (a *App) handleSearchTitle(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, 200, map[string]any{"hits": []any{}})
+		return
+	}
+	rows, err := a.Store.db.Query(
+		`SELECT id, title, updated_at FROM sessions
+		 WHERE `+searchableSessionsSQL+` AND title LIKE ? ESCAPE '\'
+		 ORDER BY updated_at DESC LIMIT 50`, likePattern(q))
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer rows.Close()
+	hits := []map[string]any{}
+	for rows.Next() {
+		var id, title, updated string
+		if err := rows.Scan(&id, &title, &updated); err != nil {
+			continue
+		}
+		hits = append(hits, map[string]any{"sessionId": id, "title": title, "updatedAt": updated})
+	}
+	writeJSON(w, 200, map[string]any{"hits": hits})
+}
+
+// handleSearchContent 按聊天记录逐字搜索：只搜用户消息与模型最终输出
+// （无工具调用的 assistant 消息），忽略思考（本就不入库）、工具调用与
+// 系统注入行。每条命中返回定位用 seq 与命中点附近的片段。
+func (a *App) handleSearchContent(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, 200, map[string]any{"hits": []any{}})
+		return
+	}
+	rows, err := a.Store.db.Query(
+		`SELECT m.session_id, s.title, m.seq, m.role, m.content, m.created_at
+		 FROM messages m JOIN sessions s ON s.id = m.session_id
+		 WHERE s.`+searchableSessionsSQL+`
+		   AND m.kind = 'chat' AND m.content IS NOT NULL
+		   AND (m.role = 'user'
+		        OR (m.role = 'assistant' AND (m.tool_calls IS NULL OR m.tool_calls = '')))
+		   AND m.content LIKE ? ESCAPE '\'
+		 ORDER BY s.updated_at DESC, m.seq ASC LIMIT 200`, likePattern(q))
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer rows.Close()
+	hits := []map[string]any{}
+	for rows.Next() {
+		var sid, title, role, content, created string
+		var seq int64
+		if err := rows.Scan(&sid, &title, &seq, &role, &content, &created); err != nil {
+			continue
+		}
+		hits = append(hits, map[string]any{
+			"sessionId": sid, "title": title, "seq": seq,
+			"role": role, "snippet": searchSnippet(content, q), "createdAt": created,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"hits": hits})
+}
+
+// searchSnippet 截取首个命中点前后各约 40 字的片段（前端负责高亮）。
+func searchSnippet(content, q string) string {
+	const radius = 40
+	lowC, lowQ := strings.ToLower(content), strings.ToLower(q)
+	at := strings.Index(lowC, lowQ)
+	if at < 0 {
+		at = 0
+	}
+	runes := []rune(content)
+	atRune := len([]rune(content[:at]))
+	lo := atRune - radius
+	if lo < 0 {
+		lo = 0
+	}
+	hi := atRune + len([]rune(q)) + radius
+	if hi > len(runes) {
+		hi = len(runes)
+	}
+	pre, suf := "", ""
+	if lo > 0 {
+		pre = "…"
+	}
+	if hi < len(runes) {
+		suf = "…"
+	}
+	return pre + string(runes[lo:hi]) + suf
+}
+
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	t := a.DefaultTarget()
 	writeJSON(w, 200, map[string]any{
@@ -285,16 +394,21 @@ func (a *App) DefaultProviderID() string {
 // handleModels 返回模型选择器用的扁平清单。
 func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 	type modelItem struct {
-		ProviderID    string `json:"providerId"`
-		ProviderName  string `json:"providerName"`
-		ModelID       string `json:"modelId"`
-		ModelName     string `json:"modelName,omitempty"`
-		ContextWindow int    `json:"contextWindow,omitempty"`
+		ProviderID      string   `json:"providerId"`
+		ProviderName    string   `json:"providerName"`
+		ModelID         string   `json:"modelId"`
+		ModelName       string   `json:"modelName,omitempty"`
+		ContextWindow   int      `json:"contextWindow,omitempty"`
+		ReasoningLevels []string `json:"reasoningLevels,omitempty"`
 	}
 	items := []modelItem{}
 	for _, p := range a.Cfg.Providers {
 		for _, m := range p.Models {
-			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow})
+			levels := m.ReasoningLevels
+			if len(levels) == 0 { // 老配置未存档位：按 ID 现场推断
+				levels = guessReasoningLevels(m.ID)
+			}
+			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow, levels})
 		}
 	}
 	t := a.DefaultTarget()
@@ -305,18 +419,39 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// resolveProviderDraft 把请求里的 id/baseURL/apiKey 折算成一个可用的提供方：
+// 没存过的 id（或新增卡片）直接用请求里带来的地址与密钥，便于未保存先拉取/测试。
+func (a *App) resolveProviderDraft(id, baseURL, apiKey string) (*ProviderCfg, error) {
+	eff := &ProviderCfg{}
+	if p := a.providerByID(strings.TrimSpace(id)); p != nil {
+		*eff = *p
+	}
+	if u := strings.TrimSpace(baseURL); u != "" {
+		eff.BaseURL = u
+	}
+	if k := strings.TrimSpace(apiKey); k != "" {
+		eff.APIKey = k
+	}
+	if strings.TrimSpace(eff.BaseURL) == "" {
+		return nil, fmt.Errorf("缺少 API 地址")
+	}
+	return eff, nil
+}
+
 // handleFetchModels 从提供方服务拉取可用模型清单（服务端代理，避开浏览器跨域）。
 func (a *App) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		BaseURL string `json:"baseURL"`
+		APIKey  string `json:"apiKey"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
-		writeErr(w, 400, "需要 provider id")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
 		return
 	}
-	p := a.providerByID(body.ID)
-	if p == nil {
-		writeErr(w, 404, "provider 不存在")
+	p, err := a.resolveProviderDraft(body.ID, body.BaseURL, body.APIKey)
+	if err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	models, err := a.FetchModels(p)
@@ -327,20 +462,156 @@ func (a *App) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"models": models})
 }
 
+// handleUpsertProvider 新增或更新单个提供方（模型页卡片「保存」）。
+func (a *App) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID      string     `json:"id"`
+		Name    string     `json:"name"`
+		BaseURL string     `json:"baseURL"`
+		APIKey  string     `json:"apiKey"` // 空串 = 沿用已保存的 key
+		Models  []ModelCfg `json:"models"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	id := strings.TrimSpace(in.ID)
+	preset, isPreset := PresetByID(id)
+	baseURL := strings.TrimSpace(in.BaseURL)
+	if baseURL == "" {
+		if !isPreset {
+			writeErr(w, 400, "自定义提供方必须填写 API 地址")
+			return
+		}
+		baseURL = preset.BaseURL
+	}
+	if id == "" {
+		id = fmt.Sprintf("custom-%d", time.Now().UnixMilli())
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		if isPreset {
+			name = preset.Name
+		} else {
+			writeErr(w, 400, "名称不能为空")
+			return
+		}
+	}
+	models := []ModelCfg{}
+	seen := map[string]bool{}
+	for _, m := range in.Models {
+		mid := strings.TrimSpace(m.ID)
+		if mid == "" || seen[mid] {
+			continue
+		}
+		seen[mid] = true
+		m.ID = mid
+		// 思考档位未配置时按 ID 自动推断（添加/编辑模型即自动带上）
+		if len(m.ReasoningLevels) == 0 {
+			m.ReasoningLevels = guessReasoningLevels(mid)
+		}
+		models = append(models, m)
+	}
+	pc := ProviderCfg{ID: id, Name: name, BaseURL: baseURL, Models: models}
+	if key := strings.TrimSpace(in.APIKey); key != "" {
+		pc.APIKey = key
+	} else if old := a.providerByID(id); old != nil {
+		pc.APIKey = old.APIKey
+	}
+	replaced := false
+	for i := range a.Cfg.Providers {
+		if a.Cfg.Providers[i].ID == id {
+			a.Cfg.Providers[i] = pc
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		a.Cfg.Providers = append(a.Cfg.Providers, pc)
+	}
+	a.Cfg.syncLegacyFields()
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		writeErr(w, 500, "保存配置失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": 1, "id": id})
+}
+
+// handleDeleteProvider 删除单个提供方（模型页卡片「删除提供方」）。
+func (a *App) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.ID) == "" {
+		writeErr(w, 400, "需要 provider id")
+		return
+	}
+	id := strings.TrimSpace(in.ID)
+	kept := make([]ProviderCfg, 0, len(a.Cfg.Providers))
+	for _, p := range a.Cfg.Providers {
+		if p.ID != id {
+			kept = append(kept, p)
+		}
+	}
+	a.Cfg.Providers = kept
+	a.Cfg.syncLegacyFields()
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		writeErr(w, 500, "保存配置失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": 1})
+}
+
+// handleTestProvider 对提供方目录里的所有模型做连通性测试（极小请求，限并发）。
+func (a *App) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID      string   `json:"id"`
+		BaseURL string   `json:"baseURL"`
+		APIKey  string   `json:"apiKey"`
+		Models  []string `json:"models"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	p, err := a.resolveProviderDraft(in.ID, in.BaseURL, in.APIKey)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"results": TestProviderModels(p, in.Models)})
+}
+
 func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	type providerView struct {
 		ID           string     `json:"id"`
 		Name         string     `json:"name"`
 		BaseURL      string     `json:"baseURL"`
 		APIKeyMasked string     `json:"apiKeyMasked"`
+		Preset       bool       `json:"preset"`
+		PresetURL    string     `json:"presetURL,omitempty"`
 		Models       []ModelCfg `json:"models"`
 	}
 	providers := []providerView{}
 	for _, p := range a.Cfg.Providers {
-		providers = append(providers, providerView{
+		pv := providerView{
 			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL,
 			APIKeyMasked: maskKey(p.APIKey), Models: p.Models,
-		})
+		}
+		if tpl, ok := PresetByID(p.ID); ok {
+			pv.Preset = true
+			pv.PresetURL = tpl.BaseURL
+		}
+		providers = append(providers, pv)
+	}
+	type presetView struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		BaseURL string `json:"baseURL"`
+	}
+	presets := []presetView{}
+	for _, p := range DefaultProviders() {
+		presets = append(presets, presetView{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL})
 	}
 	t := a.DefaultTarget()
 	writeJSON(w, 200, map[string]any{
@@ -348,6 +619,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"apiKeyMasked": maskKey(t.APIKey),
 		"model":        t.Model,
 		"providers":    providers,
+		"presets":      presets,
 		"workspace":    a.Cfg.Workspace,
 		"allowShell":   a.Cfg.AllowShell,
 		"bindHost":     a.Cfg.BindHost,
@@ -541,7 +813,7 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if m == nil {
 		return
 	}
-	msgs, err := a.Store.Messages(m.ID)
+	msgs, err := a.Store.MessagesWithSeq(m.ID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -560,6 +832,7 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		Provider   *string   `json:"provider"`
 		Model      *string   `json:"model"`
 		Permission *string   `json:"permission"`
+		Thinking   *string   `json:"thinking"`
 		PlanMode   *bool     `json:"planMode"`
 		GoalMode   *bool     `json:"goalMode"`
 		Tools      *[]string `json:"tools"`
@@ -584,6 +857,15 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Permission != nil {
 		m.Permission = strings.TrimSpace(*body.Permission)
+	}
+	if body.Thinking != nil {
+		switch t := strings.TrimSpace(*body.Thinking); t {
+		case "", "enabled", "disabled", "low", "medium", "high":
+			m.Thinking = t
+		default:
+			writeErr(w, 400, "thinking 档位必须是 enabled/disabled/low/medium/high 或空")
+			return
+		}
 	}
 	if body.PlanMode != nil {
 		m.PlanMode = *body.PlanMode
@@ -878,6 +1160,51 @@ func (a *App) handleTestWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "hostKey": fp, "message": "连接成功，命令通道与 SFTP 可用，目录存在"})
+}
+
+// handleWorkspaceLs 连接远程主机列出一个目录（前端「选择远程工作目录」用）。
+// 不依赖会话；连接按规格复用（连续导航不重复拨号）。path 为空时返回
+// 远程用户主目录。目录不存在等业务失败以 ok:false + message 回传。
+func (a *App) handleWorkspaceLs(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Remote *RemoteWorkspace `json:"remote"`
+		Path   string           `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Remote == nil {
+		writeErr(w, 400, "需要 remote 字段")
+		return
+	}
+	spec, err := body.Remote.normalize()
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	rc, err := a.getBrowseClient(spec)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	home := rc.homeDir()
+	p := strings.TrimSpace(body.Path)
+	if p == "" {
+		p = home
+	}
+	p = path.Clean(p)
+	type dirEntry struct {
+		Name  string `json:"name"`
+		IsDir bool   `json:"isDir"`
+		Size  int64  `json:"size,omitempty"`
+	}
+	entries, err := rc.listDir(p)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "path": p, "message": err.Error()})
+		return
+	}
+	out := make([]dirEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, dirEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size})
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "path": p, "home": home, "entries": out})
 }
 
 // handleSetSessionRemote 给会话设置 / 解除 SSH 远程工作区。
