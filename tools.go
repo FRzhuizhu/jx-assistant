@@ -94,7 +94,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(),
-	}, append(browserTools(), history...)...)
+	}, append(append(browserTools(), computerTools()...), history...)...)
 }
 
 // ---------- Schema 辅助 ----------
