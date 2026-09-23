@@ -49,10 +49,10 @@
         <button id="wst-search" title="搜索会话">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         </button>
-        <button id="wst-view" title="视图选项">
+        <button id="wst-view" title="排序选项">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
         </button>
-        <button id="wst-add" title="添加工作区">
+        <button id="wst-add" title="添加工作目录">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v4M10 12h4"/></svg>
         </button>
       </div>
@@ -73,6 +73,7 @@
     <header id="topbar">
       <button id="btn-sidebar" title="收起侧边栏">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        <span id="sb-btn-text">收起侧边栏</span>
       </button>
       <span id="sess-title">数字助理</span>
       <span id="mode-badge" class="badge hidden">数字助理</span>
@@ -87,13 +88,14 @@
 
     <div id="composer-wrap">
       <div id="hint"></div>
-      <div id="composer">
+      <div id="composer-area">
         <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
           <b id="ws-row-name">工作目录</b>
           <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </div>
-        <textarea id="input" rows="1" placeholder="描述你想要构建的内容…"></textarea>
+        <div id="composer">
+        <textarea id="input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
         <div class="composer-bar">
           <div class="composer-left">
             <span id="plugin-composer-controls"></span>
@@ -127,6 +129,7 @@
           </div>
         </div>
       </div>
+      </div>
     </div>
   </main>
 
@@ -148,72 +151,141 @@
 </div>
 
 <div id="settings" class="modal hidden">
-  <div class="modal-card">
-    <h3>设置</h3>
-    <label>API 地址（baseURL）
-      <input id="set-baseurl" placeholder="https://api.deepseek.com/v1 ，填 mock 启用离线演示">
-    </label>
-    <label>API Key
-      <input id="set-apikey" type="password" placeholder="sk-...">
-    </label>
-    <div class="prov-section">
-      <h4>模型服务 <span class="tip-inline">会话可单独选模型；未配置 Key 的服务填好 Key 后点「拉取」</span></h4>
-      <div id="prov-list"></div>
-      <div class="prov-add">
-        <input id="prov-new-name" placeholder="名称（如 硅基流动）">
-        <input id="prov-new-url" placeholder="baseURL（https://…/v1，OpenAI 兼容）">
-        <input id="prov-new-key" type="password" placeholder="API Key（可选）">
-        <button id="prov-add-btn">添加</button>
+  <div class="modal-card settings-card">
+    <div class="settings-body">
+      <nav class="set-nav">
+        <button class="set-nav-item active" data-pane="general">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+          常规
+        </button>
+        <button class="set-nav-item" data-pane="models">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          模型服务
+        </button>
+        <button class="set-nav-item" data-pane="context">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+          上下文
+        </button>
+        <button class="set-nav-item" data-pane="appearance">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17.5" cy="10.5" r="1.2"/><circle cx="8.5" cy="7.5" r="1.2"/><circle cx="6.5" cy="12.5" r="1.2"/><path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.4A4.6 4.6 0 0 0 22 10.8C22 6 17.5 2 12 2z"/></svg>
+          外观
+        </button>
+        <button class="set-nav-item" data-pane="components">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          组件
+        </button>
+        <button class="set-nav-item" data-pane="plugins">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
+          插件
+        </button>
+        <button class="set-nav-item" data-pane="about">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
+          关于
+        </button>
+      </nav>
+      <div class="set-panes">
+        <div class="set-pane active" id="set-pane-general">
+          <h3>常规</h3>
+          <label>API 地址（baseURL）
+            <input id="set-baseurl" placeholder="https://api.deepseek.com/v1 ，填 mock 启用离线演示">
+          </label>
+          <label>API Key
+            <input id="set-apikey" type="password" placeholder="sk-...">
+          </label>
+          <label>默认工作区
+            <input id="set-workspace" placeholder="D:\path\to\workspace">
+          </label>
+          <label>监听地址
+            <input id="set-bindhost" placeholder="127.0.0.1 或 0.0.0.0（局域网访问）">
+          </label>
+          <label>单次任务最大步数
+            <input id="set-maxsteps" type="number" min="1">
+          </label>
+          <label class="chk"><input id="set-allowshell" type="checkbox"> 允许模型执行 shell 命令</label>
+          <p class="tip">修改监听地址后需重启服务生效，其余配置即时生效。</p>
+        </div>
+        <div class="set-pane" id="set-pane-models">
+          <h3>模型服务</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">会话可单独选模型；未配置 Key 的服务填好 Key 后点「拉取」</div>
+            <div id="prov-list"></div>
+            <div class="prov-add">
+              <input id="prov-new-name" placeholder="名称（如 硅基流动）">
+              <input id="prov-new-url" placeholder="baseURL（https://…/v1，OpenAI 兼容）">
+              <input id="prov-new-key" type="password" placeholder="API Key（可选）">
+              <button id="prov-add-btn">添加</button>
+            </div>
+          </div>
+        </div>
+        <div class="set-pane" id="set-pane-context">
+          <h3>上下文</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留，压缩只影响发给模型的内容</div>
+            <div class="compact-row">
+              <label>模式
+                <select id="set-compact-mode">
+                  <option value="rule">规则压缩（零成本，默认）</option>
+                  <option value="llm">模型摘要（达阈值自动+手动）</option>
+                  <option value="off">关闭</option>
+                </select>
+              </label>
+              <label>保留最近轮数
+                <input id="set-keeprounds" type="number" min="1">
+              </label>
+              <label>规则压缩间隔（轮）
+                <input id="set-ruleinterval" type="number" min="1">
+              </label>
+              <label>摘要触发阈值
+                <select id="set-compact-threshold">
+                  <option value="0.8">80%</option>
+                  <option value="0.9">90%</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="set-pane" id="set-pane-appearance">
+          <h3>外观</h3>
+          <p class="tip-inline" style="margin:0 0 6px">「界面强调色」组件启用后在此显示色板。</p>
+        </div>
+        <div class="set-pane" id="set-pane-components">
+          <h3>组件</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">来自 组件/ 的原生外围扩展；开关即时生效，无需刷新</div>
+            <div id="component-list"></div>
+          </div>
+        </div>
+        <div class="set-pane" id="set-pane-plugins">
+          <h3>插件</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">来自 插件兼容层/；开关即时保存，界面部分刷新页面后生效</div>
+            <div id="plugin-list"></div>
+          </div>
+          <div id="plugin-sections"></div>
+        </div>
+        <div class="set-pane" id="set-pane-about">
+          <h3>关于</h3>
+          <div class="about-block">
+            <div class="hero" style="justify-content:flex-start">
+              <img class="logo-img" src="/logo.png" alt="坚祥数字助理">
+              <div>
+                <b>坚祥数字助理（软著版）</b>
+                <div class="tip-inline" id="about-version" style="margin:0">版本 0.1.0</div>
+              </div>
+            </div>
+            <p class="tip" id="about-status" style="margin-top:14px"></p>
+            <p class="tip">Go 后端（LLM 主循环 + 工具集 + 编排 + 上下文管理）+ 原生 JS 前端；SQLite 存储；单文件交付。</p>
+          </div>
+        </div>
+        <div class="set-footer">
+          <p class="tip" style="margin:0">改动在点击「保存」后生效</p>
+          <div class="modal-actions">
+            <button id="set-cancel">取消</button>
+            <button id="set-save" class="accent">保存</button>
+          </div>
+        </div>
       </div>
     </div>
-    <label>默认工作区
-      <input id="set-workspace" placeholder="D:\path\to\workspace">
-    </label>
-    <label>监听地址
-      <input id="set-bindhost" placeholder="127.0.0.1 或 0.0.0.0（局域网访问）">
-    </label>
-    <label>单次任务最大步数
-      <input id="set-maxsteps" type="number" min="1">
-    </label>
-    <div class="prov-section">
-      <h4>上下文压缩 <span class="tip-inline">原始历史永久保留，压缩只影响发给模型的内容</span></h4>
-      <div class="compact-row">
-        <label>模式
-          <select id="set-compact-mode">
-            <option value="rule">规则压缩（零成本，默认）</option>
-            <option value="llm">模型摘要（达阈值自动+手动）</option>
-            <option value="off">关闭</option>
-          </select>
-        </label>
-        <label>保留最近轮数
-          <input id="set-keeprounds" type="number" min="1">
-        </label>
-        <label>规则压缩间隔（轮）
-          <input id="set-ruleinterval" type="number" min="1">
-        </label>
-        <label>摘要触发阈值
-          <select id="set-compact-threshold">
-            <option value="0.8">80%</option>
-            <option value="0.9">90%</option>
-          </select>
-        </label>
-      </div>
-    </div>
-    <label class="chk"><input id="set-allowshell" type="checkbox"> 允许模型执行 shell 命令</label>
-    <div class="prov-section">
-      <h4>组件 <span class="tip-inline">来自 组件/ 的原生外围扩展；开关即时生效，无需刷新</span></h4>
-      <div id="component-list"></div>
-    </div>
-    <div class="prov-section">
-      <h4>插件 <span class="tip-inline">来自 插件兼容层/；开关即时保存，界面部分刷新页面后生效</span></h4>
-      <div id="plugin-list"></div>
-      <div id="plugin-sections"></div>
-    </div>
-    <div class="modal-actions">
-      <button id="set-cancel">取消</button>
-      <button id="set-save" class="accent">保存</button>
-    </div>
-    <p class="tip">修改监听地址后需重启服务生效，其余配置即时生效。</p>
   </div>
 </div>
 
@@ -237,7 +309,7 @@
   </button>
   <button class="pop-item" id="pm-remote">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><path d="M7 8h.01M11 8h.01"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 18h.01M11 18h.01"/></svg>
-    SSH 远程工作区<span class="pop-check" id="pm-remote-check"></span>
+    添加远程工作目录<span class="pop-check" id="pm-remote-check"></span>
   </button>
 </div>
 
@@ -277,14 +349,27 @@
 
 <!-- 工作目录选择面板（仅新建对话时） -->
 <div id="ws-pop" class="popover ws-pop hidden">
-  <div class="perm-col-title">选择工作目录</div>
+  <div class="ws-search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    <input id="ws-search" placeholder="搜索工作目录">
+    <button id="ws-search-clear" class="hidden" title="清空">✕</button>
+  </div>
   <div id="ws-pop-list"></div>
-  <input id="ws-pop-custom" placeholder="或输入绝对路径，如 D:\projects\demo">
+  <div class="ws-pop-actions">
+    <button id="ws-pop-add" class="pop-item" title="打开系统文件夹选择框">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v4M10 12h4"/></svg>
+      添加工作目录
+    </button>
+    <button id="ws-pop-remote" class="pop-item" title="通过 SSH 使用远程目录作为工作目录">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="2"/><path d="M7 8h.01M11 8h.01"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 18h.01M11 18h.01"/></svg>
+      添加远程工作目录
+    </button>
+  </div>
 </div>
 
-<!-- SSH 远程工作区表单（加号菜单进入；新对话=草稿，已有会话=切换其工作区） -->
+<!-- SSH 远程工作区表单（工作目录面板/加号菜单进入；新对话=草稿，已有会话=切换其工作区） -->
 <div id="remote-pop" class="popover remote-pop hidden">
-  <div class="perm-col-title">SSH 远程工作区</div>
+  <div class="perm-col-title">添加远程工作目录</div>
   <div class="remote-form">
     <input id="rm-host" placeholder="主机 host，如 192.168.1.10">
     <input id="rm-port" type="number" placeholder="端口，默认 22">

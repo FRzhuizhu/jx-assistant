@@ -1,4 +1,4 @@
-/* 组件：强调色主题 —— 设置页内的界面强调色选择。
+/* 组件：强调色主题 —— 设置「外观」页内的界面强调色选择。
  * 按用户要求从输入区移到设置里；组件契约不变：
  * init() 建立全部 UI 与状态，dispose() 完整撤销，支持设置页热开关。 */
 (function () {
@@ -28,7 +28,7 @@
   }
 
   function buildUI() {
-    const card = document.querySelector('#settings .modal-card');
+    const card = document.getElementById('set-pane-appearance');
     if (!card) return;
     const saved = (() => { try { return localStorage.getItem('cx:accent') || ''; } catch (e) { return ''; } })();
 
@@ -68,10 +68,7 @@
     row.appendChild(custom);
     section.appendChild(row);
 
-    // 插到弹窗操作按钮之前
-    const actions = card.querySelector('.modal-actions');
-    if (actions) card.insertBefore(section, actions);
-    else card.appendChild(section);
+    card.appendChild(section);
 
     if (saved) {
       const [c, h] = saved.split('|');

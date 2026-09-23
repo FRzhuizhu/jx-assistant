@@ -119,6 +119,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
+	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
@@ -776,6 +777,22 @@ func (a *App) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// handlePickFolder 弹出系统原生“选择文件夹”对话框（与浏览器目录选择器同款），
+// 阻塞至用户关闭后返回所选目录绝对路径；用户取消时 path 为空串。
+// 浏览器端拿不到绝对路径，而本服务运行在用户本机，由后端弹框是唯一可靠途径。
+func (a *App) handlePickFolder(w http.ResponseWriter, r *http.Request) {
+	start := strings.TrimSpace(r.URL.Query().Get("start"))
+	if start == "" {
+		start = a.Cfg.Workspace
+	}
+	path, err := pickFolderSerialized(start, "选择工作目录")
+	if err != nil {
+		writeErr(w, 500, "无法打开文件夹选择框: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"path": path})
 }
 
 // handleFork 分支对话：复制出一个新会话。若目标正在执行，只复制到

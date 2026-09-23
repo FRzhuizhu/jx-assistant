@@ -177,7 +177,7 @@ function wsOf(s) {
   return s.workspace || state.defaultWs || '';
 }
 
-/* ---------- 侧栏标题行工具：搜索 / 视图选项 / 添加工作区 ---------- */
+/* ---------- 侧栏标题行工具：搜索 / 排序选项 / 添加工作目录 ---------- */
 
 function toggleSideSearch() {
   const row = document.getElementById('side-search');
@@ -204,30 +204,37 @@ function openViewMenu(anchor) {
   ], r.right - 160, r.bottom + 4);
 }
 
-function openAddWsMenu(anchor) {
-  const r = anchor.getBoundingClientRect();
-  const m = ensureCtxMenu();
-  m.innerHTML = '<input id="ctx-ws-input" placeholder="输入目录绝对路径，回车添加">';
-  closePopovers();
-  m.classList.remove('hidden');
-  m.style.left = Math.max(8, r.right - 240) + 'px';
-  m.style.top = (r.bottom + 4) + 'px';
-  const inp = m.querySelector('#ctx-ws-input');
-  inp.style.cssText = 'width:220px;margin:6px 8px;padding:7px 10px;font-size:12.5px;border:1px solid var(--border);border-radius:8px;outline:none';
-  inp.focus();
-  inp.onkeydown = (e) => {
-    e.stopPropagation();
-    if (e.key === 'Enter') {
-      const v = inp.value.trim();
-      if (v) {
-        lsSet('jx.wslist', [...new Set([...lsGet('jx.wslist', []), v])]);
-        closePopovers();
-        loadSessions();
-      }
-    }
-    if (e.key === 'Escape') closePopovers();
-  };
-  inp.onclick = (e) => e.stopPropagation();
+// 调后端弹出系统原生「选择文件夹」对话框，返回所选目录绝对路径；取消返回空串。
+// 浏览器自身的目录选择 API 不回传绝对路径，而本服务就跑在用户本机上，
+// 由后端代为弹框既能拿到真实路径，体验也与系统/浏览器一致。
+let pickingFolder = false;
+async function pickWorkFolder() {
+  if (pickingFolder) return '';
+  pickingFolder = true;
+  try {
+    const start = state.defaultWs ? '?start=' + encodeURIComponent(state.defaultWs) : '';
+    const res = await api('/api/pick-folder' + start);
+    return (res && res.path) || '';
+  } catch (e) {
+    alert('无法打开文件夹选择框：' + (e.message || e));
+    return '';
+  } finally {
+    pickingFolder = false;
+  }
+}
+
+// 把目录登记为已知工作区（localStorage），侧栏分组与选择面板都会出现它
+function rememberWorkspace(ws) {
+  if (!ws) return;
+  lsSet('jx.wslist', [...new Set([...lsGet('jx.wslist', []), ws])]);
+}
+
+// 侧栏「添加工作目录」：弹选择框并登记
+async function addWorkFolder() {
+  const p = await pickWorkFolder();
+  if (!p) return;
+  rememberWorkspace(p);
+  loadSessions();
 }
 
 // 右键/三个点共用的上下文菜单（动态 popover）
@@ -436,17 +443,23 @@ async function loadSessions() {
 
 /* ---------- 侧栏收起/展开（顶栏最左按钮，状态落本地） ---------- */
 
+function setSidebarBtn(collapsed) {
+  const label = collapsed ? '展开侧边栏' : '收起侧边栏';
+  const btn = document.getElementById('btn-sidebar');
+  if (btn) btn.title = label;
+  const txt = document.getElementById('sb-btn-text');
+  if (txt) txt.textContent = label;
+}
+
 function applySidebarState() {
   const collapsed = lsGet('jx.sb', '') === '1';
   document.body.classList.toggle('sb-collapsed', collapsed);
-  const btn = document.getElementById('btn-sidebar');
-  if (btn) btn.title = collapsed ? '展开侧边栏' : '收起侧边栏';
+  setSidebarBtn(collapsed);
 }
 
 function toggleSidebar() {
   const collapsed = document.body.classList.toggle('sb-collapsed');
-  const btn = document.getElementById('btn-sidebar');
-  if (btn) btn.title = collapsed ? '展开侧边栏' : '收起侧边栏';
+  setSidebarBtn(collapsed);
   lsSet('jx.sb', collapsed ? '1' : '0');
 }
 
@@ -464,8 +477,9 @@ function setFace(st, revertMs) {
 /* ---------- 首页（新建对话）---------- */
 
 // 输入卡片的位置：首页时挂在页面中央的问候区里，进对话后回到底部
+// 搬移的是 composer-area（工作目录胶囊 + 输入卡），两者始终在一起
 function placeComposer() {
-  const c = $('composer');
+  const c = $('composer-area');
   const homeSlot = $('home-composer');
   const wrap = $('composer-wrap');
   if (!state.cur && homeSlot) {
@@ -479,7 +493,7 @@ function placeComposer() {
 
 // 把输入卡挪回底部容器（msg-col 重建 innerHTML 前必须先挪出，否则会被一起销毁）
 function detachComposerToWrap() {
-  const c = document.getElementById('composer');
+  const c = document.getElementById('composer-area');
   if (c) $('composer-wrap').appendChild(c);
 }
 
@@ -1392,7 +1406,7 @@ function renderPermPop() {
 }
 
 function renderWsPop() {
-  // 候选目录 = 默认工作区 + 历史会话用过的目录
+  // 候选目录 = 默认工作区 + 手动添加的工作目录 + 历史会话用过的目录
   const seen = new Set();
   const list = [];
   const add = (ws) => {
@@ -1401,15 +1415,28 @@ function renderWsPop() {
     list.push(ws);
   };
   add(state.defaultWs);
+  lsGet('jx.wslist', []).forEach(add);
   (state.sessions || []).forEach((s) => add(s.workspace));
-  const cur = homeDraft.workspace || state.defaultWs || '';
+  const q = ($('ws-search').value || '').trim().toLowerCase();
+  const filtered = q ? list.filter((ws) => ws.toLowerCase().includes(q)) : list;
+  // 挂了远程目录时不标本地选中项
+  const cur = homeDraft.remote ? '' : (homeDraft.workspace || state.defaultWs || '');
   const box = $('ws-pop-list');
   box.innerHTML = '';
-  list.forEach((ws) => {
+  if (!filtered.length) {
+    box.innerHTML = `<div class="ws-pop-empty">${q ? '没有匹配的工作目录' : '还没有工作目录，用下方按钮添加'}</div>`;
+    return;
+  }
+  filtered.forEach((ws) => {
     const b = document.createElement('button');
     b.className = 'pop-item' + (ws === cur ? ' sel' : '');
-    b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>${esc(ws)}`;
-    b.onclick = () => { homeDraft.workspace = ws; closePopovers(); syncComposer(); };
+    b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>${esc(ws)}<span class="pop-check">${ws === cur ? '✓' : ''}</span>`;
+    b.onclick = () => {
+      homeDraft.remote = null; // 显式选本地目录 = 放弃远程挂载
+      homeDraft.workspace = ws;
+      closePopovers();
+      syncComposer();
+    };
     box.appendChild(b);
   });
 }
@@ -1456,6 +1483,16 @@ async function toggleModeFlag(flag) {
 
 let provDraft = []; // 设置页编辑中的 provider 列表（不直接改全局配置）
 
+// 设置浮窗：左目录切换
+function setSettingsPane(name) {
+  document.querySelectorAll('.set-nav-item').forEach((b) => {
+    b.classList.toggle('active', b.dataset.pane === name);
+  });
+  document.querySelectorAll('.set-pane').forEach((p) => {
+    p.classList.toggle('active', p.id === 'set-pane-' + name);
+  });
+}
+
 async function openSettings() {
   const c = await api('/api/config');
   $('set-baseurl').value = c.baseURL || '';
@@ -1478,6 +1515,13 @@ async function openSettings() {
   renderPluginList();
   mountPluginSections();
   renderComponentList();
+  setSettingsPane('general');
+  // 关于页信息
+  try {
+    const st = await api('/api/status');
+    $('about-version').textContent = '版本 ' + (st.version || '-') + ' · ' + (st.model || '');
+    $('about-status').textContent = st.mock ? '当前：离线演示模式（mock）' : (st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key');
+  } catch (e) { $('about-status').textContent = '服务状态未知'; }
   $('settings').classList.remove('hidden');
 }
 
@@ -1666,7 +1710,7 @@ $('btn-new-task').onclick = goHomeNewTask;
 $('btn-sidebar').onclick = toggleSidebar;
 $('wst-search').onclick = toggleSideSearch;
 $('wst-view').onclick = (e) => openViewMenu(e.currentTarget);
-$('wst-add').onclick = (e) => openAddWsMenu(e.currentTarget);
+$('wst-add').onclick = addWorkFolder;
 document.getElementById('side-search-input').addEventListener('input', (e) => {
   sideSearchQ = e.target.value.trim();
   loadSessions();
@@ -1683,7 +1727,23 @@ $('set-save').onclick = saveSettings;
 $('btn-plus').onclick = () => openPopover('plus-menu', $('btn-plus'));
 $('perm-chip').onclick = () => { renderPermPop(); openPopover('perm-pop', $('perm-chip')); };
 $('model-chip').onclick = () => { renderModelPop(); openPopover('model-pop', $('model-chip')); };
-$('ws-row').onclick = () => { renderWsPop(); openPopover('ws-pop', $('ws-row')); };
+// 工作目录面板：每次打开重置搜索；搜索实时过滤目录列表
+$('ws-row').onclick = () => {
+  $('ws-search').value = '';
+  $('ws-search-clear').classList.add('hidden');
+  renderWsPop();
+  openPopover('ws-pop', $('ws-row'));
+};
+$('ws-search').addEventListener('input', (e) => {
+  $('ws-search-clear').classList.toggle('hidden', !e.target.value);
+  renderWsPop();
+});
+$('ws-search-clear').onclick = () => {
+  $('ws-search').value = '';
+  $('ws-search-clear').classList.add('hidden');
+  renderWsPop();
+  $('ws-search').focus();
+};
 $('pm-upload').onclick = doUpload;
 $('pm-plan').onclick = () => toggleModeFlag('planMode');
 $('pm-goal').onclick = () => toggleModeFlag('goalMode');
@@ -1695,15 +1755,18 @@ $('rm-test').onclick = testRemote;
 $('rm-apply').onclick = applyRemote;
 $('rm-clear').onclick = clearRemote;
 $('file-input').addEventListener('change', (e) => { if (e.target.files.length) uploadFiles([...e.target.files]); });
-$('ws-pop-custom').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    homeDraft.workspace = e.target.value.trim();
-    e.target.value = '';
-    closePopovers();
-    syncComposer();
-  }
-});
+// 「添加工作目录」：弹系统选择框，选中即设为新对话的工作目录并登记
+$('ws-pop-add').onclick = async () => {
+  const p = await pickWorkFolder();
+  if (!p) return;
+  homeDraft.remote = null; // 选了本地目录，放弃远程挂载
+  homeDraft.workspace = p;
+  rememberWorkspace(p);
+  closePopovers();
+  syncComposer();
+};
+// 「添加远程工作目录」：打开 SSH 表单（与加号菜单里的是同一个）
+$('ws-pop-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', $('ws-row')); };
 // 权限面板：单选立即生效，多选即时收集
 $('perm-pop').addEventListener('change', (e) => {
   if (e.target.name === 'perm') {
@@ -1736,6 +1799,9 @@ $('prov-add-btn').onclick = () => {
   renderProvList();
 };
 $('settings').onclick = (e) => { if (e.target === $('settings')) $('settings').classList.add('hidden'); };
+document.querySelectorAll('.set-nav-item').forEach((b) => {
+  b.onclick = () => setSettingsPane(b.dataset.pane);
+});
 $('btn-drawer').onclick = toggleDrawer;
 // 语音输入：浏览器原生识别，边说边追加到输入框
 let voiceRecog = null;
