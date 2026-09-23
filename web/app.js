@@ -914,11 +914,20 @@ function toolCard(tc, result) {
   let argsDisp = (tc.function && tc.function.arguments) || '';
   try { argsDisp = JSON.stringify(JSON.parse(argsDisp), null, 2); } catch (e) { /* 原样显示 */ }
   let out = String((result && result.content) || '');
+  // 图片信封：抽出来渲染成 <img>，正文里不再重复显示
+  const imgFiles = [];
+  out = out.replace(/<image attachment="([^"]+)"[^>]*\/>\n?/g, (_, f) => { imgFiles.push(f); return ''; });
   if (out.length > 4000) out = out.slice(0, 4000) + '\n…';
+  const imgsHtml = imgFiles.length
+    ? `<div class="tc-imgs">` + imgFiles.map((f) =>
+        `<a href="/attachments/${encodeURIComponent(f)}" target="_blank" title="点击查看原图">` +
+        `<img class="tc-img" src="/attachments/${encodeURIComponent(f)}" loading="lazy" alt="图片附件"></a>`
+      ).join('') + `</div>`
+    : '';
   d.innerHTML =
     `<summary>工具调用：${esc(name)}${result ? '' : ' — 运行中…'}</summary>` +
     `<div class="tc-args"><b>参数</b><pre>${esc(argsDisp)}</pre></div>` +
-    (result ? `<div class="tc-out"><b>结果</b><pre>${esc(out)}</pre></div>` : '');
+    (result ? `<div class="tc-out"><b>结果</b><pre>${esc(out)}</pre>${imgsHtml}</div>` : '');
   return d;
 }
 

@@ -130,6 +130,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
 	mux.HandleFunc("POST /api/workspace/test", a.handleTestWorkspace)
 	mux.HandleFunc("POST /api/workspace/ls", a.handleWorkspaceLs)
+	mux.HandleFunc("GET /attachments/", a.handleAttachment)
 	mux.HandleFunc("POST /api/sessions/{id}/remote", a.handleSetSessionRemote)
 	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
 	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)
@@ -1205,6 +1206,24 @@ func (a *App) handleWorkspaceLs(w http.ResponseWriter, r *http.Request) {
 		out = append(out, dirEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size})
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "path": p, "home": home, "entries": out})
+}
+
+// handleAttachment 提供附件库里的图片（read_image 工具的产出），
+// 供前端工具卡片直接渲染原图。
+func (a *App) handleAttachment(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimPrefix(r.URL.Path, "/attachments/")
+	if rel == "" {
+		http.NotFound(w, r)
+		return
+	}
+	data, mediaType, err := a.loadAttachment(rel)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	_, _ = w.Write(data)
 }
 
 // handleSetSessionRemote 给会话设置 / 解除 SSH 远程工作区。

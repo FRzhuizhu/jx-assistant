@@ -59,6 +59,7 @@ type LLMTarget struct {
 	APIKey        string
 	Model         string
 	ContextWindow int
+	SupportsImages bool // 该模型是否声明支持图片输入（决定 read_image 是否内联视觉内容）
 }
 
 func (a *App) providerByID(id string) *ProviderCfg {
@@ -98,8 +99,11 @@ func (a *App) targetOf(p *ProviderCfg, _, modelID string) LLMTarget {
 		t.Model = p.Models[0].ID
 	}
 	for _, m := range p.Models {
-		if m.ID == t.Model && m.ContextWindow > 0 {
-			t.ContextWindow = m.ContextWindow
+		if m.ID == t.Model {
+			if m.ContextWindow > 0 {
+				t.ContextWindow = m.ContextWindow
+			}
+			t.SupportsImages = m.SupportsImages
 			break
 		}
 	}

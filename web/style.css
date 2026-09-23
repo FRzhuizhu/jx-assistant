@@ -982,3 +982,11 @@ mark {
 .pf-cancel:hover { background: var(--hover); }
 .pf-save { background: var(--accent); border-color: var(--accent); color: #fff; }
 .pf-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* 工具卡片里的图片附件 */
+.tc-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 12px 10px; }
+.tc-img {
+  max-width: 100%; max-height: 320px; border-radius: 8px;
+  border: 1px solid var(--border-2); cursor: zoom-in; display: block;
+}
+.tc-img:hover { border-color: var(--accent); }

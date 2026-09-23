@@ -169,6 +169,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
 		msgs := a.buildContext(sess, sys)
+		// 视觉模型：把工具结果引用的图片内联为内容块；纯文本模型原样透传
+		msgs = inlineImagesForRequest(a, msgs, target)
 		if err := a.maybeAutoCompact(sess, msgs, target.ContextWindow); err != nil {
 			emit(Event{Type: "error", Error: "自动压缩失败: " + err.Error()})
 		}

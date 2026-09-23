@@ -67,6 +67,18 @@ type ChatRequest struct {
 	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
 }
 
+// ContentPart 是多模态消息的内容块（OpenAI 兼容格式）：
+// 视觉输入用 {type:"text"} + {type:"image_url"} 组合放在 user 消息里。
+type ContentPart struct {
+	Type     string    `json:"type"` // text | image_url
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
 // ThinkingCfg 是 DeepSeek/GLM 风格的思考开关参数。
 type ThinkingCfg struct {
 	Type string `json:"type"` // enabled | disabled

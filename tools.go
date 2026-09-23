@@ -88,11 +88,11 @@ func (a *App) toolsFor(mode string) []Tool {
 		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool()}, history...)
 	}
 	if mode == "aux" {
-		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool()}, history...)
+		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool()}, history...)
 	}
 	return append([]Tool{
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
-		globTool(), grepTool(), runCommandTool(), webFetchTool(),
+		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 	}, history...)
 }
 
