@@ -100,8 +100,14 @@ func (a *App) envPermBlock(sess *SessionMeta) string {
 			b.WriteString("- 命令工作目录限制在工作区内；确需工作区外执行时引导用户在权限芯片开启「允许工作区外执行命令」\n")
 		}
 	}
-	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录；不可逆的破坏性命令会被硬拦截\n")
-	return b.String()
+		b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录；不可逆的破坏性命令会被硬拦截\n")
+		if hasCapability(sess, capBrowser) {
+			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
+		}
+		if hasCapability(sess, capComputer) {
+			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
+		}
+		return b.String()
 }
 
 func (a *App) systemPrompt(sess *SessionMeta) string {
