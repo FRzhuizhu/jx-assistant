@@ -113,6 +113,31 @@ report_ready），前端常驻订阅：主对话里的子任务卡片实时滚�
 Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键拉取模型清单；
 会话顶栏可单独切换本会话模型；派发时可指定子会话模型（providerId/modelId）。
 
+## 能力组件（图片 / 文档 / 浏览器 / 电脑）
+
+在基础工具之上的能力扩展，均为本栈重写（设计参考 DSH / ZCode 的对应机制）：
+
+- **图片查看**：`read_image` 工具 + 内容寻址附件库（`data/attachments/`）+
+  `GET /attachments/` 端点。工具结果只带文本信封；前端在工具卡片直接渲染原图；
+  视觉模型在请求组装时按预算内联 base64（单次最多 8 张，超限卸载），
+  纯文本模型降级为信封占位不报错。
+- **PDF**：`pdf` 工具（mode = diagnose / text / table / image / embed）。
+  先跑 diagnose 按字符分布判断文字层可信度（text-usable / text-suspect /
+  image-only）再选通路；image 模式把页面渲染成 PNG 并以图片信封返回。
+  依赖本机 Python + `pypdfium2`（text/table 另需 `pdfplumber`、`pypdf`）。
+- **OCR**：`ocr` 工具（mode = text / lines，可 `outlined` 描红对照图），
+  离线引擎 RapidOCR（PP-OCRv4）。依赖 `rapidocr-onnxruntime`。
+- **Office**：`office_skill` 工具返回 docx / xlsx / pptx 的操作要点
+  （python-docx / openpyxl / python-pptx）、中文字体陷阱与生成后的
+  结构校验命令（`scripts/check_office.py`，纯标准库）。
+  组件脚本内嵌于可执行文件，首次使用落盘到临时目录。
+- **浏览器操作**（能力开关 `browser`）：`browser_open / content / click /
+  type / evaluate / screenshot / close` 七件工具，chromedp（纯 Go CDP）
+  驱动本机 Chrome / Edge，有头模式运行。
+- **电脑操作**（能力开关 `computer`）：`computer_screenshot / click /
+  type / key / scroll / windows` 六件工具，win32 SendInput + GDI
+  DIB Section 直调，无 cgo；点击坐标以截屏图片像素为准。
+
 ## 组件管理（原生外围扩展，热开关）
 
 与插件（DSH 适配）相互独立的轻量扩展体系，全部为本栈原生态编写：
