@@ -36,7 +36,7 @@
     section = document.createElement('div');
     section.className = 'prov-section cx-accent-section';
     const title = document.createElement('h4');
-    title.textContent = '界面强调色';
+    title.textContent = '点缀色';
     section.appendChild(title);
 
     const row = document.createElement('div');

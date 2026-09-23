@@ -13,8 +13,7 @@ import (
 // permission: workspace-write=工作区内读写 full=完全访问 read-only=只读
 // （后端权限引擎强制执行，见 perm.go；tools 为启用的能力开关 id 列表，
 // 其中 unsandboxed=允许工作区外执行命令，越界执行逐次审批）
-// remote 非空时会话挂载 SSH 远程工作区：文件工具走 SFTP、命令走远程 shell；
-// allowed 是用户在审批中选过"本会话总是允许"的动作签名。
+// remote 非空时会话挂载 SSH 远程工作区：文件工具走 SFTP、命令走远程 shell。
 type SessionMeta struct {
 	ID         string           `json:"id"`
 	Title      string           `json:"title"`
@@ -29,7 +28,6 @@ type SessionMeta struct {
 	PlanMode   bool             `json:"planMode,omitempty"`
 	GoalMode   bool             `json:"goalMode,omitempty"`
 	Tools      []string         `json:"tools,omitempty"`
-	Allowed    []string         `json:"allowed,omitempty"`
 	Archived   bool             `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
 	Unread     bool             `json:"unread,omitempty"`   // 标为未读：侧栏红点
 	Status     string           `json:"status,omitempty"`   // idle | running

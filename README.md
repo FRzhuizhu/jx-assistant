@@ -19,26 +19,43 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
 首次使用：左下角「设置」中填入 API Key；`baseURL` 兼容 OpenAI chat-completions
 接口。`baseURL` 填 `mock` 可进入**离线演示模式**，无需 Key 即可体验完整链路。
 
-## 权限与执行模型（移植自 DSH 的核心理念，本栈重写）
+## 权限与执行模型（移植 DSH 官方沙箱机制，本栈重写）
 
-DSH（DeepSeek 官方 Agent）权限管理的核心思想：**三档权限模式 + 沙箱内执行 +
-一次性授权凭证 + 越权逐次审批**。本产品按同一套模型重写实现（`perm.go`）：
+与官方同构的完整沙箱栈——**OS 级强制隔离**，不是策略约定：
 
-| DSH 理念 | 本栈实现 |
-|---|---|
-| 权限三档（read-only / workspace-write / danger-full-access） | 会话粒度权限模式（权限芯片单选），后端强制执行 |
-| 沙箱内执行命令（可联网、可写工作区） | 命令默认在会话工作区内执行：cwd 锁定、环境变量白名单最小化、限时、输出截断；`web_fetch` 提供联网抓取 |
-| 向执行环境索取授权凭证 | 每次写文件 / 执行命令必须先经权限引擎评估，签发**短时效（5 分钟）一次性凭证**，执行器核销后才动手；过期/重用即拒绝（fail closed） |
-| 沙箱外执行（escalation） | 命令工作目录放到工作区之外 = 沙箱外执行：需先开启「允许工作区外执行命令」能力（权限面板多选），之后每次越界执行弹**审批卡**（允许 / 本会话总是允许 / 拒绝），2 分钟不响应视为拒绝；完全访问模式不弹审批 |
-| 保护自身配置与密钥 | 助手自身的配置文件与数据目录（含 API Key、全部会话记录）任何模式禁读禁写 |
-| 破坏性命令拦截 | 不可逆危险命令（格式化盘 / 删根目录 / 写系统注册表 / fork 炸弹等）任何模式硬拦截 |
-
-文件工具的权限（DSH 同款思路）：只读模式禁写禁执行；工作区内读写模式写文件
-仅限工作区（读不受限）；完全访问全域可写（受保护路径除外）。`web_fetch` 在非
-完全访问模式下拒绝内网/本机地址（防 SSRF）。
-
-> 说明：Windows 本地的"沙箱"是策略级沙箱（目录锁定 + 环境最小化 + 凭证核销），
-> 未做 OS 级进程隔离（AppContainer/受限令牌）；联网管控亦为策略级。
+- **三档沙箱策略**（会话粒度，权限芯片选择）：
+  `read-only`（沙箱内执行、禁止任何写入）/ `workspace-write`（默认；只能写
+  工作区与沙箱私有临时目录，联网不限）/ `full`（不受限，官方
+  danger-full-access 语义）。
+- **Windows 后端**（`sandbox_windows.go`，对齐官方 sandbox-windows-acl）：
+  `CreateRestrictedToken` 造受限令牌（剥全部特权 + LUA + 写受限 Flags），
+  restricting 列表 = 登录 SID + Everyone + 工作区/临时目录合成 SID（由路径
+  SHA-256 派生，长期 ACE 授权工作区、一次性授权每运行私有临时目录）；子进程
+  每次写都过内核两段检查，工作区外一律拒绝。令牌默认 DACL 按官方
+  setTokenDefaultDaclGrant 补授，保证管道/临时文件可创建。已知边界与官方
+  相同（Everyone 可写位置、NTFS 硬链接），自报 partial。
+- **Linux 后端**（`sandboxhelper`，对齐官方 Landlock 方案）：非特权
+  Landlock ruleset「handled」全部写类访问，workspace-write 下仅给工作区与
+  私有临时目录加 path-beneath 规则；`PR_SET_NO_NEW_PRIVS` 防提权。本地
+  Linux 主程序自重入施限；`build.bat` 交叉编译 amd64/arm64 helper 并内嵌。
+- **SSH 远程沙箱**（对齐官方 sandbox-ssh「远端选择它安装的本地后端」）：
+  首次执行时按远端架构把 helper 经 SFTP 上传到 `~/.jx-assistant/bin/`，
+  命令在远端沙箱内运行；远端内核不支持 Landlock 时如实报
+  `sandbox unavailable`（fail closed）。
+- **拒绝驱动的升级**（对齐官方 bash 工具）：不做威胁命令猜测、不做执行前
+  预检——命令先按会话策略进沙箱真实执行，被拒结果带
+  `[sandbox: … denied under <mode> mode]` 标记；模型同轮带
+  `sandbox_permissions`（够用的最宽档）+ 一句 `justification` 重试同一命令
+  一次，弹**审批卡**由用户决定；拒绝后该命令本轮终局。
+- **能力开关 = 常设授权**（权限面板右侧多选）：审批卡点「始终允许」点亮
+  该类动作对应的能力——`允许工作区外执行命令`（沙箱外执行命令行）、
+  `读写工作区外文件`（工作区外写入）、以及预留的浏览器/电脑操作；点亮后
+  该类动作不再逐次审批。三种基础权限档位之外的能力逐类申请、逐类点亮。
+- **一次性授权凭证**：每次写文件/执行命令先签发 5 分钟时效的一次性凭证，
+  执行器核销后才动手；过期/重用即拒绝（fail closed）。
+- **受保护路径**：助手自身配置与数据目录（API Key、全部会话记录）任何模式
+  禁止访问——确定性的路径边界，非命令内容猜测。
+- `web_fetch` 在非完全访问模式拒绝内网/本机地址（防 SSRF）。
 
 ## SSH 远程工作区（提前实现 DSH 的远程环境能力）
 
@@ -81,7 +98,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 | 模式 | 说明 | 工具 |
 |---|---|---|
-| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell/web_fetch + 历史查询 |
+| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / todo_write + 历史查询 |
 | `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / dispatch_task / send_to_session + 历史查询 |
 | `aux` | 辅助对话（挂在某会话下的答疑小会话，右栏「＋ 新建」） | 只读文件 + web_fetch + 历史查询 |
 
@@ -218,6 +235,9 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
 | `POST /api/sessions/{id}/compact` | 手动压缩为一条摘要 |
 | `POST /api/sessions/{id}/remote` | 设置/解除会话的 SSH 远程工作区（`{remote:{…}}` 或 `{clear:true}`） |
 | `GET /api/approvals` | 待决定的越权审批清单（轮询兜底） |
+| `GET /api/questions` | 待回答的助手提问 / 计划审批清单（轮询兜底） |
+| `POST /api/questions/{id}` | 回答提问；计划批准传 `__approve__`，驳回传反馈文本 |
+| `GET /api/sessions/{id}/todos` | 会话待办清单（todo_write 的持久化结果） |
 | `POST /api/approvals/{id}` | 审批决定：`{approved, always}`（always=本会话总是允许） |
 | `POST /api/workspace/test` | 测试 SSH 远程工作区配置（拨号/SFTP/目录，回显主机指纹） |
 | `GET /api/events` | 全局事件流（后台派发进度、回报就绪、会话更新、审批请求） |
@@ -230,5 +250,6 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
 
 聊天 SSE 事件：`message` / `delta` / `tool_start` / `tool_wait`（等待审批）/ `tool_end` /
 `sub_start` / `sub_end` / `title` / `done` / `error`。全局事件流另含 `sub_tool`、
-`report_ready`、`session_updated`、`approval_required` / `approval_resolved`
-（审批请求与结束，前端弹右下角审批卡；均带 sessionId，前端按会话过滤渲染）。
+`report_ready`、`session_updated`、`approval_required` / `approval_resolved`（审批卡）、
+`question_required` / `question_resolved`（助手提问 / 计划审批卡）、`todos`（待办刷新）
+（均带 sessionId，前端按会话过滤渲染）。

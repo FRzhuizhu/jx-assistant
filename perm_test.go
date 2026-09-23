@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// 权限引擎纯函数单测：危险命令拦截、工作区边界（本地/远程）、模式解析。
+// 权限引擎单测：危险命令护栏（组件开关）、工作区边界、模式解析、
+// 授权凭证、拒绝驱动的升级审批链路。
 
 func TestDestructiveCommandHit(t *testing.T) {
 	blocked := map[string]string{
@@ -113,23 +116,9 @@ func TestPermModeDefaults(t *testing.T) {
 	}
 }
 
-func TestRememberedSignature(t *testing.T) {
-	s := &SessionMeta{}
-	if isRemembered(s, "exec", "x") {
-		t.Fatal("空会话不应命中")
-	}
-	s.Allowed = append(s.Allowed, allowSignature("exec", "x"))
-	if !isRemembered(s, "exec", "x") {
-		t.Error("应命中已记录签名")
-	}
-	if isRemembered(s, "exec", "y") {
-		t.Error("不同摘要不应命中")
-	}
-}
-
 func TestGrantOneTimeConsume(t *testing.T) {
 	a := &App{grants: map[string]*Grant{}}
-	g := a.issueGrant("s1", "write_file", "write", "写文件 x", false, false)
+	g := a.issueGrant("s1", "write_file", "write", "写文件 x", permWorkspace)
 	if err := a.consumeGrant(g); err != nil {
 		t.Fatalf("首次核销应成功: %v", err)
 	}
@@ -161,39 +150,100 @@ func TestProtectedPath(t *testing.T) {
 	}
 }
 
-// 审批链路端到端：能力开关 → 越界执行进入审批 → 用户批准 → 签发沙箱外凭证。
-func TestAuthorizeEscalationApprovalFlow(t *testing.T) {
-	a := &App{Cfg: &Config{AllowShell: true, Workspace: `D:\w`},
-		grants: map[string]*Grant{}, approvals: map[string]*Approval{}, subscribers: map[chan Event]bool{}}
-	sess := &SessionMeta{Workspace: `D:\w`}
+// guardOnApp 构造一个带危险命令护栏组件注册表的 App（on=false 时组件被关）。
+func guardOnApp(t *testing.T, on bool) *App {
+	t.Helper()
+	dir := t.TempDir()
+	compDir := filepath.Join(dir, "dangerous-cmd-guard")
+	if err := os.MkdirAll(compDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"dangerous-cmd-guard","name":"危险命令拦截","version":"0.1.0","description":"","client":{}}`
+	if err := os.WriteFile(filepath.Join(compDir, "manifest.json"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "components.json")
+	comp := InitComponents(dir, state)
+	if !on {
+		if err := comp.SetEnabled("dangerous-cmd-guard", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &App{Components: comp}
+}
+
+func TestGuardToggle(t *testing.T) {
+	if !guardOnApp(t, true).guardEnabled() {
+		t.Fatal("护栏组件开启时 guardEnabled 应为 true")
+	}
+	if guardOnApp(t, false).guardEnabled() {
+		t.Fatal("护栏组件关闭时 guardEnabled 应为 false")
+	}
+	if !(&App{}).guardEnabled() {
+		t.Fatal("无组件注册表时护栏应缺省开启")
+	}
+	// 组件目录里根本没有该组件（被删掉）也应视为开启
+	empty := &App{Components: InitComponents(t.TempDir(), filepath.Join(t.TempDir(), "s.json"))}
+	if !empty.guardEnabled() {
+		t.Fatal("组件缺失时护栏应视为开启")
+	}
+}
+
+// escalationApp 构造可跑 authorize 的完整 App（真 Store，供「始终允许」落库）。
+func escalationApp(t *testing.T) (*App, *SessionMeta, *toolContext) {
+	t.Helper()
+	store, err := NewStore(filepath.Join(t.TempDir(), "jx.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sess := &SessionMeta{ID: "sess-t1", Workspace: `D:\w`, Permission: permWorkspace}
+	if err := store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{Cfg: &Config{AllowShell: true, Workspace: `D:\w`}, Store: store,
+		grants: map[string]*Grant{}, approvals: map[string]*Approval{},
+		subscribers: map[chan Event]bool{}}
 	tc := &toolContext{ctx: context.Background(), app: a, sess: sess}
+	return a, sess, tc
+}
 
-	// 只读模式：写与执行都被拒
+// TestAuthorizeDenialDriven 覆盖新模型：exec 不预检（护栏除外）、
+// 升级需真实拒绝后的 sandbox_permissions+justification、审批决定走向。
+func TestAuthorizeDenialDriven(t *testing.T) {
+	a, sess, tc := escalationApp(t)
+
+	// 工作区写模式：写工作区内放行，工作区外拒绝（fs 路径沙箱）
+	if g, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\w\a.txt`}); err != nil || g.Policy != permWorkspace {
+		t.Fatalf("工作区内写应放行且策略为 workspace-write: g=%v err=%v", g, err)
+	}
+	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\a.txt`}); err == nil ||
+		!strings.Contains(err.Error(), "fs sandbox") {
+		t.Fatalf("工作区外写应带 fs sandbox 拒绝标记: %v", err)
+	}
+
+	// exec 不再预检：只读模式下也放行（沙箱内执行，写会被 OS 拒绝）
 	sess.Permission = permReadOnly
-	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\w\a.txt`}); err == nil {
-		t.Fatal("只读模式应拒绝写文件")
+	if g, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "echo hi", Cwd: `D:\w`}); err != nil || g.Policy != permReadOnly {
+		t.Fatalf("只读模式 exec 应按只读策略放行: g=%v err=%v", g, err)
 	}
-	if _, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "echo hi", Cwd: `D:\w`}); err == nil {
-		t.Fatal("只读模式应拒绝执行命令")
+	sess.Permission = permWorkspace
+
+	// 危险命令护栏：任何模式硬拦截
+	if _, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "format C:", Cwd: `D:\w`}); err == nil {
+		t.Fatal("危险命令应被护栏拦截")
 	}
 
-	// 工作区写模式：工作区外写被拒
-	sess.Permission = ""
-	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\w\a.txt`}); err != nil {
-		t.Fatalf("工作区内写应放行: %v", err)
+	// 升级方向校验：同级/更窄档无效；缺 justification 无效
+	if _, err := tc.authorize(permAction{Op: "exec", Command: "x", EscalateTo: permWorkspace}); err == nil {
+		t.Fatal("当前已是 workspace-write，再升 workspace-write 应拒绝")
 	}
-	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\a.txt`}); err == nil {
-		t.Fatal("工作区外写应拒绝")
-	}
-
-	// 越界执行：未开启能力 → 直接拒
-	if _, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "git status", Cwd: `D:\other`}); err == nil ||
-		!strings.Contains(err.Error(), "工作区之外") {
-		t.Fatalf("未开启能力时应拒绝越界执行: %v", err)
+	if _, err := tc.authorize(permAction{Op: "exec", Command: "x", EscalateTo: permFull}); err == nil ||
+		!strings.Contains(err.Error(), "justification") {
+		t.Fatalf("升级缺 justification 应拒绝: %v", err)
 	}
 
-	// 开启能力 → 进入审批 → 批准 → 沙箱外凭证
-	sess.Tools = []string{capUnsandboxed}
+	// 升级 → 审批 → 批准 → 以更宽策略签发
 	go func() {
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
@@ -204,25 +254,65 @@ func TestAuthorizeEscalationApprovalFlow(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
-	g, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "git status", Cwd: `D:\other`})
+	g, err := tc.authorize(permAction{Op: "exec", Command: "git push", EscalateTo: permFull,
+		Justification: "需要推送到远端仓库完成交付"})
 	if err != nil {
-		t.Fatalf("批准后应放行: %v", err)
+		t.Fatalf("批准后升级应放行: %v", err)
 	}
-	if !g.Escaped || !g.FullEnv {
-		t.Fatal("沙箱外凭证应带 Escaped 与 FullEnv")
+	if g.Policy != permFull {
+		t.Fatalf("升级后的凭证策略应为 full，得到 %s", g.Policy)
 	}
-	if err := a.consumeGrant(g); err != nil {
-		t.Fatalf("核销失败: %v", err)
+	if sess.Permission != permWorkspace {
+		t.Fatalf("仅点「允许」不应改变会话权限，得到 %s", sess.Permission)
 	}
 
-	// 危险命令硬拦截（即便完全访问）
-	sess.Permission = permFull
-	if _, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "format C:", Cwd: `D:\w`}); err == nil {
-		t.Fatal("危险命令应被硬拦截")
+	// 升级 → 审批 → 拒绝 → 该命令终局
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if aps := a.pendingApprovals(); len(aps) == 1 {
+				_ = a.resolveApproval(aps[0].ID, false, false)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	if _, err := tc.authorize(permAction{Op: "exec", Command: "git push", EscalateTo: permFull,
+		Justification: "再试一次"}); err == nil || !strings.Contains(err.Error(), "终局") {
+		t.Fatalf("被拒绝的升级应终局: %v", err)
 	}
-	// 完全访问下越界执行不弹审批直接放行
-	g2, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: "git status", Cwd: `D:\other`})
-	if err != nil || !g2.Escaped {
-		t.Fatalf("完全访问越界应直接放行: %v", err)
+
+	// 「始终允许」：给会话开启「允许工作区外执行命令」能力（勾选点亮）
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if aps := a.pendingApprovals(); len(aps) == 1 {
+				_ = a.resolveApproval(aps[0].ID, true, true)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	if _, err := tc.authorize(permAction{Op: "exec", Command: "git push", EscalateTo: permFull,
+		Justification: "这次用始终允许"}); err != nil {
+		t.Fatalf("始终允许路径应放行: %v", err)
+	}
+	if !hasCapability(sess, capUnsandboxed) {
+		t.Fatalf("始终允许应点亮 unsandboxed 能力勾选，得到 %v", sess.Tools)
+	}
+	if sess.Permission != permWorkspace {
+		t.Fatalf("始终允许不应改变权限模式（仍是工作区内读写），得到 %s", sess.Permission)
+	}
+
+	// 之后升级不再弹审批：直接以请求的更宽策略放行
+	g2, err := tc.authorize(permAction{Op: "exec", Command: "git push", EscalateTo: permFull,
+		Justification: "开过能力后这次不应再弹审批"})
+	if err != nil || g2.Policy != permFull {
+		t.Fatalf("能力开启后升级应免审批直接放行: g=%v err=%v", g2, err)
+	}
+	// 普通无升级 exec 保持当前策略（workspace-write），不受能力影响
+	g3, err := tc.authorize(permAction{Op: "exec", Command: "git status", Cwd: `D:\w`})
+	if err != nil || g3.Policy != permWorkspace {
+		t.Fatalf("普通 exec 应保持 workspace-write 策略: g=%v err=%v", g3, err)
 	}
 }

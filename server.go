@@ -25,25 +25,30 @@ const appVersion = "0.1.0"
 
 // App 持有配置与会话存储，是所有 HTTP 处理器的宿主。
 type App struct {
-	Cfg     *Config
-	CfgPath string
-	Store   *Store
-	Plugins   *PluginRegistry
+	Cfg        *Config
+	CfgPath    string
+	Store      *Store
+	Plugins    *PluginRegistry
 	Components *ComponentRegistry
-	static  fs.FS // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	static     fs.FS // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
-	mu          sync.Mutex
-	sessLocks   map[string]*sync.Mutex
-	runMu       sync.Mutex
-	runners     map[string]*runner      // 正在执行的会话（含后台派发）
-	permMu      sync.Mutex
-	grants      map[string]*Grant       // 授权凭证（perm.go）
-	approvals   map[string]*Approval    // 等待用户决定的越权审批（perm.go）
-	protectPaths []string               // 助手自身配置/数据目录，任何模式禁访问
-	remoteMu    sync.Mutex
-	remotes     map[string]*remoteClient // SSH 远程连接池（remote.go）
-	evtMu       sync.Mutex
-	subscribers map[chan Event]bool     // /api/events 的订阅者
+	mu           sync.Mutex
+	sessLocks    map[string]*sync.Mutex
+	runMu        sync.Mutex
+	runners      map[string]*runner // 正在执行的会话（含后台派发）
+	permMu       sync.Mutex
+	grants       map[string]*Grant        // 授权凭证（perm.go）
+	approvals    map[string]*Approval     // 等待用户决定的越权审批（perm.go）
+	questions    map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
+	jobsMu       sync.Mutex
+	jobs         map[string]*jobRun // 会话内后台作业（jobs.go）
+	protectPaths []string           // 助手自身配置/数据目录，任何模式禁访问
+	remoteMu     sync.Mutex
+	remotes      map[string]*remoteClient // SSH 远程连接池（remote.go）
+	evtMu        sync.Mutex
+	subscribers  map[chan Event]bool // /api/events 的订阅者
+	intjMu       sync.Mutex
+	interjects   map[string][]string // 执行中会话的插话队列（agent 循环步间排水）
 }
 
 func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
@@ -81,6 +86,7 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a := &App{Cfg: cfg, CfgPath: cfgPath, Store: store, Plugins: plugins, Components: components, static: static,
 		sessLocks: map[string]*sync.Mutex{},
 		grants:    map[string]*Grant{}, approvals: map[string]*Approval{},
+		questions: map[string]*UserQuestion{}, jobs: map[string]*jobRun{},
 		remotes: map[string]*remoteClient{}}
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
@@ -119,7 +125,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/sessions/{id}", a.handlePatchSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", a.handleDeleteSession)
 	mux.HandleFunc("POST /api/sessions/{id}/chat", a.handleChat)
+	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
+	mux.HandleFunc("GET /api/sessions/{id}/todos", a.handleGetTodos)
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.handleExport)
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
@@ -128,6 +136,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
+	mux.HandleFunc("GET /api/questions", a.handleListQuestions)
+	mux.HandleFunc("POST /api/questions/{id}", a.handleResolveQuestion)
 	mux.HandleFunc("POST /api/workspace/test", a.handleTestWorkspace)
 	mux.HandleFunc("POST /api/workspace/ls", a.handleWorkspaceLs)
 	mux.HandleFunc("GET /attachments/", a.handleAttachment)
@@ -616,15 +626,15 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	t := a.DefaultTarget()
 	writeJSON(w, 200, map[string]any{
-		"baseURL":      t.BaseURL,
-		"apiKeyMasked": maskKey(t.APIKey),
-		"model":        t.Model,
-		"providers":    providers,
-		"presets":      presets,
-		"workspace":    a.Cfg.Workspace,
-		"allowShell":   a.Cfg.AllowShell,
-		"bindHost":     a.Cfg.BindHost,
-		"maxSteps":     a.Cfg.MaxSteps,
+		"baseURL":          t.BaseURL,
+		"apiKeyMasked":     maskKey(t.APIKey),
+		"model":            t.Model,
+		"providers":        providers,
+		"presets":          presets,
+		"workspace":        a.Cfg.Workspace,
+		"allowShell":       a.Cfg.AllowShell,
+		"bindHost":         a.Cfg.BindHost,
+		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
 		"keepRounds":       a.Cfg.KeepRounds,
 		"ruleInterval":     a.Cfg.RuleInterval,
@@ -642,12 +652,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		AllowShell *bool   `json:"allowShell"`
 		MaxSteps   *int    `json:"maxSteps"`
 		Compact    *struct {
-			Mode      string  `json:"mode"`
-			KeepRounds *int   `json:"keepRounds"`
-			RuleInterval *int `json:"ruleInterval"`
-			Threshold float64 `json:"threshold"`
+			Mode         string  `json:"mode"`
+			KeepRounds   *int    `json:"keepRounds"`
+			RuleInterval *int    `json:"ruleInterval"`
+			Threshold    float64 `json:"threshold"`
 		} `json:"compact"`
-		Providers  *[]struct {
+		Providers *[]struct {
 			ID      string     `json:"id"`
 			Name    string     `json:"name"`
 			BaseURL string     `json:"baseURL"`
@@ -757,6 +767,7 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Provider   string           `json:"provider"`
 		Model      string           `json:"model"`
 		Permission string           `json:"permission"`
+		Thinking   string           `json:"thinking"`
 		PlanMode   bool             `json:"planMode"`
 		GoalMode   bool             `json:"goalMode"`
 		Tools      []string         `json:"tools"`
@@ -787,6 +798,7 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Provider:   strings.TrimSpace(body.Provider),
 		Model:      strings.TrimSpace(body.Model),
 		Permission: body.Permission,
+		Thinking:   strings.TrimSpace(body.Thinking),
 		PlanMode:   body.PlanMode,
 		GoalMode:   body.GoalMode,
 		Tools:      body.Tools,
@@ -1078,6 +1090,28 @@ func (a *App) handlePickFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"path": path})
 }
 
+// handleInterject 对话中途插话：不打断执行，排进队列，agent 循环在
+// 下一次调用模型前落库注入（若本轮恰好结束则直接续跑一轮）。
+func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
+		writeErr(w, 400, "content 不能为空")
+		return
+	}
+	if !a.IsRunning(m.ID) {
+		writeJSON(w, 200, map[string]any{"accepted": false})
+		return
+	}
+	a.pushInterject(m.ID, strings.TrimSpace(body.Content))
+	writeJSON(w, 200, map[string]any{"accepted": true})
+}
+
 // handleFork 分支对话：复制出一个新会话。若目标正在执行，只复制到
 // 最近一轮完成的位置（最后一条带正文且无工具调用的助手消息）。
 func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
@@ -1143,6 +1177,33 @@ func (a *App) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// handleListQuestions 返回待回答的提问/计划审批（前端轮询兜底）。
+func (a *App) handleListQuestions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"questions": a.pendingQuestions()})
+}
+
+// handleResolveQuestion 接收用户对提问的回答（计划批准用 __approve__）。
+func (a *App) handleResolveQuestion(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Answer string `json:"answer"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := a.resolveQuestion(r.PathValue("id"), body.Answer); err != nil {
+		writeErr(w, 404, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// handleGetTodos 返回会话的待办清单。
+func (a *App) handleGetTodos(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	writeJSON(w, 200, map[string]any{"todos": todosOf(a, m.ID)})
 }
 
 // handleTestWorkspace 测试一个 SSH 远程工作区配置：拨号 → 远程命令 →

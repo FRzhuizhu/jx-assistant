@@ -21,13 +21,16 @@ const state = {
   cur: null,        // 当前会话 meta
   msgs: [],         // 当前会话已确认的消息
   streamText: '',   // 正在流式输出的助手文本
+  streamThinking: '', // 正在流式输出的思考过程
   streaming: false,
   abort: null,
+  queue: [],        // 对话中途发送行为=等待 时的待发队列（本会话）
   defaultWs: '',    // 默认工作区（文件夹），来自 /api/status
   models: [],       // 可选模型清单，来自 /api/models
   defaultProvider: '',
   defaultModel: '',
   approvals: [],    // 待用户决定的越权审批（右下角卡片）
+  questions: [],    // 待回答的助手提问 / 计划审批（右下角卡片）
 };
 
 async function api(path, opts = {}) {
@@ -841,6 +844,7 @@ function restoreHomeDraftLS() {
     homeDraft.permission = d.permission || 'workspace-write';
     homeDraft.provider = d.provider || '';
     homeDraft.model = d.model || '';
+    homeDraft.thinking = d.thinking || '';
     homeDraft.tools = Array.isArray(d.tools) ? d.tools : [];
     homeDraft.planMode = !!d.planMode;
     homeDraft.goalMode = !!d.goalMode;
@@ -864,6 +868,7 @@ async function openAssistant() {
 function goHomeNewTask() {
   if (state.streaming) return;
   state.cur = null;
+  loadTodos();
   state.msgs = [];
   resetEmpty();
   loadSessions();
@@ -874,6 +879,7 @@ async function openSession(id) {
   const data = await api('/api/sessions/' + id);
   state.cur = data.meta;
   state.msgs = data.messages || [];
+  state.queue = loadQueueLS(id);
   $('sess-title').textContent = state.cur.title || '(未命名)';
   const badge = $('mode-badge');
   if (state.cur.mode === 'assistant') {
@@ -889,6 +895,7 @@ async function openSession(id) {
   refreshDrawer();
   placeComposer();
   syncComposer();
+  loadTodos();
   renderMessages(state.msgs);
   // 打开即视为已读：清红点与绿点
   delete dotDone[id];
@@ -901,6 +908,8 @@ async function openSession(id) {
     const t = localStorage.getItem(sessionDraftKey(id));
     if (t) { $('input').value = t; autoGrow(); }
   } catch (e) {}
+  // 上次中断遗留的排队消息：会话空闲时从第一条继续
+  if (state.queue.length && !state.streaming) setTimeout(flushQueue, 300);
   loadSessions();
   JX.emit('session:open', state.cur);
 }
@@ -1033,6 +1042,13 @@ function renderMessages(msgs) {
       wrap.dataset.seq = m.seq; // 搜索命中定位用
       const body = document.createElement('div');
       body.className = 'md';
+      // 该步的思考过程（入库原文），折叠展示
+      if (m.thinking) {
+        const tk = document.createElement('details');
+        tk.className = 'think-card';
+        tk.innerHTML = `<summary>思考过程</summary><pre class="tk-body">${esc(m.thinking)}</pre>`;
+        wrap.appendChild(tk);
+      }
       if (m.content) body.innerHTML = md(m.content);
       for (const tc of m.tool_calls || []) {
         const n = (tc.function && tc.function.name) || '';
@@ -1083,6 +1099,26 @@ function renderMessages(msgs) {
     }
     // role === 'tool' 的消息已配对进工具卡片，跳过
   }
+  // 等待队列：本轮执行中排入的消息，徽标 + 可移出
+  state.queue.forEach((q, qi) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg user queued';
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    const badge = document.createElement('span');
+    badge.className = 'q-badge';
+    badge.textContent = '排队中';
+    b.appendChild(badge);
+    b.appendChild(document.createTextNode(q));
+    const x = document.createElement('button');
+    x.className = 'q-x';
+    x.title = '移出队列';
+    x.textContent = '✕';
+    x.onclick = () => { state.queue.splice(qi, 1); saveQueueLS(); renderMessages(state.msgs); };
+    b.appendChild(x);
+    wrap.appendChild(b);
+    box.appendChild(wrap);
+  });
   $('messages').scrollTop = $('messages').scrollHeight;
 }
 
@@ -1097,8 +1133,18 @@ function liveRender() {
       el = document.createElement('div');
       el.className = 'msg assistant';
       el.id = 'live-bubble';
-      el.innerHTML = '<div class="md"></div>';
+      el.innerHTML = '<details class="think-card" open><summary>思考过程</summary><pre class="tk-body"></pre></details><div class="md"></div>';
       $('msg-col').appendChild(el);
+    }
+    const tk = el.querySelector('.think-card');
+    const tkBody = el.querySelector('.tk-body');
+    const thinking = state.streamThinking || '';
+    if (thinking) {
+      tk.style.display = '';
+      tkBody.textContent = thinking;
+      tk.querySelector('summary').textContent = '思考中…';
+    } else {
+      tk.style.display = 'none';
     }
     el.querySelector('.md').innerHTML = md(state.streamText);
     $('messages').scrollTop = $('messages').scrollHeight;
@@ -1155,11 +1201,14 @@ function handleGlobalEvent(ev) {
       if (viewing && !state.streaming) { state.streamText += ev.delta; liveRender(); }
       if (state.cur && state.cur.mode === 'assistant') setFace('thinking');
       break;
+    case 'reasoning':
+      if (viewing && !state.streaming) { state.streamThinking = (state.streamThinking || '') + ev.delta; liveRender(); }
+      break;
     case 'message':
       if (viewing && !state.streaming && ev.message && ev.message.role === 'user') refreshCurrent();
       break;
     case 'done':
-      if (viewing && !state.streaming) { state.streamText = ''; removeLive(); refreshCurrent(); }
+      if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
       if (state.cur && state.cur.mode === 'assistant') setFace('done', 4000);
       break;
     case 'report_ready':
@@ -1175,13 +1224,22 @@ function handleGlobalEvent(ev) {
     case 'approval_resolved':
       removeApproval(ev.approvalId);
       break;
+    case 'question_required':
+      pushQuestion(ev);
+      break;
+    case 'question_resolved':
+      removeQuestion(ev.questionId);
+      break;
+    case 'todos':
+      loadTodos();
+      break;
     case 'error':
       if (viewing && !state.streaming) refreshCurrent();
       break;
   }
 }
 
-/* ---------- 审批卡片（沙箱外执行等越权动作：允许 / 总是允许 / 拒绝） ---------- */
+/* ---------- 审批卡片（沙箱升级等越权动作：允许 / 始终允许 / 拒绝） ---------- */
 
 function pushApproval(ev) {
   if (!ev.approvalId || state.approvals.some((a) => a.id === ev.approvalId)) return;
@@ -1220,8 +1278,9 @@ function renderApprovals() {
   const bar = $('approval-bar');
   if (!bar) return;
   bar.innerHTML = '';
-  if (!state.approvals.length) { bar.classList.add('hidden'); return; }
+  if (!state.approvals.length && !state.questions.length) { bar.classList.add('hidden'); return; }
   bar.classList.remove('hidden');
+  renderQuestionsInto(bar);
   for (const ap of state.approvals) {
     const card = document.createElement('div');
     card.className = 'ap-card';
@@ -1234,7 +1293,7 @@ function renderApprovals() {
       (ap.reason ? '<p>' + esc(ap.reason) + '</p>' : '') + '</div>' +
       '<div class="ap-actions">' +
       '<button class="ok" data-act="ok">允许</button>' +
-      '<button class="ok always" data-act="always">本会话总是允许</button>' +
+      '<button class="ok always" data-act="always" title="开启「允许工作区外执行命令」能力（权限面板勾选点亮），此后沙箱外执行不再逐次审批">始终允许</button>' +
       '<button class="deny" data-act="deny">拒绝</button>' +
       '</div>';
     card.querySelectorAll('button').forEach((b) => {
@@ -1245,6 +1304,104 @@ function renderApprovals() {
     });
     bar.appendChild(card);
   }
+}
+
+/* ---------- 提问 / 计划审批卡片（ask_user_question / exit_plan_mode） ---------- */
+
+function pushQuestion(ev) {
+  if (!ev.questionId || state.questions.some((q) => q.id === ev.questionId)) return;
+  state.questions.push({
+    id: ev.questionId, sessionId: ev.sessionId || '', kind: ev.kind || 'ask',
+    question: ev.summary || '', plan: ev.plan || '',
+    options: ev.options || [],
+  });
+  renderApprovals(); // 复用同一容器统一重画
+}
+
+function removeQuestion(id) {
+  state.questions = state.questions.filter((q) => q.id !== id);
+  renderApprovals();
+}
+
+async function loadQuestions() {
+  try {
+    const d = await api('/api/questions');
+    state.questions = (d.questions || []).map((q) => ({
+      id: q.id, sessionId: q.sessionId, kind: q.kind || 'ask',
+      question: q.question || '', plan: q.plan || '', options: q.options || [],
+    }));
+    renderApprovals();
+  } catch (e) { /* 服务离线时忽略 */ }
+}
+
+async function decideQuestion(id, answer) {
+  removeQuestion(id); // 先乐观移除，避免双击
+  try {
+    await api('/api/questions/' + id, { method: 'POST', body: JSON.stringify({ answer }) });
+  } catch (e) {
+    $('hint').textContent = '提交失败：' + e.message;
+    setTimeout(() => { $('hint').textContent = ''; }, 3000);
+  }
+}
+
+function renderQuestionsInto(bar) {
+  for (const q of state.questions) {
+    const card = document.createElement('div');
+    card.className = 'ap-card q-card' + (q.kind === 'plan' ? ' plan' : '');
+    const isPlan = q.kind === 'plan';
+    let body = '';
+    if (isPlan) {
+      body = '<pre class="q-plan">' + esc(q.plan || '') + '</pre>' +
+        '<div class="q-free"><input type="text" placeholder="反馈修改意见后点「驳回」，或直接批准"><button class="ghost" data-free>驳回</button></div>' +
+        '<div class="ap-actions"><button class="ok" data-opt="__approve__">批准并开始执行</button></div>';
+    } else {
+      const opts = (q.options || []).map((o, i) =>
+        '<button class="opt" data-i="' + i + '">' + esc(o) + '</button>').join('');
+      body = '<div class="ap-body"><p>' + esc(q.question || '') + '</p></div>' +
+        (opts ? '<div class="q-opts">' + opts + '</div>' : '') +
+        '<div class="q-free"><input type="text" placeholder="' + (opts ? '或输入自定义回答' : '输入你的回答') + '"><button class="ghost" data-free>发送</button></div>';
+    }
+    card.innerHTML = '<div class="ap-head"><b>' + (isPlan ? '计划审批' : '助手提问') + '</b></div>' + body;
+    card.querySelectorAll('button[data-opt]').forEach((b) => {
+      b.onclick = () => decideQuestion(q.id, b.dataset.opt);
+    });
+    card.querySelectorAll('button.opt').forEach((b) => {
+      b.onclick = () => decideQuestion(q.id, q.options[parseInt(b.dataset.i, 10)]);
+    });
+    const free = card.querySelector('.q-free');
+    if (free) {
+      const send = () => {
+        const v = free.querySelector('input').value.trim();
+        if (!v) return;
+        decideQuestion(q.id, isPlan ? v : v);
+      };
+      free.querySelector('button').onclick = send;
+      free.querySelector('input').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    }
+    bar.appendChild(card);
+  }
+}
+
+/* ---------- 待办面板（todo_write） ---------- */
+
+async function loadTodos() {
+  const panel = $('todo-panel');
+  if (!panel) return;
+  if (!state.cur) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+  try {
+    const d = await api('/api/sessions/' + state.cur.id + '/todos');
+    const todos = d.todos || [];
+    if (!todos.length) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+    const done = todos.filter((t) => t.status === 'completed').length;
+    let html = '<div class="todo-head"><b>待办</b><span>' + done + '/' + todos.length + '</span></div><ul>';
+    for (const t of todos) {
+      const mark = t.status === 'completed' ? '✔' : (t.status === 'in_progress' ? '▶' : '·');
+      html += '<li class="td-' + (t.status || 'pending') + '"><span class="td-mark">' + mark + '</span>' + esc(t.content) + '</li>';
+    }
+    html += '</ul>';
+    panel.innerHTML = html;
+    panel.classList.remove('hidden');
+  } catch (e) { /* 会话不存在等情况忽略 */ }
 }
 
 /* ---------- SSH 远程工作区（两步式：连接配置 → 保存 → 浏览目录 → 使用） ---------- */
@@ -1432,7 +1589,7 @@ async function clearRemote() {
 /* ---------- 发送与事件流 ---------- */
 
 function setStreamUI(on) {
-  $('btn-send').disabled = on;
+  // 发送按钮保持可用：执行中发送 = 插话或排队（常规页「对话中途发送行为」）
   $('btn-stop').classList.toggle('hidden', !on);
   if (!on) $('hint').textContent = '';
 }
@@ -1441,6 +1598,7 @@ function handleEvent(ev) {
   switch (ev.type) {
     case 'message': {
       state.streamText = '';
+      state.streamThinking = '';
       const live = document.getElementById('live-bubble');
       if (live) live.remove();
       state.msgs.push(ev.message);
@@ -1449,6 +1607,11 @@ function handleEvent(ev) {
     }
     case 'delta':
       state.streamText += ev.delta;
+      liveRender();
+      if (state.cur && state.cur.mode === 'assistant') setFace('thinking');
+      break;
+    case 'reasoning': // 思考增量：实时显示在折叠块里
+      state.streamThinking = (state.streamThinking || '') + ev.delta;
       liveRender();
       if (state.cur && state.cur.mode === 'assistant') setFace('thinking');
       break;
@@ -1476,6 +1639,7 @@ function handleEvent(ev) {
       break;
     case 'error': {
       state.streamText = '';
+      state.streamThinking = '';
       const live = document.getElementById('live-bubble');
       if (live) live.remove();
       renderMessages(state.msgs);
@@ -1493,10 +1657,63 @@ function handleEvent(ev) {
   }
 }
 
-async function send() {
+function queueKey(sid) { return 'jx.queue.' + sid; }
+
+function loadQueueLS(sid) {
+  try { return JSON.parse(localStorage.getItem(queueKey(sid)) || '[]'); } catch (e) { return []; }
+}
+
+function saveQueueLS() {
+  if (!state.cur) return;
+  try { localStorage.setItem(queueKey(state.cur.id), JSON.stringify(state.queue)); } catch (e) { /* 忽略 */ }
+}
+
+// 等待模式：本轮结束后从队列取下一条串行发送
+async function flushQueue() {
+  if (!state.cur || state.streaming || !state.queue.length) return;
+  const next = state.queue.shift();
+  saveQueueLS();
+  renderMessages(state.msgs);
+  await send(next);
+}
+
+// 执行中发出的消息：按「对话中途发送行为」插话或排队
+async function sendMidrun(content, viaInput) {
+  if (lsGet('jx.midrun', 'interject') === 'queue') {
+    state.queue.push(content);
+    saveQueueLS();
+    if (viaInput) { $('input').value = ''; autoGrow(); if (state.cur) clearSessionDraftLS(state.cur.id); }
+    renderMessages(state.msgs);
+    return;
+  }
+  try {
+    const d = await api('/api/sessions/' + state.cur.id + '/interject', {
+      method: 'POST', body: JSON.stringify({ content }),
+    });
+    if (d.accepted) {
+      // 消息本身不在这里入列：后端在注入时会通过聊天流回推 message 事件，
+      // 本地再 push 会显示两条。
+    } else {
+      // 刚好执行结束的竞态：转入排队，稍后自动续发
+      state.queue.push(content);
+      saveQueueLS();
+      renderMessages(state.msgs);
+      setTimeout(flushQueue, 200);
+    }
+  } catch (e) {
+    alert('插话失败：' + e.message);
+    return;
+  }
+  if (viaInput) { $('input').value = ''; autoGrow(); if (state.cur) clearSessionDraftLS(state.cur.id); }
+  renderMessages(state.msgs);
+}
+
+async function send(forceContent) {
   const input = $('input');
-  const content = input.value.trim();
-  if (!content || state.streaming) return;
+  const fromInput = typeof forceContent !== 'string';
+  const content = (fromInput ? input.value : forceContent).trim();
+  if (!content) return;
+  if (state.streaming) { await sendMidrun(content, fromInput); return; }
   if (!state.cur) {
     // 懒创建：发出第一条消息才真正建会话（侧栏不再出现空会话，首页不再一闪而过）
     const s = await api('/api/sessions', {
@@ -1508,6 +1725,7 @@ async function send() {
         permission: homeDraft.permission,
         provider: homeDraft.provider,
         model: homeDraft.model,
+        thinking: homeDraft.thinking || '',
         planMode: homeDraft.planMode,
         goalMode: homeDraft.goalMode,
         tools: homeDraft.tools,
@@ -1520,16 +1738,20 @@ async function send() {
     refreshDrawer();
     loadSessions();
   }
-  input.value = '';
-  autoGrow();
-  clearSessionDraftLS(state.cur.id);
+  if (fromInput) {
+    input.value = '';
+    autoGrow();
+    clearSessionDraftLS(state.cur.id);
+  }
 
   state.streaming = true;
   setStreamUI(true);
   state.abort = new AbortController();
   state.streamText = '';
+  state.streamThinking = '';
   JX.emit('send', { content });
 
+  let aborted = false;
   try {
     const res = await fetch(`/api/sessions/${state.cur.id}/chat`, {
       method: 'POST',
@@ -1557,8 +1779,11 @@ async function send() {
       }
     }
   } catch (e) {
-    if (e.name !== 'AbortError') {
+    if (e.name === 'AbortError') {
+      aborted = true; // 用户主动停止：排队消息保留，不自动续发
+    } else {
       state.streamText = '';
+      state.streamThinking = '';
       renderMessages(state.msgs);
       const box = $('msg-col');
       const err = document.createElement('div');
@@ -1575,6 +1800,7 @@ async function send() {
   loadSessions();
   loadStatus();
   JX.emit('message:done', { sessionId: state.cur && state.cur.id });
+  if (!aborted) flushQueue(); // 等待模式：本轮彻底结束，取下一条排队消息
 }
 
 /* ---------- 模型选择（发送按钮左侧的芯片 + 弹出面板） ---------- */
@@ -1605,8 +1831,15 @@ function modelNameOf(key) {
   return (hit && (hit.modelName || hit.modelId)) || mid;
 }
 
-async function pickModel(key) {
-  closePopovers();
+const THINK_LABELS = { enabled: '思考·开', disabled: '思考·关', low: '思考·低', medium: '思考·中', high: '思考·高' };
+
+// 当前生效的思考档位（会话级或首页草稿）
+function curThinking() {
+  return state.cur ? (state.cur.thinking || '') : (homeDraft.thinking || '');
+}
+
+async function pickModel(key, keepOpen) {
+  if (!keepOpen) closePopovers();
   if (state.cur) {
     const body = key === '__default__' ? { provider: '', model: '' } : {
       provider: key.split('|')[0], model: key.split('|')[1],
@@ -1623,10 +1856,49 @@ async function pickModel(key) {
   syncComposer();
 }
 
+// 设置思考档位（空串=跟随服务端默认）
+async function pickThinking(level) {
+  closePopovers();
+  if (state.cur) {
+    try {
+      state.cur = await api('/api/sessions/' + state.cur.id, { method: 'PATCH', body: JSON.stringify({ thinking: level }) });
+    } catch (e) { alert('设置思考档位失败：' + e.message); return; }
+  } else {
+    homeDraft.thinking = level;
+    persistHomeDraftLS();
+  }
+  syncComposer();
+}
+
+// 默认模型的思考档位（模型菜单的「默认」条目用）
+function levelsOfDefault() {
+  for (const m of state.models || []) {
+    if (m.providerId === state.defaultProvider && m.modelId === state.defaultModel) {
+      return m.reasoningLevels || [];
+    }
+  }
+  return [];
+}
+
+let modelPopExpand = ''; // 模型菜单里展开档位的模型 key
+
 function renderModelPop() {
   const pop = $('model-pop');
   const cur = currentModelKey();
+  const thinking = curThinking();
+  // 档位子列表：仅当前选中的模型行内显示档位选中态
+  const lvRows = (key, levels) => {
+    if (modelPopExpand !== key || !levels || !levels.length) return '';
+    const active = key === cur;
+    let h = '<div class="mp-levels">';
+    h += `<button class="pop-item mp-lv${active && !thinking ? ' on' : ''}" data-lv="">默认（跟随服务）</button>`;
+    for (const lv of levels) {
+      h += `<button class="pop-item mp-lv${active && thinking === lv ? ' on' : ''}" data-lv="${esc(lv)}">${THINK_LABELS[lv] || esc(lv)}</button>`;
+    }
+    return h + '</div>';
+  };
   let html = `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}" data-key="__default__">默认（${esc(state.defaultModel || '未配置')}）</button>`;
+  html += lvRows('__default__', levelsOfDefault());
   let lastProv = '';
   for (const m of state.models || []) {
     if (m.providerId !== lastProv) {
@@ -1634,19 +1906,34 @@ function renderModelPop() {
       lastProv = m.providerId;
     }
     const k = m.providerId + '|' + m.modelId;
-    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}" data-key="${esc(k)}">${esc(m.modelName || m.modelId)}</button>`;
+    const hasLv = m.reasoningLevels && m.reasoningLevels.length;
+    const arrow = hasLv ? '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>' : '';
+    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${arrow}</button>`;
+    html += lvRows(k, m.reasoningLevels);
   }
   pop.innerHTML = html;
-  pop.querySelectorAll('.model-item').forEach((b) => { b.onclick = () => pickModel(b.dataset.key); });
+  // 点模型 = 选中并展开/收起它的思考档位
+  pop.querySelectorAll('.model-item').forEach((b) => {
+    b.onclick = async () => {
+      const key = b.dataset.key;
+      await pickModel(key, true);
+      modelPopExpand = modelPopExpand === key ? '' : key;
+      renderModelPop();
+    };
+  });
+  pop.querySelectorAll('.mp-lv').forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); pickThinking(b.dataset.lv); };
+  });
 }
 
 /* ---------- 弹出面板系统：加号菜单 / 权限面板 / 模型面板 / 目录面板 ---------- */
 
 const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读写', 'full': '完全访问' };
-const homeDraft = { permission: 'workspace-write', provider: '', model: '', tools: [], planMode: false, goalMode: false, remote: null };
+const homeDraft = { permission: 'workspace-write', provider: '', model: '', thinking: '', tools: [], planMode: false, goalMode: false, remote: null };
 
 function closePopovers() {
   document.querySelectorAll('.popover').forEach((p) => p.classList.add('hidden'));
+  closeAllSelects();
 }
 
 function openPopover(popId, anchor) {
@@ -1693,7 +1980,8 @@ function syncComposer() {
   const s = sessionOrDraft();
   const remote = state.cur ? !!state.cur.remote : !!homeDraft.remote;
   $('perm-chip-label').textContent = (PERM_LABELS[s.permission] || s.permission) + (remote ? ' ·远程' : '');
-  $('model-chip-label').textContent = modelNameOf(currentModelKey());
+  const tk = curThinking();
+  $('model-chip-label').textContent = modelNameOf(currentModelKey()) + (tk ? ' · ' + (THINK_LABELS[tk] || tk) : '');
   $('flag-plan').classList.toggle('on', s.planMode);
   $('flag-goal').classList.toggle('on', s.goalMode);
   $('mode-flags').classList.toggle('hidden', !s.planMode && !s.goalMode);
@@ -1855,14 +2143,16 @@ async function openSettings() {
   provDraft = loadProvDraft(c);
   provOpenKey = null; provNew = null; provTest = {}; provModelOpen = {};
   renderProvCards();
-  $('set-compact-mode').value = c.compactMode || 'rule';
+  selRefs.compactMode.set(c.compactMode || 'rule');
   $('set-keeprounds').value = c.keepRounds || 5;
   $('set-ruleinterval').value = c.ruleInterval || 5;
-  $('set-compact-threshold').value = String(c.compactThreshold || 0.8);
-  // 常规页：本机浏览器偏好（即时生效）
-  $('set-lang').value = lsGet('jx.lang', 'zh');
-  $('set-fontsize').value = lsGet('jx.fontscale', '1');
-  $('set-sendkey').value = lsGet('jx.sendkey', 'enter');
+  selRefs.compactThreshold.set(String(c.compactThreshold || 0.8));
+  // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
+  selRefs.lang.set(lsGet('jx.lang', 'zh'));
+  selRefs.fontsize.set(lsGet('jx.fontscale', '1'));
+  selRefs.theme.set(lsGet('jx.theme', 'light'));
+  selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
+  selRefs.midrun.set(lsGet('jx.midrun', 'interject'));
   renderPluginList();
   mountPluginSections();
   renderComponentList();
@@ -2359,10 +2649,10 @@ async function saveSettings() {
   // 底部「保存」只负责上下文页。
   const body = {
     compact: {
-      mode: $('set-compact-mode').value,
+      mode: selRefs.compactMode.get(),
       keepRounds: parseInt($('set-keeprounds').value, 10) || 5,
       ruleInterval: parseInt($('set-ruleinterval').value, 10) || 5,
-      threshold: parseFloat($('set-compact-threshold').value) || 0.8,
+      threshold: parseFloat(selRefs.compactThreshold.get()) || 0.8,
     },
   };
   await api('/api/config', { method: 'POST', body: JSON.stringify(body) });
@@ -2516,9 +2806,115 @@ $('prov-add-card').onclick = () => {
   if (box && box.lastElementChild) box.lastElementChild.scrollIntoView({ block: 'nearest' });
 };
 // 常规页：语言/字体/发送行为，改动即时生效并落本机
-$('set-lang').onchange = (e) => lsSet('jx.lang', e.target.value);
-$('set-fontsize').onchange = (e) => applyFontScale(e.target.value);
-$('set-sendkey').onchange = (e) => lsSet('jx.sendkey', e.target.value);
+/* ---------- 自定义下拉：圆角按钮 + 浮层，设置页统一外观 ---------- */
+
+const selRefs = {};
+
+function closeAllSelects() {
+  document.querySelectorAll('.jx-sel-pop.open').forEach((p) => p.classList.remove('open'));
+}
+
+// makeSelect(hostId, key, options, onChange)：在容器里建一套下拉，
+// 返回 {set(v), get()}；onChange 在用户选中时触发。
+function makeSelect(hostId, key, options, onChange) {
+  const host = $(hostId);
+  if (!host) return { set() {}, get() { return null; } };
+  host.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'jx-select';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'jx-sel-btn';
+  const label = document.createElement('span');
+  label.className = 'jx-sel-label';
+  btn.appendChild(label);
+  btn.insertAdjacentHTML('beforeend',
+    '<svg class="jx-sel-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>');
+  const pop = document.createElement('div');
+  pop.className = 'jx-sel-pop';
+  let value = options.length ? options[0].v : null;
+  const render = () => {
+    const cur = options.find((o) => o.v === value);
+    label.textContent = cur ? cur.label : '请选择';
+    pop.innerHTML = '';
+    for (const o of options) {
+      const it = document.createElement('button');
+      it.type = 'button';
+      it.className = 'jx-sel-opt' + (o.v === value ? ' cur' : '');
+      it.innerHTML = '<span></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      it.firstChild.textContent = o.label;
+      it.onclick = (e) => {
+        e.stopPropagation();
+        value = o.v;
+        render();
+        closeAllSelects();
+        if (onChange) onChange(o.v);
+      };
+      pop.appendChild(it);
+    }
+  };
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = pop.classList.contains('open');
+    closeAllSelects();
+    pop.classList.toggle('open', !wasOpen);
+  };
+  wrap.appendChild(btn);
+  wrap.appendChild(pop);
+  host.appendChild(wrap);
+  render();
+  const ref = { set(v) { value = v; render(); }, get() { return value; } };
+  selRefs[key] = ref;
+  return ref;
+}
+
+/* ---------- 主题色：白 / 黑 / 跟随系统（CSS 变量整体换装） ---------- */
+
+const themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+function applyTheme() {
+  const pref = lsGet('jx.theme', 'light');
+  let t = pref;
+  if (pref === 'auto' && themeMedia) t = themeMedia.matches ? 'dark' : 'light';
+  document.documentElement.dataset.theme = t;
+}
+if (themeMedia && themeMedia.addEventListener) {
+  themeMedia.addEventListener('change', () => { if (lsGet('jx.theme', 'light') === 'auto') applyTheme(); });
+}
+
+// 常规页各下拉：值即时落本机并生效
+makeSelect('sel-lang', 'lang', [
+  { v: 'zh', label: '简体中文' },
+  { v: 'en', label: 'English（翻译逐步补齐）' },
+], (v) => lsSet('jx.lang', v));
+makeSelect('sel-fontsize', 'fontsize', [
+  { v: '0.9', label: '小' },
+  { v: '1', label: '标准' },
+  { v: '1.125', label: '大' },
+  { v: '1.25', label: '特大' },
+], (v) => applyFontScale(v));
+makeSelect('sel-theme', 'theme', [
+  { v: 'light', label: '白色' },
+  { v: 'dark', label: '黑色' },
+  { v: 'auto', label: '跟随系统' },
+], (v) => { lsSet('jx.theme', v); applyTheme(); });
+makeSelect('sel-sendkey', 'sendkey', [
+  { v: 'enter', label: 'Enter 发送，Shift+Enter 换行' },
+  { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter 换行' },
+], (v) => lsSet('jx.sendkey', v));
+makeSelect('sel-midrun', 'midrun', [
+  { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
+  { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
+], (v) => lsSet('jx.midrun', v));
+makeSelect('sel-compact-mode', 'compactMode', [
+  { v: 'rule', label: '规则压缩（零成本，默认）' },
+  { v: 'llm', label: '模型摘要（达阈值自动+手动）' },
+  { v: 'off', label: '关闭' },
+], null);
+makeSelect('sel-compact-threshold', 'compactThreshold', [
+  { v: '0.8', label: '80%' },
+  { v: '0.9', label: '90%' },
+], null);
 $('btn-drawer').onclick = toggleDrawer;
 // 语音输入：浏览器原生识别，边说边追加到输入框
 let voiceRecog = null;
@@ -2570,10 +2966,13 @@ $('input').addEventListener('input', () => {
 
 restoreHomeDraftLS(); // 先恢复上次草稿（输入与全部选择），再渲染首页
 restoreFontScale();   // 恢复常规页选的字体大小
+applyTheme();         // 恢复常规页选的主题色（白/黑/跟随系统）
 applySidebarState();
 resetEmpty();
 loadStatus().then(loadSessions);
 loadModels();
 connectEvents();
 loadApprovals();
+loadQuestions();
 setInterval(loadApprovals, 20000); // 审批轮询兜底（SSE 断连时也能拿到）
+setInterval(loadQuestions, 20000);

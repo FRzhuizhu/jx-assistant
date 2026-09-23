@@ -22,6 +22,7 @@ func (a *App) initRuntime() {
 	a.grants = map[string]*Grant{}
 	a.approvals = map[string]*Approval{}
 	a.remotes = map[string]*remoteClient{}
+	a.interjects = map[string][]string{}
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
 	// 工作区就是程序目录，整目录保护会让开箱即用的会话什么都写不了。
@@ -79,6 +80,22 @@ func (a *App) broadcast(ev Event) {
 		default: // 订阅者跟不上就丢帧，事件流只做进度通知
 		}
 	}
+}
+
+// pushInterject 把一条用户插话排进执行中会话的队列（不打断当前步骤）。
+func (a *App) pushInterject(id, content string) {
+	a.intjMu.Lock()
+	a.interjects[id] = append(a.interjects[id], content)
+	a.intjMu.Unlock()
+}
+
+// drainInterjects 取走并清空会话的插话队列；不执行则返回 nil。
+func (a *App) drainInterjects(id string) []string {
+	a.intjMu.Lock()
+	q := a.interjects[id]
+	delete(a.interjects, id)
+	a.intjMu.Unlock()
+	return q
 }
 
 func (a *App) subscribe() (chan Event, func()) {

@@ -94,6 +94,8 @@ func (a *App) toolsFor(mode string) []Tool {
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(),
+		askUserQuestionTool(), exitPlanModeTool(), todoWriteTool(),
+		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(browserTools(), computerTools()...), history...)...)
 }
 
@@ -338,10 +340,12 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write_file", "创建或覆盖文件。写权限由会话权限模式决定：「工作区内读写」仅允许工作区内的路径，「完全访问」不限。",
+		Spec: toolSpec("write_file", "创建或覆盖文件。按会话权限模式的文件沙箱执行：工作区内读写只允许写工作区内，被拒绝时可带 sandbox_permissions=full 与 justification 申请写入（弹审批）。",
 			objSchema(map[string]any{
-				"path":    strProp("目标文件路径（相对或绝对）"),
-				"content": strProp("要写入的完整内容"),
+				"path":                strProp("目标文件路径（相对或绝对）"),
+				"content":             strProp("要写入的完整内容"),
+				"sandbox_permissions": strProp("仅在被拒绝后的重试中使用：full，申请写入沙箱边界之外（弹审批）"),
+				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户说明理由"),
 			}, "path", "content")),
 		Run: runWriteFile,
 	}
@@ -349,8 +353,10 @@ func writeFileTool() Tool {
 
 func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		Path               string `json:"path"`
+		Content            string `json:"content"`
+		SandboxPermissions string `json:"sandbox_permissions"`
+		Justification      string `json:"justification"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -359,7 +365,8 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	grant, err := t.authorize(permAction{Op: "write", Tool: "write_file", Path: path})
+	grant, err := t.authorize(permAction{Op: "write", Tool: "write_file", Path: path,
+		EscalateTo: p.SandboxPermissions, Justification: p.Justification})
 	if err != nil {
 		return "", err
 	}
@@ -384,10 +391,12 @@ func editFileTool() Tool {
 
 func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Path       string `json:"path"`
-		OldString  string `json:"old_string"`
-		NewString  string `json:"new_string"`
-		ReplaceAll bool   `json:"replace_all"`
+		Path               string `json:"path"`
+		OldString          string `json:"old_string"`
+		NewString          string `json:"new_string"`
+		ReplaceAll         bool   `json:"replace_all"`
+		SandboxPermissions string `json:"sandbox_permissions"`
+		Justification      string `json:"justification"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -414,7 +423,8 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	if count > 1 && !p.ReplaceAll {
 		return "", fmt.Errorf("old_string 出现了 %d 次，请提供更长的片段保证唯一，或设置 replace_all", count)
 	}
-	grant, err := t.authorize(permAction{Op: "write", Tool: "edit_file", Path: path})
+	grant, err := t.authorize(permAction{Op: "write", Tool: "edit_file", Path: path,
+		EscalateTo: p.SandboxPermissions, Justification: p.Justification})
 	if err != nil {
 		return "", err
 	}
@@ -604,12 +614,15 @@ func runGrep(t *toolContext, args json.RawMessage) (string, error) {
 
 func runCommandTool() Tool {
 	return Tool{
-		Spec: toolSpec("run_command", "在工作目录中执行一条 shell 命令并返回输出。默认在会话工作区内执行（沙箱内：最小环境变量、限时、输出截断）。远程工作区会话在远程主机执行（shell 参数忽略）。cwd 指到工作区之外属于沙箱外执行：需要用户开启相应能力并逐次审批。",
+		Spec: toolSpec("run_command", "执行一条 shell 命令并返回输出。命令按会话权限模式在 OS 级沙箱内执行：workspace-write 下只能写工作区与私有临时目录（Windows 受限令牌 / Linux Landlock / 远程沙箱 helper），read-only 下不能写任何位置，联网不受限。尝试沙箱可能拒绝的命令是安全且符合预期的：直接运行并读取标记。若命令因沙箱拒绝失败且更宽档位能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档）与一句 justification 重试同一命令一次——该重试会弹审批由用户批准；未经真实拒绝不要请求升级；被拒后该命令终局，停止并说明，不要绕过。",
 			objSchema(map[string]any{
-				"command":     strProp("要执行的命令"),
-				"shell":       strProp("本地执行时的 shell：powershell（默认）或 cmd；远程执行忽略"),
-				"cwd":         strProp("工作目录（可选，默认会话工作区；工作区外目录需审批）"),
-				"timeout_sec": intProp("超时秒数，默认 60，上限 600"),
+				"command":             strProp("要执行的命令"),
+				"shell":               strProp("本地执行时的 shell：powershell（默认）或 cmd；远程执行忽略"),
+				"cwd":                 strProp("工作目录（可选，默认会话工作区；是否可写由沙箱决定，cwd 本身不受限）"),
+				"timeout_sec":         intProp("超时秒数，默认 60，上限 600；后台作业忽略"),
+				"run_in_background":   boolProp("true 时后台执行并立即返回作业 id（仅本地）"),
+				"sandbox_permissions": strProp("仅用于被沙箱拒绝后的同轮重试：请求的更宽档位（workspace-write 或 danger-full-access），必须搭配 justification；会弹审批由用户决定"),
+				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户解释为什么这条命令需要更宽权限"),
 			}, "command")),
 		Run: runCommand,
 	}
@@ -617,10 +630,13 @@ func runCommandTool() Tool {
 
 func runCommand(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Command    string `json:"command"`
-		Shell      string `json:"shell"`
-		Cwd        string `json:"cwd"`
-		TimeoutSec int    `json:"timeout_sec"`
+		Command            string `json:"command"`
+		Shell              string `json:"shell"`
+		Cwd                string `json:"cwd"`
+		TimeoutSec         int    `json:"timeout_sec"`
+		RunInBackground    bool   `json:"run_in_background"`
+		SandboxPermissions string `json:"sandbox_permissions"`
+		Justification      string `json:"justification"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -632,56 +648,99 @@ func runCommand(t *toolContext, args json.RawMessage) (string, error) {
 	if r, err := t.resolve(cwd); err == nil {
 		cwd = r // 统一解析为绝对路径（空 = 会话工作区；远程为 POSIX 绝对路径）
 	}
-	grant, err := t.authorize(permAction{Op: "exec", Tool: "run_command", Command: p.Command, Cwd: cwd})
+	// 拒绝驱动的升级在这里发生：EscalateTo 非空时弹审批，批准后按更宽档执行这一次
+	grant, err := t.authorize(permAction{
+		Op: "exec", Tool: "run_command", Command: p.Command, Cwd: cwd,
+		EscalateTo: p.SandboxPermissions, Justification: p.Justification,
+	})
 	if err != nil {
 		return "", err
 	}
 	if err := t.app.consumeGrant(grant); err != nil {
 		return "", err
 	}
+	policy := grant.Policy
+
+	// 后台作业：立即返回，不限时；与前台同一条策略与沙箱路径。
+	if p.RunInBackground {
+		if t.isRemote() {
+			return "", fmt.Errorf("后台作业暂不支持远程工作区会话；请去掉 run_in_background 直接执行")
+		}
+		j, jerr := t.app.startJob(t, p.Command, p.Shell, cwd, policy)
+		if jerr != nil {
+			return "", jerr
+		}
+		return fmt.Sprintf("后台作业已启动：%s（沙箱 %s，不限时）。\n- job_output 查看输出（wait=true 可等它结束）\n- job_list 列出全部作业\n- job_kill 终止\n现在可以继续做别的事。", j.ID, policy), nil
+	}
+
 	timeout := time.Duration(60) * time.Second
 	if p.TimeoutSec > 0 {
 		timeout = time.Duration(min(p.TimeoutSec, 600)) * time.Second
 	}
 
-	// 远程工作区：SSH 远程 shell，cd 到目标目录后执行。
-	if t.isRemote() {
-		rc, rerr := t.app.getRemoteClient(t.sess)
-		if rerr != nil {
-			return "", rerr
-		}
-		out, rerr := rc.run(t.ctx, cwd, p.Command, timeout)
-		if rerr != nil {
-			return "", rerr
-		}
-		return out + "\n[远程执行于 " + t.sess.Remote.Display() + "]", nil
+	run := sandboxRun{
+		Dir: cwd, Command: p.Command, Shell: strings.ToLower(strings.TrimSpace(p.Shell)),
+		Timeout: timeout, Policy: policy, Workspace: t.workspace(),
 	}
 
-	// 本地执行（沙箱内 = 工作区内目录 + 最小环境变量；沙箱外凭证携带完整环境）。
-	if info, serr := os.Stat(cwd); serr != nil || !info.IsDir() {
-		return "", fmt.Errorf("工作目录不存在: %s", cwd)
+	var out string
+	switch policy {
+	case permFull:
+		// danger-full-access：不受限（官方语义：消费者绕过 confine）
+		if t.isRemote() {
+			rc, rerr := t.app.getRemoteClient(t.sess)
+			if rerr != nil {
+				return "", rerr
+			}
+			out, err = rc.run(t.ctx, cwd, p.Command, timeout)
+			if err == nil {
+				out += "\n[远程执行于 " + t.sess.Remote.Display() + "｜不受限]"
+			}
+		} else {
+			out, err = runUnconfinedLocal(t.ctx, run)
+		}
+	default:
+		out, err = t.runConfined(run)
+		if err == nil {
+			out += runDeniedMarker(policy, out)
+		}
 	}
-	shell := strings.ToLower(strings.TrimSpace(p.Shell))
+	if err != nil {
+		// 沙箱不可用也是一次「拒绝」：提示模型可走升级审批路径
+		if strings.Contains(err.Error(), "sandbox unavailable") {
+			return "", fmt.Errorf("%w。可带 sandbox_permissions=danger-full-access 与 justification 申请升级（弹审批由用户决定）", err)
+		}
+		return "", err
+	}
+	return out, nil
+}
+
+// runUnconfinedLocal 不受限本地执行（full 策略）。
+func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
+	if info, serr := os.Stat(r.Dir); serr != nil || !info.IsDir() {
+		return "", fmt.Errorf("工作目录不存在: %s", r.Dir)
+	}
+	shell := strings.TrimSpace(r.Shell)
 	if shell == "" {
 		shell = "powershell"
 	}
-	ctx, cancel := context.WithTimeout(t.ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	var cmd *exec.Cmd
-	switch shell {
+	switch strings.ToLower(shell) {
 	case "cmd":
-		cmd = exec.CommandContext(ctx, "cmd", "/C", p.Command)
+		cmd = exec.CommandContext(ctx, "cmd", "/C", r.Command)
 	case "pwsh", "powershell":
 		exe := "powershell"
-		if shell == "pwsh" {
+		if strings.ToLower(shell) == "pwsh" {
 			exe = "pwsh"
 		}
-		cmd = exec.CommandContext(ctx, exe, "-NoProfile", "-NonInteractive", "-Command", p.Command)
+		cmd = exec.CommandContext(ctx, exe, "-NoProfile", "-NonInteractive", "-Command", r.Command)
 	default:
-		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd）", p.Shell)
+		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd）", r.Shell)
 	}
-	cmd.Dir = cwd
-	cmd.Env = sandboxEnv(grant.FullEnv)
+	cmd.Dir = r.Dir
+	cmd.Env = sandboxEnv(true)
 	out, err := cmd.CombinedOutput()
 	note := ""
 	if ctx.Err() == context.DeadlineExceeded {

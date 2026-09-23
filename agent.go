@@ -10,18 +10,23 @@ import (
 
 // Event 是后端向前端推送的流式事件（SSE data 帧的载荷）。
 type Event struct {
-	Type      string   `json:"type"` // message|delta|tool_start|tool_end|sub_start|sub_end|title|done|error
-	Delta     string   `json:"delta,omitempty"`
-	Message   *Message `json:"message,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	Args      string   `json:"args,omitempty"`
-	Output    string   `json:"output,omitempty"`
-	Error     string   `json:"error,omitempty"`
-	SessionID string   `json:"sessionId,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	ApprovalID string  `json:"approvalId,omitempty"`
-	Summary   string   `json:"summary,omitempty"`
-	Reason    string   `json:"reason,omitempty"`
+	Type       string   `json:"type"` // message|delta|tool_start|tool_end|tool_wait|sub_start|sub_end|title|done|error|approval_required|approval_resolved|question_required|question_resolved|todos
+	Delta      string   `json:"delta,omitempty"`
+	Message    *Message `json:"message,omitempty"`
+	Name       string   `json:"name,omitempty"`
+	Args       string   `json:"args,omitempty"`
+	Output     string   `json:"output,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	ApprovalID string   `json:"approvalId,omitempty"`
+	Summary    string   `json:"summary,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+	// 提问 / 计划审批（question_required）：等待用户输入
+	QuestionID string   `json:"questionId,omitempty"`
+	Kind       string   `json:"kind,omitempty"` // ask | plan
+	Plan       string   `json:"plan,omitempty"`
+	Options    []string `json:"options,omitempty"`
 }
 
 const auxPrompt = `你是「坚祥数字助理」的辅助答疑助手，依附于一个主对话存在。你的主要目的是答疑：解释概念、回答关于当前工作区/项目的问题、帮忙查证细节，让人不打断主对话也能把问题弄清楚。
@@ -89,25 +94,23 @@ func (a *App) envPermBlock(sess *SessionMeta) string {
 	mode := permModeOf(sess)
 	switch mode {
 	case permReadOnly:
-		b.WriteString("- 权限模式：只读——可读文件、检索、抓取网页，不能写文件、不能执行命令\n")
+		b.WriteString("- 权限模式：只读——可读文件、检索、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
 	case permFull:
-		b.WriteString("- 权限模式：完全访问——读写与命令不受工作区限制（助手自身配置/数据仍受保护）\n")
+		b.WriteString("- 权限模式：完全访问——读写与命令不受限（助手自身配置/数据仍受保护）\n")
 	default:
-		b.WriteString("- 权限模式：工作区内读写——写文件仅限工作区；命令默认在工作区内执行（沙箱内：最小环境变量、限时、可联网）\n")
-		if hasCapability(sess, capUnsandboxed) {
-			b.WriteString("- 能力：已开启「工作区外执行命令」——命令的工作目录放到工作区外时会弹出用户审批，批准后才执行\n")
-		} else {
-			b.WriteString("- 命令工作目录限制在工作区内；确需工作区外执行时引导用户在权限芯片开启「允许工作区外执行命令」\n")
-		}
+		b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
 	}
-		b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录；不可逆的破坏性命令会被硬拦截\n")
-		if hasCapability(sess, capBrowser) {
-			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
-		}
-		if hasCapability(sess, capComputer) {
-			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
-		}
-		return b.String()
+	b.WriteString("- 沙箱拒绝是正常工作方式：命令/写入直接尝试，被拒会得到 [sandbox: … denied under <mode> mode] 标记。若更宽权限能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档：workspace-write / danger-full-access / 文件写边界外用 full）与一句 justification 重试一次；重试会弹审批由用户批准\n")
+	b.WriteString("- 审批卡上用户点「始终允许」会点亮该类动作对应的能力开关（权限面板可见，如「允许工作区外执行命令」「读写工作区外文件」），之后该类动作不再逐次审批\n")
+	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")
+	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录（含 API Key）；不可逆的破坏性命令会被硬拦截\n")
+	if hasCapability(sess, capBrowser) {
+		b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
+	}
+	if hasCapability(sess, capComputer) {
+		b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
+	}
+	return b.String()
 }
 
 func (a *App) systemPrompt(sess *SessionMeta) string {
@@ -172,8 +175,28 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	sys := a.systemPrompt(sess)
 	target := a.resolveTarget(sess)
 	overflowRetried := false
+	// 兜底：异常退出/步数耗尽时残留的插话仍要落库，消息永不丢
+	defer func() {
+		for _, c := range a.drainInterjects(sess.ID) {
+			a.appendMessage(sess, TextMessage("user", c))
+		}
+	}()
+
+	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
+	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
+	interjectsBefore := func(emit func(Event)) bool {
+		got := false
+		for _, content := range a.drainInterjects(sess.ID) {
+			um := TextMessage("user", content)
+			a.appendMessage(sess, um)
+			emit(Event{Type: "message", Message: &um})
+			got = true
+		}
+		return got
+	}
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
+		interjectsBefore(emit)
 		msgs := a.buildContext(sess, sys)
 		// 视觉模型：把工具结果引用的图片内联为内容块；纯文本模型原样透传
 		msgs = inlineImagesForRequest(a, msgs, target)
@@ -218,6 +241,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				msg := TextMessage("assistant", text.String())
 				a.appendMessageThinking(sess, msg, reasoning.String())
 				emit(Event{Type: "message", Message: &msg})
+			}
+			// 本轮将结束时来了插话：不收尾，带着插话继续下一轮
+			if interjectsBefore(emit) {
+				a.ruleCompactPass(sess)
+				continue
 			}
 			emit(Event{Type: "done"})
 			a.ruleCompactPass(sess) // 轮末：规则压缩增量检查
