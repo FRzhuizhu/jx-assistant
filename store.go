@@ -143,6 +143,8 @@ var storeMigrations = []migration{
 			`ALTER TABLE sessions ADD COLUMN unread INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE sessions ADD COLUMN remote TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE sessions ADD COLUMN allowed TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 	{
 		id:       "0003_thinking",
 		tolerant: true,
