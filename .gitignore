@@ -1,0 +1,6 @@
+data/
+config.json
+*.exe
+*.exe~
+.zcode/
+node_modules/

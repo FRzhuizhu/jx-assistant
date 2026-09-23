@@ -1,0 +1,7 @@
+{
+  "id": "dsh-speech",
+  "name": "语音（朗读与听写）",
+  "version": "0.1.0",
+  "description": "DSH dsh-speech 插件适配：助手消息朗读（TTS）、浏览器语音听写、转写润色（走本机已配置模型）。未适配：本地离线识别、云端 ASR、热键。",
+  "client": { "js": "client.js", "css": "client.css" }
+}

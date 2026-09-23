@@ -1,0 +1,38 @@
+{
+  "name": "dsh-speech",
+  "version": "1.0.0",
+  "description": "语音：会话消息朗读（Web Speech API TTS）+ 语音输入（实时听写，无识别引擎时录音转写）+ 语音设置页",
+  "type": "module",
+  "private": true,
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "jx": {
+    "description": "消息朗读 + 语音输入（听写/录音转写）+ 语音设置页",
+    "defaultEnabled": true
+  },
+  "scripts": {
+    "build": "node build.mjs"
+  }
+}

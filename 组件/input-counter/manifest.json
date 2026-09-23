@@ -1,0 +1,7 @@
+{
+  "id": "input-counter",
+  "name": "输入字数统计",
+  "version": "0.1.0",
+  "description": "输入框右下角实时显示字数（字符数），超过 2000 字变橙提醒。最小组件模板：可作为新组件的起点。",
+  "client": { "js": "client.js" }
+}
