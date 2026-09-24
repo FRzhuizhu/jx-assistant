@@ -1,56 +1,45 @@
-/* 组件：待办与定时任务 —— 面板样式。
+/* 组件：待办与定时任务 —— 页面样式。
  *
- * 全部复用宿主的 CSS 变量（--border / --text / --accent …）与既有组件类：
+ * 本页是主列里的一个真页面（渲染进 #msg-col，与首页/对话页同一个容器），不是浮窗，
+ * 所以这里只排内容，滚动交给 #messages。全部复用宿主的 CSS 变量
+ * （--border / --text / --accent …）与既有组件类：
  *   .side-btn     侧边栏入口（与「新工作任务 / 数字助理主对话」同一组件）
- *   .modal .modal-card  面板与表单的全屏弹窗外壳（与设置弹窗同一组件）
  *   .pr-toggle    启用开关（与设置页同一组件）
  *   .sf-label     字段标签（与设置页同一组件）
- *   .modal-actions button  表单底部按钮（与设置弹窗同一组件）
- * 这里只补面板自己的排布。 */
+ *   .modal .modal-card / .modal-actions button  新建-编辑表单的弹窗外壳与按钮
+ * 这里只补本页自己的排布。 */
 
-/* 侧边栏入口的选中态（打开面板时高亮，与 .foot-btn.active 同一观感） */
+/* 侧边栏入口的选中态（停在待办页时高亮，与 .foot-btn.active 同一观感） */
 .side-btn.active { background: rgba(77, 107, 254, .10); border-color: var(--accent); color: var(--accent); }
 
-/* ---------- 面板外壳：沿用设置弹窗的宽卡片，内容一列居中 ---------- */
-#todo-board { z-index: 55; }
-.td-card {
-  width: min(880px, 94vw); height: min(720px, 88vh);
-  max-width: none; padding: 0; overflow: hidden;
-  display: flex; flex-direction: column;
-}
+/* ---------- 页面骨架：一列内容，宽度随对话内容列（--content-w） ---------- */
+.td-page { display: flex; flex-direction: column; gap: 15px; padding-bottom: 20px; }
 .td-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
-  padding: 20px 24px 14px; border-bottom: 1px solid var(--border-2); flex: none;
 }
-.td-title { font-size: 16px; margin: 0; }
-.td-intro { font-size: 12.5px; color: var(--text-2); margin: 5px 0 0; line-height: 1.55; max-width: 620px; }
-.td-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.td-title { font-size: 19px; font-weight: 600; margin: 0; line-height: 1.35; }
+.td-intro { font-size: 13px; color: var(--text-2); margin: 6px 0 0; line-height: 1.6; }
+.td-head-actions { display: flex; align-items: center; gap: 8px; flex: none; padding-top: 2px; }
 .td-head-actions button.primary {
   padding: 7px 14px; border-radius: 8px; border: 1px solid var(--accent);
   background: var(--accent); color: #fff; font-size: 13px; cursor: pointer;
 }
 .td-head-actions button.primary:hover { background: var(--accent-hover); }
-.td-x {
-  width: 30px; height: 30px; border: none; background: none; border-radius: 8px;
-  color: var(--text-3); font-size: 15px; cursor: pointer; line-height: 1;
-}
-.td-x:hover { background: var(--hover); color: var(--text); }
 
-.td-notice { margin: 10px 24px 0; font-size: 12.5px; color: #d13438; white-space: pre-wrap; flex: none; }
+.td-notice { margin: 0; font-size: 12.5px; color: #d13438; white-space: pre-wrap; }
 .td-missed {
-  margin: 12px 24px 0; border: 1px solid var(--amber); border-radius: 10px;
-  background: var(--amber-bg); padding: 10px 14px; flex: none;
+  margin: 0; border: 1px solid var(--amber); border-radius: 10px;
+  background: var(--amber-bg); padding: 10px 14px;
   display: flex; flex-direction: column; gap: 6px;
 }
 .td-missed-title { font-size: 12.5px; color: var(--amber); line-height: 1.5; }
 .td-missed-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12.5px; }
 
 .td-list {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 14px 24px 20px;
   display: flex; flex-direction: column; gap: 10px;
 }
 .td-empty { text-align: center; color: var(--text-3); font-size: 13px; padding: 48px 0; }
-.td-foot { flex: none; border-top: 1px solid var(--border-2); padding: 8px 24px; font-size: 11.5px; color: var(--text-3); }
+.td-foot { border-top: 1px solid var(--border-2); padding-top: 8px; font-size: 11.5px; color: var(--text-3); }
 
 /* ---------- 任务卡片 ---------- */
 /* 卡片默认折叠：上半部分（类型/时间徽标、标题、启用开关）与描述常显，
@@ -152,10 +141,13 @@
 .td-day input { width: auto; }
 /* 面板沿用了 .modal-card 外壳，而宿主对 .modal-card label / label input 有整行规则；
    这里把它们在我们自己的作用域内收敛回控件本来的样子（组件不该被宿主样式改形）。 */
-.td-card .pr-toggle, .td-form-card .pr-toggle { display: inline-flex; margin: 0; }
+.td-form-card .pr-toggle { display: inline-flex; margin: 0; }
 .td-form-card .td-field { display: flex; flex-direction: column; gap: 6px; margin: 0; font-size: inherit; color: inherit; }
 .td-form-card .td-day { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--text); }
-.td-form-card .td-day input, .td-card .pr-toggle input, .td-form-card .pr-toggle input { width: auto; margin: 0; }
+.td-form-card .td-day input, .td-form-card .pr-toggle input { width: auto; margin: 0; }
+/* 页面里的启用开关不受 .modal-card label 影响（它不在弹窗里，这里只是同一套收敛） */
+.td-page .pr-toggle { display: inline-flex; margin: 0; }
+.td-page .pr-toggle input { width: auto; margin: 0; }
 .td-dir-row { display: flex; gap: 8px; align-items: center; }
 .td-dir-row input { flex: 1; min-width: 0; }
 .td-dir-row button {

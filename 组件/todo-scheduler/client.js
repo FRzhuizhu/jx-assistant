@@ -1,14 +1,19 @@
 /* 组件：待办与定时任务 —— 浏览器半边。
  *
  * 侧边栏「数字助理主对话」下方插一个入口按钮（与相邻按钮同一个 .side-btn 组件），
- * 点击打开全屏面板（复用设置弹窗的 .modal/.modal-card 外壳）：
+ * 点击后把待办页渲染进主列（#msg-col）——就是对话页的同一个容器，等同级页面而非
+ * 浮窗：顶栏标题改成本页名字、底部输入区收起，内容随 #messages 自然滚动。
  *   - 一条持久化的任务清单：新建 / 编辑 / 删除（两段确认）/ 启用停用 / 立即执行；
  *   - 两类任务：AI 任务（到点把描述转交数字助理）与程序任务（到点运行命令）；
  *   - 执行记录（时间、触发方式、成败、摘要、「查看会话」跳转）；
- *   - 程序没开着时错过的执行不自动补跑，面板顶部提示「补跑 / 忽略」。
+ *   - 程序没开着时错过的执行不自动补跑，页面顶部提示「补跑 / 忽略」。
+ *
+ * 页面不是自己管生死的：点侧栏任何会话/新工作任务，app.js 会重画 #msg-col 把本页
+ * 顶掉——挂在 #msg-col 上的 MutationObserver 察觉后只清自己的状态，不动 DOM。
+ * 返回值走「从哪来回哪去」：进页前记住当前会话，关页时 openSession 回去，没有则回首页。
  *
  * 数据与调度全在宿主半边（todo.go 的 /api/todos*），这里只管界面与调用。
- * dispose 撤掉按钮、面板、表单、事件流与全部监听——组件可热关闭。 */
+ * dispose 撤掉按钮、表单、事件流与全部监听——组件可热关闭。 */
 (function () {
   if (!window.CX) return;
 
@@ -21,15 +26,20 @@
   };
   const STATUS_LABEL = { ok: '完成', failed: '失败', running: '执行中' };
   const TRIGGER_LABEL = { schedule: '定时', manual: '手动', 'catch-up': '补跑' };
+  const PAGE_TITLE = '待办与定时任务';
 
   /* 运行期状态：清单 + 工作目录候选 + 界面开关。 */
   const st = {
     tasks: [], records: [], missed: [], store: '',
     workspaces: [], busy: false, armedDelete: '', expanded: {}, open: {}, editing: null,
+    page: false,      // 本页是否正占着主列
+    prevSession: null, // 进页前正在看的会话 id（关页时回去）
   };
-  let btn = null, panel = null, formEl = null, sse = null, disposing = false;
+  let btn = null, formEl = null, sse = null, colObserver = null, disposing = false;
 
   /* ---------- 小工具 ---------- */
+
+  const $ = (id) => document.getElementById(id);
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -78,29 +88,27 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
       '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M5 3L2 6M19 3l3 3"/></svg>' +
       '待办与定时任务';
-    btn.onclick = () => { if (panel && !panel.classList.contains('hidden')) closePanel(); else openPanel(); };
+    btn.onclick = () => { if (st.page) closePage(); else openPage(); };
     // 位置：紧跟「数字助理主对话」，在工作区段头之上
     const anchor = document.getElementById('btn-new-assistant');
     if (anchor && anchor.parentElement === actions) anchor.insertAdjacentElement('afterend', btn);
     else actions.appendChild(btn);
   }
 
-  /* ---------- 面板骨架 ---------- */
+  /* ---------- 主列页面 ---------- */
 
-  function mountPanel() {
-    panel = document.createElement('div');
-    panel.id = 'todo-board';
-    panel.className = 'modal hidden';
-    panel.innerHTML =
-      '<div class="modal-card td-card">' +
+  /* 本页的根节点（页面可能被 app.js 重画顶掉，每次现取）。 */
+  function pageEl() { return $('todo-page'); }
+
+  function pageHTML() {
+    return '<div id="todo-page" class="td-page">' +
         '<div class="td-head">' +
           '<div>' +
-            '<h3 class="td-title">待办事项与定时任务</h3>' +
+            '<h2 class="td-title">待办事项与定时任务</h2>' +
             '<p class="td-intro">一条一条记下要做的工作。AI 任务到点转交给数字助理执行，程序任务到点直接运行命令；结果和会话入口都在这里看。</p>' +
           '</div>' +
           '<div class="td-head-actions">' +
             '<button type="button" id="td-new" class="primary">＋ 新建任务</button>' +
-            '<button type="button" id="td-close" class="td-x" title="关闭">✕</button>' +
           '</div>' +
         '</div>' +
         '<p id="td-notice" class="td-notice hidden"></p>' +
@@ -108,11 +116,13 @@
         '<div id="td-list" class="td-list"></div>' +
         '<div class="td-foot"><span id="td-store"></span></div>' +
       '</div>';
-    document.body.appendChild(panel);
-    panel.onmousedown = (e) => { if (e.target === panel) closePanel(); };
-    panel.querySelector('#td-close').onclick = closePanel;
-    panel.querySelector('#td-new').onclick = () => openForm(null);
   }
+
+  /* 主页面的宿主状态：把主列装成这一页（等同首页/对话页的切换方式）。 */
+  function appState() {
+    try { return typeof state === 'object' && state ? state : null; } catch (e) { return null; }
+  }
+  const hide = (id, on) => { const e = $(id); if (e) e.classList.toggle('hidden', on); };
 
   function mountForm() {
     formEl = document.createElement('div');
@@ -123,29 +133,69 @@
     formEl.onmousedown = (e) => { if (e.target === formEl) closeForm(); };
   }
 
-  /* ---------- 面板渲染 ---------- */
+  /* ---------- 进/出这一页 ---------- */
 
-  function openPanel() {
-    if (!panel) return;
-    panel.classList.remove('hidden');
+  /* 覆写主列前先把输入卡挪回底部容器（app.js 的 detachComposerToWrap）：首页时
+     #composer-area 就挂在 #msg-col 里，直接覆写会连输入框一起销毁，之后 app.js
+     的 placeComposer 会拿到 null 抛错，主列再也重画不出来。 */
+  function clearCol() {
+    if (typeof detachComposerToWrap === 'function') detachComposerToWrap();
+  }
+
+  function openPage() {
+    const col = $('msg-col');
+    if (!col) return;
+    const s = appState();
+    st.prevSession = (s && s.cur && s.cur.id) || null;
+    // 主列换成这一页；对话那套外壳（输入区、会话待办条、模式徽标、子对话按钮）收起
+    clearCol();
+    col.innerHTML = pageHTML();
+    st.page = true;
+    if (s) s.cur = null; // 本页不是任何会话：侧栏取消高亮，后台事件也不会把页面顶回对话
     if (btn) btn.classList.add('active');
+    const title = $('sess-title');
+    if (title) title.textContent = PAGE_TITLE;
+    hide('composer-wrap', true);
+    hide('todo-panel', true);
+    hide('mode-badge', true);
+    hide('btn-drawer', true);
+    $('td-new').onclick = () => openForm(null);
     render();
     void load();
     openStream();
+    watchCol();
   }
 
-  function closePanel() {
-    if (!panel) return;
-    panel.classList.add('hidden');
-    if (btn) btn.classList.remove('active');
+  function closePage() {
+    const back = st.prevSession;
+    forgetPage();
     closeForm();
+    if (back && typeof openSession === 'function') { void openSession(back); return; }
+    if (typeof goHomeNewTask === 'function') goHomeNewTask();
+    else { clearCol(); const col = $('msg-col'); if (col) col.innerHTML = ''; }
+  }
+
+  /* 页面被顶掉（点了侧栏某个会话/新工作任务）：只清状态，DOM 归 app.js 管。 */
+  function forgetPage() {
+    st.page = false;
+    if (btn) btn.classList.remove('active');
     closeStream();
+    if (colObserver) { colObserver.disconnect(); colObserver = null; }
+  }
+
+  /* app.js 重画 #msg-col 会连本页一起换掉，察觉后清状态（不抢它的 DOM）。 */
+  function watchCol() {
+    const col = $('msg-col');
+    if (!col || colObserver) return;
+    colObserver = new MutationObserver(() => { if (!pageEl()) forgetPage(); });
+    colObserver.observe(col, { childList: true });
   }
 
   async function load() {
+    if (!st.page) return;
     try {
       const d = await api('/api/todos');
-      if (disposing) return;
+      if (disposing || !st.page) return;
       st.tasks = d.tasks || [];
       st.records = d.records || [];
       st.missed = d.missed || [];
@@ -154,14 +204,14 @@
     } catch (e) {
       notice('加载失败：' + (e.message || e));
     }
-    if (panel && !panel.classList.contains('hidden')) render();
+    if (st.page) render();
   }
 
   function notice(text) {
-    const el = panel && panel.querySelector('#td-notice');
-    if (!el) return;
-    el.textContent = text || '';
-    el.classList.toggle('hidden', !text);
+    const e = $('td-notice');
+    if (!e) return;
+    e.textContent = text || '';
+    e.classList.toggle('hidden', !text);
   }
 
   function recordsOf(taskId) {
@@ -169,8 +219,11 @@
   }
 
   function render() {
-    const list = panel.querySelector('#td-list');
-    const missedBox = panel.querySelector('#td-missed');
+    const root = pageEl();
+    if (!root) return;
+    const list = root.querySelector('#td-list');
+    const missedBox = root.querySelector('#td-missed');
+    if (!list || !missedBox) return;
     const missed = st.missed || [];
     // 展开/收起只重画列表，滚动位置得自己留住，否则每点一下都回到顶部
     const keepScroll = list.scrollTop;
@@ -195,7 +248,7 @@
       list.innerHTML = st.tasks.map(cardHTML).join('');
     }
     list.scrollTop = keepScroll;
-    panel.querySelector('#td-store').textContent = st.store ? '数据位置：' + st.store : '';
+    root.querySelector('#td-store').textContent = st.store ? '数据位置：' + st.store : '';
 
     // 列表内的事件：统一委托到容器
     list.onclick = onListClick;
@@ -295,7 +348,7 @@
         break;
       case 'records': st.expanded[id] = !st.expanded[id]; render(); break;
       case 'session':
-        closePanel();
+        forgetPage();
         if (typeof openSession === 'function') openSession(el.dataset.sid);
         break;
     }
@@ -573,7 +626,7 @@
         try {
           const ev = JSON.parse(e.data);
           if (ev.type !== 'todo_tasks') return;
-          if (panel && !panel.classList.contains('hidden')) void load();
+          if (st.page) void load();
         } catch (err) { /* 坏帧跳过 */ }
       };
     } catch (e) { sse = null; }
@@ -586,9 +639,9 @@
   /* ---------- 全局键盘 ---------- */
 
   function onKey(e) {
+    // 本页已经不是一个浮窗，Esc 只关表单弹窗，退出页面走侧栏（与对话页一致）
     if (e.key !== 'Escape') return;
-    if (formEl && !formEl.classList.contains('hidden')) { closeForm(); return; }
-    if (panel && !panel.classList.contains('hidden')) closePanel();
+    if (formEl && !formEl.classList.contains('hidden')) closeForm();
   }
 
   /* ---------- 注册 ---------- */
@@ -598,19 +651,24 @@
     init() {
       disposing = false;
       mountButton();
-      mountPanel();
       mountForm();
       document.addEventListener('keydown', onKey);
     },
     dispose() {
       disposing = true;
+      // 关组件时若正停在本页：把主列还给 app.js（回原会话或首页），再拆自己的东西
+      if (st.page) {
+        const back = st.prevSession;
+        forgetPage();
+        if (back && typeof openSession === 'function') void openSession(back);
+        else if (typeof goHomeNewTask === 'function') goHomeNewTask();
+      }
       closeStream();
       document.removeEventListener('keydown', onKey);
       if (btn) { btn.remove(); btn = null; }
-      if (panel) { panel.remove(); panel = null; }
       if (formEl) { formEl.remove(); formEl = null; }
       st.tasks = []; st.records = []; st.missed = []; st.editing = null;
-      st.open = {}; st.expanded = {};
+      st.open = {}; st.expanded = {}; st.page = false; st.prevSession = null;
     },
   });
 })();
