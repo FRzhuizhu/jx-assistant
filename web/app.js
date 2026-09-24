@@ -1203,6 +1203,14 @@ function drawerFamilyId() {
   return state.cur.parentId || state.cur.id; // 锚定在主对话（父）上
 }
 
+// 会话 id 反查它正展示在哪个视图（主列 or 右栏子对话）；都不在看则返回 null，
+// 消息操作条据此决定编辑/分支作用于哪个会话、成功后切到哪个视图
+function viewOf(sid) {
+  if (state.cur && state.cur.id === sid) return mainView;
+  if (subState.cur && subState.cur.id === sid) return subView;
+  return null;
+}
+
 /* 输入区控件的视图参数化：两个视图各有一套底部控件（id 在右栏加 sub- 前缀），
    样式与行为完全共用；单例弹层（权限/模型/加号菜单）记住是谁打开的（popView），
    处理时就作用于那个视图的会话。 */
@@ -1747,7 +1755,7 @@ function inheritBlock(items, resultOf, sid) {
   body.className = 'tf-body';
   const turns = groupTurns(items, resultOf);
   turns.forEach((turn, ti) => {
-    if (turn.userMsg) body.appendChild(userBubble(turn.userMsg));
+    if (turn.userMsg) body.appendChild(userBubble(turn.userMsg, viewOf(sid)));
     renderFinishedTurn(body, turn, key + ':' + ti);
   });
   const open = turnOpen[key] === true;
@@ -1837,7 +1845,9 @@ function groupTurns(msgs, resultOf) {
   return turns;
 }
 
-function userBubble(m) {
+// 用户消息气泡：右下悬停操作（复制 / 编辑重发）。编辑只对真实用户消息开放
+// （kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。
+function userBubble(m, view) {
   const wrap = document.createElement('div');
   wrap.className = 'msg user';
   wrap.dataset.seq = m.seq; // 搜索命中定位用
@@ -1845,11 +1855,34 @@ function userBubble(m) {
   b.className = 'bubble';
   b.textContent = String(m.content ?? '');
   wrap.appendChild(b);
+  if (m.kind === 'chat' && view) {
+    const acts = document.createElement('div');
+    acts.className = 'msg-actions user-acts';
+    const cp = document.createElement('button');
+    cp.className = 'act-copy';
+    const cpOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制';
+    cp.innerHTML = cpOrig;
+    cp.onclick = () => {
+      navigator.clipboard.writeText(String(m.content ?? '')).then(() => {
+        cp.textContent = '已复制';
+        setTimeout(() => { cp.innerHTML = cpOrig; }, 1200);
+      });
+    };
+    acts.appendChild(cp);
+    const ed = document.createElement('button');
+    ed.className = 'act-copy act-edit';
+    ed.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>编辑';
+    ed.title = '修改这条消息并重新发送；它之后的对话记录将被移除';
+    ed.onclick = () => editUserMsg(m, view, wrap);
+    acts.appendChild(ed);
+    wrap.appendChild(acts);
+  }
   return wrap;
 }
 
-// 悬停操作：复制原文 / 手动压缩 / 插件扩展位
-function msgActions(m) {
+// 悬停操作：复制原文 / 手动压缩 / 分支（仅回合最终回答）/ 插件扩展位
+function msgActions(m, opts) {
+  opts = opts || {};
   const acts = document.createElement('div');
   acts.className = 'msg-actions';
   const cp = document.createElement('button');
@@ -1883,11 +1916,42 @@ function msgActions(m) {
     }
   };
   acts.appendChild(cb);
+  if (opts.final) {
+    const bk = document.createElement('button');
+    bk.className = 'act-copy act-branch';
+    bk.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 7.2v9.6"/><path d="M18 11.2c0 3.4-3.2 4-7.5 4.3"/></svg>分支';
+    bk.title = '从这条回答处复制出一个新会话并切换过去；当前对话保持不变';
+    bk.onclick = () => forkFromAnswer(m, bk);
+    acts.appendChild(bk);
+  }
   for (const fn of JX._msgActions) { try { fn(acts, m); } catch (e) { console.warn('[JX] action', e); } }
   return acts;
 }
 
-function renderItem(it) {
+// 从某条回答处分支出新会话：消息按 seq 前缀复制，创建成功后切过去看。
+// 会话执行中也可分支（后端只复制到该 seq，前缀稳定）。
+async function forkFromAnswer(m, btn) {
+  if (!m.sessionId) return;
+  if (btn) { btn.disabled = true; btn.classList.add('ok'); }
+  try {
+    const fork = await api('/api/sessions/' + m.sessionId + '/fork', {
+      method: 'POST',
+      body: JSON.stringify({ upTo: m.seq }),
+    });
+    await loadSessions();
+    if (mainView.state.cur && mainView.state.cur.id === m.sessionId) {
+      if (!state.streaming) openSession(fork.id);
+    } else if (subState.cur && subState.cur.id === m.sessionId) {
+      refreshDrawer();
+      if (!subState.streaming) openSubSession(fork.id);
+    }
+  } catch (e) {
+    alert('分支失败：' + e.message);
+  }
+  if (btn) { btn.disabled = false; btn.classList.remove('ok'); }
+}
+
+function renderItem(it, opts) {
   if (it.k === 'prompt') return promptRow(it.sys, it.env, it.tools, it.seq);
   if (it.k === 'envnote') return envNoteRow(it.text, it.seq);
   if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
@@ -1907,7 +1971,7 @@ function renderItem(it) {
     body.className = 'md';
     body.innerHTML = md(it.text);
     wrap.appendChild(body);
-    wrap.appendChild(msgActions(it.m));
+    wrap.appendChild(msgActions(it.m, opts && opts.final ? { final: true } : undefined));
     return wrap;
   }
   // 系统通知：常显独立块
@@ -2011,7 +2075,7 @@ function renderMessages(msgs, view) {
   }
   const turns = groupTurns(rest, resultOf);
   turns.forEach((turn, ti) => {
-    if (turn.userMsg) box.appendChild(userBubble(turn.userMsg));
+    if (turn.userMsg) box.appendChild(userBubble(turn.userMsg, view));
     const key = sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti);
     if (ti === turns.length - 1 && view.state.streaming) renderStreamingTurn(box, turn, key);
     else renderFinishedTurn(box, turn, key);
@@ -2054,7 +2118,7 @@ function renderFinishedTurn(box, turn, key) {
     seg = [];
   };
   items.forEach((it, i) => {
-    if (anchors.has(i)) { flushSeg(); box.appendChild(renderItem(it)); }
+    if (anchors.has(i)) { flushSeg(); box.appendChild(renderItem(it, { final: i === answerIdx })); }
     else seg.push(it);
   });
   flushSeg();
@@ -2594,6 +2658,14 @@ function setStreamUI(on, view) {
 function handleEvent(ev, view) {
   view = view || mainView;
   switch (ev.type) {
+    case 'edited': {
+      // 编辑重发的截断确认：服务端已删掉 seq 之后的记录并改写正文，
+      // 本地对齐后模型续跑的输出会接着这条消息往下走
+      view.state.msgs = view.state.msgs.filter((x) => x.seq <= ev.seq);
+      view.state.msgs.forEach((x) => { if (x.seq === ev.seq) x.content = ev.delta; });
+      renderMessages(view.state.msgs, view);
+      break;
+    }
     case 'message': {
       view.state.streamText = '';
       view.state.streamThinking = '';
@@ -2896,6 +2968,128 @@ async function send(forceContent, view) {
   }
 }
 
+/* ---------- 编辑历史用户消息并重发（语义对齐 ZCode 的 editUserQuery：
+   同会话内截断后重发——该消息之后的记录从当前对话移除、模型回到这条消息
+   重新执行；已做的文件修改不回退（本项目无文件快照）。想保留原路线，
+   先用助手回答下的「分支」按钮把对话另存一份再编辑。 ---------- */
+
+// 进入编辑态：气泡原位换成输入框（Esc/取消还原，Ctrl+Enter 或按钮提交）
+function editUserMsg(m, view, wrap) {
+  if (wrap.classList.contains('editing')) return;
+  if (view.state.streaming) {
+    view.hint.textContent = '本轮执行中，等结束再编辑';
+    setTimeout(() => { if (view.hint.textContent === '本轮执行中，等结束再编辑') view.hint.textContent = ''; }, 2500);
+    return;
+  }
+  wrap.classList.add('editing');
+  const box = document.createElement('div');
+  box.className = 'ed-box';
+  const ta = document.createElement('textarea');
+  ta.className = 'ed-input';
+  ta.value = String(m.content ?? '');
+  ta.rows = 3;
+  const row = document.createElement('div');
+  row.className = 'ed-row';
+  const cancel = document.createElement('button');
+  cancel.className = 'ed-btn';
+  cancel.type = 'button';
+  cancel.textContent = '取消';
+  const ok = document.createElement('button');
+  ok.className = 'ed-btn primary';
+  ok.type = 'button';
+  ok.textContent = '发送';
+  row.appendChild(cancel);
+  row.appendChild(ok);
+  const note = document.createElement('div');
+  note.className = 'ed-note';
+  note.textContent = '发送后将从这条消息重新执行，它之后的对话记录会被移除（已做的文件修改不回退）';
+  box.appendChild(ta);
+  box.appendChild(row);
+  box.appendChild(note);
+  wrap.appendChild(box);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  const close = () => { wrap.classList.remove('editing'); box.remove(); };
+  cancel.onclick = close;
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && $('confirm-modal').classList.contains('hidden')) {
+      e.stopPropagation();
+      close();
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ok.click(); }
+  });
+  ok.onclick = async () => {
+    const content = ta.value.trim();
+    if (!content) return;
+    const later = view.state.msgs.filter((x) => x.seq > m.seq).length;
+    if (later > 0) {
+      const sure = await confirmCenter(`这条消息之后还有 ${later} 条记录，重新发送后将全部移除（不回退已做的文件修改；要保留原路线请先用「分支」）。确定吗？`);
+      if (!sure) return;
+    }
+    ok.disabled = true;
+    cancel.disabled = true;
+    if (await resendEdit(m, content, view)) close();
+    else { ok.disabled = false; cancel.disabled = false; }
+  };
+}
+
+// 编辑重发的请求与收流：结构与 send() 的发后处理一致；成功返回 true（此时
+// edited 确认帧已把本地记录截断对齐），失败/中止返回 false 保留编辑框
+async function resendEdit(m, content, view) {
+  view = view || mainView;
+  if (!view.state.cur || view.state.streaming) return false;
+  view.state.streaming = true;
+  setStreamUI(true, view);
+  view.state.abort = new AbortController();
+  view.state.streamText = '';
+  view.state.streamThinking = '';
+  if (view === mainView) JX.emit('send', { content });
+  let aborted = false;
+  try {
+    const res = await fetch(`/api/sessions/${view.state.cur.id}/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seq: m.seq, content }),
+      signal: view.state.abort.signal,
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || res.statusText);
+    }
+    await consumeStream(res, view);
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      aborted = true; // 用户主动停止：保留编辑框，可改完再试
+    } else {
+      view.state.streamText = '';
+      view.state.streamThinking = '';
+      renderMessages(view.state.msgs, view);
+      const err = document.createElement('div');
+      err.className = 'msg assistant';
+      err.innerHTML = `<div class="md"><p style="color:#c22f2f">编辑发送失败：${esc(e.message)}</p></div>`;
+      view.col.appendChild(err);
+    }
+  }
+  removeLive(view);
+  view.state.streaming = false;
+  if (!aborted) await refreshIfDangling(view); // 流断但后端仍在跑：接回去继续看
+  renderMessages(view.state.msgs, view);
+  setStreamUI(false, view);
+  if (view === mainView) {
+    loadSessions();
+    loadStatus();
+    refreshCtxChip();
+    JX.emit('message:done', { sessionId: state.cur && state.cur.id });
+  } else {
+    refreshDrawer();
+    refreshCtxChip(subView); // 右栏的上下文圆环同样要跟着本轮刷新
+  }
+  return !aborted;
+}
+
+/* ---------- 事件流读取与「接回执行中会话」 ---------- */
+
+// consumeStream 读一条 SSE 响应直到流结束，每帧交给 handleEvent
 async function consumeStream(res, view) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();

@@ -155,13 +155,40 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
 }
 
-/* 用户消息：右侧浅灰气泡 */
-.msg.user { display: flex; justify-content: flex-end; margin-bottom: 20px; }
+/* 用户消息：右侧浅灰气泡；悬停时气泡下方露出复制/编辑操作条。
+   间距拆两半放：气泡底部 2px + 容器底部 18px；带操作条时容器收零，
+   由操作条自己的 18px 接管（排队/插话/系统注入行没有操作条，走容器那份） */
+.msg.user { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 18px; }
 .msg.user .bubble {
   max-width: 72%; background: var(--chip); color: var(--text);
   padding: 10px 15px; border-radius: 14px 14px 4px 14px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
+  margin-bottom: 2px;
 }
+.msg.user:has(> .msg-actions) { margin-bottom: 0; }
+.msg.user .msg-actions { margin: 0 0 18px; }
+.msg.user:hover .msg-actions { opacity: 1; }
+
+/* 编辑重发：气泡原位换成输入框（发送后截断该消息之后的记录重新执行） */
+.msg.user.editing { align-items: stretch; margin-bottom: 20px; }
+.msg.user.editing .bubble, .msg.user.editing .user-acts { display: none; }
+.ed-box { width: 100%; }
+.ed-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 76px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border-2);
+  border-radius: 10px; padding: 10px 12px; font: inherit; font-size: .95em; line-height: 1.6;
+}
+.ed-input:focus { outline: none; border-color: var(--accent); }
+.ed-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.ed-btn {
+  border: 1px solid var(--border-2); background: var(--bg); color: var(--text-2);
+  border-radius: 8px; padding: 5px 14px; font: inherit; font-size: .88em; cursor: pointer;
+}
+.ed-btn:hover { background: var(--hover); color: var(--text); }
+.ed-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ed-btn.primary:hover { background: var(--accent); opacity: .88; }
+.ed-btn:disabled { opacity: .5; cursor: default; }
+.ed-note { margin-top: 6px; font-size: .78em; color: var(--text-3); }
 
 /* 系统注入的回报/中断记录：左侧细边框通知样式 */
 .msg.sysnote { display: flex; margin-bottom: 14px; }

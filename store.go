@@ -672,6 +672,40 @@ func (s *Store) RawMessagesAll(id string) ([]*StoredMessage, error) {
 	return out, rows.Err()
 }
 
+// EditUserMessage 编辑重发的原子落地（语义对齐 ZCode 的 editUserQuery：同会话
+// 截断后重发）：事务内删除 seq 之后的全部记录并改写该条用户消息正文。
+// 返回被移除的条数，供前端确认提示用。
+func (s *Store) EditUserMessage(sessionID string, seq int64, content string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE session_id=? AND seq>?`, sessionID, seq).Scan(&removed); err != nil {
+		return 0, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM messages WHERE session_id=? AND seq>?`, sessionID, seq); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	res, err := tx.Exec(`UPDATE messages SET content=? WHERE session_id=? AND seq=?`, content, sessionID, seq)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("会话 %s 里不存在 seq=%d 的消息", sessionID, seq)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at=? WHERE id=?`, now(), sessionID); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	return removed, tx.Commit()
+}
+
 // SupersedeAutoSummaries 把会话内所有未过期的自动摘要标记为已过期（新自动摘要合并旧摘要时用）。
 func (s *Store) SupersedeAutoSummaries(sessionID string) error {
 	s.mu.Lock()

@@ -147,6 +147,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
+	mux.HandleFunc("POST /api/sessions/{id}/edit", a.handleEdit)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
 	mux.HandleFunc("GET /api/questions", a.handleListQuestions)
@@ -1372,6 +1373,71 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	a.broadcast(Event{Type: "session_updated", SessionID: fork.ID})
 	writeJSON(w, 200, fork)
+}
+
+// handleEdit 编辑历史用户消息并重发：截断该消息之后的全部记录、改写正文、
+// 立即续跑一轮。语义对齐 ZCode 的 editUserQuery——同会话内截断重发，不建
+// 子会话、不回退已做的文件修改（本项目无文件快照，等价于其 workspaceMode
+// 的 preserve 档）。仅空闲会话可编辑；系统注入行（回报/上传/目标续跑/继承
+// 标记）不可编辑。
+func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	var body struct {
+		Seq     int64  `json:"seq"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Seq <= 0 || strings.TrimSpace(body.Content) == "" {
+		writeErr(w, 400, "需要 seq 与非空 content")
+		return
+	}
+	if _, ok := w.(http.Flusher); !ok {
+		writeErr(w, 500, "当前连接不支持流式响应")
+		return
+	}
+	lock := a.sessLock(m.ID)
+	lock.Lock()
+	if a.IsRunning(m.ID) {
+		lock.Unlock()
+		writeErr(w, 409, "该会话正在执行中，等本轮结束后再编辑")
+		return
+	}
+	rows, err := a.Store.RawMessagesAll(m.ID)
+	if err != nil {
+		lock.Unlock()
+		writeErr(w, 500, err.Error())
+		return
+	}
+	valid := false
+	for _, x := range rows {
+		if x.Seq == body.Seq {
+			valid = x.Role == "user" && x.Kind == "chat"
+			break
+		}
+	}
+	if !valid {
+		lock.Unlock()
+		writeErr(w, 400, "只有真实的用户消息可以编辑")
+		return
+	}
+	content := strings.TrimSpace(body.Content)
+	if _, err := a.Store.EditUserMessage(m.ID, body.Seq, content); err != nil {
+		lock.Unlock()
+		writeErr(w, 500, "编辑落库失败: "+err.Error())
+		return
+	}
+	run, ok := a.beginRun(m.ID)
+	if !ok {
+		lock.Unlock()
+		writeErr(w, 409, "该会话正在执行中，等本轮结束后再编辑")
+		return
+	}
+	lock.Unlock()
+	// opening 先发 edited 确认帧：前端据此把本地记录截断对齐，再跟随续跑输出
+	opening := []Event{{Type: "edited", Seq: body.Seq, Delta: content}}
+	a.serveRun(w, r, m, run, opening)
 }
 
 // handleListApprovals 返回待决定的审批（前端轮询兜底）。
