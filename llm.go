@@ -62,9 +62,16 @@ type ChatRequest struct {
 	Messages []Message `json:"messages"`
 	Tools    []ToolDef `json:"tools,omitempty"`
 	Stream   bool      `json:"stream"`
+	// 流尾统计：OpenAI 兼容端（DeepSeek/GLM 等）要求显式开启才在最后一个
+	// chunk 附带 usage（缓存命中率的数据来源）
+	StreamOptions   *StreamOptionsCfg `json:"stream_options,omitempty"`
 	// 思考控制：DeepSeek/智谱等用 thinking{type}，OpenAI o/gpt-5 系用 reasoning_effort
 	Thinking        *ThinkingCfg `json:"thinking,omitempty"`
 	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
+}
+
+type StreamOptionsCfg struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // ContentPart 是多模态消息的内容块（OpenAI 兼容格式）：
@@ -97,11 +104,23 @@ func (r *ChatRequest) ApplyThinking(level string) {
 	}
 }
 
-// StreamCallbacks 把流式输出回调给调用方：思考增量、正文增量与完整的工具调用。
+// StreamCallbacks 把流式输出回调给调用方：思考增量、正文增量、完整的工具调用
+// 与流尾的用量统计（DeepSeek/GLM 等兼容网关在最后一个 chunk 附带 usage，
+// 含 prompt_cache_hit_tokens 前缀缓存命中量）。
 type StreamCallbacks struct {
-	OnText     func(string)
+	OnText      func(string)
 	OnReasoning func(string)
-	OnToolCall func(ToolCall)
+	OnToolCall  func(ToolCall)
+	OnUsage     func(Usage)
+}
+
+// Usage 是流尾统计块（OpenAI 兼容 + DeepSeek 缓存命中扩展）。
+type Usage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	PromptCacheHit      int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMiss     int `json:"prompt_cache_miss_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
 }
 
 // StreamChat 向解析后的 LLM 目标发起一轮流式对话。
@@ -112,6 +131,7 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 	}
 	req.Model = target.Model
 	req.Stream = true
+	req.StreamOptions = &StreamOptionsCfg{IncludeUsage: true}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -154,6 +174,7 @@ type streamChunk struct {
 		} `json:"delta"`
 		FinishReason any `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // parseSSE 解析 text/event-stream：聚合按 index 分片的工具调用参数增量，
@@ -199,6 +220,10 @@ func parseSSE(r io.Reader, cb StreamCallbacks) error {
 				}
 				cur.Function.Arguments += tc.Function.Arguments
 			}
+		}
+		// 流尾用量块（缓存命中率的数据来源）；网关不带 usage 时静默跳过
+		if chunk.Usage != nil && cb.OnUsage != nil {
+			cb.OnUsage(*chunk.Usage)
 		}
 	}
 	if err := sc.Err(); err != nil {

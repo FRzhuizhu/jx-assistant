@@ -52,6 +52,8 @@ type App struct {
 	subscribers  map[chan Event]bool // /api/events 的订阅者
 	intjMu       sync.Mutex
 	interjects   map[string][]string // 执行中会话的插话队列（agent 循环步间排水）
+	osOnce       sync.Once
+	osDesc       string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
 }
 
 func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
@@ -131,6 +133,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
 	mux.HandleFunc("GET /api/sessions/{id}/todos", a.handleGetTodos)
+	mux.HandleFunc("GET /api/sessions/{id}/context", a.handleContextStats)
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.handleExport)
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
@@ -193,6 +196,10 @@ func (a *App) handleStatic(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(html))
 		return
 	}
+	// 静态子资源（app.js/style.css 等）一律 no-cache：embed FS 不带修改时间戳，
+	// 浏览器会对无验证器的响应做启发式缓存，出现"前端改了、刷新不生效"；
+	// 强制每次回源校验，本地服务开销可忽略
+	w.Header().Set("Cache-Control", "no-cache")
 	http.FileServer(http.FS(a.static)).ServeHTTP(w, r)
 }
 
@@ -777,6 +784,7 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Thinking   string           `json:"thinking"`
 		PlanMode   bool             `json:"planMode"`
 		GoalMode   bool             `json:"goalMode"`
+		GoalText   string           `json:"goalText"`
 		Tools      []string         `json:"tools"`
 		Remote     *RemoteWorkspace `json:"remote"`
 	}
@@ -808,9 +816,16 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Thinking:   strings.TrimSpace(body.Thinking),
 		PlanMode:   body.PlanMode,
 		GoalMode:   body.GoalMode,
+		GoalText:   truncateRunes(body.GoalText, 2000),
 		Tools:      body.Tools,
 		CreatedAt:  now(),
 		UpdatedAt:  now(),
+	}
+	if permModeOf(m) == permFull {
+		m.Tools = bundleFullAccessCaps(m.Tools) // 完全访问：预设捆绑能力一并点亮
+	}
+	if m.GoalMode {
+		m.GoalStatus = "active" // 创建即带目标模式：状态从 active 起步
 	}
 	if err := a.Store.Create(m); err != nil {
 		writeErr(w, 500, err.Error())
@@ -855,6 +870,7 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		Thinking   *string   `json:"thinking"`
 		PlanMode   *bool     `json:"planMode"`
 		GoalMode   *bool     `json:"goalMode"`
+		GoalText   *string   `json:"goalText"`
 		Tools      *[]string `json:"tools"`
 		Archived   *bool     `json:"archived"`
 		Unread     *bool     `json:"unread"`
@@ -876,7 +892,14 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		m.Model = strings.TrimSpace(*body.Model)
 	}
 	if body.Permission != nil {
+		was := permModeOf(m)
 		m.Permission = strings.TrimSpace(*body.Permission)
+		switch {
+		case permModeOf(m) == permFull:
+			m.Tools = bundleFullAccessCaps(m.Tools) // 切到完全访问：捆绑能力联动点亮
+		case was == permFull && body.Tools == nil:
+			m.Tools = stripFullAccessCaps(m.Tools) // 从完全访问切回：捆绑能力随之取消
+		}
 	}
 	if body.Thinking != nil {
 		switch t := strings.TrimSpace(*body.Thinking); t {
@@ -890,8 +913,17 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	if body.PlanMode != nil {
 		m.PlanMode = *body.PlanMode
 	}
+	if body.GoalText != nil {
+		m.GoalText = truncateRunes(*body.GoalText, 2000)
+	}
 	if body.GoalMode != nil {
 		m.GoalMode = *body.GoalMode
+		// 开启/重开目标模式：状态归位 active；关闭时清状态（目标文本保留备查）
+		if m.GoalMode {
+			m.GoalStatus = "active"
+		} else {
+			m.GoalStatus = ""
+		}
 	}
 	if body.Archived != nil {
 		m.Archived = *body.Archived
@@ -943,57 +975,35 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": 1, "summary": truncateRunes(summary, 300)})
 }
 
-// handleExport 把会话导出为 Markdown 文件下载。
+// handleExport 导出会话日志。?format=md（默认）出人读的完整 Markdown，
+// ?format=json 出机器可存的原始记录；两者都含全部子会话（递归），
+// 且都取自 messages 表原始历史——与发给模型的压缩视图无关。
 func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
 		return
 	}
-	raw, err := a.Store.RawMessagesAll(m.ID)
+	root, err := a.buildExportTree(m.ID, map[string]bool{})
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	var b strings.Builder
-	b.WriteString("# " + m.Title + "\n\n")
-	b.WriteString(fmt.Sprintf("- 会话：%s｜模式：%s｜模型：%s\n- 工作区：%s｜权限：%s\n- 创建：%s｜导出：%s\n\n---\n\n",
-		m.ID, m.Mode, m.Model, wsOr(a, m), permOf(m), m.CreatedAt, now()))
-	for _, msg := range raw {
-		if msg.Kind == "summary" {
-			b.WriteString("> " + strings.ReplaceAll(msg.Text(), "\n", "\n> ") + "\n\n")
-			continue
+	stamp := time.Now().Format("20060102-150405")
+	base := strings.ReplaceAll(truncateRunes(m.Title, 30), " ", "_") + "_" + stamp
+	if r.URL.Query().Get("format") == "json" {
+		data, err := json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			writeErr(w, 500, "导出序列化失败: "+err.Error())
+			return
 		}
-		switch msg.Role {
-		case "user":
-			b.WriteString("## 🧑 用户\n\n" + msg.Text() + "\n\n")
-		case "assistant":
-			head := "## 🤖 助手"
-			if len(msg.ToolCalls) > 0 {
-				names := []string{}
-				for _, tc := range msg.ToolCalls {
-					names = append(names, tc.Function.Name)
-				}
-				head += "（调用：" + strings.Join(names, ", ") + "）"
-			}
-			b.WriteString(head + "\n\n")
-			if t := msg.Text(); strings.TrimSpace(t) != "" {
-				b.WriteString(t + "\n\n")
-			}
-			for _, tc := range msg.ToolCalls {
-				b.WriteString("```json\n" + tc.Function.Name + " " + tc.Function.Arguments + "\n```\n\n")
-			}
-		case "tool":
-			out := msg.Text()
-			if len([]rune(out)) > 2000 {
-				out = string([]rune(out)[:2000]) + "…（截断）"
-			}
-			b.WriteString("<details><summary>工具结果</summary>\n\n```\n" + out + "\n```\n\n</details>\n\n")
-		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+".json"))
+		_, _ = w.Write(data)
+		return
 	}
-	filename := fmt.Sprintf("%s.md", strings.ReplaceAll(truncateRunes(m.Title, 30), " ", "_"))
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filename))
-	_, _ = w.Write([]byte(b.String()))
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+".md"))
+	_, _ = w.Write([]byte(a.ExportMarkdown(root)))
 }
 
 func wsOr(a *App, m *SessionMeta) string {
@@ -1213,6 +1223,16 @@ func (a *App) handleGetTodos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"todos": todosOf(a, m.ID)})
 }
 
+// handleContextStats 返回会话下一次请求的上下文占用分解与缓存命中率
+//（前端输入区「上下文」按钮面板的数据源）。
+func (a *App) handleContextStats(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	writeJSON(w, 200, a.contextStats(m))
+}
+
 // handleTestWorkspace 测试一个 SSH 远程工作区配置：拨号 → 远程命令 →
 // SFTP → 检查目录，返回主机指纹（前端展示，保存时绑定到会话）。
 func (a *App) handleTestWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -1408,14 +1428,14 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer a.EndRun(m.ID)
 
 	um := TextMessage("user", body.Content)
-	a.appendMessage(m, um)
-	emit(Event{Type: "message", Message: &um})
+	sm := a.appendMessage(m, um)
+	emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
 
 	if m.Title == "" {
 		m.Title = truncateRunes(body.Content, 24)
 		_ = a.Store.SaveMeta(m)
 		emit(Event{Type: "title", SessionID: m.ID, Title: m.Title})
 	}
-	_ = a.RunAgent(r.Context(), m, emit)
+	_ = a.runGoalRounds(r.Context(), m, emit)
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
 }

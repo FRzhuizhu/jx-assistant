@@ -53,9 +53,16 @@ const (
 	sysPrctl           = 157
 )
 
-// Main 是 helper 的入口：jx-sandbox restrict --mode M --workspace W --temp T -- cmd…
+// Main 是 helper 的入口：
+//   - jx-sandbox version：打印版本号退出（ensureRemoteHelper 校验用）
+//   - jx-sandbox restrict --mode M --workspace W --temp T|auto -- cmd…
+//
 // 返回进程退出码。
 func Main(args []string) int {
+	if len(args) > 0 && args[0] == "version" {
+		fmt.Println(Version)
+		return 0
+	}
 	mode, ws, temp, cmd, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "用法: jx-sandbox restrict --mode read-only|workspace-write --workspace DIR --temp DIR|auto -- cmd…")
@@ -113,7 +120,7 @@ func parseArgs(args []string) (mode, ws, temp string, cmd []string, err error) {
 // Restrict 对当前进程施加 Landlock 限制，返回要 exec 的命令。
 // temp=auto 时自动创建私有临时目录并把它设为子进程的 TMPDIR。
 func Restrict(mode, ws, temp string, cmd []string) ([]string, error) {
-	handled := writeHandledSet()
+	_, handled := writeHandledSet()
 	if handled == 0 {
 		return nil, fmt.Errorf("内核不支持 Landlock（需要 Linux 5.13+）")
 	}
@@ -123,6 +130,10 @@ func Restrict(mode, ws, temp string, cmd []string) ([]string, error) {
 			return nil, fmt.Errorf("创建私有临时目录失败: %w", err)
 		}
 		temp = td
+	}
+	// 显式或 auto 给出的临时目录都注入 TMPDIR：否则子进程往默认 /tmp 写
+	// 临时文件会被 Landlock 拒掉（TMPDIR 指向授权目录才可写）。
+	if mode == "workspace-write" && temp != "" {
 		_ = os.Setenv("TMPDIR", temp)
 	}
 	if err := noNewPrivs(); err != nil {
@@ -143,17 +154,26 @@ func Restrict(mode, ws, temp string, cmd []string) ([]string, error) {
 			}
 		}
 	}
+	// /dev/null sink（官方 POSIX 后端同款）：shell 与大量工具的
+	// >/dev/null、2>/dev/null 重定向依赖它，两种模式都放行写。
+	// 字符设备规则只接受 WRITE_FILE 单独使用（ABI5 实测：含 TRUNCATE/
+	// READ/EXECUTE 任意组合都 EINVAL；O_TRUNC 对字符设备是 no-op 不需要位）。
+	devNullBits := uint64(landlockAccessWriteFile)
+	if err := addPathBeneath(fd, "/dev/null", devNullBits); err != nil {
+		return nil, fmt.Errorf("放行 /dev/null sink 失败: %w", err)
+	}
 	if err := restrictSelf(fd); err != nil {
 		return nil, fmt.Errorf("landlock_restrict_self 失败: %w", err)
 	}
 	return cmd, nil
 }
 
-// writeHandledSet 返回内核支持的「写类」访问集合；不支持时返回 0。
-func writeHandledSet() uint64 {
+// writeHandledSet 返回（内核 ABI 版本，支持的「写类」访问集合）；
+// 不支持时返回 (0, 0)。
+func writeHandledSet() (int, uint64) {
 	ver, err := rulesetVersion()
 	if err != nil || ver < 1 {
-		return 0
+		return 0, 0
 	}
 	set := uint64(landlockAccessWriteFile | landlockAccessRemoveDir | landlockAccessRemoveFile |
 		landlockAccessMakeChar | landlockAccessMakeDir | landlockAccessMakeReg |
@@ -164,7 +184,7 @@ func writeHandledSet() uint64 {
 	if ver >= 3 {
 		set |= landlockAccessTruncate
 	}
-	return set
+	return ver, set
 }
 
 func rulesetVersion() (int, error) {

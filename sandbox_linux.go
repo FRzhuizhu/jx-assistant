@@ -25,10 +25,17 @@ func spawnConfinedLinuxReexec(r sandboxRun) (string, error) {
 			return "", fmt.Errorf("sandbox unavailable: 找不到 sh: %w", err)
 		}
 	}
+	// 私有临时目录由父进程创建并在退出后清理（与 Windows 后端行为对齐），
+	// 不再用 --temp auto（helper exec 后无人清理，会泄漏 /tmp 目录）
+	tempDir, err := os.MkdirTemp("", "jx-sbx-")
+	if err != nil {
+		return "", fmt.Errorf("sandbox unavailable: 创建私有临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
 	wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
 	args := []string{
 		"__jx-sandbox-restrict", "restrict",
-		"--mode", r.Policy, "--workspace", r.Workspace, "--temp", "auto",
+		"--mode", r.Policy, "--workspace", r.Workspace, "--temp", tempDir,
 		"--", sh, "-c", wrapped,
 	}
 	cmd := exec.Command(exe, args...)

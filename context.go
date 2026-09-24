@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -85,10 +87,13 @@ func activeSummaries(msgs []*StoredMessage) []*StoredMessage {
 
 // buildContext 是组装管线：系统提示词 + 活跃摘要 + 边界后消息
 // （规则压缩视图生效，最近轮保持原文），并修剪结尾悬空的工具调用。
-func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
+// 环境快照（env）不进历史序列——历史里的 kind=env/prompt 行全部跳过，
+// 最新环境快照作为一条 user 消息固定放在序列末尾：模型永远读到最新环境，
+// 旧快照不重复占用表面上下文，系统提示词前缀保持稳定命中缓存。
+func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
-		return []Message{TextMessage("system", sys)}
+		return []Message{TextMessage("system", sys), TextMessage("user", env)}
 	}
 	summaries := activeSummaries(raw)
 	boundary := int64(0)
@@ -105,7 +110,7 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		out = append(out, TextMessage("user", s.Text()))
 	}
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Kind == "summary" {
+		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" {
 			continue
 		}
 		if ruleMode && m.Compact != "" {
@@ -127,6 +132,8 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		}
 		break
 	}
+	// 环境快照固定在序列末尾（易变内容永远在尾部，前缀缓存不受影响）
+	out = append(out, TextMessage("user", env))
 	return out
 }
 
@@ -143,6 +150,104 @@ func estimateTokens(msgs []Message) int {
 		total += 8
 	}
 	return total
+}
+
+// ---------- 上下文占用统计（前端「上下文」面板的数据源） ----------
+
+type ctxCategory struct {
+	Name   string  `json:"name"`
+	Tokens int     `json:"tokens"`
+	Share  float64 `json:"share"` // 占总上下文的百分比（0-100）
+}
+
+type ctxStats struct {
+	Window     int           `json:"window"` // 模型上下文窗口（token）
+	Total      int           `json:"total"`  // 下一次请求的估算总量
+	Categories []ctxCategory `json:"categories"`
+	Cache      struct {
+		PromptTokens int64   `json:"promptTokens"` // 历次调用 prompt_tokens 总和
+		CacheHit     int64   `json:"cacheHit"`     // 历次调用缓存命中总和
+		Rate         float64 `json:"rate"`         // 平均缓存命中率（0-1；无数据为 0）
+		Calls        int64   `json:"calls"`        // 模型调用次数
+	} `json:"cache"`
+}
+
+// contextStats 按与 buildContext 完全相同的组装规则，把下一次请求的上下文
+// 拆成分类 token 估算（同一启发式）。注意：buildContext 的组装规则改动时需同步此处。
+func (a *App) contextStats(sess *SessionMeta) ctxStats {
+	cats := map[string]int{}
+	add := func(name string, msgs ...Message) {
+		for _, m := range msgs {
+			cats[name] += estimateTokens([]Message{m})
+		}
+	}
+
+	sys := a.systemPrompt(sess)
+	env := a.envPrompt(sess)
+	add("系统提示词", TextMessage("system", sys))
+	add("环境快照", TextMessage("user", env))
+
+	// 工具定义按序列化后的 JSON 体积估算（与消息同一 rune*3/4 启发式）
+	if tools := a.toolsFor(sess.Mode); len(tools) > 0 {
+		defs := make([]ToolDef, len(tools))
+		for i, tl := range tools {
+			defs[i] = tl.Spec
+		}
+		if raw, err := json.Marshal(defs); err == nil {
+			cats["系统工具"] += len([]rune(string(raw))) * 3 / 4
+		}
+	}
+
+	if raw, err := a.Store.RawMessagesAll(sess.ID); err == nil {
+		summaries := activeSummaries(raw)
+		boundary := int64(0)
+		for _, s := range summaries {
+			if s.CoversUpTo > boundary {
+				boundary = s.CoversUpTo
+			}
+		}
+		ruleMode := a.Cfg.CompactMode == "rule"
+		for _, s := range summaries {
+			add("摘要", TextMessage("user", s.Text()))
+		}
+		for _, m := range raw {
+			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" {
+				continue
+			}
+			if ruleMode && m.Compact != "" {
+				if m.Compact == compactOmit {
+					continue
+				}
+				add("消息", Message{Role: m.Role, Content: m.Compact})
+				continue
+			}
+			add("消息", m.Message)
+		}
+	}
+
+	order := []string{"消息", "系统工具", "系统提示词", "摘要", "环境快照", "其他"}
+	total := 0
+	for _, v := range cats {
+		total += v
+	}
+	var out ctxStats
+	out.Window = a.resolveTarget(sess).ContextWindow
+	out.Total = total
+	for _, name := range order {
+		tok := cats[name]
+		share := 0.0
+		if total > 0 {
+			share = float64(tok) * 100 / float64(total)
+		}
+		out.Categories = append(out.Categories, ctxCategory{Name: name, Tokens: tok, Share: math.Round(share*10) / 10})
+	}
+	out.Cache.PromptTokens = sess.UsagePrompt
+	out.Cache.CacheHit = sess.UsageCacheHit
+	out.Cache.Calls = sess.UsageCalls
+	if sess.UsagePrompt > 0 {
+		out.Cache.Rate = float64(sess.UsageCacheHit) / float64(sess.UsagePrompt)
+	}
+	return out
 }
 
 // ---------- 规则压缩（零模型调用） ----------
@@ -281,7 +386,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	b.WriteString("【待压缩的对话历史】\n")
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" {
+		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" {
 			continue
 		}
 		role := map[string]string{"user": "用户", "assistant": "助手", "tool": "工具结果"}[m.Role]

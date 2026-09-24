@@ -9,6 +9,7 @@
 <body>
 <div id="app">
   <aside id="sidebar">
+    <div class="sb-inner">
     <div class="brand">
       <img class="logo-img sm" src="/logo.png" alt="坚祥数字助理">
       <b>坚祥数字助理</b>
@@ -77,6 +78,7 @@
       </button>
       <span id="status-text" class="pill gray">连接中…</span>
     </div>
+    </div>
   </aside>
 
   <main id="main">
@@ -88,7 +90,8 @@
       <span id="sess-title">数字助理</span>
       <span id="mode-badge" class="badge hidden">数字助理</span>
       <button id="remote-badge" class="badge remote hidden" title="本会话挂载了 SSH 远程工作区（点击配置/解除）">远程</button>
-      <button id="btn-drawer" class="hidden" title="子对话：派发的子任务与辅助对话">
+      <span class="topbar-spacer"></span>
+      <button id="btn-drawer" class="hidden" title="子对话：AI 派发与人工发起的子对话都在右栏查看">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
         子对话
       </button>
@@ -119,14 +122,23 @@
               <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
             </button>
             <span id="mode-flags" class="hidden">
-              <span class="mflag" id="flag-plan" title="计划模式：先出方案再执行">计划</span>
-              <span class="mflag" id="flag-goal" title="目标模式">目标</span>
+              <span class="mflag" id="flag-plan" title="计划模式：先出方案再执行（点击关闭）">计划<b class="mf-x">✕</b></span>
+              <span class="mflag" id="flag-goal" title="目标模式（点击关闭）">目标<b class="mf-x">✕</b></span>
             </span>
           </div>
           <div class="composer-right">
             <button id="btn-voice" title="语音输入">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
             </button>
+            <!-- 上下文用量圆环：弧长=占窗口比例，中心百分比；悬停显示分类明细与缓存命中率（纯展示无点击） -->
+            <div id="ctx-ring" aria-label="上下文用量">
+              <svg viewBox="0 0 36 36" aria-hidden="true">
+                <circle class="cr-bg" cx="18" cy="18" r="15.5"/>
+                <circle class="cr-fg" cx="18" cy="18" r="15.5"/>
+              </svg>
+              <span class="cr-num" id="ctx-num">–</span>
+              <div class="ctx-tip" id="ctx-tip"></div>
+            </div>
             <button id="model-chip" title="选择模型">
               <span id="model-chip-label">默认模型</span>
               <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
@@ -144,19 +156,46 @@
     </div>
   </main>
 
-  <aside id="drawer" class="hidden">
-    <div class="drawer-head">
-      <b>子对话</b>
-      <button id="drawer-close" title="收起">✕</button>
+  <!-- 右侧边栏：弹出即占用对话区以外的剩余宽度（不影响左侧栏与对话区宽度）；
+       拖左缘同时调整对话区与侧栏宽度（对话区宽度落盘记忆，侧栏宽度不记忆，重开重新占剩余宽）。
+       面板是外壳：计划/浏览器/文件/子对话等视图经 rpRegister 注册进来，标签头自动生成。 -->
+  <aside id="rpanel" class="hidden">
+    <div class="rp-resize" id="rp-resize" title="拖动调整侧栏与对话区宽度"></div>
+    <div class="rp-head">
+      <div class="rp-tabs" id="rp-tabs"></div>
+      <button id="rp-close" title="收起侧栏">✕</button>
     </div>
-    <div class="drawer-scroll">
-      <div class="drawer-section"><span>派发的子任务</span></div>
-      <div id="sub-list" class="drawer-list"></div>
-      <div class="drawer-section">
-        <span>辅助对话</span>
-        <button id="btn-new-aux" title="发起一个答疑用的小对话">＋ 新建</button>
+    <div class="rp-body" id="rp-body">
+      <!-- 子对话视图：顶部下拉选/新建子对话；下方是与主对话同一套渲染代码的完整对话区 -->
+      <div class="rp-view" id="rp-view-subs">
+        <div class="subbar">
+          <button id="sub-dd" title="选择或新建子对话">
+            <span class="sub-dd-name" id="sub-dd-name">选择子对话</span>
+            <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <span class="sub-dd-status" id="sub-dd-status"></span>
+        </div>
+        <div class="sub-chat">
+          <div id="sub-messages"><div class="msg-col" id="sub-msg-col"></div></div>
+          <div class="sub-composer-wrap">
+            <div id="sub-hint"></div>
+            <div class="sub-composer-card">
+              <textarea id="sub-input" rows="3" placeholder="向子对话发消息…"></textarea>
+              <div class="composer-bar">
+                <div class="composer-left"></div>
+                <div class="composer-right">
+                  <button id="sub-stop" class="send-btn stop hidden" title="停止">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                  </button>
+                  <button id="sub-send" class="send-btn" title="发送">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div id="aux-list" class="drawer-list"></div>
     </div>
   </aside>
 </div>
@@ -209,11 +248,24 @@
             <h4>外观</h4>
             <div class="set-field">
               <div class="sf-label">主题色</div>
-              <div id="sel-theme"></div>
+              <div class="theme-cards" id="theme-cards">
+                <button type="button" class="theme-card" data-v="light">
+                  <span class="tc-prev light"><i class="tc-side"></i><i class="tc-main"><b></b></i></span>
+                  <span class="tc-name">白色</span>
+                </button>
+                <button type="button" class="theme-card" data-v="dark">
+                  <span class="tc-prev dark"><i class="tc-side"></i><i class="tc-main"><b></b></i></span>
+                  <span class="tc-name">黑色</span>
+                </button>
+                <button type="button" class="theme-card" data-v="auto">
+                  <span class="tc-prev auto"><i class="tc-side"></i><i class="tc-main"><b></b></i></span>
+                  <span class="tc-name">跟随系统</span>
+                </button>
+              </div>
             </div>
             <div class="set-field">
               <div class="sf-label">点缀色</div>
-              <div id="appearance-slot"></div>
+              <div id="accent-row"></div>
             </div>
           </div>
           <div class="gen-section">
@@ -332,7 +384,11 @@
   </button>
   <button class="pop-item" id="pm-export">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
-    导出日志
+    导出日志（Markdown）
+  </button>
+  <button class="pop-item" id="pm-export-json">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h1M16 3h1a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-1"/></svg>
+    导出原始数据（JSON）
   </button>
   <button class="pop-item" id="pm-remote">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><path d="M7 8h.01M11 8h.01"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 18h.01M11 18h.01"/></svg>
@@ -363,20 +419,19 @@
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         允许操作电脑</span><input type="checkbox" data-tool="computer" title="开启后模型可截屏、点击、键入、切换窗口；坐标以 computer_screenshot 的图片为准"></label>
-      <label class="perm-opt" title="开启后，沙箱外的命令执行不再逐次审批；在审批卡上点「始终允许」也会自动勾上">
+      <label class="perm-opt" title="开启后，沙箱外的命令执行不再逐次审批；在审批卡上点「始终允许」也会自动勾上；切到「完全访问」时强制勾选">
         <span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg>
         允许工作区外执行命令</span><input type="checkbox" data-tool="unsandboxed"></label>
-      <label class="perm-opt" title="开启后，读写工作区外的文件不再逐次审批；在审批卡上点「始终允许」也会自动勾上">
-        <span class="po-text">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7M9 13h6M9 17h6"/></svg>
-        读写工作区外文件</span><input type="checkbox" data-tool="fs-escape"></label>
     </div>
   </div>
 </div>
 
 <!-- 模型选择面板 -->
 <div id="model-pop" class="popover model-pop hidden"></div>
+
+<!-- 子对话选择下拉（右栏顶部）：列出当前主对话的全部子对话 + 新建 -->
+<div id="sub-dd-pop" class="popover sub-dd-pop hidden"></div>
 
 <!-- 工作目录选择面板（仅新建对话时） -->
 <div id="ws-pop" class="popover ws-pop hidden">
@@ -445,6 +500,13 @@
 
 <!-- 审批卡片（右下角堆叠：沙箱外执行等越权动作等用户决定） -->
 <div id="approval-bar" class="hidden"></div>
+
+<!-- 对话区选中文字的浮窗：复制 / 添加到当前对话 / 在右侧辅助问答（不影响当前对话） -->
+<div id="sel-pop" class="hidden">
+  <button data-act="copy">复制</button>
+  <button data-act="compose">添加到当前对话</button>
+  <button data-act="aux">在右侧辅助问答（不影响当前对话）</button>
+</div>
 
 <input type="file" id="file-input" multiple class="hidden">
 

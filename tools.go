@@ -17,7 +17,23 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
+
+// decodeCmdOutput 把控制台输出字节还原成合法 UTF-8 文本：优先按 UTF-8，
+// 失败按 GB18030（Windows 中文控制台的默认代码页），仍不行用替换符兜底。
+// 不做这一步，GBK 输出会以非法字节入库，界面与导出都会出现乱码。
+func decodeCmdOutput(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	if s, err := simplifiedchinese.GB18030.NewDecoder().Bytes(b); err == nil {
+		return string(s)
+	}
+	return strings.ToValidUTF8(string(b), "\uFFFD")
+}
 
 // 工具集：每个工具 = JSON Schema 定义 + Go 实现。
 // 所有会改动外界（写文件 / 执行命令）的工具都先过权限引擎 authorize()
@@ -82,19 +98,24 @@ func (t *toolContext) resolve(p string) (string, error) {
 // toolsFor 按会话模式返回可用工具。数字助理总控只拥有编排类工具
 // （不亲自读写文件、不执行命令）；任务会话拥有全部实操工具；
 // 辅助对话只有只读工具（定位是答疑，不修改任何东西）。
+// 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
+// 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
+// （见 agent.go 的 suspendedInPlan）；exit_plan_mode / update_goal 因此常驻。
 func (a *App) toolsFor(mode string) []Tool {
 	history := []Tool{searchSessionsTool(), readSessionMessagesTool()}
 	if mode == "assistant" {
-		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool()}, history...)
+		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool(),
+			exitPlanModeTool(), updateGoalTool()}, history...)
 	}
 	if mode == "aux" {
-		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool()}, history...)
+		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
+			exitPlanModeTool(), updateGoalTool()}, history...)
 	}
 	return append([]Tool{
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(),
-		askUserQuestionTool(), exitPlanModeTool(), todoWriteTool(),
+		askUserQuestionTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(browserTools(), computerTools()...), history...)...)
 }
@@ -340,11 +361,11 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write_file", "创建或覆盖文件。按会话权限模式的文件沙箱执行：工作区内读写只允许写工作区内，被拒绝时可带 sandbox_permissions=full 与 justification 申请写入（弹审批）。",
+		Spec: toolSpec("write_file", "创建或覆盖文件。按会话权限模式的文件沙箱执行：工作区内读写只允许写工作区内，被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("目标文件路径（相对或绝对）"),
 				"content":             strProp("要写入的完整内容"),
-				"sandbox_permissions": strProp("仅在被拒绝后的重试中使用：full，申请写入沙箱边界之外（弹审批）"),
+				"sandbox_permissions": strProp("仅在被拒绝后的重试中使用：full，申请把会话提升为完全访问以写入工作区之外（弹审批）"),
 				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户说明理由"),
 			}, "path", "content")),
 		Run: runWriteFile,
@@ -750,7 +771,7 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		out = out[:64*1024]
 		note += "\n[输出过长已截断]"
 	}
-	res := strings.TrimRight(string(out), "\r\n") + note
+	res := strings.TrimRight(decodeCmdOutput(out), "\r\n") + note
 	if err != nil && ctx.Err() == nil {
 		res += fmt.Sprintf("\n[进程退出异常: %v]", err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -110,12 +111,49 @@ func (a *App) subscribe() (chan Event, func()) {
 	}
 }
 
+// maxGoalRounds 是目标模式自动续跑的轮数上限（防止无限消耗）。
+const maxGoalRounds = 8
+
+// runGoalRounds 是目标模式的续跑驱动：跑一轮 RunAgent；轮末若目标仍
+// active 且未达上限，注入一条 goal_round 消息自动开下一轮，直到模型调用
+// update_goal 标记 complete/blocked、达到上限、出错或被取消。
+// 未开目标模式时就是普通的一轮 RunAgent。
+func (a *App) runGoalRounds(ctx context.Context, sess *SessionMeta, emit func(Event)) error {
+	for round := 0; ; round++ {
+		err := a.RunAgent(ctx, sess, emit)
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !sess.GoalMode || sess.GoalStatus != "active" {
+			return nil
+		}
+		if round+1 >= maxGoalRounds {
+			sm := a.appendRow(sess, StoredMessage{
+				Message: TextMessage("user", "【目标续跑】已达到自动续跑上限（"+itoa(maxGoalRounds)+" 轮），暂停自动推进；目标尚未标记完成。可补充指示后继续。"),
+				Kind:    "report", CreatedAt: now(),
+			})
+			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+			return nil
+		}
+		gm := TextMessage("user", "<goal_round> 继续推进当前目标（第 "+itoa(round+2)+" 轮）。若已达成或确认无法推进，调用 update_goal 汇报并写最终总结；否则继续执行下一步，保持进度、不要重复已完成的步骤。")
+		sm := a.appendMessage(sess, gm)
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+	}
+}
+
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
+}
+
 // runSubAgent 是派发子任务的后台执行体：执行 → 广播进度 → 回报主对话 →
 // 主对话空闲时自动跑一轮面向用户的汇报。
 func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta) {
 	defer a.EndRun(sub.ID)
 	a.broadcast(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
-	err := a.RunAgent(context.Background(), sub, func(ev Event) {
+	err := a.runGoalRounds(context.Background(), sub, func(ev Event) {
 		if ev.Type == "tool_start" || ev.Type == "tool_end" {
 			a.broadcast(Event{Type: "sub_tool", SessionID: sub.ID, Name: ev.Name, Args: ev.Args, Output: ev.Output})
 		}

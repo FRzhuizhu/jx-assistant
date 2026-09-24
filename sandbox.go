@@ -19,9 +19,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"jxassistant/sandboxhelper"
 )
 
 // sandboxRun 是一次沙箱内执行的全部输入。
@@ -100,19 +103,24 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		if err != nil {
 			return nil, fmt.Errorf("sandbox unavailable: %w", err)
 		}
+		tempDir, err := os.MkdirTemp("", "jx-sbx-")
+		if err != nil {
+			return nil, fmt.Errorf("sandbox unavailable: 创建私有临时目录失败: %w", err)
+		}
 		wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
 		args := []string{"__jx-sandbox-restrict", "restrict", "--mode", r.Policy,
-			"--workspace", r.Workspace, "--temp", "auto", "--", "/bin/sh", "-c", wrapped}
+			"--workspace", r.Workspace, "--temp", tempDir, "--", "/bin/sh", "-c", wrapped}
 		cmd := exec.CommandContext(ctx, exe, args...)
 		cmd.Dir = r.Dir
 		cmd.Env = sandboxEnv(false)
 		cmd.Stdout = w
 		cmd.Stderr = w
 		if err := cmd.Start(); err != nil {
+			os.RemoveAll(tempDir)
 			return nil, fmt.Errorf("sandbox unavailable: %w", err)
 		}
 		waitDone := make(chan struct{}, 1)
-		go func() { _ = cmd.Wait(); close(waitDone) }()
+		go func() { _ = cmd.Wait(); os.RemoveAll(tempDir); close(waitDone) }()
 		return func() bool { <-waitDone; return true }, nil
 	default:
 		return nil, fmt.Errorf("sandbox unavailable: 当前平台暂无沙箱后端")
@@ -160,10 +168,13 @@ func (a *App) runRemoteConfined(ctx context.Context, rc *remoteClient, r sandbox
 	if err != nil {
 		return "", fmt.Errorf("sandbox unavailable: %w", err)
 	}
-	// helper exec /bin/sh -c 'cd dir && { cmd ;}'：cd 在沙箱内执行
+	// helper exec /bin/sh -c 'cd dir && { cmd ;}'：cd 在沙箱内执行。
+	// 外层 mktemp 建临时目录 + EXIT trap 清理：ssh 会话 shell 退出时必触发
+	// （成功/失败/超时被杀都清理），堵住此前 --temp auto 的每命令泄漏。
 	wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
-	cmdline := shellQuote(helper) + " restrict --mode " + r.Policy +
-		" --workspace " + shellQuote(r.Workspace) + " --temp auto -- /bin/sh -c " + shellQuote(wrapped)
+	inner := shellQuote(helper) + " restrict --mode " + r.Policy +
+		" --workspace " + shellQuote(r.Workspace) + " --temp \"$JX_TMP\" -- /bin/sh -c " + shellQuote(wrapped)
+	cmdline := "JX_TMP=$(mktemp -d /tmp/jx-sbx-XXXXXX) && trap 'rm -rf \"$JX_TMP\"' EXIT && " + inner
 	return rc.run(ctx, r.Workspace, cmdline, r.Timeout)
 }
 
@@ -198,15 +209,32 @@ func (a *App) ensureRemoteHelper(ctx context.Context, rc *remoteClient) (string,
 	if err != nil {
 		return "", fmt.Errorf("sandbox unavailable: %w", err)
 	}
-	if err := rc.mkdirAll(filepath.Dir(dest)); err != nil {
+	// 远端路径必须用 POSIX 的 path.Dir：filepath.Dir 在 Windows 宿主上会把
+	// 分隔符转成反斜杠，SFTP 将其当作字面文件名字符，目录永远建不到位
+	if err := rc.mkdirAll(path.Dir(dest)); err != nil {
 		return "", fmt.Errorf("远端创建 helper 目录失败: %w", err)
 	}
+	needUpload := false
 	if fi, serr := sc.Stat(dest); serr != nil || fi.Size() != int64(len(bin)) {
+		needUpload = true
+	} else {
+		// 尺寸巧合相同也要校验语义版本：不符即重传（防旧语义 helper）
+		out, verr := rc.run(ctx, "/tmp", shellQuote(dest)+" version", 10*time.Second)
+		if verr != nil || strings.TrimSpace(out) != sandboxhelper.Version {
+			needUpload = true
+		}
+	}
+	if needUpload {
 		if err := rc.writeFile(dest, bin); err != nil {
 			return "", fmt.Errorf("上传沙箱 helper 失败: %w", err)
 		}
 		if err := sc.Chmod(dest, 0o755); err != nil {
 			return "", fmt.Errorf("设置 helper 执行位失败: %w", err)
+		}
+		if out, verr := rc.run(ctx, "/tmp", shellQuote(dest)+" version", 10*time.Second); verr != nil ||
+			strings.TrimSpace(out) != sandboxhelper.Version {
+			return "", fmt.Errorf("sandbox unavailable: 上传后版本校验失败（远端输出 %q，期望 %s）",
+				strings.TrimSpace(out), sandboxhelper.Version)
 		}
 	}
 
