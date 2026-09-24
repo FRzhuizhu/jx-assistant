@@ -565,7 +565,11 @@ body.rp-open .w-handle { display: none; }
   border: 1px solid var(--border); background: var(--bg); border-radius: 999px;
   padding: 5px 12px; cursor: pointer; max-width: 260px;
 }
-.chip-btn svg { width: 13px; height: 13px; color: var(--accent); flex-shrink: 0; }
+.chip-btn svg:not(.caret) { width: 13px; height: 13px; color: var(--accent); flex-shrink: 0; } /* 芯片图标（盾牌等）走强调色 */
+.chip-btn svg.caret { width: 12px; height: 12px; color: var(--text-3); } /* 下拉箭头＝全站统一的灰色小箭头 */
+/* 权限芯片的箭头原本被上一条图标规则连带成强调色 13px（历史效果），显式保留原样，
+   免得这次 class 化顺手改了它的观感；模型芯片只有箭头，走上面的灰色标准箭头 */
+#perm-chip > svg.caret, #sub-perm-chip > svg.caret { width: 13px; height: 13px; color: var(--accent); }
 .chip-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-btn:hover { border-color: rgba(77, 107, 254, .4); color: var(--accent); }
 .mode-flags { display: flex; gap: 4px; }
