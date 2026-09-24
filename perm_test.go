@@ -339,6 +339,15 @@ func TestFullAccessBundlesCapabilities(t *testing.T) {
 	if got := bundleFullAccessCaps([]string{capBrowser}); len(got) != 3 {
 		t.Errorf("bundleFullAccessCaps 应补齐三项捆绑能力，得到 %v", got)
 	}
+	// 剥除：切离完全访问时捆绑能力自动取消，其余能力保留
+	stripped := stripFullAccessCaps([]string{capUnsandboxed, capSandboxWrite, capBrowser, capComputer})
+	if len(stripped) != 1 || stripped[0] != capSandboxWrite {
+		t.Errorf("stripFullAccessCaps 应只留下非捆绑能力，得到 %v", stripped)
+	}
+	plain = &SessionMeta{Permission: permWorkspace, Tools: stripped}
+	if hasCapability(plain, capBrowser) || hasCapability(plain, capUnsandboxed) {
+		t.Error("切离完全访问后捆绑能力应已取消")
+	}
 }
 
 // TestWriteEscalationToFullAccess：工作区外写入的升级不再点亮单独能力，

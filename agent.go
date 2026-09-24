@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -79,24 +81,40 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 
 纯聊天、简单问答直接回答，不必派发。用中文与用户交流，语气专业、简洁。`
 
-// envPermBlock 生成「运行环境与权限」段：按会话的本地/远程环境与
-// 权限模式动态描述，让模型清楚知道边界在哪、被拒后该怎么引导用户。
-func (a *App) envPermBlock(sess *SessionMeta) string {
+// systemPrompt 是会话内固定的系统提示词：只有基础提示词 + 软件版本标识。
+// 刻意不含任何易变信息（时间/权限/模式/环境）——它们全部进 envPrompt 的
+// 尾部快照（对齐 DSH 的缓存策略：前缀稳定命中 KV 缓存，易变内容在尾部
+// 以新消息出现）。因此它只随软件版本变化，会话期间永远不变。
+func (a *App) systemPrompt(sess *SessionMeta) string {
+	base := taskPrompt
+	switch sess.Mode {
+	case "assistant":
+		base = assistantPrompt
+	case "aux":
+		base = auxPrompt
+	}
+	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动）"
+}
+
+// envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿，作为 user 消息
+// 追加在上下文尾部。内容有变化才落库新快照（见 RunAgent 的 diff 逻辑）；
+// 开头固定声明「取代更早的快照」，历史里的旧快照组装时全部跳过。
+func (a *App) envPrompt(sess *SessionMeta) string {
 	b := &strings.Builder{}
-	b.WriteString("# 运行环境与权限\n")
+	b.WriteString("# 运行环境快照（最新，取代更早的快照）\n")
 	b.WriteString("- 当前时间：" + time.Now().Format("2006-01-02 15:04") + "\n")
 	if sess.Remote != nil {
 		r := sess.Remote
 		b.WriteString("- 运行环境：SSH 远程工作区 " + r.Display() + "（类 Unix；命令经远程 shell 执行，run_command 的 shell 参数忽略，路径为 POSIX 格式）\n")
 		b.WriteString("- 工作区目录（远程）：" + r.Dir + "；文件工具经 SFTP 读写远程目录\n")
 	} else {
-		b.WriteString("- 操作系统：Windows（run_command 支持 powershell 与 cmd）\n")
+		b.WriteString("- 操作系统：" + a.osDescription() + "\n")
 		b.WriteString("- 工作区目录：" + wsOr(a, sess) + "\n")
 	}
 	mode := permModeOf(sess)
 	switch mode {
 	case permReadOnly:
-		b.WriteString("- 权限模式：只读——可读文件、检索、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
+		b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
 	case permFull:
 		b.WriteString("- 权限模式：完全访问——读写与命令不受限（助手自身配置/数据仍受保护）；已捆绑开启「允许工作区外执行命令」「操作浏览器」「操作电脑」能力\n")
 	default:
@@ -112,42 +130,98 @@ func (a *App) envPermBlock(sess *SessionMeta) string {
 	if hasCapability(sess, capComputer) {
 		b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
 	}
+	if sess.PlanMode {
+		if sess.Mode == "assistant" {
+			b.WriteString("- 计划模式：已开启。dispatch_task / send_to_session 已暂停（子会话会实际改动文件）；此阶段只用只读工具调研（list_sessions / read_session_summary / search_sessions / read_session_messages），调研完成后调用 exit_plan_mode 提交计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后恢复派发。\n")
+		} else {
+			b.WriteString("- 计划模式：已开启。write_file / edit_file / run_command / browser_* / computer_* / job_* 工具已暂停；此阶段只做只读探索（read_file / grep / glob / list_dir / web_fetch 等），调研完成后调用 exit_plan_mode 提交计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后恢复执行。\n")
+		}
+	}
+	if sess.GoalMode {
+		status := map[string]string{"active": "推进中", "complete": "已达成", "blocked": "受阻"}[sess.GoalStatus]
+		if status == "" {
+			status = "推进中"
+		}
+		b.WriteString("- 目标模式：目标「" + sess.GoalText + "」（当前状态：" + status + "）。自主持续推进，无需等待用户逐轮催促；达成或确认无法推进（缺权限/缺信息/外部受阻）时必须调用 update_goal（result=complete 或 blocked）并附 summary，然后面向用户做最终总结，不要空转。\n")
+	}
+	// 插件兼容层的动态段（如语音听写提示）也归入环境快照——它们随时间变化
+	if a.Plugins != nil {
+		if extra := a.Plugins.PromptExtra(a, sess); extra != "" {
+			b.WriteString(extra + "\n")
+		}
+	}
 	return b.String()
 }
 
-func (a *App) systemPrompt(sess *SessionMeta) string {
-	base := taskPrompt
-	switch sess.Mode {
-	case "assistant":
-		base = assistantPrompt
-	case "aux":
-		base = auxPrompt
-	}
-	prompt := base + "\n\n" + a.envPermBlock(sess)
-	// 插件兼容层：已启用适配器可向系统提示词追加段（如语音输入提示）
-	if a.Plugins != nil {
-		if extra := a.Plugins.PromptExtra(a, sess); extra != "" {
-			prompt += "\n" + extra + "\n"
-		}
-	}
-	return prompt
+// buildLLMMessages 已废弃删除：真正的组装只走 buildContext。
+
+// osDescription 探测并缓存本机系统描述（Windows 版本 + PowerShell 版本）。
+func (a *App) osDescription() string {
+	a.osOnce.Do(func() {
+		a.osDesc = detectOSDesc()
+	})
+	return a.osDesc
 }
 
-// buildLLMMessages 把持久化历史转换为 LLM 请求消息序列，
-// 并修剪结尾悬空的工具调用（客户端中断可能留下未配对的调用）。
-func buildLLMMessages(sys string, history []Message) []Message {
-	msgs := make([]Message, 0, len(history)+1)
-	msgs = append(msgs, TextMessage("system", sys))
-	msgs = append(msgs, history...)
-	for len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if last.Role == "assistant" && len(last.ToolCalls) > 0 {
-			msgs = msgs[:len(msgs)-1]
-			continue
-		}
-		break
+// detectOSDesc 探测系统描述：Windows 版本（cmd /c ver）+ PowerShell 版本
+// （pwsh 优先，回退 powershell）。探测失败降级；结果由调用方缓存。
+func detectOSDesc() string {
+	if runtime.GOOS != "windows" {
+		return runtime.GOOS + "（类 Unix）"
 	}
-	return msgs
+	desc := "Windows"
+	if out, err := exec.Command("cmd", "/c", "ver").Output(); err == nil {
+		s := strings.TrimSpace(string(out))
+		if i := strings.Index(s, "Version "); i >= 0 {
+			desc = "Windows " + strings.TrimSpace(strings.TrimRight(s[i+len("Version "):], "]"))
+		}
+	}
+	ps := "PowerShell（版本未知）"
+	for _, name := range []string{"pwsh", "powershell"} {
+		cctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		out, err := exec.CommandContext(cctx, name, "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()").Output()
+		cancel()
+		if err == nil && strings.TrimSpace(string(out)) != "" {
+			ps = "PowerShell " + strings.TrimSpace(string(out))
+			break
+		}
+	}
+	return desc + " · " + ps + "（run_command 支持 powershell 与 cmd）"
+}
+
+// maybeAppendEnvSnapshot 环境快照 diff：与最近一条 kind=env 快照比较，
+// 内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条）。
+func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string) {
+	raw, err := a.Store.RawMessagesAll(sess.ID)
+	if err == nil {
+		for i := len(raw) - 1; i >= 0; i-- {
+			if raw[i].Kind == "env" {
+				if raw[i].Text() == env {
+					return
+				}
+				break
+			}
+		}
+	}
+	a.appendRow(sess, StoredMessage{Message: TextMessage("user", env), Kind: "env", CreatedAt: now()})
+}
+
+// planSuspendedTask 是计划模式下暂停的 task 会话工具（目录不变，调用时拦截）。
+var planSuspendedTask = map[string]bool{
+	"write_file": true, "edit_file": true, "run_command": true,
+	"job_output": true, "job_list": true, "job_kill": true,
+}
+
+// suspendedInPlan 判断某工具在计划模式下是否被暂停。工具目录跨模式保持
+// 不变（请求形状稳定，缓存友好）；约束靠环境快照公告 + 这里调用时硬拦。
+func suspendedInPlan(mode, name string) bool {
+	if strings.HasPrefix(name, "browser_") || strings.HasPrefix(name, "computer_") {
+		return true
+	}
+	if mode == "assistant" {
+		return name == "dispatch_task" || name == "send_to_session"
+	}
+	return planSuspendedTask[name]
 }
 
 // appendMessage 落库并返回带 seq 的记录（seq 供 SSE message 事件回传前端定位用）
@@ -157,6 +231,14 @@ func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
 	sess.UpdatedAt = now()
 	_ = a.Store.SaveMeta(sess)
 	return sm
+}
+
+// appendRow 落库一条自定义 kind 的消息（env 快照 / prompt 快照）。
+func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
+	_ = a.Store.AppendRow(sess.ID, &sm)
+	sess.UpdatedAt = now()
+	_ = a.Store.SaveMeta(sess)
+	return &sm
 }
 
 // appendMessageThinking 同 appendMessage，但带上该步的思考过程原文。
@@ -179,7 +261,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		defs[i] = tl.Spec
 		runs[tl.Spec.Function.Name] = tl.Run
 	}
-	sys := a.systemPrompt(sess)
+	sys := a.systemPrompt(sess) // 会话内固定：基础提示词 + 版本行
 	target := a.resolveTarget(sess)
 	overflowRetried := false
 	// 兜底：异常退出/步数耗尽时残留的插话仍要落库，消息永不丢
@@ -188,6 +270,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			a.appendMessage(sess, TextMessage("user", c))
 		}
 	}()
+
+	// 提示词快照行：每轮记录当轮初始组装的系统/环境提示词原文，供前端折叠展示。
+	// 环境快照在循环里每步重算（模式中途切换立即反映），以尾部最新快照为准。
+	if pj, err := json.Marshal(map[string]string{"sys": sys, "env": a.envPrompt(sess)}); err == nil {
+		sm := a.appendRow(sess, StoredMessage{Message: TextMessage("user", string(pj)), Kind: "prompt", CreatedAt: now()})
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "prompt"})
+	}
 
 	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
@@ -204,7 +293,10 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
 		interjectsBefore(emit)
-		msgs := a.buildContext(sess, sys)
+		// 环境快照每步重算 + diff：内容（含模式中途变化）有变才落新快照
+		env := a.envPrompt(sess)
+		a.maybeAppendEnvSnapshot(sess, env)
+		msgs := a.buildContext(sess, sys, env)
 		// 视觉模型：把工具结果引用的图片内联为内容块；纯文本模型原样透传
 		msgs = inlineImagesForRequest(a, msgs, target)
 		if err := a.maybeAutoCompact(sess, msgs, target.ContextWindow); err != nil {
@@ -224,8 +316,14 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				reasoning.WriteString(s)
 				emit(Event{Type: "reasoning", Delta: s})
 			},
-			OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
-		})
+		OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
+		OnUsage: func(u Usage) { // 流尾用量累计落盘（缓存命中率数据源）
+			sess.UsagePrompt += int64(u.PromptTokens)
+			sess.UsageCacheHit += int64(u.PromptCacheHit)
+			sess.UsageCalls++
+			_ = a.Store.SaveMeta(sess)
+		},
+	})
 		if err != nil {
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次
 			if isOverflowError(err) && !overflowRetried {
@@ -276,7 +374,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			emit(Event{Type: "tool_start", Name: tc.Function.Name, Args: tc.Function.Arguments})
 			var out string
-			if run, ok := runs[tc.Function.Name]; ok {
+			if sess.PlanMode && suspendedInPlan(sess.Mode, tc.Function.Name) {
+				// 计划模式硬拦：工具目录保持不变（请求形状/缓存稳定），调用时拒绝；
+				// exit_plan_mode 批准后 PlanMode 即刻置 false，同一回合内自动放行
+				out = "计划模式下该工具已暂停：" + tc.Function.Name + "。当前仅可只读探索；请完成调研后调用 exit_plan_mode 提交计划供用户批准。"
+			} else if run, ok := runs[tc.Function.Name]; ok {
 				res, rerr := run(&toolContext{ctx: ctx, app: a, sess: sess, emit: emit}, json.RawMessage(tc.Function.Arguments))
 				if rerr != nil {
 					out = "工具执行失败: " + rerr.Error()

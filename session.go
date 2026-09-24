@@ -14,7 +14,8 @@ import (
 // （后端权限引擎强制执行，见 perm.go；tools 为启用的能力开关 id 列表：
 // unsandboxed=允许工作区外执行命令、sandbox-write=只读档下沙箱内写入、
 // browser/computer=操作浏览器/电脑；完全访问模式下 unsandboxed/browser/
-// computer 三项强制视为开启，面板勾选联动点亮且不可单独关闭）
+// computer 三项强制视为开启，面板勾选联动点亮且不可单独关闭，切回其他
+// 档位时自动取消）
 // remote 非空时会话挂载 SSH 远程工作区：文件工具走 SFTP、命令走远程 shell。
 type SessionMeta struct {
 	ID         string           `json:"id"`
@@ -29,10 +30,17 @@ type SessionMeta struct {
 	Thinking   string           `json:"thinking,omitempty"` // 思考档位：enabled/disabled/low/medium/high，空=服务端默认
 	PlanMode   bool             `json:"planMode,omitempty"`
 	GoalMode   bool             `json:"goalMode,omitempty"`
+	GoalText   string           `json:"goalText,omitempty"`   // 目标模式的当前目标
+	GoalStatus string           `json:"goalStatus,omitempty"` // active=推进中 complete=已达成 blocked=受阻
+	GoalRounds int              `json:"goalRounds,omitempty"` // 自动续跑已用轮数
 	Tools      []string         `json:"tools,omitempty"`
 	Archived   bool             `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
 	Unread     bool             `json:"unread,omitempty"`   // 标为未读：侧栏红点
 	Status     string           `json:"status,omitempty"`   // idle | running
+	// 累计用量（来自每次模型调用的流尾 usage，供上下文面板显示缓存命中率）
+	UsagePrompt   int64 `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和
+	UsageCacheHit int64 `json:"usageCacheHit,omitempty"` // 历次调用 prompt_cache_hit_tokens 总和
+	UsageCalls    int64 `json:"usageCalls,omitempty"`    // 模型调用次数
 	CreatedAt  string           `json:"createdAt"`
 	UpdatedAt  string           `json:"updatedAt"`
 }

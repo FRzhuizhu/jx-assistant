@@ -49,7 +49,8 @@ const (
 )
 
 // fullAccessCaps 是「完全访问」预设捆绑的能力：会话切到完全访问时，
-// 这三项在权限面板强制勾选并置灰（不可单独关闭），权限引擎同样视为开启。
+// 这三项在权限面板强制勾选并置灰（不可单独关闭），权限引擎同样视为开启；
+// 切离完全访问时随之自动取消（stripFullAccessCaps）。
 var fullAccessCaps = []string{capUnsandboxed, capBrowser, capComputer}
 
 // escalationCapability 返回某类升级请求对应的能力开关 id：
@@ -103,6 +104,22 @@ func bundleFullAccessCaps(tools []string) []string {
 	out := tools
 	for _, c := range fullAccessCaps {
 		if !have[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// stripFullAccessCaps 从 tools 中移除完全访问捆绑的能力（纯内存过滤，不落库；
+// 从完全访问切回其他档位时用：捆绑点亮的能力随之自动取消勾选）。
+func stripFullAccessCaps(tools []string) []string {
+	bundled := make(map[string]bool, len(fullAccessCaps))
+	for _, c := range fullAccessCaps {
+		bundled[c] = true
+	}
+	out := make([]string, 0, len(tools))
+	for _, c := range tools {
+		if !bundled[c] {
 			out = append(out, c)
 		}
 	}

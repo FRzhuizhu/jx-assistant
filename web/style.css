@@ -35,10 +35,20 @@ svg { width: 16px; height: 16px; flex: none; }
 #app { display: flex; height: 100vh; }
 
 /* ---------- 左侧栏 ---------- */
+/* 宽度动画：#sidebar 只承载宽度/裁剪，内容装在固定 272px 的 .sb-inner 里，
+   收起时内容不回流换行，像抽屉一样滑出 */
 #sidebar {
   width: 272px; min-width: 272px; background: var(--side-bg);
   border-right: 1px solid var(--border);
-  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.sb-inner { width: 272px; height: 100%; display: flex; flex-direction: column; }
+#sidebar.anim, #rpanel.anim {
+  transition: width .22s cubic-bezier(.4, 0, .2, 1), min-width .22s cubic-bezier(.4, 0, .2, 1);
+}
+body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
+@media (prefers-reduced-motion: reduce) {
+  #sidebar.anim, #rpanel.anim { transition: none; }
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px; }
 .logo {
@@ -319,32 +329,154 @@ svg { width: 16px; height: 16px; flex: none; }
 #btn-drawer svg { width: 13px; height: 13px; }
 #btn-drawer:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
 
-/* 子对话右栏抽屉 */
-#drawer {
-  width: 264px; flex-shrink: 0; border-left: 1px solid var(--border-2);
+/* 右侧边栏：宽度永远是推导值（var(--rp-w)，JS 按剩余宽算出），不落盘记忆；
+   打开时对话区列（max-width: var(--content-w)）宽度不变，右栏吃掉其余全部 */
+#rpanel {
+  position: relative; flex-shrink: 0;
+  width: var(--rp-w, 340px);
+  border-left: 1px solid var(--border-2);
   display: flex; flex-direction: column; background: var(--bg);
+  overflow: hidden; /* 开合动画期间裁剪内容，宽度过渡才平滑 */
 }
-.drawer-head {
+/* 右栏左缘拖拽条：拖动同时调宽对话区与右栏（对话区宽度才是落盘的那个） */
+.rp-resize {
+  position: absolute; left: -5px; top: 0; bottom: 0; width: 10px;
+  cursor: col-resize; z-index: 6; touch-action: none;
+}
+.rp-resize::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px;
+  border-radius: 2px; background: transparent; opacity: 0;
+  transition: opacity .15s;
+}
+.rp-resize:hover::after, .rp-resize.dragging::after {
+  opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
+}
+.rp-head {
   height: 48px; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 14px; border-bottom: 1px solid var(--border-2); font-size: 13px;
+  gap: 8px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border-2);
 }
-.drawer-head button {
+.rp-tabs { display: flex; align-items: center; gap: 4px; overflow: hidden; min-width: 0; }
+.rp-tab {
+  border: none; background: none; color: var(--text-2);
+  font-size: 12.5px; padding: 5px 9px; border-radius: 7px;
+  cursor: pointer; white-space: nowrap;
+}
+.rp-tab:hover { background: var(--hover); }
+.rp-tab.active { background: var(--chip); color: var(--text); font-weight: 600; }
+#rp-close {
   border: none; background: none; color: var(--text-3); cursor: pointer;
-  font-size: 13px; padding: 4px 6px; border-radius: 6px;
+  font-size: 13px; padding: 4px 6px; border-radius: 6px; flex-shrink: 0;
 }
-.drawer-head button:hover { background: var(--hover); color: var(--text-2); }
-.drawer-scroll { flex: 1; overflow-y: auto; padding: 8px 8px 16px; }
-.drawer-section {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 8px 5px; font-size: 11.5px; color: var(--text-3);
+#rp-close:hover { background: var(--hover); color: var(--text-2); }
+.rp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rp-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* 右栏打开时对话区两缘把手退场：其右缘与右栏拖拽条重叠，由后者接管调宽 */
+body.rp-open .w-handle { display: none; }
+
+/* ---------- 子对话视图（右栏内嵌完整对话，与主对话同一套渲染） ---------- */
+.subbar {
+  height: 42px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 10px 0 14px; border-bottom: 1px solid var(--border-2);
 }
-.drawer-section button {
-  border: 1px solid var(--border); background: none; color: var(--text-3);
-  font-size: 11px; padding: 2px 8px; border-radius: 999px; cursor: pointer;
+#sub-dd {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: var(--bg); border-radius: 8px;
+  color: var(--text); font-size: 12.5px; font-weight: 600;
+  padding: 5px 9px; cursor: pointer; min-width: 0;
 }
-.drawer-section button:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
-.drawer-list { display: flex; flex-direction: column; gap: 2px; }
-.drawer-empty { padding: 6px 8px; font-size: 12px; color: var(--text-3); }
+#sub-dd:hover { background: var(--hover); }
+#sub-dd .sub-dd-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;
+}
+#sub-dd .caret { width: 12px; height: 12px; color: var(--text-3); flex-shrink: 0; }
+.sub-dd-status { font-size: 11.5px; color: var(--amber); white-space: nowrap; }
+.sub-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#sub-messages { flex: 1; overflow-y: auto; }
+#sub-messages .msg-col { padding: 14px 14px 8px; } /* 窄栏收窄边距，字号与主对话一致（var(--chat-fs)） */
+.sub-composer-wrap { padding: 6px 10px 10px; flex-shrink: 0; }
+#sub-hint { min-height: 16px; margin-bottom: 6px; font-size: 12px; color: var(--amber); }
+.sub-composer-card {
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--bg); padding: 8px 10px 6px;
+  box-shadow: 0 1px 3px rgba(16, 20, 26, .04);
+}
+.sub-composer-card:focus-within { border-color: #c9cfda; }
+:root[data-theme='dark'] .sub-composer-card:focus-within { border-color: #4a5158; }
+#sub-input {
+  width: 100%; border: none; outline: none; resize: none;
+  font-size: 13.5px; font-family: inherit; color: var(--text);
+  line-height: 1.6; padding: 2px 4px; min-height: 54px; max-height: 160px;
+  background: transparent;
+}
+#sub-input::placeholder { color: var(--text-3); }
+
+/* 子对话下拉面板（选择 / 新建）：列表项直接复用 drawer-item 系列样式 */
+.sub-dd-pop { width: 280px; padding: 6px; }
+.sub-dd-new { border-top: 1px solid var(--border-2); margin-top: 4px; padding-top: 8px; border-radius: 0 0 8px 8px; background: none; border-left: none; border-right: none; border-bottom: none; width: 100%; font-family: inherit; color: var(--text-2); }
+.sub-dd-new:hover { background: var(--hover); }
+.sub-dd-empty { padding: 10px 10px 8px; font-size: 12px; color: var(--text-3); }
+
+/* ---------- 上下文用量圆环（模型选择左侧）：弧长=占窗口比例，悬停显示明细 ---------- */
+#ctx-ring { position: relative; width: 30px; height: 30px; flex: none; cursor: default; }
+#ctx-ring svg { width: 100%; height: 100%; display: block; transform: rotate(-90deg); }
+#ctx-ring .cr-bg { fill: none; stroke: var(--border); stroke-width: 3; }
+#ctx-ring .cr-fg {
+  fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round;
+  stroke-dasharray: 97.39; stroke-dashoffset: 97.39;
+  transition: stroke-dashoffset .6s ease, stroke .3s;
+}
+#ctx-ring .cr-num {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 8.5px; font-weight: 600; color: var(--text-2);
+  font-variant-numeric: tabular-nums; user-select: none;
+}
+#ctx-ring.warn .cr-fg { stroke: var(--amber); }
+#ctx-ring.full .cr-fg { stroke: #d93a3a; }
+#ctx-ring.full .cr-num { color: #d93a3a; }
+.ctx-tip {
+  position: absolute; bottom: calc(100% + 10px); right: -8px; width: 250px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(16, 20, 26, .14); padding: 11px 12px;
+  opacity: 0; transform: translateY(3px); pointer-events: none;
+  transition: opacity .12s ease, transform .12s ease; z-index: 40;
+}
+#ctx-ring:hover .ctx-tip { opacity: 1; transform: translateY(0); }
+.ctx-tip .ctx-bar { margin: 7px 0 9px; height: 6px; }
+.ctx-tip .ctx-cat { font-size: 11.5px; padding: 2px 0; }
+.ctx-tip .ctx-cache { margin-top: 8px; padding-top: 7px; font-size: 11.5px; }
+.ctx-title { font-size: 12.5px; color: var(--text-2); }
+.ctx-total { font-size: 12px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ctx-bar {
+  height: 8px; border-radius: 4px; background: var(--chip);
+  overflow: hidden; margin: 9px 0 11px; display: flex;
+}
+.ctx-bar i { height: 100%; }
+.ctx-cat { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+.ctx-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ctx-cat .cc-name { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-cat .cc-tok { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.ctx-cat .cc-pct { color: var(--text); font-variant-numeric: tabular-nums; width: 46px; text-align: right; }
+.ctx-cache {
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border-2);
+  display: flex; justify-content: space-between; font-size: 12px; color: var(--text-2);
+}
+.ctx-cache b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ---------- 对话区选中文字浮窗（复制 / 添加到当前对话 / 右侧辅助问答） ----------
+   底色跟随系统主题（浅色=白底黑字，深色=黑底白字），不做彩色强调 */
+#sel-pop {
+  position: fixed; z-index: 45; display: flex; align-items: center; gap: 2px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 999px;
+  box-shadow: 0 4px 18px rgba(16, 20, 26, .16); padding: 3px 4px;
+}
+#sel-pop button {
+  border: none; background: none; font-size: 12.5px; color: var(--text-2);
+  padding: 5px 11px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  font-family: inherit; line-height: 1.4;
+}
+#sel-pop button:hover { background: var(--hover); color: var(--text); }
+/* 子对话下拉列表项（选择/新建） */
 .drawer-item {
   display: flex; align-items: center; gap: 7px; padding: 7px 8px;
   border-radius: 8px; cursor: pointer; font-size: 12.5px;
@@ -357,6 +489,12 @@ svg { width: 16px; height: 16px; flex: none; }
   flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2);
 }
 .drawer-item .d-time { font-size: 11px; color: var(--text-3); flex-shrink: 0; }
+/* 子对话来源标记：AI 派发 / 人工发起，同列不分组 */
+.drawer-item .d-src {
+  flex-shrink: 0; font-size: 10.5px; line-height: 1; padding: 3px 5px;
+  border-radius: 5px; color: var(--text-3); background: var(--chip);
+}
+.drawer-item .d-src.human { color: var(--accent); background: rgba(77, 107, 254, .09); }
 
 /* ---------- 首页（新建对话） ---------- */
 .home {
@@ -405,11 +543,14 @@ svg { width: 16px; height: 16px; flex: none; }
 #perm-chip:hover, #model-chip:hover { border-color: rgba(77, 107, 254, .4); color: var(--accent); }
 #mode-flags { display: flex; gap: 4px; }
 .mflag {
-  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; padding: 2px 7px 2px 9px; border-radius: 999px;
   background: rgba(214, 158, 46, .12); color: var(--amber); border: 1px solid rgba(214, 158, 46, .35);
   display: none;
 }
-.mflag.on { display: inline-block; }
+.mflag.on { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.mflag.on:hover { background: rgba(214, 158, 46, .22); }
+.mf-x { font-size: 10px; font-weight: 700; opacity: .65; flex: none; }
+.mf-x:hover { opacity: 1; }
 #mode-flags.hidden { display: none; }
 
 /* ---------- 弹出面板 ---------- */
@@ -663,7 +804,8 @@ svg { width: 16px; height: 16px; flex: none; }
 }
 #btn-sidebar svg { width: 15px; height: 15px; }
 #btn-sidebar:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); background: var(--hover); }
-body.sb-collapsed #sidebar { display: none; }
+/* 顶栏右侧占位：把子对话按钮等推到顶栏最右 */
+.topbar-spacer { flex: 1; }
 
 /* ---------- 会话行悬停操作 ---------- */
 .session-item { position: relative; }
