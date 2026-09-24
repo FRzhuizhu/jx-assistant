@@ -1297,6 +1297,7 @@ async function openSubSession(id) {
     subState.pendingQueue = (data.pending && data.pending.queue) || [];
     subState.checkpoints = data.checkpoints || [];
     subState.deliveries = data.deliveries || [];
+    if (data.error) showRunError(subView, data.error); else hideRunError(subView);
     subState.streamText = '';
     subState.streamThinking = '';
     subRenderHeader();
@@ -1449,6 +1450,7 @@ async function openSession(id) {
   state.pendingQueue = (data.pending && data.pending.queue) || [];
   state.checkpoints = data.checkpoints || [];
   state.deliveries = data.deliveries || [];
+  if (data.error) showRunError(mainView, data.error); else hideRunError(mainView);
   // 计划/目标二选一：旧数据可能两个都开着，收敛为只留计划并落库
   if (state.cur.planMode && state.cur.goalMode) {
     state.cur.goalMode = false;
@@ -2417,6 +2419,9 @@ function handleGlobalEvent(ev) {
       loadTodos();
       break;
     case 'error':
+      // 真实失败（模型/网络/费用等）：进输入框上方的报错条，不往对话里插内容
+      if (viewing) showRunError(mainView, ev.error);
+      if (subViewing) showRunError(subView, ev.error);
       if (viewing && !state.streaming) refreshCurrent();
       break;
   }
@@ -2854,17 +2859,16 @@ function handleEvent(ev, view) {
         $('sess-title').textContent = ev.title;
       }
       break;
-    case 'error': {
+    case 'error':
+      // 真实失败：收掉流式、把原因显示到输入框上方的报错条（不进对话区）
       view.state.streamText = '';
       view.state.streamThinking = '';
       removeLive(view);
-      renderMessages(view.state.msgs, view);
-      const err = document.createElement('div');
-      err.className = 'msg assistant';
-      err.innerHTML = `<div class="md"><p style="color:#c22f2f">⚠ ${esc(ev.error)}</p></div>`;
-      view.col.appendChild(err);
+      showRunError(view, ev.error);
       break;
-    }
+    case 'retry':
+      hideRunError(view); // 重试已开始：报错条收掉
+      break;
     case 'done':
       view.hint.textContent = '';
       if (view === mainView && state.cur && state.cur.mode === 'assistant') setFace('done', 4000);
@@ -2880,6 +2884,98 @@ function handleEvent(ev, view) {
 function pendingHint(view, text) {
   view.hint.textContent = text;
   setTimeout(() => { if (view.hint.textContent === text) view.hint.textContent = ''; }, 6000);
+}
+
+/* ---------- 报错条：模型/网络等真实失败显示在输入框上方（不属于对话区），
+   带「重试」按钮（重试不再重复落库用户消息，后台直接带着当前上下文再跑一轮）。
+   正常完成与用户手动停止都不产生任何内容。 ---------- */
+
+function showRunError(view, text) {
+  view = view || mainView;
+  const box = viewEl(view, 'run-error');
+  if (!box) return;
+  if (!text) { hideRunError(view); return; }
+  if (view.state.errDismissed === text) return; // 这条已被用户手动关掉
+  view.state.errText = text;
+  box.innerHTML = '';
+  box.classList.remove('hidden');
+  const icon = document.createElement('span');
+  icon.className = 're-icon';
+  icon.textContent = '⚠';
+  const msg = document.createElement('span');
+  msg.className = 're-text';
+  msg.textContent = text;
+  const retry = document.createElement('button');
+  retry.className = 're-btn re-retry';
+  retry.type = 'button';
+  retry.textContent = '重试';
+  retry.onclick = () => retryRun(view);
+  const close = document.createElement('button');
+  close.className = 're-btn re-close';
+  close.type = 'button';
+  close.title = '关闭';
+  close.textContent = '✕';
+  close.onclick = () => hideRunError(view, true);
+  box.appendChild(icon);
+  box.appendChild(msg);
+  box.appendChild(retry);
+  box.appendChild(close);
+}
+
+// hideRunError 收掉报错条；remember=true 表示「用户手动关闭」（同一条不再自动弹回）
+function hideRunError(view, remember) {
+  view = view || mainView;
+  const box = viewEl(view, 'run-error');
+  if (remember) view.state.errDismissed = view.state.errText || '';
+  view.state.errText = '';
+  if (!box) return;
+  box.classList.add('hidden');
+  box.innerHTML = '';
+}
+
+// retryRun 重试上一轮：直接启动新一轮执行（用户消息已在库里），并跟随输出
+async function retryRun(view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (!cur || view.state.streaming) return;
+  hideRunError(view);
+  view.state.streaming = true;
+  setStreamUI(true, view);
+  view.state.abort = new AbortController();
+  view.state.streamText = '';
+  view.state.streamThinking = '';
+  let aborted = false;
+  try {
+    const res = await fetch(`/api/sessions/${cur.id}/retry`, {
+      method: 'POST', signal: view.state.abort.signal,
+    });
+    if (!res.ok) throw new Error(res.statusText || '重试失败');
+    await consumeStream(res, view);
+  } catch (e) {
+    if (e.name === 'AbortError') aborted = true;
+    else showRunError(view, '重试失败：' + e.message);
+  }
+  await endTurn(view, aborted);
+}
+
+// endTurn 一轮结束后的收尾（send / retry / attach 共用）：收流式、对齐状态、刷新周边
+async function endTurn(view, aborted) {
+  removeLive(view);
+  view.state.streaming = false;
+  view.state.attached = false;
+  if (aborted) await reloadMessages(view); // 本地被动断流：整体对一次
+  else await refreshIfDangling(view);      // 流断但后端仍在跑：接回去继续看
+  renderMessages(view.state.msgs, view);
+  setStreamUI(false, view);
+  if (view === mainView) {
+    loadSessions();
+    loadStatus();
+    refreshCtxChip();
+    JX.emit('message:done', { sessionId: state.cur && state.cur.id });
+  } else {
+    refreshDrawer();
+    refreshCtxChip(subView);
+  }
 }
 
 // 排队坞：输入框上方的紧凑面板，列出排队的消息（可删除、可提前为插话）
@@ -3045,6 +3141,7 @@ async function send(forceContent, view) {
   view.state.abort = new AbortController();
   view.state.streamText = '';
   view.state.streamThinking = '';
+  hideRunError(view); // 新一轮开始：上一轮的报错条收掉
   if (view === mainView) JX.emit('send', { content });
 
   let aborted = false;
@@ -3068,30 +3165,10 @@ async function send(forceContent, view) {
       view.state.streamText = '';
       view.state.streamThinking = '';
       renderMessages(view.state.msgs, view);
-      if (!(await backendRunning(view.state.cur.id, view))) {
-        const err = document.createElement('div');
-        err.className = 'msg assistant';
-        err.innerHTML = `<div class="md"><p style="color:#c22f2f">请求失败：${esc(e.message)}</p></div>`;
-        view.col.appendChild(err);
-      }
+      if (!(await backendRunning(view.state.cur.id, view))) showRunError(view, '请求失败：' + e.message);
     }
   }
-  removeLive(view);
-  // 先收流式标记再重渲：最后一帧要按"已完成回合"折叠呈现，而不是停留在流式尾部窗口
-  view.state.streaming = false;
-  if (aborted) await reloadMessages(view); // 本地被动断流（用户停止的兜底路径）：整体对一次
-  else await refreshIfDangling(view); // 流断但后端仍在跑：接回去继续看
-  renderMessages(view.state.msgs, view);
-  setStreamUI(false, view);
-  if (view === mainView) {
-    loadSessions();
-    loadStatus();
-    refreshCtxChip();
-    JX.emit('message:done', { sessionId: state.cur && state.cur.id });
-  } else {
-    refreshDrawer();
-    refreshCtxChip(subView); // 右栏的上下文圆环同样要跟着本轮刷新
-  }
+  await endTurn(view, aborted);
 }
 
 /* ---------- 编辑历史用户消息并重发（语义对齐 ZCode 的 editUserQuery：
@@ -3237,27 +3314,10 @@ async function resendEdit(m, content, view, mode) {
     } else {
       view.state.streamText = '';
       view.state.streamThinking = '';
-      renderMessages(view.state.msgs, view);
-      const err = document.createElement('div');
-      err.className = 'msg assistant';
-      err.innerHTML = `<div class="md"><p style="color:#c22f2f">编辑发送失败：${esc(e.message)}</p></div>`;
-      view.col.appendChild(err);
+      showRunError(view, '编辑发送失败：' + e.message); // 真实失败进报错条，不插进对话区
     }
   }
-  removeLive(view);
-  view.state.streaming = false;
-  if (!aborted) await refreshIfDangling(view); // 流断但后端仍在跑：接回去继续看
-  renderMessages(view.state.msgs, view);
-  setStreamUI(false, view);
-  if (view === mainView) {
-    loadSessions();
-    loadStatus();
-    refreshCtxChip();
-    JX.emit('message:done', { sessionId: state.cur && state.cur.id });
-  } else {
-    refreshDrawer();
-    refreshCtxChip(subView); // 右栏的上下文圆环同样要跟着本轮刷新
-  }
+  await endTurn(view, aborted);
   return !aborted;
 }
 
@@ -3309,6 +3369,8 @@ async function reloadMessages(view) {
     view.state.pendingQueue = (d.pending && d.pending.queue) || [];
     view.state.checkpoints = d.checkpoints || [];
     view.state.deliveries = d.deliveries || [];
+    // 上一轮失败过就继续显示报错条（刷新/切换回来都还在，方便接着重试）
+    if (d.error) showRunError(view, d.error);
   } catch (e) { return; /* 取不到就保持现状 */ }
   renderQueueDock(view);
   renderMessages(view.state.msgs, view);
@@ -3324,6 +3386,7 @@ async function attachRun(view) {
   view.state.abort = new AbortController();
   view.state.streamText = '';
   view.state.streamThinking = '';
+  hideRunError(view); // 执行还在跑：报错条收掉
   setStreamUI(true, view);
   await reloadMessages(view); // 先对齐到服务端现状，再接流
   try {
@@ -3956,6 +4019,10 @@ async function openSettings() {
   $('set-keeprounds').value = c.keepRounds || 5;
   $('set-ruleinterval').value = c.ruleInterval || 5;
   selRefs.compactThreshold.set(String(c.compactThreshold || 0.8));
+  // 常规页：文件备份（服务端配置，改动即时保存）
+  $('set-snapshot-on').checked = c.snapshotEnabled !== false;
+  syncSnapshotState(c.snapshotEnabled !== false);
+  $('set-snapshot-days').value = c.snapshotDays != null ? c.snapshotDays : 7;
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
   selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
@@ -4577,6 +4644,30 @@ $('btn-new-assistant').onclick = () => {
 };
 $('btn-send').onclick = send;
 $('btn-stop').onclick = () => stopRun(mainView);
+/* ---------- 常规页：文件备份（服务端配置，改动即时保存） ---------- */
+
+function syncSnapshotState(on) {
+  $('set-snapshot-state').textContent = on ? '已开启' : '已关闭';
+}
+
+async function saveSnapshotCfg(patch) {
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify(patch) });
+    $('set-snapshot-on').checked = c.snapshotEnabled !== false;
+    syncSnapshotState(c.snapshotEnabled !== false);
+    if (c.snapshotDays != null) $('set-snapshot-days').value = c.snapshotDays;
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  }
+}
+
+$('set-snapshot-on').onchange = () => saveSnapshotCfg({ snapshotEnabled: $('set-snapshot-on').checked });
+$('set-snapshot-days').onchange = () => {
+  const v = parseInt($('set-snapshot-days').value, 10);
+  if (isNaN(v) || (v < 1 && v !== -1)) { alert('天数需为 ≥1 的整数，或 -1（永不过期）'); return; }
+  saveSnapshotCfg({ snapshotDays: v });
+};
+
 $('btn-settings').onclick = openSettings;
 $('btn-recycle').onclick = () => setBinView(!binView);
 $('set-cancel').onclick = () => $('settings').classList.add('hidden');

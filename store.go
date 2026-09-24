@@ -228,6 +228,16 @@ var storeMigrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_deliveries_session ON deliveries(session_id, seq)`,
 		},
 	},
+	{
+		// 快照正文改为落盘到工作区 .jxai/snapshots/（用户可见、可随工作区整体
+		// 迁移，也避免大快照撑大 SQLite）；库里只留元数据与大小（before_size）。
+		// 旧库里已存在的 before_content BLOB 继续兼容读取。
+		id:       "0009_snapshot_before_size",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE checkpoints ADD COLUMN before_size INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
@@ -774,9 +784,11 @@ func (s *Store) SetCompact(sessionID string, seq int64, compact string) error {
 
 /* ---------- 文件快照与交付成果 ---------- */
 
-// Checkpoint 是一条文件改动快照：改动发生前该文件的内容。before_content 为
+// Checkpoint 是一条文件改动快照：改动发生前该文件的内容。path 为
 // 工作区相对路径（脱离工作区的绝对写入存原样绝对路径）；after_hash 供回退前
-// 校验"文件自这次改动后没被外部改过"。
+// 校验"文件自这次改动后没被外部改过"。before 正文落盘在工作区
+// .jxai/snapshots/<会话id>/<checkpoint id>.bin（BeforeSize 记字节数）；
+// 旧库内联的 before_content BLOB 继续兼容。
 type Checkpoint struct {
 	ID            int64  `json:"id"`
 	SessionID     string `json:"sessionId"`
@@ -786,6 +798,7 @@ type Checkpoint struct {
 	Path          string `json:"path"`
 	ExistedBefore bool   `json:"existedBefore"`
 	Before        []byte `json:"-"`
+	BeforeSize    int64  `json:"beforeSize"`
 	AfterHash     string `json:"-"`
 	AfterSize     int64  `json:"afterSize"`
 	CreatedAt     string `json:"createdAt"`
@@ -801,13 +814,17 @@ type Delivery struct {
 	CreatedAt string `json:"createdAt"`
 }
 
-const checkpointCols = `id, session_id, seq, tool_call_id, tool_name, path, existed_before, before_content, after_hash, after_size, created_at`
+const checkpointCols = `id, session_id, seq, tool_call_id, tool_name, path, existed_before, before_content, after_hash, after_size, created_at, before_size`
+
+// checkpointSizeExpr 是一条快照的体积口径：新库用 before_size（正文已落盘），
+// 旧库内联 BLOB 用 LENGTH(before_content) 兜底。
+const checkpointSizeExpr = `COALESCE(NULLIF(before_size,0), LENGTH(before_content))`
 
 func scanCheckpoint(sc interface{ Scan(dest ...any) error }) (*Checkpoint, error) {
 	cp := &Checkpoint{}
 	var existed int
 	err := sc.Scan(&cp.ID, &cp.SessionID, &cp.Seq, &cp.ToolCallID, &cp.ToolName, &cp.Path,
-		&existed, &cp.Before, &cp.AfterHash, &cp.AfterSize, &cp.CreatedAt)
+		&existed, &cp.Before, &cp.AfterHash, &cp.AfterSize, &cp.CreatedAt, &cp.BeforeSize)
 	if err != nil {
 		return nil, err
 	}
@@ -816,15 +833,19 @@ func scanCheckpoint(sc interface{ Scan(dest ...any) error }) (*Checkpoint, error
 }
 
 // AppendCheckpoint 落一条快照（写失败只影响回退能力，调用方按 best-effort 处理）。
-func (s *Store) AppendCheckpoint(cp *Checkpoint) error {
+// 返回新行 id——正文文件按 id 命名（.jxai/snapshots/<会话>/<id>.bin）。
+func (s *Store) AppendCheckpoint(cp *Checkpoint) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO checkpoints
-		(session_id, seq, tool_call_id, tool_name, path, existed_before, before_content, after_hash, after_size, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO checkpoints
+		(session_id, seq, tool_call_id, tool_name, path, existed_before, before_content, after_hash, after_size, created_at, before_size)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		cp.SessionID, cp.Seq, cp.ToolCallID, cp.ToolName, cp.Path, boolInt(cp.ExistedBefore),
-		cp.Before, cp.AfterHash, cp.AfterSize, cp.CreatedAt)
-	return err
+		cp.Before, cp.AfterHash, cp.AfterSize, cp.CreatedAt, cp.BeforeSize)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 // CheckpointsAfter 取 seq 之后（不含）的全部快照，按落库顺序（即改动发生顺序）。
@@ -878,6 +899,14 @@ func (s *Store) DeleteCheckpoints(sessionID string, ids []int64) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.deleteCheckpointsLocked(sessionID, ids)
+}
+
+// deleteCheckpointsLocked 是 DeleteCheckpoints 的持锁版本（已在 s.mu 内的调用方用）。
+func (s *Store) deleteCheckpointsLocked(sessionID string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
 	args := []any{sessionID}
 	marks := []string{}
 	for _, id := range ids {
@@ -888,25 +917,37 @@ func (s *Store) DeleteCheckpoints(sessionID string, ids []int64) error {
 	return err
 }
 
-// PruneCheckpointsOlderThan 清理超龄快照（保留策略：按天），返回删除条数。
-// 按文件原子清理：一个文件的全部快照都早于截止时间才整体删除——只删一半
-// 会让回退拿到"中间状态"的错误基线（该删新建却恢复成中间内容）。
-func (s *Store) PruneCheckpointsOlderThan(cutoff string) (int64, error) {
+// PruneCheckpointsOlderThan 清理会话内超龄快照（保留策略：按天），返回被删的
+// 行 id（正文文件按 id 落盘，调用方据此同步删文件）。按文件原子清理：一个
+// 文件的全部快照都早于截止时间才整体删除——只删一半会让回退拿到"中间状态"
+// 的错误基线（该删新建却恢复成中间内容）。
+func (s *Store) PruneCheckpointsOlderThan(sessionID, cutoff string) ([]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM checkpoints WHERE NOT EXISTS (
+	rows, err := s.db.Query(`SELECT id FROM checkpoints WHERE session_id=? AND NOT EXISTS (
 		SELECT 1 FROM checkpoints c2
 		WHERE c2.session_id = checkpoints.session_id AND c2.path = checkpoints.path
-		  AND c2.created_at >= ?)`, cutoff)
+		  AND c2.created_at >= ?)`, sessionID, cutoff)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return res.RowsAffected()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if err := s.deleteCheckpointsLocked(sessionID, ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // snapshotBytesOf 统计会话内指定池（手动 / 自动）的快照字节数。
 func (s *Store) snapshotBytesOf(sessionID string, manual bool) (int64, error) {
-	q := `SELECT COALESCE(SUM(LENGTH(before_content)),0) FROM checkpoints WHERE session_id=? AND tool_name`
+	q := `SELECT COALESCE(SUM(` + checkpointSizeExpr + `),0) FROM checkpoints WHERE session_id=? AND tool_name`
 	if manual {
 		q += `=?`
 	} else {
@@ -920,26 +961,26 @@ func (s *Store) snapshotBytesOf(sessionID string, manual bool) (int64, error) {
 	return n, nil
 }
 
-// EvictCheckpointsOver 把两个池（自动快照 / 手动快照）的总量分别压到预算内。
-// 按文件原子驱逐：从最久未动的文件开始，一旦驱逐就把该文件的全部快照删掉
-// （同上，不能删一半）；某文件在某池没有足迹就不会因该池超限被驱逐。
-// 预算传负数表示该池不限量。返回删除条数。
-func (s *Store) EvictCheckpointsOver(sessionID string, maxAuto, maxManual int64) (int64, error) {
+// EvictCheckpointsOver 把两个池（自动快照 / 手动快照）的总量分别压到预算内，
+// 返回被删的行 id（供正文文件同步删除）。按文件原子驱逐：从最久未动的文件
+// 开始，一旦驱逐就把该文件的全部快照删掉（不能删一半）；某文件在某池没有
+// 足迹就不会因该池超限被驱逐。预算传负数表示该池不限量。
+func (s *Store) EvictCheckpointsOver(sessionID string, maxAuto, maxManual int64) ([]int64, error) {
 	type row struct {
 		id     int64
 		path   string
 		sz     int64
 		manual bool
 	}
-	rows, err := s.db.Query(`SELECT id, path, LENGTH(before_content), tool_name
+	rows, err := s.db.Query(`SELECT id, path, `+checkpointSizeExpr+`, tool_name
 		FROM checkpoints WHERE session_id=? ORDER BY id`, sessionID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	type group struct {
-		ids                []int64
-		autoB, manualB     int64
-		last               int64 // 最新一条的 id：驱逐从最久未动的文件开始
+		ids            []int64
+		autoB, manualB int64
+		last           int64 // 最新一条的 id：驱逐从最久未动的文件开始
 	}
 	order := []string{}
 	byPath := map[string]*group{}
@@ -1002,9 +1043,9 @@ func (s *Store) EvictCheckpointsOver(sessionID string, maxAuto, maxManual int64)
 	evict(false, maxAuto)
 	evict(true, maxManual)
 	if err := s.DeleteCheckpoints(sessionID, ids); err != nil {
-		return 0, err
+		return nil, err
 	}
-	return int64(len(ids)), nil
+	return ids, nil
 }
 
 // AddDelivery 落一条交付登记。
@@ -1035,11 +1076,14 @@ func (s *Store) DeliveriesFor(sessionID string) ([]*Delivery, error) {
 }
 
 // CopySnapshots 把源会话的快照与交付登记按 seq 映射复制到新会话（分支对话用）。
-func (s *Store) CopySnapshots(fromID, toID string, seqMap map[int64]int64) error {
+// 快照正文文件由调用方按返回的配对（源 id → 新 id）另行复制（两个会话可能
+// 挂不同工作区，落盘位置不同；同工作区时也在不同的 <会话id>/ 子目录下）。
+func (s *Store) CopySnapshots(fromID, toID string, seqMap map[int64]int64) ([][2]int64, error) {
 	cps, err := s.CheckpointsAfter(fromID, 0) // seq 从 1 起，>0 即全部
 	if err != nil {
-		return err
+		return nil, err
 	}
+	pairs := [][2]int64{}
 	for _, cp := range cps {
 		nq, ok := seqMap[cp.Seq]
 		if !ok {
@@ -1047,13 +1091,18 @@ func (s *Store) CopySnapshots(fromID, toID string, seqMap map[int64]int64) error
 		}
 		nc := *cp
 		nc.ID, nc.SessionID, nc.Seq = 0, toID, nq
-		if err := s.AppendCheckpoint(&nc); err != nil {
-			return err
+		// 新行的正文文件尚未写入：先把元数据里带的内联 BLOB（旧数据）清掉，
+		// 走统一的落盘复制路径；BeforeSize 保留给预算口径
+		nc.Before = nil
+		id, err := s.AppendCheckpoint(&nc)
+		if err != nil {
+			return pairs, err
 		}
+		pairs = append(pairs, [2]int64{cp.ID, id})
 	}
 	dvs, err := s.DeliveriesFor(fromID)
 	if err != nil {
-		return err
+		return pairs, err
 	}
 	for _, d := range dvs {
 		nq, ok := seqMap[d.Seq]
@@ -1063,10 +1112,10 @@ func (s *Store) CopySnapshots(fromID, toID string, seqMap map[int64]int64) error
 		nd := *d
 		nd.ID, nd.SessionID, nd.Seq = 0, toID, nq
 		if err := s.AddDelivery(&nd); err != nil {
-			return err
+			return pairs, err
 		}
 	}
-	return nil
+	return pairs, nil
 }
 
 // SearchMessages 跨会话全文搜索（当前 LIKE 实现；个人规模数据足够，量大后可升 FTS）。

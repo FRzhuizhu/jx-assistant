@@ -69,14 +69,118 @@ func (t *toolContext) displayPath(abs string) string {
 	return filepath.ToSlash(rel)
 }
 
+// snapshotsEnabled 文件快照总开关（设置页「文件备份」）。配置缺省视为开。
+func (a *App) snapshotsEnabled() bool {
+	if a.Cfg == nil || a.Cfg.SnapshotEnabled == nil {
+		return true
+	}
+	return *a.Cfg.SnapshotEnabled
+}
+
+// jxAIName 工作区内的系统目录名：快照、模型临时文件（.jxai/tmp）都归这里。
+const jxAIName = ".jxai"
+
+// snapshotFilePath 一条快照的正文文件位置（工作区相对路径）：
+// .jxai/snapshots/<会话id>/<checkpoint id>.bin
+func snapshotFilePath(sessionID string, id int64) string {
+	return fmt.Sprintf("%s/snapshots/%s/%d.bin", jxAIName, sessionID, id)
+}
+
+// writeSnapshotBody 把快照正文写进 .jxai/snapshots/<会话>/<id>.bin。
+func (t *toolContext) writeSnapshotBody(id int64, content []byte) error {
+	p, err := t.resolve(snapshotFilePath(t.sess.ID, id))
+	if err != nil {
+		return err
+	}
+	return t.envWriteFile(p, content)
+}
+
+// loadBefore 取一条快照的正文：旧库内联 BLOB 优先，否则读 .jxai 里的落盘文件。
+func (t *toolContext) loadBefore(cp *Checkpoint) []byte {
+	if cp.Before != nil {
+		return cp.Before
+	}
+	if !cp.ExistedBefore {
+		return nil // 改动前不存在：本就没有正文
+	}
+	p, err := t.resolve(snapshotFilePath(cp.SessionID, cp.ID))
+	if err != nil {
+		return nil
+	}
+	b, err := t.envReadFile(p)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// deleteSnapshotFiles 删除快照正文文件（行已删或将删；文件不存在视为成功）。
+func (t *toolContext) deleteSnapshotFiles(ids []int64) {
+	for _, id := range ids {
+		p, err := t.resolve(snapshotFilePath(t.sess.ID, id))
+		if err != nil {
+			continue
+		}
+		if err := t.envDeleteFile(p); err != nil {
+			log.Printf("[快照] 会话 %s 清理正文文件 %d 失败: %v", t.sess.ID, id, err)
+		}
+	}
+}
+
+// copySnapshotFiles 分支复制快照时同步复制正文文件（pairs = 源id → 新id）。
+// 源正文可能是旧库内联 BLOB（读到再写）或 .jxai 落盘文件，loadBefore 统一处理。
+func (a *App) copySnapshotFiles(from, to *SessionMeta, pairs [][2]int64) {
+	if len(pairs) == 0 {
+		return
+	}
+	ftx := &toolContext{app: a, sess: from}
+	ttx := &toolContext{app: a, sess: to}
+	for _, pr := range pairs {
+		src, err := ftx.resolve(snapshotFilePath(from.ID, pr[0]))
+		if err != nil {
+			continue
+		}
+		body, rerr := ftx.envReadFile(src)
+		if rerr != nil {
+			// 源正文可能是内联 BLOB：按 checkpoint 元数据再取一次
+			cps, _ := a.Store.CheckpointsAfter(from.ID, 0)
+			for _, cp := range cps {
+				if cp.ID == pr[0] {
+					body = ftx.loadBefore(cp)
+					break
+				}
+			}
+		}
+		if body == nil {
+			continue
+		}
+		if err := ttx.writeSnapshotBody(pr[1], body); err != nil {
+			log.Printf("[快照] 分支复制正文 %d→%d 失败: %v", pr[0], pr[1], err)
+		}
+	}
+}
+
+// ensureJxAI 确保工作区里有 .jxai/tmp（模型临时文件的约定去处，见系统提示词）。
+// 选定工作目录后尽快调用一次；模型用 write_file 写 .jxai/tmp 也会自动建目录，
+// 这里只是让目录从一开始就存在、可被发现。
+func (t *toolContext) ensureJxAI() {
+	p, err := t.resolve(jxAIName + "/tmp")
+	if err != nil {
+		return
+	}
+	if err := t.envMkdirAll(p); err != nil {
+		log.Printf("[.jxai] 会话 %s 建临时目录失败: %v", t.sess.ID, err)
+	}
+}
+
 // snapshotWrite 带快照的文件写入（write_file / edit_file 共用）：先读旧内容，
-// 写入成功后回读算哈希，落一条 checkpoint。旧文件读不了或超过单文件上限时
-// 跳过快照（写入照常），回退时该文件按未追踪处理。快照落库失败只记日志，
-// 不让正常写入报错。
+// 写入成功后回读算哈希，落一条 checkpoint 并把正文写进 .jxai/snapshots/。
+// 旧文件读不了、超过单文件上限、正文属于 .jxai 自身或备份开关关闭时跳过快照
+// （写入照常）。快照失败只记日志，不让正常写入报错。
 func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) error {
 	var before []byte
 	existed := true
-	track := true
+	track := t.app.snapshotsEnabled()
 	if isDir, size, err := t.envStat(abs); err != nil {
 		if os.IsNotExist(err) {
 			existed = false
@@ -90,6 +194,9 @@ func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) error
 	} else {
 		before = b
 	}
+	if track && strings.HasPrefix(t.displayPath(abs), jxAIName+"/") {
+		track = false // 系统目录自身的文件不做快照（快照/临时文件无需回退）
+	}
 	if err := t.envWriteFileWithGrant(abs, data, grant); err != nil {
 		return err
 	}
@@ -102,11 +209,20 @@ func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) error
 	}
 	cp := &Checkpoint{
 		SessionID: t.sess.ID, Seq: t.seq, ToolCallID: t.callID, ToolName: t.toolName,
-		Path: t.displayPath(abs), ExistedBefore: existed, Before: before,
+		Path: t.displayPath(abs), ExistedBefore: existed, BeforeSize: int64(len(before)),
 		AfterHash: hashBytes(after), AfterSize: int64(len(after)), CreatedAt: now(),
 	}
-	if err := t.app.Store.AppendCheckpoint(cp); err != nil {
+	id, err := t.app.Store.AppendCheckpoint(cp)
+	if err != nil {
 		log.Printf("[快照] 会话 %s 写 %s 的快照落库失败: %v", t.sess.ID, cp.Path, err)
+		return nil
+	}
+	if existed {
+		if err := t.writeSnapshotBody(id, before); err != nil {
+			// 正文写不进去就把元数据行一并撤掉，避免留下"有快照却没正文"的坑
+			log.Printf("[快照] 会话 %s 写 %s 的快照正文失败: %v", t.sess.ID, cp.Path, err)
+			_ = t.app.Store.DeleteCheckpoints(t.sess.ID, []int64{id})
+		}
 	}
 	return nil
 }
@@ -152,13 +268,19 @@ func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int
 	for _, p := range order {
 		st := byPath[p]
 		plan := &rewindPlan{
-			Path: p, ExistedBefore: st.first.ExistedBefore, Before: st.first.Before,
+			Path: p, ExistedBefore: st.first.ExistedBefore,
 			Manual: st.last.ToolName == manualSnapshotTool,
 		}
-		if !plan.ExistedBefore {
-			plan.Action = "delete"
-		} else {
+		if plan.ExistedBefore {
 			plan.Action = "restore"
+			plan.Before = t.loadBefore(st.first)
+			if plan.Before == nil {
+				plan.Reason = "快照正文缺失（.jxai/snapshots 里的文件不在了），拒绝盲恢复"
+				unsafe = append(unsafe, plan)
+				continue
+			}
+		} else {
+			plan.Action = "delete"
 		}
 		abs, rerr := t.resolve(p)
 		if rerr != nil {
@@ -255,27 +377,34 @@ func (a *App) applyRewind(t *toolContext, plans []*rewindPlan) error {
 // snapshotJanitor 快照保留策略的周期执行：启动后先跑一轮，之后每天一轮。
 // 主力是按天清理（SnapshotDays=0/-1 表示永不过期）；限量驱逐是兜底——自动池
 // SnapshotMaxMB 默认 32MB，手动池 SnapshotManualMaxMB 默认 -1 不限量（确有
-// 磁盘压力再配 500/1024 级别）。两者都按文件原子清理（见 store.go 注释）。
-// 删除行随会话级联，这里只管时间与体积。
+// 磁盘压力再配 500/1024 级别）。两者都按文件原子清理（见 store.go 注释），
+// 且同步删除 .jxai/snapshots/ 里的正文文件。备份开关只停新采集，不停清理——
+// 关掉之后存量快照仍按天数退场，不留孤儿文件。
 func (a *App) snapshotJanitor() {
 	run := func() {
-		if days := a.Cfg.SnapshotDays; days > 0 {
-			cutoff := time.Now().AddDate(0, 0, -days).Format("2006-01-02T15:04:05")
-			if n, err := a.Store.PruneCheckpointsOlderThan(cutoff); err != nil {
-				log.Printf("[快照] 超龄清理失败: %v", err)
-			} else if n > 0 {
-				log.Printf("[快照] 已清理 %d 条超龄快照（>%d 天）", n, days)
-			}
+		days := a.Cfg.SnapshotDays
+		sessions, err := a.Store.List()
+		if err != nil {
+			return
 		}
-		if sessions, err := a.Store.List(); err == nil {
-			for _, m := range sessions {
-				n, err := a.Store.EvictCheckpointsOver(m.ID,
-					int64(a.Cfg.SnapshotMaxMB)<<20, int64(a.Cfg.SnapshotManualMaxMB)<<20)
-				if err != nil {
-					log.Printf("[快照] 会话 %s 限量驱逐失败: %v", m.ID, err)
-				} else if n > 0 {
-					log.Printf("[快照] 会话 %s 超量，已按文件驱逐最旧快照 %d 条", m.ID, n)
+		for _, m := range sessions {
+			tctx := &toolContext{app: a, sess: m}
+			if days > 0 {
+				cutoff := time.Now().AddDate(0, 0, -days).Format("2006-01-02T15:04:05")
+				if ids, err := a.Store.PruneCheckpointsOlderThan(m.ID, cutoff); err != nil {
+					log.Printf("[快照] 会话 %s 超龄清理失败: %v", m.ID, err)
+				} else if len(ids) > 0 {
+					tctx.deleteSnapshotFiles(ids)
+					log.Printf("[快照] 会话 %s 清理 %d 条超龄快照（>%d 天）", m.ID, len(ids), days)
 				}
+			}
+			ids, err := a.Store.EvictCheckpointsOver(m.ID,
+				int64(a.Cfg.SnapshotMaxMB)<<20, int64(a.Cfg.SnapshotManualMaxMB)<<20)
+			if err != nil {
+				log.Printf("[快照] 会话 %s 限量驱逐失败: %v", m.ID, err)
+			} else if len(ids) > 0 {
+				tctx.deleteSnapshotFiles(ids)
+				log.Printf("[快照] 会话 %s 超量，已按文件驱逐最旧快照 %d 条", m.ID, len(ids))
 			}
 		}
 	}

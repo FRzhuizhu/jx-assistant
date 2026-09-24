@@ -83,7 +83,7 @@ func TestRewindFlow(t *testing.T) {
 	mtctx := &toolContext{app: a, sess: sess, seq: 3, callID: "cm", toolName: manualSnapshotTool}
 	os.WriteFile(target, []byte("手动快照点"), 0644)
 	before, _ := mtctx.envReadFile(target)
-	if err := store.AppendCheckpoint(&Checkpoint{SessionID: "r1", Seq: 3, ToolName: manualSnapshotTool,
+	if _, err := store.AppendCheckpoint(&Checkpoint{SessionID: "r1", Seq: 3, ToolName: manualSnapshotTool,
 		Path: "demo.txt", ExistedBefore: true, Before: before, AfterHash: hashBytes(before), CreatedAt: now()}); err != nil {
 		t.Fatalf("手动快照落库失败: %v", err)
 	}

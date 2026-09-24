@@ -112,6 +112,8 @@
       <div id="hint" class="composer-hint"></div>
       <!-- 排队坞：执行中排队的消息（本轮结束后自动作为独立一轮发送），内容由 app.js 渲染 -->
       <div id="queue-dock" class="queue-dock hidden" data-queue-dock></div>
+      <!-- 报错区：模型/网络等真实失败显示在这里（不属于对话区），带重试按钮 -->
+      <div id="run-error" class="run-error hidden" role="alert"></div>
       <div id="composer-area">
         <div id="draft-chips">
           <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
@@ -197,6 +199,7 @@
           <div class="sub-composer-wrap composer-wrap">
             <div id="sub-hint" class="composer-hint"></div>
             <div id="sub-queue-dock" class="queue-dock hidden" data-queue-dock></div>
+            <div id="sub-run-error" class="run-error hidden" role="alert"></div>
             <div class="sub-composer-card composer-card">
               <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
@@ -339,7 +342,25 @@
               <p class="sf-desc">插话不打断执行：消息在模型下一次调用前注入本轮；等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
           </div>
-          <p class="tip">本页设置保存在本机浏览器，改动即时生效。</p>
+          <div class="gen-section">
+            <h4>文件备份</h4>
+            <div class="set-field">
+              <div class="sf-label">文件历史快照</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-snapshot-on"><span></span></label>
+                <span class="sf-desc" id="set-snapshot-state"></span>
+              </div>
+              <p class="sf-desc">write_file / edit_file 与 snapshot_file 的改动前内容会存进工作区的 .jxai/snapshots，供编辑历史消息或按轮撤销时回退文件；关闭后不再记录新快照。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">自动清理（天）</div>
+              <div class="sf-inline">
+                <input id="set-snapshot-days" type="number" min="1" max="3650" style="width:88px">
+                <span class="sf-desc">超龄快照每天清一次；填 -1 表示永不过期</span>
+              </div>
+            </div>
+          </div>
+          <p class="tip">本页偏好保存在本机浏览器；「文件备份」保存在服务端，改动即时生效。</p>
         </div>
         <div class="set-pane" id="set-pane-models">
           <h3>模型</h3>

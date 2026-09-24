@@ -54,6 +54,8 @@ type App struct {
 	pendMu        sync.Mutex
 	pendingSteer  map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
 	pendingQueue  map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
+	errMu         sync.Mutex
+	runErrors     map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
 	osOnce        sync.Once
 	osDesc        string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
 }
@@ -138,6 +140,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/chat", a.handleChat)
 	mux.HandleFunc("GET /api/sessions/{id}/stream", a.handleSessionStream)
 	mux.HandleFunc("POST /api/sessions/{id}/stop", a.handleStop)
+	mux.HandleFunc("POST /api/sessions/{id}/retry", a.handleRetry)
 	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
 	mux.HandleFunc("POST /api/sessions/{id}/pending", a.handlePending)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
@@ -784,6 +787,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
 		"keepRounds":       a.Cfg.KeepRounds,
+		"snapshotEnabled":  a.snapshotsEnabled(),
+		"snapshotDays":     a.Cfg.SnapshotDays,
 		"ruleInterval":     a.Cfg.RuleInterval,
 		"compactThreshold": a.Cfg.CompactThreshold,
 	})
@@ -795,9 +800,11 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		APIKey     *string `json:"apiKey"` // 空串表示保持不变
 		Model      *string `json:"model"`
 		Workspace  *string `json:"workspace"`
-		BindHost   *string `json:"bindHost"`
-		AllowShell *bool   `json:"allowShell"`
-		MaxSteps   *int    `json:"maxSteps"`
+		BindHost         *string `json:"bindHost"`
+		AllowShell       *bool   `json:"allowShell"`
+		MaxSteps         *int    `json:"maxSteps"`
+		SnapshotEnabled  *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
+		SnapshotDays     *int    `json:"snapshotDays"`    // 快照自动清理天数（-1=永不过期）
 		Compact    *struct {
 			Mode         string  `json:"mode"`
 			KeepRounds   *int    `json:"keepRounds"`
@@ -859,6 +866,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.MaxSteps != nil && *body.MaxSteps > 0 {
 		a.Cfg.MaxSteps = *body.MaxSteps
+	}
+	if body.SnapshotEnabled != nil {
+		a.Cfg.SnapshotEnabled = body.SnapshotEnabled
+	}
+	if body.SnapshotDays != nil && (*body.SnapshotDays > 0 || *body.SnapshotDays == -1) {
+		a.Cfg.SnapshotDays = *body.SnapshotDays
 	}
 	if body.Compact != nil {
 		if body.Compact.Mode != "" {
@@ -1011,6 +1024,10 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// 选定工作目录后即建 .jxai/tmp：模型临时文件的约定去处（见系统提示词）
+	if m.Remote == nil {
+		(&toolContext{app: a, sess: m}).ensureJxAI()
+	}
 	if body.InheritContext {
 		if _, err := a.copyInheritedContext(parent.ID, m.ID); err != nil {
 			// 上下文没复制成功就退回：留着半截继承的子对话比没有更糟
@@ -1060,6 +1077,7 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		"meta": m, "messages": msgs,
 		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
 		"checkpoints": cps, "deliveries": dvs,
+		"error": a.runError(m.ID), // 最近一次失败原因（输入框上方报错条 + 重试）
 	})
 }
 
@@ -1483,9 +1501,12 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 文件快照与交付登记跟着消息一起搬过去：分支里同样能回退文件、看交付
-	if err := a.Store.CopySnapshots(m.ID, fork.ID, seqMap); err != nil {
+	if pairs, err := a.Store.CopySnapshots(m.ID, fork.ID, seqMap); err != nil {
 		log.Printf("[快照] 分支 %s 复制快照失败（分支仍可用，只是缺文件历史）: %v", fork.ID, err)
+	} else {
+		a.copySnapshotFiles(m, fork, pairs)
 	}
+	(&toolContext{app: a, sess: fork}).ensureJxAI()
 	a.broadcast(Event{Type: "session_updated", SessionID: fork.ID})
 	writeJSON(w, 200, fork)
 }
@@ -1564,10 +1585,18 @@ func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
 		restored = safe
 	}
 	content := strings.TrimSpace(body.Content)
+	doomed, _ := a.Store.CheckpointsAfter(m.ID, body.Seq) // 截断将删掉的快照（拿 id 删正文文件）
 	if _, err := a.Store.EditUserMessage(m.ID, body.Seq, content); err != nil {
 		lock.Unlock()
 		writeErr(w, 500, "编辑落库失败: "+err.Error())
 		return
+	}
+	if len(doomed) > 0 {
+		ids := make([]int64, 0, len(doomed))
+		for _, cp := range doomed {
+			ids = append(ids, cp.ID)
+		}
+		(&toolContext{app: a, sess: m}).deleteSnapshotFiles(ids)
 	}
 	if restored != nil {
 		tctx := &toolContext{app: a, sess: m}
@@ -1638,6 +1667,7 @@ func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, cp.ID)
 	}
 	_ = a.Store.DeleteCheckpoints(m.ID, ids)
+	tctx.deleteSnapshotFiles(ids)
 	names := []string{}
 	restored, deleted := 0, 0
 	for _, p := range safe {
@@ -1986,6 +2016,30 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"stopped": true})
+}
+
+// handleRetry 失败后重试：不重复落库用户消息，直接带着当前上下文再跑一轮
+// （上一轮报错时用户消息已经在库里，重发只会多出一条重复的用户消息）。
+func (a *App) handleRetry(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	lock := a.sessLock(m.ID)
+	lock.Lock()
+	if a.IsRunning(m.ID) {
+		lock.Unlock()
+		writeJSON(w, 200, map[string]any{"started": false, "reason": "该会话正在执行中"})
+		return
+	}
+	run, ok := a.beginRun(m.ID)
+	lock.Unlock()
+	if !ok {
+		writeJSON(w, 200, map[string]any{"started": false, "reason": "该会话正在执行中"})
+		return
+	}
+	a.clearRunError(m.ID)
+	a.serveRun(w, r, m, run, []Event{{Type: "retry"}})
 }
 
 // sseHeaders 切换响应为 SSE。

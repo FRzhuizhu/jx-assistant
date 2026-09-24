@@ -215,6 +215,18 @@ func (t *toolContext) envDeleteFile(p string) error {
 	return nil
 }
 
+// envMkdirAll 递归建目录（本地与远程一致），.jxai 目录体系用。
+func (t *toolContext) envMkdirAll(p string) error {
+	if t.isRemote() {
+		rc, err := t.app.getRemoteClient(t.sess)
+		if err != nil {
+			return err
+		}
+		return rc.mkdirAll(p)
+	}
+	return os.MkdirAll(p, 0755)
+}
+
 func (t *toolContext) envListDir(p string) ([]envEntry, error) {
 	if t.isRemote() {
 		rc, err := t.app.getRemoteClient(t.sess)
@@ -254,8 +266,10 @@ func (t *toolContext) envStat(p string) (isDir bool, size int64, err error) {
 	return info.IsDir(), info.Size(), nil
 }
 
-// envWalk 遍历目录树（跳过 .git 与 node_modules），fn 收到相对 root 的
+// envWalk 遍历目录树（跳过 .git、.jxai 与 node_modules），fn 收到相对 root 的
 // 斜杠路径；fn 返回 filepath.SkipAll 时整体停止。远程经 SFTP 递归。
+// .jxai 是本助手的系统目录（快照正文 + 模型临时文件），不进目录检索；
+// 按路径直接 read_file 访问不受影响。
 func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error) error {
 	if t.isRemote() {
 		rc, err := t.app.getRemoteClient(t.sess)
@@ -279,7 +293,7 @@ func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error
 					r = rel + "/" + e.Name
 				}
 				if e.IsDir {
-					if e.Name == ".git" || e.Name == "node_modules" {
+					if e.Name == ".git" || e.Name == "node_modules" || e.Name == jxAIName {
 						continue
 					}
 					if err := rec(dir+"/"+e.Name, r); err != nil {
@@ -305,7 +319,7 @@ func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error
 		}
 		if info.IsDir() {
 			name := info.Name()
-			if name == ".git" || (name == "node_modules" && p != root) {
+			if name == ".git" || name == jxAIName || (name == "node_modules" && p != root) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -512,6 +526,9 @@ func runSnapshotFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
+	if !t.app.snapshotsEnabled() {
+		return "文件备份已在设置中关闭：本次未记录快照。若任务需要可回退，请提示用户在设置-常规里打开「文件备份」。", nil
+	}
 	abs, err := t.resolve(p.Path)
 	if err != nil {
 		return "", err
@@ -538,14 +555,21 @@ func runSnapshotFile(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	cp := &Checkpoint{
 		SessionID: t.sess.ID, Seq: t.seq, ToolCallID: t.callID, ToolName: t.toolName,
-		Path: t.displayPath(abs), ExistedBefore: existed, Before: before,
+		Path: t.displayPath(abs), ExistedBefore: existed, BeforeSize: int64(len(before)),
 		AfterHash: hashBytes(before), AfterSize: size, CreatedAt: now(),
 	}
-	if err := t.app.Store.AppendCheckpoint(cp); err != nil {
+	id, err := t.app.Store.AppendCheckpoint(cp)
+	if err != nil {
 		return "", fmt.Errorf("快照落库失败: %w", err)
 	}
 	if existed {
-		return fmt.Sprintf("已记录 %s 的快照（%d 字节）。之后可以用不可追踪的方式修改它；用户编辑历史消息时可回退到此刻的内容。", cp.Path, len(before)), nil
+		if err := t.writeSnapshotBody(id, before); err != nil {
+			_ = t.app.Store.DeleteCheckpoints(t.sess.ID, []int64{id})
+			return "", fmt.Errorf("快照正文写入 .jxai 失败: %w", err)
+		}
+	}
+	if existed {
+		return fmt.Sprintf("已记录 %s 的快照（%d 字节，存于 .jxai/snapshots）。之后可以用不可追踪的方式修改它；用户编辑历史消息时可回退到此刻的内容。", cp.Path, len(before)), nil
 	}
 	return fmt.Sprintf("%s 当前不存在，已记录\"新增文件\"状态：之后创建它，用户编辑历史消息时会把它作为本轮新增撤回。", cp.Path), nil
 }

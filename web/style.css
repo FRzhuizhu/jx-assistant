@@ -1515,6 +1515,33 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .qd-act:hover { background: var(--hover); color: var(--text); }
 .qd-act.qd-steer:hover { color: var(--accent); }
 
+/* ---------- 报错条：真实失败的提示（在输入框上方，不属于对话区） ---------- */
+.run-error {
+  max-width: var(--content-w); margin: 0 auto 6px; display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px 8px 12px; border: 1px solid rgba(192, 57, 43, .35);
+  border-radius: 10px; background: rgba(192, 57, 43, .06);
+  font-size: 12px; line-height: 1.5; color: #a93226;
+}
+.run-error.hidden { display: none; }
+.run-error .re-icon { flex: none; line-height: 1.5; }
+.run-error .re-text {
+  flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap;
+  max-height: 5.2em; overflow-y: auto;
+}
+.run-error .re-btn {
+  flex: none; border: 1px solid transparent; background: none; cursor: pointer;
+  font: inherit; color: inherit; border-radius: 7px; padding: 1px 8px;
+}
+.run-error .re-btn:hover { background: rgba(192, 57, 43, .12); }
+.run-error .re-retry { border-color: rgba(192, 57, 43, .4); font-weight: 600; }
+.run-error .re-close { opacity: .7; padding: 1px 6px; }
+.run-error .re-close:hover { opacity: 1; }
+:root[data-theme='dark'] .run-error {
+  border-color: rgba(255, 130, 115, .35); background: rgba(255, 130, 115, .1); color: #ff9d8f;
+}
+:root[data-theme='dark'] .run-error .re-btn:hover { background: rgba(255, 130, 115, .16); }
+:root[data-theme='dark'] .run-error .re-retry { border-color: rgba(255, 130, 115, .45); }
+
 /* 技能面板 */
 .skill-constant { font-size: 12px; color: var(--text-3); flex: none; }
 .skill-del {
@@ -1522,3 +1549,6 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   border-radius: 7px; padding: 3px 10px; font-size: 12px; cursor: pointer; flex: none;
 }
 .skill-del:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+/* 常规页「文件备份」行内布局：开关/输入与说明同行 */
+.sf-inline { display: flex; align-items: center; gap: 10px; min-height: 28px; }
