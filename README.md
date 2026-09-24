@@ -242,9 +242,15 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
   `init()` 建立界面与状态，`dispose()` 完整撤销（删节点、卸样式、清监听）。
   设置页切换开关时**前端即时加载/卸载，不需要刷新页面、不需要重启服务**；
   组件未提供 `dispose` 时退化为提示刷新。
+- **宿主半边可以落在主程序里**：组件本身是纯浏览器半边，但它掌管的功能若需要
+  后端（持久化、定时、接口、模型工具），就写在主程序对应文件里、按
+  `Components.IsEnabled(<id>)` 自查开关——组件关掉时那部分功能一并停。
 - 示例组件：`input-counter`（输入字数实时统计，最小组件模板——新建组件
   直接复制该目录改 manifest 与 client.js 即可）。界面强调色（点缀色）原为
   示例组件，现已并入主程序 `web/app.js`（常规 → 外观 → 点缀色）。
+- 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
+  宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
+  `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）。
 
 ## 插件与插件兼容层
 
@@ -292,6 +298,7 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
 | `adapters.go` | 插件兼容层：扫描、开关联查、资产清单、Go 半边注册点 |
 | `adapter_dsh_speech.go` | dsh-speech 的 Go 半边：润色端点（复用已配置模型）+ 听写提示词段 |
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务 |
+| `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行 / 模型工具 |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页 |
 
@@ -318,11 +325,15 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
 | `GET /_components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供） |
+| `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `todo_write` 的待办是两回事**） |
+| `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |
+| `GET /api/todos/workspaces` | 程序任务可选的工作目录（默认工作区 + 历史会话用过的目录） |
 | `POST /api/plugins/dsh-speech/polish` | 转写润色（dsh-speech 适配器 Go 半边） |
 | `GET /` | 内嵌前端页面（按开关注入插件资产） |
 
 聊天 SSE 事件：`message` / `delta` / `tool_start` / `tool_wait`（等待审批）/ `tool_end` /
 `sub_start` / `sub_end` / `title` / `done` / `error`。全局事件流另含 `sub_tool`、
 `report_ready`、`session_updated`、`approval_required` / `approval_resolved`（审批卡）、
-`question_required` / `question_resolved`（助手提问 / 计划审批卡）、`todos`（待办刷新）
+`question_required` / `question_resolved`（助手提问 / 计划审批卡）、`todos`（会话待办刷新）、
+`todo_tasks`（待办/定时任务清单变化，组件 `todo-scheduler`）
 （均带 sessionId，前端按会话过滤渲染）。
