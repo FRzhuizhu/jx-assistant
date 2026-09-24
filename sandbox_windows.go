@@ -28,7 +28,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -391,20 +390,6 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("sandbox unavailable: CreateProcess(受限令牌) 失败: %w", err)
 	}
-	// 调试：确认子进程令牌确实受限
-	var ct windows.Token
-	if err := windows.OpenProcessToken(pi.Process, windows.TOKEN_QUERY, &ct); err == nil {
-		var retLen uint32
-		_ = windows.GetTokenInformation(ct, windows.TokenRestrictedSids, nil, 0, &retLen)
-		if retLen > 0 {
-			buf := make([]byte, retLen)
-			if err := windows.GetTokenInformation(ct, windows.TokenRestrictedSids, &buf[0], retLen, &retLen); err == nil {
-				count := *(*uint32)(unsafe.Pointer(&buf[0]))
-				log.Printf("[sandbox-debug] 子进程受限 SID 数量=%d flags=%#x", count, restrictedTokenFlags)
-			}
-		}
-		ct.Close()
-	}
 	return &confinedChild{proc: pi.Process, thread: pi.Thread, stdoutR: stdoutR, stderrR: stderrR, tempDir: tempDir}, nil
 }
 
@@ -429,10 +414,11 @@ func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) (timedO
 		_, _ = windows.WaitForSingleObject(c.proc, windows.INFINITE)
 		close(waitDone)
 	}()
-	var timer *time.Timer
+	var timeoutCh <-chan time.Time // 不限时（timeout<=0）时保持 nil：从 nil 通道接收永久阻塞
 	if timeout > 0 {
-		timer = time.NewTimer(timeout)
+		timer := time.NewTimer(timeout)
 		defer timer.Stop()
+		timeoutCh = timer.C
 	}
 	select {
 	case <-waitDone:
@@ -440,7 +426,7 @@ func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) (timedO
 		c.kill()
 		<-waitDone
 		timedOut = true
-	case <-timer.C: // timer 为 nil 时该分支永久阻塞 = 不限时
+	case <-timeoutCh:
 		c.kill()
 		<-waitDone
 		timedOut = true

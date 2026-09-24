@@ -33,7 +33,11 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   SHA-256 派生，长期 ACE 授权工作区、一次性授权每运行私有临时目录）；子进程
   每次写都过内核两段检查，工作区外一律拒绝。令牌默认 DACL 按官方
   setTokenDefaultDaclGrant 补授，保证管道/临时文件可创建。已知边界与官方
-  相同（Everyone 可写位置、NTFS 硬链接），自报 partial。
+  相同（Everyone 可写位置、NTFS 硬链接、以及真机对抗验证发现的第三项：
+  经父目录 FILE_DELETE_CHILD 的删除——如 PowerShell 不带 -Force 的
+  Remove-Item——可删除用户可删的外部文件；-Force 走文件 DELETE 权利则
+  被正常拦截），自报 partial。对抗验证用例见 sbx_adversarial_test.go
+  （穿越/Junction/删外部/注册表/子进程继承/网络/硬链接七项）。
 - **Linux 后端**（`sandboxhelper`，对齐官方 Landlock 方案）：非特权
   Landlock ruleset「handled」全部写类访问，workspace-write 下仅给工作区与
   私有临时目录加 path-beneath 规则；`PR_SET_NO_NEW_PRIVS` 防提权。本地
