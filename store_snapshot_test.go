@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// 快照与交付登记的生命周期测试：落库/按 seq 取数/编辑清理/按天过期/按量驱逐。
+// 快照与交付登记的生命周期测试：落库/按 seq 取数/编辑清理/按天过期/双池限量驱逐。
 func TestSnapshotLifecycle(t *testing.T) {
 	os.RemoveAll("data-snap-test")
 	defer os.RemoveAll("data-snap-test")
@@ -27,11 +27,13 @@ func TestSnapshotLifecycle(t *testing.T) {
 			t.Fatalf("写消息失败: %v", err)
 		}
 	}
-	// 三条快照：一条超龄（seq1），两条新（seq2 覆盖同文件、seq3 新文件）
+	// 四条快照（锚在助手步骤的 seq 上：2/3/5）：a.txt 新旧各一条（文件整体
+	// 未超龄，不能删）、b.txt 一条新的、c.txt 一条超龄的独立文件（整体过期，应删）
 	cps := []*Checkpoint{
-		{SessionID: "s1", Seq: 1, ToolName: "write_file", Path: "a.txt", ExistedBefore: true, Before: []byte("旧a"), AfterHash: "h1", AfterSize: 3, CreatedAt: old},
-		{SessionID: "s1", Seq: 2, ToolName: "edit_file", Path: "a.txt", ExistedBefore: true, Before: []byte("旧a"), AfterHash: "h2", AfterSize: 4, CreatedAt: now()},
-		{SessionID: "s1", Seq: 3, ToolName: "write_file", Path: "b.txt", Before: nil, AfterHash: "h3", AfterSize: 5, CreatedAt: now()},
+		{SessionID: "s1", Seq: 2, ToolName: "write_file", Path: "a.txt", ExistedBefore: true, Before: []byte("旧a"), AfterHash: "h1", AfterSize: 3, CreatedAt: old},
+		{SessionID: "s1", Seq: 3, ToolName: "edit_file", Path: "a.txt", ExistedBefore: true, Before: []byte("旧a"), AfterHash: "h2", AfterSize: 4, CreatedAt: now()},
+		{SessionID: "s1", Seq: 4, ToolName: "write_file", Path: "b.txt", Before: nil, AfterHash: "h3", AfterSize: 5, CreatedAt: now()},
+		{SessionID: "s1", Seq: 5, ToolName: "write_file", Path: "c.txt", Before: nil, AfterHash: "h4", AfterSize: 5, CreatedAt: old},
 	}
 	for _, cp := range cps {
 		if err := s.AppendCheckpoint(cp); err != nil {
@@ -39,21 +41,21 @@ func TestSnapshotLifecycle(t *testing.T) {
 		}
 	}
 	got, err := s.CheckpointsAfter("s1", 1)
-	if err != nil || len(got) != 2 {
-		t.Fatalf("CheckpointsAfter(1) 应得 2 条，实际 %d err=%v", len(got), err)
+	if err != nil || len(got) != 4 {
+		t.Fatalf("CheckpointsAfter(1) 应得 4 条，实际 %d err=%v", len(got), err)
 	}
-	in, err := s.CheckpointsIn("s1", []int64{3})
+	in, err := s.CheckpointsIn("s1", []int64{4})
 	if err != nil || len(in) != 1 || in[0].Path != "b.txt" {
 		t.Fatalf("CheckpointsIn 应得 b.txt，实际 %+v err=%v", in, err)
 	}
 
-	// 按天清理：只删超龄那条
+	// 按天清理（按文件原子）：只有 c.txt 整体过期，删 1 条；a.txt 有新快照要整文件保留
 	if n, err := s.PruneCheckpointsOlderThan(time.Now().AddDate(0, 0, -7).Format("2006-01-02T15:04:05")); err != nil || n != 1 {
-		t.Fatalf("超龄清理应删 1 条，实际 %d err=%v", n, err)
+		t.Fatalf("超龄清理应只删 c.txt 的 1 条，实际 %d err=%v", n, err)
 	}
 	got, _ = s.CheckpointsAfter("s1", 0)
-	if len(got) != 2 {
-		t.Fatalf("清理后应剩 2 条，实际 %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("清理后应剩 3 条，实际 %d", len(got))
 	}
 
 	// 编辑重发：seq=2 之后无记录不删；seq=1 之后应清掉两条快照与交付
@@ -75,16 +77,63 @@ func TestSnapshotLifecycle(t *testing.T) {
 	if dvs, _ := s.DeliveriesFor("s1"); len(dvs) != 0 {
 		t.Fatalf("编辑 seq=1 后交付应清空，剩 %d", len(dvs))
 	}
+}
 
-	// 按量驱逐：两个 10 字节快照，上限 15 → 从最旧驱逐一条
-	for i := 0; i < 2; i++ {
-		_ = s.AppendCheckpoint(&Checkpoint{SessionID: "s1", Seq: int64(5 + i), ToolName: "write_file",
-			Path: string(rune('a'+i)) + ".txt", ExistedBefore: true, Before: make([]byte, 10), CreatedAt: now()})
+// 双池限量驱逐：自动池超限只驱逐有自动足迹的最旧文件（整文件删）；
+// 手动池的大快照不因自动池超限被驱逐，手动池自己超限才动它。
+func TestSnapshotDualBudget(t *testing.T) {
+	os.RemoveAll("data-snap2-test")
+	defer os.RemoveAll("data-snap2-test")
+	s, err := NewStore("data-snap2-test")
+	if err != nil {
+		t.Fatalf("建库失败: %v", err)
 	}
-	if n, err := s.EvictCheckpointsOver("s1", 15); err != nil || n != 1 {
-		t.Fatalf("限量驱逐应删 1 条，实际 %d err=%v", n, err)
+	defer s.db.Close()
+	if err := s.Create(&SessionMeta{ID: "s2", Title: "双池测试", CreatedAt: now(), UpdatedAt: now()}); err != nil {
+		t.Fatalf("建会话失败: %v", err)
 	}
-	if sz, _ := s.SnapshotBytes("s1"); sz != 10 {
-		t.Fatalf("驱逐后总量应为 10，实际 %d", sz)
+	// 先落：小自动快照 old.txt / new.txt（各 10B），大手动快照 doc.pptx（100B）
+	seed := []*Checkpoint{
+		{SessionID: "s2", Seq: 1, ToolName: "write_file", Path: "old.txt", ExistedBefore: true, Before: make([]byte, 10), CreatedAt: now()},
+		{SessionID: "s2", Seq: 2, ToolName: "write_file", Path: "new.txt", ExistedBefore: true, Before: make([]byte, 10), CreatedAt: now()},
+		{SessionID: "s2", Seq: 3, ToolName: manualSnapshotTool, Path: "doc.pptx", ExistedBefore: true, Before: make([]byte, 100), CreatedAt: now()},
+	}
+	for _, cp := range seed {
+		if err := s.AppendCheckpoint(cp); err != nil {
+			t.Fatalf("落快照失败: %v", err)
+		}
+	}
+	// 自动池预算 15B：总量 20B 超限 → 驱逐最旧的 old.txt（整文件 1 条）；
+	// doc.pptx 在自动池无足迹，不受影响
+	n, err := s.EvictCheckpointsOver("s2", 15, -1)
+	if err != nil || n != 1 {
+		t.Fatalf("自动池驱逐应删 old.txt 的 1 条，实际 %d err=%v", n, err)
+	}
+	got, _ := s.CheckpointsAfter("s2", 0)
+	paths := map[string]int{}
+	for _, c := range got {
+		paths[c.Path]++
+	}
+	if paths["old.txt"] != 0 || paths["new.txt"] != 1 || paths["doc.pptx"] != 1 {
+		t.Fatalf("驱逐后应为 new.txt+doc.pptx，实际 %+v", paths)
+	}
+	// 手动池预算 50B：doc.pptx 100B 超限 → 整文件删除
+	n, err = s.EvictCheckpointsOver("s2", -1, 50)
+	if err != nil || n != 1 {
+		t.Fatalf("手动池驱逐应删 doc.pptx 的 1 条，实际 %d err=%v", n, err)
+	}
+	got, _ = s.CheckpointsAfter("s2", 0)
+	if len(got) != 1 || got[0].Path != "new.txt" {
+		t.Fatalf("最后应只剩 new.txt，实际 %+v", got)
+	}
+	// 同文件跨池：old2.txt 一条自动 + 一条手动，自动池超限时整文件一起删
+	// （此时 new.txt 也因自动足迹超限被先行驱逐：10+20=30B > 15B）
+	_ = s.AppendCheckpoint(&Checkpoint{SessionID: "s2", Seq: 4, ToolName: "write_file", Path: "old2.txt", ExistedBefore: true, Before: make([]byte, 20), CreatedAt: now()})
+	_ = s.AppendCheckpoint(&Checkpoint{SessionID: "s2", Seq: 5, ToolName: manualSnapshotTool, Path: "old2.txt", ExistedBefore: true, Before: make([]byte, 20), CreatedAt: now()})
+	if n, err = s.EvictCheckpointsOver("s2", 15, -1); err != nil || n != 3 {
+		t.Fatalf("跨池文件应整文件驱逐（new.txt 1 条 + old2.txt 2 条），实际 %d err=%v", n, err)
+	}
+	if got, _ = s.CheckpointsAfter("s2", 0); len(got) != 0 {
+		t.Fatalf("驱逐后应全部清空，剩 %d", len(got))
 	}
 }

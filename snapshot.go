@@ -27,9 +27,14 @@ import (
 	"time"
 )
 
-// snapshotMaxFileBytes 单文件快照上限：超过则跳过该文件的快照（回退时它
-// 按未追踪处理）。防单个大文件把库撑爆。
-const snapshotMaxFileBytes = 8 << 20
+// snapshotMaxFileBytes 自动快照的单文件上限：超过则跳过该文件的快照（回退时
+// 它按未追踪处理）。防单个大文件把库撑爆；总量另由自动池预算与按天清理约束。
+const snapshotMaxFileBytes = 32 << 20
+
+// snapshotManualMaxFileBytes 手动快照（snapshot_file）的单文件上限。手动档
+// 的用途恰恰是 Office 文档等"大而重要"的文件，上限放得很宽；清理主力是
+// 按天过期（SnapshotDays），手动池默认不限量。
+const snapshotManualMaxFileBytes = 256 << 20
 
 // manualSnapshotTool 标记"模型手动打的快照"：这类快照之后文件会按预期被
 // 不可追踪的方式修改，回退时不做哈希预检（信任快照时刻的内容）。
@@ -248,8 +253,10 @@ func (a *App) applyRewind(t *toolContext, plans []*rewindPlan) error {
 }
 
 // snapshotJanitor 快照保留策略的周期执行：启动后先跑一轮，之后每天一轮。
-// 按天清理（SnapshotDays=0 表示永不过期）+ 按会话限量驱逐（SnapshotMaxMB=0
-// 表示不限量）。删除行随会话级联，这里只管时间与体积。
+// 主力是按天清理（SnapshotDays=0/-1 表示永不过期）；限量驱逐是兜底——自动池
+// SnapshotMaxMB 默认 32MB，手动池 SnapshotManualMaxMB 默认 -1 不限量（确有
+// 磁盘压力再配 500/1024 级别）。两者都按文件原子清理（见 store.go 注释）。
+// 删除行随会话级联，这里只管时间与体积。
 func (a *App) snapshotJanitor() {
 	run := func() {
 		if days := a.Cfg.SnapshotDays; days > 0 {
@@ -260,15 +267,14 @@ func (a *App) snapshotJanitor() {
 				log.Printf("[快照] 已清理 %d 条超龄快照（>%d 天）", n, days)
 			}
 		}
-		if maxMB := a.Cfg.SnapshotMaxMB; maxMB > 0 {
-			if sessions, err := a.Store.List(); err == nil {
-				for _, m := range sessions {
-					n, err := a.Store.EvictCheckpointsOver(m.ID, int64(maxMB)<<20)
-					if err != nil {
-						log.Printf("[快照] 会话 %s 限量驱逐失败: %v", m.ID, err)
-					} else if n > 0 {
-						log.Printf("[快照] 会话 %s 超量，已驱逐最旧快照 %d 条", m.ID, n)
-					}
+		if sessions, err := a.Store.List(); err == nil {
+			for _, m := range sessions {
+				n, err := a.Store.EvictCheckpointsOver(m.ID,
+					int64(a.Cfg.SnapshotMaxMB)<<20, int64(a.Cfg.SnapshotManualMaxMB)<<20)
+				if err != nil {
+					log.Printf("[快照] 会话 %s 限量驱逐失败: %v", m.ID, err)
+				} else if n > 0 {
+					log.Printf("[快照] 会话 %s 超量，已按文件驱逐最旧快照 %d 条", m.ID, n)
 				}
 			}
 		}

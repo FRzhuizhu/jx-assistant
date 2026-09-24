@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -888,58 +889,118 @@ func (s *Store) DeleteCheckpoints(sessionID string, ids []int64) error {
 }
 
 // PruneCheckpointsOlderThan 清理超龄快照（保留策略：按天），返回删除条数。
+// 按文件原子清理：一个文件的全部快照都早于截止时间才整体删除——只删一半
+// 会让回退拿到"中间状态"的错误基线（该删新建却恢复成中间内容）。
 func (s *Store) PruneCheckpointsOlderThan(cutoff string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM checkpoints WHERE created_at < ?`, cutoff)
+	res, err := s.db.Exec(`DELETE FROM checkpoints WHERE NOT EXISTS (
+		SELECT 1 FROM checkpoints c2
+		WHERE c2.session_id = checkpoints.session_id AND c2.path = checkpoints.path
+		  AND c2.created_at >= ?)`, cutoff)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
 }
 
-// SnapshotBytes 统计会话快照占用的字节数（保留策略：按量）。
-func (s *Store) SnapshotBytes(sessionID string) (int64, error) {
-	var n sql.NullInt64
-	err := s.db.QueryRow(`SELECT SUM(LENGTH(before_content)) FROM checkpoints WHERE session_id=?`, sessionID).Scan(&n)
+// snapshotBytesOf 统计会话内指定池（手动 / 自动）的快照字节数。
+func (s *Store) snapshotBytesOf(sessionID string, manual bool) (int64, error) {
+	q := `SELECT COALESCE(SUM(LENGTH(before_content)),0) FROM checkpoints WHERE session_id=? AND tool_name`
+	if manual {
+		q += `=?`
+	} else {
+		q += `<>?`
+	}
+	var n int64
+	err := s.db.QueryRow(q, sessionID, manualSnapshotTool).Scan(&n)
 	if err != nil {
 		return 0, err
 	}
-	return n.Int64, nil
+	return n, nil
 }
 
-// EvictCheckpointsOver 把会话快照总量压到 maxBytes 以下（从最旧开始驱逐），
-// 返回删除条数。按量保留的兜底：超龄清理管不到的突发大文件由这里限住。
-func (s *Store) EvictCheckpointsOver(sessionID string, maxBytes int64) (int64, error) {
-	total, err := s.SnapshotBytes(sessionID)
-	if err != nil || total <= maxBytes {
-		return 0, err
+// EvictCheckpointsOver 把两个池（自动快照 / 手动快照）的总量分别压到预算内。
+// 按文件原子驱逐：从最久未动的文件开始，一旦驱逐就把该文件的全部快照删掉
+// （同上，不能删一半）；某文件在某池没有足迹就不会因该池超限被驱逐。
+// 预算传负数表示该池不限量。返回删除条数。
+func (s *Store) EvictCheckpointsOver(sessionID string, maxAuto, maxManual int64) (int64, error) {
+	type row struct {
+		id     int64
+		path   string
+		sz     int64
+		manual bool
 	}
-	ids := []int64{}
-	rows, err := s.db.Query(`SELECT id, LENGTH(before_content) FROM checkpoints
-		WHERE session_id=? ORDER BY id`, sessionID)
+	rows, err := s.db.Query(`SELECT id, path, LENGTH(before_content), tool_name
+		FROM checkpoints WHERE session_id=? ORDER BY id`, sessionID)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	type ev struct {
-		id int64
-		sz int64
+	type group struct {
+		ids                []int64
+		autoB, manualB     int64
+		last               int64 // 最新一条的 id：驱逐从最久未动的文件开始
 	}
-	all := []ev{}
+	order := []string{}
+	byPath := map[string]*group{}
 	for rows.Next() {
-		var e ev
-		if err := rows.Scan(&e.id, &e.sz); err == nil {
-			all = append(all, e)
+		var r row
+		var tool string
+		if err := rows.Scan(&r.id, &r.path, &r.sz, &tool); err != nil {
+			continue
+		}
+		r.manual = tool == manualSnapshotTool
+		g, ok := byPath[r.path]
+		if !ok {
+			g = &group{}
+			byPath[r.path] = g
+			order = append(order, r.path)
+		}
+		g.ids = append(g.ids, r.id)
+		g.last = r.id
+		if r.manual {
+			g.manualB += r.sz
+		} else {
+			g.autoB += r.sz
 		}
 	}
-	for _, e := range all {
-		if total <= maxBytes {
-			break
+	rows.Close()
+	ids := []int64{}
+	evict := func(manualPool bool, budget int64) {
+		if budget < 0 {
+			return // 该池不限量
 		}
-		ids = append(ids, e.id)
-		total -= e.sz
+		total := int64(0)
+		for _, g := range byPath {
+			if manualPool {
+				total += g.manualB
+			} else {
+				total += g.autoB
+			}
+		}
+		if total <= budget {
+			return
+		}
+		paths := append([]string{}, order...)
+		sort.Slice(paths, func(i, j int) bool { return byPath[paths[i]].last < byPath[paths[j]].last })
+		for _, p := range paths {
+			g := byPath[p]
+			footprint := g.autoB
+			if manualPool {
+				footprint = g.manualB
+			}
+			if footprint <= 0 {
+				continue
+			}
+			total -= footprint
+			ids = append(ids, g.ids...)
+			if total <= budget {
+				break
+			}
+		}
 	}
+	evict(false, maxAuto)
+	evict(true, maxManual)
 	if err := s.DeleteCheckpoints(sessionID, ids); err != nil {
 		return 0, err
 	}

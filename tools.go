@@ -529,8 +529,8 @@ func runSnapshotFile(t *toolContext, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("无法读取文件状态: %w", serr)
 	case isDir:
 		return "", fmt.Errorf("目标是一个目录，快照只支持文件")
-	case size > snapshotMaxFileBytes:
-		return "", fmt.Errorf("文件超过单文件快照上限（%d MB），无法快照", snapshotMaxFileBytes>>20)
+	case size > snapshotManualMaxFileBytes:
+		return "", fmt.Errorf("文件超过手动快照单文件上限（%d MB）", snapshotManualMaxFileBytes>>20)
 	default:
 		if before, err = t.envReadFile(abs); err != nil {
 			return "", err
