@@ -380,13 +380,21 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		msgs = inlineImagesForRequest(a, msgs, target)
 		if err := a.maybeAutoCompact(sess, msgs, target.ContextWindow); err != nil {
 			emit(Event{Type: "error", Error: "自动压缩失败: " + err.Error()})
+			a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + err.Error()})
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: defs}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
+		est := estimateTokens(msgs)      // 发送前的 token 估算（审计行用）
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall
+		var usage *Usage // 本步流尾用量（审计行用；网关不带 usage 则为 nil）
+		callStart := time.Now()
 		err := StreamChat(ctx, target, req, StreamCallbacks{
+			// 请求发出前捕获全量请求体（「导出原始数据」的数据源，每会话只留最近一条）
+			OnRequest: func(u string, body []byte) {
+				a.recordLastRequest(sess, u, target.Model, step+1, len(msgs), est, body)
+			},
 			OnText: func(s string) {
 				text.WriteString(s)
 				emit(Event{Type: "delta", Delta: s})
@@ -397,6 +405,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			},
 		OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
 		OnUsage: func(u Usage) { // 流尾用量按 token 累计落盘（缓存命中率/Token 用量面板数据源）
+			uu := u
+			usage = &uu
 			sess.UsagePrompt += int64(u.PromptTokens)
 			sess.UsageCacheHit += int64(u.PromptCacheHit)
 			sess.UsageOutput += int64(u.CompletionTokens)
@@ -404,10 +414,14 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			_ = a.Store.SaveMeta(sess)
 		},
 	})
+		// 调用审计行：成败都落（导出日志时间线的核心数据——发送规模、返回、缓存命中、耗时）
+		a.auditCall(sess, step+1, len(msgs), est, time.Since(callStart).Milliseconds(),
+			usage, len([]rune(text.String())), toolNamesOf(calls), err)
 		if err != nil {
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次
 			if isOverflowError(err) && !overflowRetried {
 				if cerr := a.overflowCompact(sess); cerr == nil {
+					a.auditWrite(sess, map[string]any{"type": "overflow", "error": err.Error()})
 					overflowRetried = true
 					continue
 				}

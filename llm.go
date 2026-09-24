@@ -116,6 +116,10 @@ type StreamCallbacks struct {
 	OnReasoning func(string)
 	OnToolCall  func(ToolCall)
 	OnUsage     func(Usage)
+	// OnRequest 在请求真正发出前回调一次：url 是最终请求地址，body 是与线上
+	// 完全一致的请求体字节（含 model/stream/stream_options 等最终字段）。
+	// 「导出原始数据」靠它捕获最近一次发给模型的完整内容。
+	OnRequest func(url string, body []byte)
 }
 
 // Usage 是流尾统计块（OpenAI 兼容 + DeepSeek 缓存命中扩展）。
@@ -141,6 +145,9 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 		return err
 	}
 	url := strings.TrimRight(target.BaseURL, "/") + "/chat/completions"
+	if cb.OnRequest != nil {
+		cb.OnRequest(url, body)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err

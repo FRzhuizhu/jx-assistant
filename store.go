@@ -582,6 +582,33 @@ func (s *Store) Append(id string, m Message) error {
 func (s *Store) AppendRow(id string, sm *StoredMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.appendRowLocked(id, sm)
+}
+
+// ReplaceRequestRow 替换式写入模型输入快照行（kind=request）：每会话只保留
+// 最近一条，写入前删掉旧行——全量上下文体积大，逐条留档会让库无界增长。
+func (s *Store) ReplaceRequestRow(id string, sm *StoredMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec(`DELETE FROM messages WHERE session_id=? AND kind='request'`, id); err != nil {
+		return err
+	}
+	return s.appendRowLocked(id, sm)
+}
+
+// LastRequestRow 取该会话最近一条模型输入快照行；从未发送过则返回 nil。
+func (s *Store) LastRequestRow(id string) (*StoredMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sm, err := scanMessage(s.db.QueryRow(
+		`SELECT `+messageCols+` FROM messages WHERE session_id=? AND kind='request' ORDER BY seq DESC LIMIT 1`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return sm, err
+}
+
+func (s *Store) appendRowLocked(id string, sm *StoredMessage) error {
 	if sm.Seq == 0 {
 		if err := s.db.QueryRow(`SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=?`, id).Scan(&sm.Seq); err != nil {
 			return err

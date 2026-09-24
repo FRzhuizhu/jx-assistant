@@ -382,6 +382,7 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 		if p := recover(); p != nil {
 			log.Printf("[对话] 会话 %s 执行体异常: %v", m.ID, p)
 			emit(Event{Type: "error", Error: fmt.Sprintf("执行体异常: %v", p)})
+			a.auditWrite(m, map[string]any{"type": "error", "error": fmt.Sprintf("执行体异常: %v", p)})
 		}
 	}()
 	for _, ev := range opening {
@@ -407,17 +408,20 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 	a.broadcastPending(m.ID)
 
 	// 终态：正常完成与用户停止都不往界面塞话（对话里只有真实对话）；
-	// 只有真实的失败（模型/网络/费用等）才进前端的报错区，并带重试按钮
+	// 只有真实的失败（模型/网络/费用等）才进前端的报错区，并带重试按钮。
+	// 三种终态都在审计日志留痕（导出日志时间线可见，不发给模型）。
 	switch {
 	case err == nil:
 		emit(Event{Type: "done"})
 	case a.isStopped(run) || run.ctx.Err() != nil:
 		log.Printf("[对话] 会话 %s 已被用户停止", m.ID)
 		a.clearRunError(m.ID)
+		a.auditWrite(m, map[string]any{"type": "stop"})
 		emit(Event{Type: "stopped"})
 	default:
 		log.Printf("[对话] 会话 %s 本轮结束于错误: %v", m.ID, err)
 		a.setRunError(m.ID, err.Error())
+		a.auditWrite(m, map[string]any{"type": "error", "error": err.Error()})
 		emit(Event{Type: "error", Error: err.Error()})
 	}
 	emit(Event{Type: "session_updated"})

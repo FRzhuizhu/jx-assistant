@@ -1234,35 +1234,34 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": 1, "summary": truncateRunes(summary, 300)})
 }
 
-// handleExport 导出会话日志。?format=md（默认）出人读的完整 Markdown，
-// ?format=json 出机器可存的原始记录；两者都含全部子会话（递归），
-// 且都取自 messages 表原始历史——与发给模型的压缩视图无关。
+// handleExport 导出两类审计材料：
+//   ?format=md（默认）——运行日志：从会话创建起的完整时间线（上下文组装、
+//     环境快照更新、用户消息、每次模型调用的用量与缓存命中、模型逐步输出、
+//     报错/停止/压缩等未发给模型的事件）；
+//   ?format=json ——原始数据：最近一次真正发给模型的完整请求体（与线上发送
+//     逐字节同源，仅排版缩进），用于核对到底给模型发了什么。
+// 两者都取自 messages 表原始历史，只导出当前会话（子会话各自单独导出）。
 func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
 		return
 	}
-	root, err := a.buildExportTree(m.ID, map[string]bool{})
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
 	stamp := time.Now().Format("20060102-150405")
 	base := strings.ReplaceAll(truncateRunes(m.Title, 30), " ", "_") + "_" + stamp
 	if r.URL.Query().Get("format") == "json" {
-		data, err := json.MarshalIndent(root, "", "  ")
+		data, err := a.ExportLatestRequest(m)
 		if err != nil {
-			writeErr(w, 500, "导出序列化失败: "+err.Error())
+			writeErr(w, 404, err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+".json"))
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+"_模型请求.json"))
 		_, _ = w.Write(data)
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+".md"))
-	_, _ = w.Write([]byte(a.ExportMarkdown(root)))
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+"_运行日志.md"))
+	_, _ = w.Write([]byte(a.ExportTimeline(m)))
 }
 
 func wsOr(a *App, m *SessionMeta) string {
@@ -1452,7 +1451,7 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	msgs := []*StoredMessage{}
 	for _, x := range all {
-		if x.Kind != "summary" && (body.UpTo <= 0 || x.Seq <= body.UpTo) {
+		if x.Kind != "summary" && x.Kind != "request" && x.Kind != "audit" && (body.UpTo <= 0 || x.Seq <= body.UpTo) {
 			msgs = append(msgs, x)
 		}
 	}

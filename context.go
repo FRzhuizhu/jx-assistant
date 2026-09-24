@@ -115,7 +115,7 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 		out = append(out, TextMessage("user", s.Text()))
 	}
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" {
+		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" || m.Kind == "audit" {
 			continue
 		}
 		if ruleMode && m.Compact != "" {
@@ -171,8 +171,8 @@ func (a *App) copyInheritedContext(parentID, childID string) (int, error) {
 	}
 	rows := make([]*StoredMessage, 0, len(all))
 	for _, x := range all {
-		if x.Kind == "request" {
-			continue // 模型输入快照是审计工件（不进 LLM 上下文），不带进子对话
+		if x.Kind == "request" || x.Kind == "audit" {
+			continue // 模型输入快照与审计行是本会话的诊断工件，不随上下文继承
 		}
 		rows = append(rows, x)
 	}
@@ -325,7 +325,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			add("摘要", TextMessage("user", s.Text()))
 		}
 		for _, m := range raw {
-			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" {
+			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
 				continue
 			}
 			if ruleMode && m.Compact != "" {
@@ -406,11 +406,21 @@ func (a *App) ruleCompactPass(sess *SessionMeta) {
 	}
 	// 压缩 [已压缩边界之后, 保留窗口之前] 的所有轮
 	keepFrom := rounds[len(rounds)-a.Cfg.KeepRounds].startSeq
+	folded, from, to := 0, int64(0), int64(0)
 	for _, r := range rounds {
 		if r.startSeq <= ruleSeq || r.startSeq >= keepFrom {
 			continue
 		}
 		a.compactRound(sess.ID, r, raw)
+		if folded == 0 {
+			from = r.startSeq
+		}
+		to = r.endSeq
+		folded++
+	}
+	if folded > 0 {
+		// 审计留痕：规则压缩改写模型可见前缀，是缓存命中率突降的常见原因
+		a.auditWrite(sess, map[string]any{"type": "compact", "rounds": folded, "from": from, "to": to})
 	}
 }
 
@@ -505,7 +515,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	b.WriteString("【待压缩的对话历史】\n")
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" {
+		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
 			continue
 		}
 		role := map[string]string{"user": "用户", "assistant": "助手", "tool": "工具结果"}[m.Role]
