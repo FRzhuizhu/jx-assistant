@@ -36,6 +36,9 @@ type SessionMeta struct {
 	GoalRounds int              `json:"goalRounds,omitempty"` // 自动续跑已用轮数
 	Tools      []string         `json:"tools,omitempty"`
 	Origin     string           `json:"origin,omitempty"` // 来源：human=人工建的子对话（右栏标记 + 划选送子对话复用判定）
+	// 数字助理派发的工作任务是顶层会话（左侧任务列表可见）；dispatched_by 记
+	// 派发它的助理会话 id，作为回报链（服务重启的中断回报 / list_sessions 标记）。
+	DispatchedBy string `json:"dispatchedBy,omitempty"`
 	Archived   bool             `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
 	Unread     bool             `json:"unread,omitempty"`   // 标为未读：侧栏红点
 	Status     string           `json:"status,omitempty"`   // idle | running

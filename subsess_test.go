@@ -292,7 +292,8 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	_ = a.Store.Append("a1", TextMessage("user", "帮我把日志整理一下"))
 	_ = a.Store.Append("a1", Message{Role: "assistant", Content: "好的，我安排一下"})
 
-	// 默认：子任务只收到派发需求，不带主对话历史
+	// 默认：任务会话只收到派发需求，不带主对话历史；
+	// 派发的是顶层工作任务（左侧列表可见），回报链记在 dispatched_by
 	ctx := &toolContext{app: a, sess: assistant, emit: func(Event) {}}
 	out, err := runDispatchTask(ctx, json.RawMessage(`{"task":"整理日志"}`))
 	if err != nil {
@@ -301,11 +302,24 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	if !strings.Contains(out, "已派发后台执行") {
 		t.Fatalf("返回文案异常: %s", out)
 	}
-	kids, _ := a.Store.Children("a1")
-	if len(kids) != 1 {
-		t.Fatalf("应有 1 个子会话，得到 %d", len(kids))
+	byMe := func() []*SessionMeta { // 助理 a1 派生的任务会话（顶层，靠 dispatched_by 关联）
+		list, _ := a.Store.List()
+		var hit []*SessionMeta
+		for _, m := range list {
+			if m.DispatchedBy == "a1" {
+				hit = append(hit, m)
+			}
+		}
+		return hit
 	}
-	plain := kids[0]
+	subs := byMe()
+	if len(subs) != 1 {
+		t.Fatalf("应有 1 个派生任务会话，得到 %d", len(subs))
+	}
+	plain := subs[0]
+	if plain.ParentID != "" || plain.Mode != "task" {
+		t.Fatalf("派生任务应是顶层 task 会话（parent=%q mode=%q）", plain.ParentID, plain.Mode)
+	}
 	raw, _ := a.Store.RawMessagesAll(plain.ID)
 	if len(raw) != 1 || !strings.Contains(raw[0].Text(), "【数字助理派发】") {
 		t.Fatalf("默认派发应只有一条需求消息，实际 %d 条", len(raw))
@@ -322,15 +336,15 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	if !strings.Contains(out, "已继承主对话上下文") {
 		t.Fatalf("返回文案应说明已继承上下文: %s", out)
 	}
-	kids, _ = a.Store.Children("a1")
+	subs = byMe()
 	var inherited *SessionMeta
-	for _, k := range kids {
+	for _, k := range subs {
 		if k.ID != plain.ID {
 			inherited = k
 		}
 	}
 	if inherited == nil {
-		t.Fatal("找不到继承上下文的子会话")
+		t.Fatal("找不到继承上下文的任务会话")
 	}
 	raw, _ = a.Store.RawMessagesAll(inherited.ID)
 	if len(raw) < 3 || raw[0].Kind != inheritKind {
@@ -363,9 +377,8 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "子对话不能再派发子对话") {
 		t.Fatalf("拒绝原因不明确: %v", err)
 	}
-	// 且不因被拒不登记子会话
-	kids, _ = a.Store.Children(inherited.ID)
-	if len(kids) != 0 {
-		t.Fatalf("被拒的派发不该留下子会话，实际 %d 个", len(kids))
+	// 且不因被拒不登记新任务（仍是原有的 2 个派生会话）
+	if n := len(byMe()); n != 2 {
+		t.Fatalf("被拒的派发不该留下会话，实际 %d 个", n)
 	}
 }

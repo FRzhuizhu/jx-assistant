@@ -627,13 +627,6 @@ function sessionItem(s) {
   return item;
 }
 
-const prevStatus = {}; // 会话id -> 上一快照的 status（识别 running→idle 的完成翻转）
-function aRunJustEnded(id) {
-  const cur = (state.sessions.find((x) => x.id === id) || {}).status;
-  const was = prevStatus[id];
-  return was === 'running' && cur !== 'running';
-}
-
 /* ---------- 回收站视图：点底部「回收站」，整个工作区列表切成回收站 ----------
    回收站内容 = 已移入回收站的工作目录（jx.wsrecycled）+ 已归档会话（archived=1）
    以及挂在回收目录下的对话（它们在正常视图里被整组隐藏）。 */
@@ -822,7 +815,6 @@ function renderBin(box) {
 async function loadSessionsNow() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
-  (state.sessions || []).forEach((x) => { prevStatus[x.id] = x.status; });
   const box = $('session-list');
   box.innerHTML = '';
   if (binView) { renderBin(box); return; } // 回收站视图：整个列表换成回收站内容
@@ -1041,6 +1033,7 @@ function detachComposerToWrap() {
 
 function resetEmpty() {
   detachComposerToWrap();
+  state._pfxSid = null; // 回到首页：消息区的增量渲染缓存失效
   $('msg-col').innerHTML =
     '<div class="home">' +
       '<div class="hero">' +
@@ -1306,9 +1299,11 @@ function renderSubDDPop() {
 async function openSubSession(id) {
   // 右栏换子对话：同样先放开本地这条流（后端执行照旧，回来自动接上）
   if (subState.streaming && (!subState.cur || subState.cur.id !== id)) detachStream(subView);
+  const tok = ++navTok.sub;
   navBusy.sub = true;
   try {
     const data = await api('/api/sessions/' + id);
+    if (tok !== navTok.sub) return; // 已被更新的导航取代：晚到的旧响应不落地
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
@@ -1319,7 +1314,7 @@ async function openSubSession(id) {
     subState.streamText = '';
     subState.streamThinking = '';
     subRenderHeader();
-    renderMessages(subState.msgs, subView);
+    renderMessages(subState.msgs, subView, { jump: true });
     renderQueueDock(subView);
     syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
     // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有就是空，不残留上一个子对话的字）
@@ -1330,7 +1325,7 @@ async function openSubSession(id) {
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
     if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
   } catch (e) { /* 打不开就保持原状 */ } finally {
-    navBusy.sub = false;
+    if (tok === navTok.sub) navBusy.sub = false;
   }
 }
 
@@ -1410,12 +1405,17 @@ function clearSubDraftLS(id) {
   try { localStorage.removeItem(subDraftKey(id)); } catch (e) {}
 }
 
-// 会话彻底删除时连带清掉它的本地痕迹（主草稿/子草稿）
+// 会话彻底删除时连带清掉它的本地痕迹（主草稿/子草稿与内存里的过程缓存）
 function removeSessionLocalData(id) {
   try {
     localStorage.removeItem(sessionDraftKey(id));
     localStorage.removeItem(subDraftKey(id));
   } catch (e) {}
+  delete subActs[id];
+  delete subDone[id];
+  delete dotApproval[id];
+  delete dotDone[id];
+  Object.keys(turnOpen).forEach((k) => { if (k.indexOf(id + ':') === 0) delete turnOpen[k]; });
 }
 
 function restoreHomeDraftLS() {
@@ -1453,6 +1453,9 @@ async function openAssistant() {
 // 「新工作任务」不立即建会话：留在首页聚焦输入框，发出第一条消息才真正创建
 function goHomeNewTask() {
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
+  navTok.main++;          // 作废在途的会话加载（回首页是同步完成的导航）
+  navBusy.main = false;
+  state._pfxSid = null;   // 消息区的增量渲染缓存随之失效
   state.cur = null;
   loadTodos();
   state.msgs = [];
@@ -1466,16 +1469,20 @@ async function openSession(id) {
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
+  const tok = ++navTok.main;
   navBusy.main = true;
   try {
-    await loadSessionInto(id);
+    await loadSessionInto(id, tok);
   } finally {
-    navBusy.main = false;
+    // 只有仍是最新一次导航才解禁（被更新的导航顶掉时，由它自己负责收尾）
+    if (tok === navTok.main) navBusy.main = false;
   }
 }
 
-async function loadSessionInto(id) {
+async function loadSessionInto(id, tok) {
   const data = await api('/api/sessions/' + id);
+  // 已被更新的导航（切换/回首页）取代：晚到的旧响应不落地，否则会把界面顶回旧会话
+  if (tok !== navTok.main) return;
   state.cur = data.meta;
   state.msgs = data.messages || [];
   state.pendingSteer = (data.pending && data.pending.steer) || [];
@@ -1507,7 +1514,7 @@ async function loadSessionInto(id) {
   placeComposer();
   syncComposer();
   loadTodos();
-  renderMessages(state.msgs);
+  renderMessages(state.msgs, mainView, { jump: true });
   renderQueueDock(mainView);
   // 打开即视为已读：清红点与绿点
   delete dotDone[id];
@@ -2024,9 +2031,24 @@ function renderItem(it, opts) {
 
 /* 数字助理派发/转达的子任务卡片：后台执行期间显示实时工具活动，完成后标已完成 */
 const subActs = {}; // 子会话id -> 最近几条工具活动
-const subDone = {}; // 子会话id -> 是否已完成（内存态；重载后由回报消息体现）
+const subDone = {}; // 子会话id -> 是否已完成（内存态；跨刷新由回报消息补判，见 reportedSubs）
 const dotApproval = {}; // 会话id -> 待审批（橙点）
 const dotDone = {};     // 会话id -> 完成未查看（绿点）
+
+// 【派发回报】消息中出现过的子会话 id（渲染期间有效）：子任务卡据此在刷新/
+// 重新打开会话后也能正确显示「已完成」，不依赖内存里的 subDone 标记
+let reportedSubs = new Set();
+function scanReported(msgs) {
+  const s = new Set();
+  for (const m of msgs) {
+    if (m.role !== 'user') continue;
+    const txt = String(m.content ?? '');
+    if (!txt.startsWith('【派发回报】')) continue;
+    const hit = txt.match(/（([^\s（）]+)）/); // 回报格式：…「标题」（会话id）本轮结束
+    if (hit) s.add(hit[1]);
+  }
+  return s;
+}
 
 function subActNode(sid) {
   return document.querySelector(`.subtask-card[data-sid="${sid}"] .st-act`);
@@ -2059,10 +2081,11 @@ function subTaskCard(tc, result) {
   try { args = JSON.parse(tc.function && tc.function.arguments) || {}; } catch (e) { /* 参数原样忽略 */ }
   const out = String((result && result.content) || '');
   // 后台派发：立即返回文本里带子会话 id；旧版同步结果则以「已完成」呈现
-  const sidMatch = out.match(/已派发后台执行：会话 (\S+)「/) || out.match(/^会话ID:\s*(\S+)$/m);
+  // （id 不能用 \S+ 贪婪匹配：后面的文案没有空格，会把整句中文都吞进 id）
+  const sidMatch = out.match(/已派发后台执行：会话 ([^\s「]+)「/) || out.match(/^会话ID:\s*(\S+)$/m);
   const sid = sidMatch ? sidMatch[1] : '';
   const dispatched = out.includes('已派发后台执行');
-  const done = subDone[sid] || (result && !dispatched);
+  const done = (sid && reportedSubs.has(sid)) || subDone[sid] || (result && !dispatched);
   const running = !done;
   const title = args.title || String(args.task || '').slice(0, 30) || '子任务';
   const d = document.createElement('div');
@@ -2190,56 +2213,108 @@ function deliveryCard(dvs, sid) {
   return card;
 }
 
-function renderMessages(msgs, view) {
-  view = view || mainView;
-  const box = view.col;
-  box.innerHTML = '';
-  if (!msgs.length) {
-    box.innerHTML = view.emptyHTML;
+/* 渲染契约（性能与滚动）：
+   - 前缀复用：最后一个真实用户消息之前的所有回合（含继承段、文件改动面板、
+     交付卡）只在结构变化时整体重建；流式期间的 message 事件只重建尾部
+     （最后一回合 + 待生效插话），前缀的折叠状态与阅读位置不被整列重渲冲掉。
+   - 跟随滚动：默认只在原本就贴近底部时跟随输出（流式中上翻阅读不被拽回）；
+     jump=true（打开会话/首次渲染）强制到底。 */
+
+// 尾部 = 从最后一个真实用户消息起的回合；没有真实用户消息则返回 -1（全算尾部）
+function lastTurnStart(msgs) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role === 'user' && !isSysNote(String(m.content ?? ''))) return i;
+  }
+  return -1;
+}
+
+// 跟随滚动：距底部 <120px 视为「正在跟随」；jump 强制到底
+function followScroll(view, jump) {
+  const el = view.scroll;
+  if (!jump && el.scrollHeight - el.scrollTop - el.clientHeight >= 120) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+// 渲染单个回合（用户气泡 + 过程折叠 + 完成态收尾件）；isLast 决定是否走流式尾部窗口
+function appendTurn(target, turn, key, view, isLast) {
+  if (turn.userMsg) target.appendChild(userBubble(turn.userMsg, view));
+  if (isLast && view.state.streaming) {
+    renderStreamingTurn(target, turn, key);
     return;
   }
+  renderFinishedTurn(target, turn, key);
+  const seqSet = new Set();
+  turn.items.forEach((it) => { if (it.seq != null) seqSet.add(it.seq); });
+  if (!seqSet.size) return;
+  const sid = (view.state.cur && view.state.cur.id) || '';
+  const cps = (view.state.checkpoints || []).filter((c) => seqSet.has(c.seq));
+  if (cps.length) target.appendChild(fileChangesPanel(cps, [...seqSet], view));
+  const dvs = (view.state.deliveries || []).filter((d) => seqSet.has(d.seq));
+  if (dvs.length) target.appendChild(deliveryCard(dvs, sid));
+}
+
+function renderMessages(msgs, view, opts) {
+  view = view || mainView;
+  const st = view.state;
+  const box = view.col;
+  if (!msgs.length) {
+    st._pfxSid = null;
+    box.innerHTML = view.emptyHTML;
+    view.scroll.scrollTop = view.scroll.scrollHeight;
+    return;
+  }
+  const jump = !!(opts && opts.jump);
+  reportedSubs = scanReported(msgs); // 子任务卡片的完成态依据（渲染期间同步使用）
   const resultOf = {};
   for (const m of msgs) {
     if (m.role === 'tool' && m.tool_call_id) resultOf[m.tool_call_id] = m;
   }
-  const sid = (view.state.cur && view.state.cur.id) || '';
+  const sid = (st.cur && st.cur.id) || '';
   // 子对话开头的继承段（后端克隆父对话时写入的标记行 + N 条历史）：
   // 折叠成一条「来自主对话」折叠条，其余消息照常渲染
-  let inherited = null, rest = msgs;
+  let inherited = null, rest = msgs, off = 0;
   if (msgs[0].kind === 'inherit') {
     let n = 0;
     try { n = JSON.parse(String(msgs[0].content ?? '{}')).count || 0; } catch (e) { /* 坏行就当没有继承段 */ }
     inherited = msgs.slice(1, 1 + n);
     rest = msgs.slice(1 + n);
+    off = 1 + n;
   }
-  if (inherited && inherited.length) box.appendChild(inheritBlock(inherited, resultOf, sid));
-  if (inherited && !rest.length) {
-    const empty = document.createElement('div');
-    empty.innerHTML = view.emptyHTML;
-    box.appendChild(empty);
-  }
+  const kRel = lastTurnStart(rest);
+  const k = kRel < 0 ? off : off + kRel; // 前缀长度：无真实用户消息时继承段之后全算尾部
   const turns = groupTurns(rest, resultOf);
-  turns.forEach((turn, ti) => {
-    if (turn.userMsg) box.appendChild(userBubble(turn.userMsg, view));
-    const key = sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti);
-    const streaming = ti === turns.length - 1 && view.state.streaming;
-    if (streaming) renderStreamingTurn(box, turn, key);
-    else {
-      renderFinishedTurn(box, turn, key);
-      // 完成态回合的收尾件：文件改动面板（可撤销）与交付成果卡片
-      const seqSet = new Set();
-      turn.items.forEach((it) => { if (it.seq != null) seqSet.add(it.seq); });
-      if (seqSet.size) {
-        const cps = (view.state.checkpoints || []).filter((c) => seqSet.has(c.seq));
-        if (cps.length) box.appendChild(fileChangesPanel(cps, [...seqSet], view));
-        const dvs = (view.state.deliveries || []).filter((d) => seqSet.has(d.seq));
-        if (dvs.length) box.appendChild(deliveryCard(dvs, sid));
-      }
+  // 前缀可复用：同会话、分界没动、分界前最后一条 seq 未变、前缀 DOM 还在
+  const reusable = st._pfxSid === sid && st._pfxLen === k && k > 0
+    && msgs[k - 1] && msgs[k - 1].seq === st._pfxSeq
+    && st._pfxNodes > 0 && box.children.length >= st._pfxNodes;
+  if (!reusable) {
+    box.innerHTML = '';
+    if (inherited && inherited.length) box.appendChild(inheritBlock(inherited, resultOf, sid));
+    if (inherited && !rest.length) {
+      const empty = document.createElement('div');
+      empty.innerHTML = view.emptyHTML;
+      box.appendChild(empty);
     }
-  });
+    turns.forEach((turn, ti) => {
+      if (ti === turns.length - 1) return; // 最后一回合属尾部
+      appendTurn(box, turn, sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti), view, false);
+    });
+    st._pfxSid = sid;
+    st._pfxLen = k;
+    st._pfxSeq = msgs[k - 1] ? msgs[k - 1].seq : 0;
+    st._pfxNodes = box.children.length;
+  }
+  // 尾部每次全量重建：最后一回合（流式中走尾部窗口）+ 待生效插话
+  while (box.children.length > st._pfxNodes) box.removeChild(box.lastChild);
+  const tail = document.createDocumentFragment();
+  const last = turns[turns.length - 1];
+  if (last) {
+    appendTurn(tail, last, sid + ':' + (last.userMsg ? last.userMsg.seq : 'head' + (turns.length - 1)), view, true);
+  }
   // 已插话、等下一次调用模型生效的消息：直接落在对话最底下（与已发送的用户消息
   // 同一套气泡外观，只多一个「插话中」角标），落库后由 message 事件替换成正常气泡
-  (view.state.pendingSteer || []).forEach((pm) => {
+  (st.pendingSteer || []).forEach((pm) => {
     const wrap = document.createElement('div');
     wrap.className = 'msg user pending-steer';
     wrap.dataset.pendingSteer = pm.id;
@@ -2251,9 +2326,10 @@ function renderMessages(msgs, view) {
     b.appendChild(badge);
     b.appendChild(document.createTextNode(pm.content));
     wrap.appendChild(b);
-    box.appendChild(wrap);
+    tail.appendChild(wrap);
   });
-  view.scroll.scrollTop = view.scroll.scrollHeight;
+  box.appendChild(tail);
+  followScroll(view, jump);
 }
 
 // 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与系统通知也常显；
@@ -2338,7 +2414,7 @@ function liveRender(view) {
       tk.style.display = 'none';
     }
     el.querySelector('.md').innerHTML = md(view.state.streamText);
-    view.scroll.scrollTop = view.scroll.scrollHeight;
+    followScroll(view, false); // 贴近底部才跟随：流式中上翻阅读不被拽回
   });
 }
 
@@ -2363,6 +2439,11 @@ function removeLive(view) {
 // 打开/切换会话的导航状态：切换在途时，旧会话事件触发的「就地翻新」要让路，
 // 否则一次切换会被旧会话的刷新顶回去（表现为点了别的会话却切不动）
 const navBusy = { main: false, sub: false };
+// 导航令牌：每次切换/回首页自增，响应落地前对不上令牌即丢弃。
+// 只靠 navBusy 挡不住「晚到的旧响应反超新导航」——完成事件触发的重载与用户
+// 点击并发时，旧的大响应可能后到获胜，把界面顶回旧会话（实测的「输出完成后
+// 被强切回完成的对话」即此）。令牌保证永远以最后一次导航为准。
+const navTok = { main: 0, sub: 0 };
 
 function refreshCurrent() {
   if (navBusy.main) return; // 正在切换：别插队
@@ -2398,19 +2479,12 @@ function handleGlobalEvent(ev) {
       loadSessions();
       refreshDrawer();
       if (subViewing && !subState.streaming) refreshCurrentSub(); // 右栏子对话就地翻新
-      if (!state.streaming) renderMessages(state.msgs); // 卡片状态就地翻新
-      break;
-    case 'delta':
-      // 自动汇报轮的流式输出（当前正看这个会话且本地没有流在进行）
-      if (viewing && !state.streaming) { state.streamText += ev.delta; liveRender(); }
-      if (subViewing && !subState.streaming) { subState.streamText += ev.delta; liveRender(subView); }
-      if (state.cur && state.cur.mode === 'assistant') setFace('thinking');
-      break;
-    case 'reasoning':
-      if (viewing && !state.streaming) { state.streamThinking = (state.streamThinking || '') + ev.delta; liveRender(); }
-      if (subViewing && !subState.streaming) { subState.streamThinking = (subState.streamThinking || '') + ev.delta; liveRender(subView); }
+      // 主对话区正显示派发它的那个会话（子任务卡在场）才翻新卡片状态；
+      // 否则不动——不冲掉别的会话/首页的界面，也不拽走阅读位置
+      if (state.cur && !state.streaming && subActNode(ev.sessionId)) renderMessages(state.msgs);
       break;
     case 'message':
+      // 待办派发等后台落库的用户消息（todo.go 广播）：正看着这个会话就整体翻新
       if (viewing && !state.streaming && ev.message && ev.message.role === 'user') refreshCurrent();
       break;
     case 'pending':
@@ -2419,17 +2493,29 @@ function handleGlobalEvent(ev) {
       if (subState.cur && ev.sessionId === subState.cur.id) applyPending(subView, ev.pending);
       break;
     case 'stopped':
-      if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
-      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); refreshCurrentSub(); }
+      // 用户显式停止（runtime.go 终态广播）：不算「完成未查看」，只刷列表
+      loadSessions();
+      if (viewing && !state.streaming) refreshCurrent();
       break;
     case 'done':
-      if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
-      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); refreshCurrentSub(); }
-      if (state.cur && state.cur.mode === 'assistant') setFace('done', 4000);
+      // 一轮执行结束（含数字助理的自动汇报轮）：没正看着这个会话就点亮绿点，
+      // 打开会话即清；正看着则就地翻新出最终结果
+      if (!viewing) dotDone[ev.sessionId] = true;
+      loadSessions();
+      refreshDrawer();
+      if (viewing && !state.streaming) refreshCurrent();
+      if ((state.sessions.find((s) => s.id === ev.sessionId) || {}).mode === 'assistant') setFace('done', 4000);
       break;
     case 'report_ready':
+      // 子智能体/派发任务的回报已落库（数字助理与普通任务派发同走这里）：
+      // 没正看着父会话就点亮「完成未查看」绿点；正看着则整体翻新，
+      // 并自动接上服务端随回报启动的汇报轮，实时看到汇报输出
+      if (!viewing) dotDone[ev.sessionId] = true;
+      loadSessions();
+      refreshDrawer();
+      if (viewing && !state.streaming) refreshCurrent();
+      break;
     case 'session_updated':
-      if (!viewing && ev.type === 'session_updated') dotDone[ev.sessionId] = dotDone[ev.sessionId] || aRunJustEnded(ev.sessionId);
       loadSessions().then(() => {
         // 权限被审批提升（如「始终允许」把会话切到完全访问）时，
         // 流式中的当前会话也立即同步权限芯片/面板
@@ -2460,12 +2546,9 @@ function handleGlobalEvent(ev) {
     case 'todos':
       loadTodos();
       break;
-    case 'error':
-      // 真实失败（模型/网络/费用等）：进输入框上方的报错条，不往对话里插内容
-      if (viewing) showRunError(mainView, ev.error);
-      if (subViewing) showRunError(subView, ev.error);
-      if (viewing && !state.streaming) refreshCurrent();
-      break;
+    // 说明：delta/reasoning 不上全局总线（流式增量只走会话自己的 SSE）；
+    // 真实失败也不广播——错误经会话详情的 error 字段到达
+    // （session_updated → refreshCurrent → openSession 会带出报错条）
   }
 }
 
@@ -2897,7 +2980,8 @@ function handleEvent(ev, view) {
       $('hint').textContent = '';
       break;
     case 'title':
-      if (view === mainView && state.cur && ev.sessionId === state.cur.id && state.cur.title !== '数字助理主对话') {
+      // 首条消息自动起标题（服务端只在会话标题为空时才发）；跟随当前会话更新顶栏
+      if (view === mainView && state.cur && ev.sessionId === state.cur.id) {
         $('sess-title').textContent = ev.title;
       }
       break;
@@ -3000,8 +3084,7 @@ async function retryRun(view) {
   await endTurn(view, aborted, { sid: cur.id, abort: view.state.abort });
 }
 
-// endTurn 一轮结束后的收尾（send / retry / attach 共用）：收流式、对齐状态、刷新周边
-// endTurn 一轮结束后的收尾（send / retry / edit / attach 共用）。
+// endTurn 一轮结束后的收尾（send / retry / edit / attach 共用）：收流式、对齐状态、刷新周边。
 // stream = {sid, abort} 用于辨认「这条流还算不算当前界面的」：用户中途切到别的
 // 会话（detachStream）或又接了别的流时，这条流的收尾不再动界面。
 async function endTurn(view, aborted, stream) {
@@ -3213,7 +3296,13 @@ async function send(forceContent, view) {
       view.state.streamText = '';
       view.state.streamThinking = '';
       renderMessages(view.state.msgs, view);
-      if (!(await backendRunning(view.state.cur.id, view))) showRunError(view, '请求失败：' + e.message);
+      if (await backendRunning(view.state.cur.id, view)) {
+        // 后端刚被别的路径拉起执行（自动汇报/排队排水/别的窗口在发），这条消息
+        // 被拒了：降级为插话/排队（在服务端排队，不丢），endTurn 会接上那轮继续看
+        await sendMidrun(content, false, view);
+      } else {
+        showRunError(view, '请求失败：' + e.message);
+      }
     }
   }
   await endTurn(view, aborted, { sid, abort: view.state.abort });

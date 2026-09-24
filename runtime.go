@@ -371,6 +371,9 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 		// delta/reasoning 这类高频事件不广播，否则会打出一串无效请求
 		switch ev.Type {
 		case "delta", "reasoning", "tool_start", "tool_end", "tool_wait", "resume", "pending":
+		case "done", "stopped":
+			// 终态原样进全局总线：前端据此点亮「完成未查看」绿点并刷新侧栏
+			a.broadcast(ev)
 		default:
 			a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
 		}
@@ -477,25 +480,30 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	msgs, _ := a.Store.Messages(sub.ID)
 	summary := renderSummary(a, sub, msgs)
 	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
-		Message: TextMessage("user", "【派发回报】子会话「"+sub.Title+"」（"+sub.ID+"）本轮结束。\n\n"+summary+
+		Message: TextMessage("user", "【派发回报】任务会话「"+sub.Title+"」（"+sub.ID+"）本轮结束。\n\n"+summary+
 			"\n\n请用用户听得懂的话汇报这件事的结果。"),
 		Kind: "report", CreatedAt: now(),
 	})
-	a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
-	// 主对话空闲则自动跑一轮汇报；正被用户占用就等下轮对话自然带出
+	// 先登记自动汇报轮再广播回报就绪：前端收到 report_ready 重查会话时必见
+	// running，能立刻接上汇报轮的流、实时看到汇报输出（正被用户占用就等下轮
+	// 对话自然带出）
+	prun, started := (*sessionRun)(nil), false
 	if parent.Mode == "assistant" {
-		if prun, ok := a.beginRun(parent.ID); ok {
-			go func() {
-				defer a.finishRun(parent.ID)
-				prun.publish(Event{Type: "run_start"})
-				_ = a.RunAgent(prun.ctx, parent, func(ev Event) {
-					ev.SessionID = parent.ID
-					prun.observe(ev)
-					prun.publish(ev)
-				})
-				a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
-			}()
-		}
+		prun, started = a.beginRun(parent.ID)
+	}
+	a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
+	if started {
+		go func() {
+			defer a.finishRun(parent.ID)
+			prun.publish(Event{Type: "run_start"})
+			_ = a.RunAgent(prun.ctx, parent, func(ev Event) {
+				ev.SessionID = parent.ID
+				prun.observe(ev)
+				prun.publish(ev)
+			})
+			a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
+			a.broadcast(Event{Type: "done", SessionID: parent.ID}) // 汇报轮结束：未查看的会话点亮绿点
+		}()
 	}
 }
 
@@ -512,13 +520,19 @@ func (a *App) recoverInterrupted() {
 			Kind:    "report", CreatedAt: now(),
 		})
 		_ = a.Store.UpdateStatus(s.ID, "idle")
-		if s.ParentID != "" {
-			if p, perr := a.Store.Get(s.ParentID); perr == nil && p.Mode == "assistant" {
-				_ = a.Store.AppendRow(p.ID, &StoredMessage{
-					Message: TextMessage("user", "【派发回报】子会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
-					Kind:    "report", CreatedAt: now(),
-				})
-			}
+	// 中断回报的归属：优先派发链（dispatched_by），人工子对话退回父会话；
+	// 对方是助理主对话才值得补一条回报
+	owner := s.DispatchedBy
+	if owner == "" {
+		owner = s.ParentID
+	}
+	if owner != "" {
+		if p, perr := a.Store.Get(owner); perr == nil && p.Mode == "assistant" {
+			_ = a.Store.AppendRow(p.ID, &StoredMessage{
+				Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
+				Kind:    "report", CreatedAt: now(),
+			})
 		}
+	}
 	}
 }
