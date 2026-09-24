@@ -1881,7 +1881,7 @@ function groupTurns(msgs, resultOf) {
       for (const tc of m.tool_calls || []) {
         const n = (tc.function && tc.function.name) || '';
         cur.items.push({
-          k: (n === 'dispatch_task' || n === 'send_to_session') ? 'subtask' : 'tool',
+          k: (n === 'dispatch_task' || n === 'dispatch_sub' || n === 'send_to_session') ? 'subtask' : 'tool',
           seq: m.seq, tc, result: resultOf[tc.id],
         });
       }

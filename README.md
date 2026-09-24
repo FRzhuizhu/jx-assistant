@@ -210,8 +210,8 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 ## 子对话：上下文继承与一级限制
 
-子对话只有一级（人工新建的分支克隆不能再建/再派发子对话）；助理派发的工作
-任务是顶层会话，不占一级名额。
+子对话只有一级（无论 AI 派发还是人工新建，都不能再派发/再建子对话）；
+数字助理派发的工作任务是顶层会话，不占一级名额。
 
 - **人工新建＝分支克隆**：右栏「＋ 新建」建的子对话照抄父会话的模式、工作区、
   远程配置、模型、权限与能力开关（因此**系统提示词、工具目录、历史全部一致**），
@@ -233,13 +233,15 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 | 模式 | 说明 | 工具 |
 |---|---|---|
-| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / todo_write + 历史查询 |
-| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / dispatch_task / send_to_session + 历史查询 |
+| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / todo_write + **dispatch_sub（派子对话）** + 历史查询 |
+| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
 
-**派发关系**：数字助理 `dispatch_task` 派出的是**顶层工作任务**（进左侧栏，
-`dispatched_by` 记派发它的助理、作为回报链），不是子对话。右栏子对话只装
-人工新建的分支克隆（挂 `parent_id`、`origin=human`），不进左侧栏。
+**派发关系**：数字助理有两个派发工具——`dispatch_task` 派出**顶层工作任务**
+（进左侧栏，`dispatched_by` 记派发它的助理、作为回报链）；`dispatch_sub` 派出
+**子对话**（挂在当前会话下、右栏抽屉可见，完成后回报并触发父会话继续）。
+工作任务同样只有 `dispatch_sub`。右栏子对话因此可能来自 AI 派发或人工新建
+（人工的挂 `parent_id`、`origin=human`，不进左侧栏；一级限制对所有子对话生效）。
 
 ## 执行的生死与对话中途发消息
 
@@ -270,12 +272,14 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 ## 后台派发与自动回报
 
-`dispatch_task` / `send_to_session` 立即返回，任务会话在后台 goroutine 并行执行；
+`dispatch_task` / `dispatch_sub` / `send_to_session` 立即返回，被派发的会话在后台
+goroutine 并行执行；
 进度经全局事件流 `GET /api/events` 实时推送（sub_start / sub_tool / sub_end /
-report_ready / done / stopped），前端常驻订阅：主对话里的子任务卡片实时滚动工具
-活动，完成后自动注入【派发回报】并触发一轮面向用户的汇报（正看着主对话时会自动
-接上汇报轮的流、实时看输出；没在看则侧栏亮「完成未查看」绿点，打开即清）。服务
-重启时未完成的执行会补
+report_ready / done / stopped），前端常驻订阅：父对话里的子任务卡片实时滚动工具
+活动，完成后自动注入【派发回报】（助理主对话收到「向用户汇报」的指示、工作任务
+收到「带着结果继续推进」的指示），父会话空闲则自动跑一轮消化回报——正看着父
+会话时会自动接上这轮流、实时看输出；没在看则侧栏亮「完成未查看」绿点，打开即清。
+服务重启时未完成的执行会补
 【系统中断】记录，发「继续」即可接续（原始历史完整保留）。
 
 ## 上下文管理（核心特色）

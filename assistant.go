@@ -132,7 +132,88 @@ func (t *toolContext) launchSub(sub *SessionMeta, note string) (string, error) {
 	t.emit(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
 	go t.app.runSubAgent(t.sess, sub, run)
 	return fmt.Sprintf("已派发后台执行：会话 %s「%s」。%s本工具立即返回，不要等待；"+
-		"任务会话完成后系统会自动收到压缩摘要并触发你向用户汇报。现在可以先回用户一句「已经安排」。", sub.ID, sub.Title, note), nil
+		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。", sub.ID, sub.Title, note), nil
+}
+
+// dispatchExtras 应用派发工具的可选项：可选模型（providerId/modelId 或纯
+// modelId）与远程工作区继承（dispatch_task / dispatch_sub 共用）。
+func (t *toolContext) dispatchExtras(sub *SessionMeta, model string) {
+	if m := strings.TrimSpace(model); m != "" {
+		provider, mdl := "", m
+		if i := strings.Index(m, "/"); i > 0 {
+			provider, mdl = m[:i], m[i+1:]
+		}
+		if t.app.providerByID(provider) != nil {
+			sub.Provider = provider
+		}
+		if mdl != "" {
+			sub.Model = mdl
+		}
+	}
+	// 远程工作区继承：派发方挂了 SSH 远程工作区时，被派发的会话默认在同一远程环境执行
+	if t.sess.Remote != nil {
+		r := *t.sess.Remote
+		sub.Remote = &r
+	}
+}
+
+func dispatchSubTool() Tool {
+	return Tool{
+		Spec: toolSpec("dispatch_sub", "新建一个子对话（挂在本对话下，右栏可见），把一块自洽的子任务交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，子对话完成后结果自动回报到本对话并触发你继续。子对话只有一级，不能再派发。",
+			objSchema(map[string]any{
+				"task":      strProp("完整子任务描述，自带全部上下文（目标、验收标准、涉及目录）"),
+				"title":     strProp("给子对话起的标题，可省略"),
+				"workspace": strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区"),
+				"model":     strProp("可选：子对话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
+			}, "task")),
+		Run: runDispatchSub,
+	}
+}
+
+// runDispatchSub 派发子对话：被派发的是挂在当前会话下的 task 会话（右栏抽屉
+// 可见），回报链就是 parent_id。主对话与工作任务（task/office）都可派；
+// 子对话本身不能再派发（只有一级）。
+func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Task      string `json:"task"`
+		Title     string `json:"title"`
+		Workspace string `json:"workspace"`
+		Model     string `json:"model"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(p.Task) == "" {
+		return "", fmt.Errorf("task 不能为空")
+	}
+	// 工具按模式分发，但人工把会话克隆成子对话后模式照旧、工具还在手里，
+	// 这里硬拦，保证子对话只有一级
+	if t.sess.ParentID != "" {
+		return "", fmt.Errorf("子对话不能再派发子对话（只有一级）；请把这块工作直接做掉")
+	}
+	ws := t.workspace()
+	if strings.TrimSpace(p.Workspace) != "" {
+		ws = p.Workspace
+	}
+	title := strings.TrimSpace(p.Title)
+	if title == "" {
+		title = truncateRunes(p.Task, 20)
+	}
+	sub := &SessionMeta{
+		ID:        newID(),
+		Title:     title,
+		Mode:      "task",
+		Workspace: ws,
+		ParentID:  t.sess.ID, // 子对话挂在当前会话下；回报链走 parent_id
+		CreatedAt: now(),
+		UpdatedAt: now(),
+	}
+	t.dispatchExtras(sub, p.Model)
+	if err := t.app.Store.Create(sub); err != nil {
+		return "", err
+	}
+	t.app.appendMessage(sub, TextMessage("user", "【派发子对话】\n\n"+p.Task))
+	return t.launchSub(sub, "")
 }
 
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
@@ -172,24 +253,7 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		CreatedAt: now(),
 		UpdatedAt: now(),
 	}
-	// 可选模型：providerId/modelId 或纯 modelId
-	if m := strings.TrimSpace(p.Model); m != "" {
-		provider, model := "", m
-		if i := strings.Index(m, "/"); i > 0 {
-			provider, model = m[:i], m[i+1:]
-		}
-		if t.app.providerByID(provider) != nil {
-			sub.Provider = provider
-		}
-		if model != "" {
-			sub.Model = model
-		}
-	}
-	// 远程工作区继承：主对话挂了 SSH 远程工作区时，子任务默认在同一远程环境执行
-	if t.sess.Remote != nil {
-		r := *t.sess.Remote
-		sub.Remote = &r
-	}
+	t.dispatchExtras(sub, p.Model)
 	if err := t.app.Store.Create(sub); err != nil {
 		return "", err
 	}

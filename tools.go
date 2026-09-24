@@ -99,9 +99,9 @@ func (t *toolContext) resolve(p string) (string, error) {
 	return filepath.Abs(p)
 }
 
-// toolsFor 按会话模式返回可用工具。数字助理总控只拥有编排类工具
-// （不亲自读写文件、不执行命令）；任务会话拥有全部实操工具；
-// 辅助对话只有只读工具（定位是答疑，不修改任何东西）。
+// toolsFor 按会话模式返回可用工具。数字助理总控拥有编排类工具（不亲自读写
+// 文件、不执行命令）；任务会话拥有全部实操工具 + 子对话派发；辅助对话只有
+// 只读工具（定位是答疑，不修改任何东西）。
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
 // （见 agent.go 的 suspendedInPlan）；exit_plan_mode / update_goal 因此常驻。
@@ -111,7 +111,7 @@ func (a *App) toolsFor(mode string) []Tool {
 	// 各模式都有；组件关掉时为空。
 	todos := a.todoTools()
 	if mode == "assistant" {
-		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool(),
+		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), dispatchSubTool(), sendToSessionTool(),
 			exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	}
 	if mode == "aux" {
@@ -122,7 +122,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(),
-		snapshotFileTool(), deliverResultTool(),
+		snapshotFileTool(), deliverResultTool(), dispatchSubTool(),
 		askUserQuestionTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)

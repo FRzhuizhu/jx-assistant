@@ -382,3 +382,66 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 		t.Fatalf("被拒的派发不该留下会话，实际 %d 个", n)
 	}
 }
+
+// dispatch_sub 派发子对话：主对话与工作任务都可派（挂在当前会话下，
+// 右栏抽屉可见）；子对话本身不能再派（只有一级）。
+func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
+	a := newTestApp(t, "rule", 5, 5)
+	a.Cfg.BaseURL = "mock" // 后台子会话走内置演示模型，离线可跑
+	assistant := &SessionMeta{ID: "a1", Mode: "assistant", Workspace: "ws", CreatedAt: now(), UpdatedAt: now()}
+	task := &SessionMeta{ID: "t1", Mode: "task", Workspace: "ws", CreatedAt: now(), UpdatedAt: now()}
+	if err := a.Store.Create(assistant); err != nil {
+		t.Fatalf("建总控会话失败: %v", err)
+	}
+	if err := a.Store.Create(task); err != nil {
+		t.Fatalf("建任务会话失败: %v", err)
+	}
+
+	// 工作任务派子对话：挂在任务下、mode=task
+	tctx := &toolContext{app: a, sess: task, emit: func(Event) {}}
+	out, err := runDispatchSub(tctx, json.RawMessage(`{"task":"把附录单独整理成一份"}`))
+	if err != nil {
+		t.Fatalf("任务派发子对话失败: %v", err)
+	}
+	if !strings.Contains(out, "已派发后台执行") {
+		t.Fatalf("返回文案异常: %s", out)
+	}
+	kids, _ := a.Store.Children("t1")
+	if len(kids) != 1 || kids[0].Mode != "task" || kids[0].ParentID != "t1" || kids[0].DispatchedBy != "" {
+		t.Fatalf("子对话应挂在 t1 下且不带 dispatched_by（mode=%q parent=%q disp=%q n=%d）",
+			kids[0].Mode, kids[0].ParentID, kids[0].DispatchedBy, len(kids))
+	}
+	raw, _ := a.Store.RawMessagesAll(kids[0].ID)
+	if len(raw) != 1 || !strings.Contains(raw[0].Text(), "【派发子对话】") {
+		t.Fatalf("子对话应只含一条派发需求，实际 %d 条", len(raw))
+	}
+
+	// 主对话也能派子对话
+	actx := &toolContext{app: a, sess: assistant, emit: func(Event) {}}
+	if _, err := runDispatchSub(actx, json.RawMessage(`{"task":"查个资料"}`)); err != nil {
+		t.Fatalf("主对话派发子对话失败: %v", err)
+	}
+	kids, _ = a.Store.Children("a1")
+	if len(kids) != 1 {
+		t.Fatalf("主对话名下应有 1 个子对话，实际 %d 个", len(kids))
+	}
+
+	// 子对话不能再派（一级限制）
+	sctx := &toolContext{app: a, sess: kids[0], emit: func(Event) {}}
+	if _, err := runDispatchSub(sctx, json.RawMessage(`{"task":"再派一个"}`)); err == nil || !strings.Contains(err.Error(), "只有一级") {
+		t.Fatalf("子对话再派应被拒（只有一级），实际 err=%v", err)
+	}
+	// 被拒不留下新会话
+	if n := len(mustChildren(t, a, "t1")); n != 1 {
+		t.Fatalf("被拒的派发不该留下会话，实际 %d 个", n)
+	}
+}
+
+func mustChildren(t *testing.T, a *App, id string) []*SessionMeta {
+	t.Helper()
+	kids, err := a.Store.Children(id)
+	if err != nil {
+		t.Fatalf("查子会话失败: %v", err)
+	}
+	return kids
+}

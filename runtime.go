@@ -479,18 +479,20 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	}
 	msgs, _ := a.Store.Messages(sub.ID)
 	summary := renderSummary(a, sub, msgs)
+	// 回报指令按父会话形态分流：数字助理向用户汇报；工作任务带着结果继续推进
+	followUp := "请用用户听得懂的话汇报这件事的结果。"
+	if parent.Mode != "assistant" {
+		followUp = "请结合这个结果继续推进当前任务；若已全部完成，给出最终答复。"
+	}
 	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
 		Message: TextMessage("user", "【派发回报】任务会话「"+sub.Title+"」（"+sub.ID+"）本轮结束。\n\n"+summary+
-			"\n\n请用用户听得懂的话汇报这件事的结果。"),
+			"\n\n"+followUp),
 		Kind: "report", CreatedAt: now(),
 	})
-	// 先登记自动汇报轮再广播回报就绪：前端收到 report_ready 重查会话时必见
-	// running，能立刻接上汇报轮的流、实时看到汇报输出（正被用户占用就等下轮
-	// 对话自然带出）
-	prun, started := (*sessionRun)(nil), false
-	if parent.Mode == "assistant" {
-		prun, started = a.beginRun(parent.ID)
-	}
+	// 先登记消化回报的续跑轮再广播回报就绪：前端收到 report_ready 重查会话时
+	// 必见 running，能立刻接上这轮流、实时看输出。父会话空闲才续跑（助理＝
+	// 面向用户汇报，工作任务＝带着结果续推）；正被用户占用就等下轮对话自然带出
+	prun, started := a.beginRun(parent.ID)
 	a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
 	if started {
 		go func() {
@@ -520,15 +522,15 @@ func (a *App) recoverInterrupted() {
 			Kind:    "report", CreatedAt: now(),
 		})
 		_ = a.Store.UpdateStatus(s.ID, "idle")
-	// 中断回报的归属：优先派发链（dispatched_by），人工子对话退回父会话；
-	// 对方是助理主对话才值得补一条回报
+	// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
+	// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
 	owner := s.DispatchedBy
 	if owner == "" {
 		owner = s.ParentID
 	}
 	if owner != "" {
-		if p, perr := a.Store.Get(owner); perr == nil && p.Mode == "assistant" {
-			_ = a.Store.AppendRow(p.ID, &StoredMessage{
+		if _, perr := a.Store.Get(owner); perr == nil {
+			_ = a.Store.AppendRow(owner, &StoredMessage{
 				Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
 				Kind:    "report", CreatedAt: now(),
 			})

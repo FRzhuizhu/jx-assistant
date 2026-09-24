@@ -78,14 +78,16 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 - list_sessions：看最近的会话（标题、工作区、时间、是否在跑）。用来判断新需求跟哪个会话相关。
 - read_session_summary：看某个会话做过什么的压缩摘要。
 - search_sessions / read_session_messages：全文搜索并翻阅任何会话的原始历史（含很久以前的）。
-- dispatch_task：新建一个任务会话，把需求交给它**后台**执行；工具立即返回，不阻塞。
+- dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。
+- dispatch_sub：新建一个**子对话**（挂在本对话下，右栏抽屉里可见），把一块独立的小工作交给它后台执行；完成后结果自动回报到这里。
 - send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。
 
 ## 怎么选目标
 
 1. 新需求与某个已有会话明显相关、且不复杂 → 用 send_to_session 复用那个会话（上下文连续，效率最高）。
 2. 不相关、或事情复杂、或那个会话已经很长 → 用 dispatch_task 新建会话。
-3. 一次可以派多个互不相干的需求（它们会并行执行）；同一件事别重复派。拿不准就问用户一句。
+3. 整件事值得单独立项（用户会想在任务列表里单独查看、单独复用）→ dispatch_task 开新工作任务；只是当前这件事里一块可并行的子工作、不必单独立项 → dispatch_sub 派子对话。
+4. 一次可以派多个互不相干的需求（它们会并行执行）；同一件事别重复派。拿不准就问用户一句。
 
 ## 怎么交代需求
 
@@ -116,6 +118,18 @@ const fileToolsPrompt = `
 - 一切临时产物——中间脚本、下载的素材、截图、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在工作区根目录；只有最终交付文件才放在正式位置。
 - .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read_file 访问没有限制。`
 
+// dispatchSubPrompt 是子对话派发工具的使用准则（task / office 模式附加；
+// assistant 的派发准则在其专属提示词里）：什么时候把工作分给子对话、
+// 怎么写任务描述、回报怎么消化。
+const dispatchSubPrompt = `
+
+## 子对话派发
+
+- dispatch_sub：新建一个子对话，把一块**自洽的子任务**交给它后台执行（它有全部实操工具，工作目录默认与你相同）。工具立即返回，你可以先继续手头的其他部分；它结束后你会自动收到一条【派发回报】（含压缩摘要），系统随即让你带着结果继续推进当前任务。
+- 适合：相对独立、可以并行的分块（比如「整理 A 目录」交给子对话，你同时处理 B）。不适合：强依赖你当前上下文的小步操作——直接自己做更快。
+- task 必须自足：目标、验收标准、涉及目录写全，别写「照我上面说的做」——子对话看不到本对话的聊天记录。
+- 子对话只有一级：它们不能再派发。同质的批量工作可以一次派多个（并行执行）。`
+
 // systemPrompt 是会话内固定的系统提示词：只有基础提示词 + 软件版本标识。
 // 刻意不含任何易变信息（时间/权限/模式/环境）——它们全部进 envPrompt 的
 // 尾部快照（对齐 DSH 的缓存策略：前缀稳定命中 KV 缓存，易变内容在尾部
@@ -131,9 +145,10 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 		base = officePrompt
 	}
 	// 文件修改与交付规范只给有写入能力的模式（task / office）；
-	// assistant 只编排不亲手改文件，aux 只读，都不需要
+	// assistant 只编排不亲手改文件，aux 只读，都不需要。
+	// 子对话派发准则同样只给 task / office（assistant 的派发准则在其专属提示词里）。
 	if sess.Mode == "task" || sess.Mode == "office" {
-		base += fileToolsPrompt
+		base += fileToolsPrompt + dispatchSubPrompt
 	}
 	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动）"
 }
@@ -187,7 +202,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		b.WriteString("- 目标模式：目标「" + sess.GoalText + "」（当前状态：" + status + "）。自主持续推进，无需等待用户逐轮催促；达成或确认无法推进（缺权限/缺信息/外部受阻）时必须调用 update_goal（result=complete 或 blocked）并附 summary，然后面向用户做最终总结，不要空转。\n")
 	}
 	if sess.ParentID != "" {
-		b.WriteString("- 本会话是子对话（父会话 " + sess.ParentID + "）：子对话只有一级，不能再派发子对话。dispatch_task / send_to_session 调用会被拒绝；需要派发时把需求回报给用户，由主对话安排。\n")
+		b.WriteString("- 本会话是子对话（父会话 " + sess.ParentID + "）：子对话只有一级，不配备任何派发工具；需要并行分块时把安排写进你的答复，由父对话或用户来派。\n")
 	}
 	// 插件兼容层的动态段（如语音听写提示）也归入环境快照——它们随时间变化
 	if a.Plugins != nil {
