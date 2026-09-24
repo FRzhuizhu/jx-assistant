@@ -1317,7 +1317,7 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	note := fmt.Sprintf("【文件上传】用户上传了文件 %s（%d 字节），已保存到工作区；需要了解内容时可用只读工具查看。",
 		filepath.ToSlash(dst), len(data))
-	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: "report", CreatedAt: now()})
+	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
 	m.UpdatedAt = now()
 	_ = a.Store.SaveMeta(m)
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
@@ -1679,7 +1679,7 @@ func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
 	}
 	note := fmt.Sprintf("【文件回退】用户撤销了本轮文件改动：恢复 %d 个文件、撤回 %d 个新建文件（%s）。",
 		restored, deleted, strings.Join(names, "、"))
-	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: "report", CreatedAt: now()})
+	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "rollback", CreatedAt: now()})
 	m.UpdatedAt = now()
 	_ = a.Store.SaveMeta(m)
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
@@ -1973,7 +1973,7 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	um := TextMessage("user", body.Content)
 	sm := a.appendMessage(m, um)
-	opening := []Event{{Type: "message", Message: &sm.Message, Seq: sm.Seq}}
+	opening := []Event{{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat}}
 	if m.Title == "" {
 		m.Title = truncateRunes(body.Content, 24)
 		_ = a.Store.SaveMeta(m)

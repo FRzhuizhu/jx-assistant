@@ -51,8 +51,11 @@ func expText(s string) string {
 	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
+// isSysNote 是旧库兼容判定（新行一律 kind=report，见《消息类型规范.md》§5）：
+// 历史系统注入通知的前缀清单。
 func isSysNote(text string) bool {
-	for _, p := range []string{"【派发回报】", "【系统中断】", "【执行中断】", "【文件上传】"} {
+	for _, p := range []string{"【派发回报】", "【系统中断】", "【执行中断】", "【文件上传】", "【文件回退】",
+		"【目标续跑】", "【派发子对话】", "【数字助理派发】", "【数字助理转达】", "【待办任务派发｜", "<goal_round>"} {
 		if strings.HasPrefix(text, p) {
 			return true
 		}

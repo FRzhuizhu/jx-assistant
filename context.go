@@ -149,10 +149,6 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 
 // ---------- 子对话的上下文继承（分支克隆） ----------
 
-// inheritKind 是继承块标记行的 kind：子对话里它标出「以下内容来自主对话」，
-// 前端据它把整段折叠成一条「来自主对话」折叠条；组装上下文时该行跳过。
-const inheritKind = "inherit"
-
 // inheritMark 是继承标记行的正文（前端只需 count 来切分继承段与自有消息）。
 type inheritMark struct {
 	Parent string `json:"parent"`
@@ -542,7 +538,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	content := fmt.Sprintf("【%s历史摘要（覆盖至第 %d 条，原文可用历史查询工具读取）】\n%s", label, segEnd, summary)
 	_ = a.Store.AppendRow(sess.ID, &StoredMessage{
-		Message: TextMessage("system", content), Kind: "summary", // 上下文材料，非用户发言；发送时现场构造 user 视图
+		Message: TextMessage("system", content), Kind: kindSummary, // 上下文材料，非用户发言；发送时现场构造 user 视图
 		Origin: origin, CoversUpTo: segEnd, CreatedAt: now(),
 	})
 	return summary, nil

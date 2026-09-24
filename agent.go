@@ -30,7 +30,10 @@ type Event struct {
 	Reason     string   `json:"reason,omitempty"`
 	// 提问 / 计划审批（question_required）：等待用户输入
 	QuestionID string   `json:"questionId,omitempty"`
-	Kind       string   `json:"kind,omitempty"` // ask | plan
+	// Kind 语义按 Type 分域（契约见《消息类型规范.md》）：message 事件=存储行 kind；
+	// question_required 事件=ask | plan
+	Kind       string   `json:"kind,omitempty"`
+	Origin     string   `json:"origin,omitempty"` // message 事件附带 report/summary 的 origin 子类
 	Plan       string   `json:"plan,omitempty"`
 	Options    []string `json:"options,omitempty"`
 	// 待生效用户消息快照（pending 事件：插话/排队的最新列表，多窗口与刷新后一致）
@@ -296,9 +299,9 @@ func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Ev
 	}
 	// 上下文材料行（env/摘要/快照）一律存 role=system：它们不是用户发言，
 	// 只是入库归档；真实发送时由 buildContext 现场构造（env 走 user 尾消息）
-	sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", env), Kind: "env", CreatedAt: now()})
+	sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", env), Kind: kindEnv, CreatedAt: now()})
 	if emit != nil {
-		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "env"})
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindEnv})
 	}
 	return env
 }
@@ -394,7 +397,7 @@ func suspendedInPlan(mode, name string) bool {
 
 // appendMessage 落库并返回带 seq 的记录（seq 供 SSE message 事件回传前端定位用）
 func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
-	sm := &StoredMessage{Message: m, Kind: "chat", CreatedAt: now()}
+	sm := &StoredMessage{Message: m, Kind: kindChat, CreatedAt: now()}
 	_ = a.Store.AppendRow(sess.ID, sm)
 	sess.UpdatedAt = now()
 	_ = a.Store.SaveMeta(sess)
@@ -411,7 +414,7 @@ func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
 
 // appendMessageThinking 同 appendMessage，但带上该步的思考过程原文。
 func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) *StoredMessage {
-	sm := &StoredMessage{Message: m, Kind: "chat", Thinking: thinking, CreatedAt: now()}
+	sm := &StoredMessage{Message: m, Kind: kindChat, Thinking: thinking, CreatedAt: now()}
 	_ = a.Store.AppendRow(sess.ID, sm)
 	sess.UpdatedAt = now()
 	_ = a.Store.SaveMeta(sess)
@@ -440,7 +443,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		for _, pm := range a.drainSteer(sess.ID) {
 			um := TextMessage("user", pm.Content)
 			sm := a.appendMessage(sess, um)
-			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat})
 			got = true
 		}
 		return got
@@ -450,8 +453,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	// 系统提示词 + 环境快照 + 工具定义（tools 即请求体里平级发送的独立 JSON 数组）。
 	// 环境快照在循环里每步重算（模式中途切换立即反映），以尾部最新快照为准。
 	if pj, err := json.Marshal(map[string]any{"sys": sys, "env": a.envPrompt(sess), "tools": defs}); err == nil {
-		sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", string(pj)), Kind: "prompt", CreatedAt: now()})
-		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "prompt"})
+		sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", string(pj)), Kind: kindPrompt, CreatedAt: now()})
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindPrompt})
 	}
 	defer a.requeueSteer(sess.ID) // 正常/异常退出后残留插话转为排队，由执行体接着发
 
@@ -523,11 +526,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			if strings.TrimSpace(text.String()) != "" {
 				msg := TextMessage("assistant", text.String())
 				sm := a.appendMessageThinking(sess, msg, reasoning.String())
-				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq})
+				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq, Kind: kindChat})
 			} else if strings.TrimSpace(reasoning.String()) != "" {
 				// 只出了思考没出正文：思考原文落盘（前端折叠展示），本轮按失败收尾
 				sm := a.appendMessageThinking(sess, TextMessage("assistant", ""), reasoning.String())
-				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq})
+				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq, Kind: kindChat})
 				return errors.New("模型本轮只返回了思考内容，没有给出正文，可点重试")
 			} else {
 				return errors.New("模型本轮没有返回任何内容，可点重试")
@@ -547,7 +550,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			am.Content = text.String()
 		}
 		asm := a.appendMessageThinking(sess, am, reasoning.String())
-		emit(Event{Type: "message", Message: &asm.Message, Thinking: reasoning.String(), Seq: asm.Seq})
+		emit(Event{Type: "message", Message: &asm.Message, Thinking: reasoning.String(), Seq: asm.Seq, Kind: kindChat})
 
 		interrupted := false
 		for _, tc := range calls {
@@ -580,7 +583,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			tm := Message{Role: "tool", Content: out, ToolCallID: tc.ID}
 			tsm := a.appendMessage(sess, tm)
-			emit(Event{Type: "message", Message: &tsm.Message, Seq: tsm.Seq})
+			emit(Event{Type: "message", Message: &tsm.Message, Seq: tsm.Seq, Kind: kindChat})
 			emit(Event{Type: "tool_end", Name: tc.Function.Name, Output: truncateRunes(out, 2000)})
 		}
 		if interrupted {

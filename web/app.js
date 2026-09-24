@@ -1544,8 +1544,14 @@ const LONG_TEXT_CHARS = 85;
 // 流式期间新来的思考/工具行、回合收尾重渲都保持展开（数字助理2 修过的同类 bug）
 const turnOpen = {};
 
+// 旧库兼容判定（只读旧数据用，新行一律带显式 kind，见《消息类型规范.md》§5）：
+// 历史库里系统注入的通知曾是 kind=chat 的 user 行，只能按正文前缀识别。
+// 前缀清单与规范 §1.4 的 origin 子类一一对应。
 function isSysNote(txt) {
-  return txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') || txt.startsWith('【文件上传】');
+  return txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') ||
+    txt.startsWith('【文件上传】') || txt.startsWith('【文件回退】') || txt.startsWith('【目标续跑】') ||
+    txt.startsWith('【派发子对话】') || txt.startsWith('【数字助理派发】') || txt.startsWith('【数字助理转达】') ||
+    txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>');
 }
 
 function cjkWidth(t) {
@@ -1878,85 +1884,105 @@ document.addEventListener('beforematch', (e) => {
   }
 });
 
-/* ---------- 回合分组与条目渲染 ---------- */
+/* ---------- 回合分组与条目渲染（类型契约的分发层，见《消息类型规范.md》） ---------- */
+
+// 行的展示类型：新行一律带显式 kind（后端保证）；旧库残留的 chat+【】前缀
+// user 行按 report 兼容（规范 §5）。此后一切分发只看 kind，不猜内容。
+function displayKindOf(m) {
+  const k = m.kind;
+  if (k === 'chat' || k === 'report' || k === 'summary' || k === 'env' || k === 'prompt' || k === 'inherit' || k === 'request' || k === 'audit') return k;
+  if ((!k || k === 'chat') && m.role === 'user' && isSysNote(String(m.content ?? ''))) return 'report';
+  return 'chat';
+}
+
+// 存储行类型 → 条目构造器（契约的注册表）。后端新增类型：在此注册一行
+// 构造器即可获得标准样式；需要新样式先在规范 §3 登记样式基元。
+// 构造器往当前回合塞条目；request/audit 是审计工件不展示（导出功能的数据源）。
+const ROW_ITEM_BUILDERS = {
+  // 对话内容：user 开新回合；assistant 拆 think/text/tool 条目（复合行拆分规则见规范 §3）
+  chat(m, st) {
+    if (m.role === 'user') {
+      st.cur = { userMsg: m, items: [] };
+      st.turns.push(st.cur);
+      return;
+    }
+    if (m.role !== 'assistant') return; // tool 行经 resultOf 配对进工具条目，不单列
+    st.ensure();
+    if (m.thinking) st.cur.items.push({ k: 'think', seq: m.seq, text: m.thinking });
+    if (m.content) st.cur.items.push({ k: 'text', seq: m.seq, m, text: String(m.content) });
+    for (const tc of m.tool_calls || []) {
+      const n = (tc.function && tc.function.name) || '';
+      st.cur.items.push({
+        k: (n === 'dispatch_task' || n === 'dispatch_sub' || n === 'send_to_session') ? 'subtask' : 'tool',
+        seq: m.seq, tc, result: st.resultOf[tc.id],
+      });
+    }
+  },
+  // 系统注入通知：归入当前回合常显
+  report(m, st) {
+    st.ensure();
+    st.cur.items.push({ k: 'note', m });
+  },
+  // 压缩摘要：在发生位置展示折叠行
+  summary(m, st) {
+    st.ensure();
+    st.cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
+  },
+  // 运行环境快照：与最近一次已知环境相同则跳过；有变化（时间翻页、权限
+  // 提升、模式切换等）才在发生位置显示「运行环境更新」折叠行
+  env(m, st) {
+    const txt = String(m.content ?? '');
+    if (txt === st.lastEnv) return;
+    st.ensure();
+    st.cur.items.push({ k: 'envnote', seq: m.seq, text: txt, prev: st.lastEnv });
+    st.lastEnv = txt;
+  },
+  // 提示词拼装快照：变化驱动展示（规范 §4）——首轮完整交代拼装结构
+  // （系统提示词在用户消息上方、运行环境+工具定义紧随其后，即请求真实排布），
+  // 此后仅在系统提示词/工具定义变更时出折叠行；环境变化由 env 行负责
+  prompt(m, st) {
+    let sys = '', env = '', tools = null;
+    try {
+      const j = JSON.parse(String(m.content ?? '{}'));
+      sys = j.sys || ''; env = j.env || '';
+      if (Array.isArray(j.tools)) tools = j.tools;
+    } catch (e) { /* 忽略坏行 */ }
+    st.ensure();
+    const toolsJson = tools == null ? '' : JSON.stringify(tools);
+    if (!st.sawPrompt) {
+      // 首轮：lastEnv 同步为本轮环境，随后的同文快照行会被去重
+      st.cur.sysHead = sys; st.cur.sysHeadSeq = m.seq;
+      st.cur.items.push({ k: 'prompttail', seq: m.seq, env, tools });
+      st.lastEnv = env;
+    } else {
+      if (sys !== st.lastSys) st.cur.items.push({ k: 'syschange', seq: m.seq, sys, prev: st.lastSys });
+      if (toolsJson !== st.lastToolsJson) st.cur.items.push({ k: 'toolschange', seq: m.seq, tools, prevTools: st.lastTools });
+    }
+    st.sawPrompt = true; st.lastSys = sys; st.lastToolsJson = toolsJson; st.lastTools = tools;
+  },
+  // 继承标记行由 inheritBlock 分段处理（这里不产条目）
+  inherit() {},
+  // 审计工件不展示
+  request() {}, audit() {},
+};
 
 // 按真实用户发言切回合；系统通知（回报/中断/上传）归入当前回合且常显；
-// assistant 消息按序拆成思考/正文/工具条目，tool 消息经 resultOf 配对进条目
-// 提示词材料（kind=prompt/env）按「变化」渲染：首轮完整展示拼装结构
-// （系统提示词在用户消息上方、运行环境+工具定义紧随其后——即请求里的
-// 真实排布：system 最前、历史居中、环境快照收尾、tools 与消息平级）；
-// 之后内容不变就不显示，只有系统提示词/工具定义变更、运行环境补充时
-// 才在发生位置出现折叠行。每次请求其实都会完整重发系统提示词——
-// 「不变」的含义是逐字节相同，前缀缓存才能命中。
+// assistant 消息按序拆成思考/正文/工具条目，tool 消息经 resultOf 配对进条目。
+// 每次请求都会完整重发系统提示词（协议如此）——「不变」= 逐字节相同，
+// 前缀缓存据此命中，所以上下文材料只在变化时展示。
 function groupTurns(msgs, resultOf) {
-  const turns = [];
-  let cur = null;
-  const ensure = () => {
-    if (!cur) { cur = { userMsg: null, items: [] }; turns.push(cur); }
+  const st = {
+    turns: [], cur: null, resultOf,
+    sawPrompt: false, lastSys: '', lastToolsJson: '', lastTools: null, lastEnv: null,
   };
-  // 跨轮对比状态：上一次见到的系统提示词 / 工具定义 / 运行环境
-  let sawPrompt = false, lastSys = '', lastToolsJson = '', lastTools = null, lastEnv = null;
+  st.ensure = () => {
+    if (!st.cur) { st.cur = { userMsg: null, items: [] }; st.turns.push(st.cur); }
+  };
   for (const m of msgs) {
-    if (m.kind === 'env') {
-      // 运行环境快照：与最近一次已知环境相同则跳过；有变化（时间翻页、
-      // 权限提升、模式切换等）才在发生位置显示「运行环境更新」折叠行
-      const txt = String(m.content ?? '');
-      if (txt === lastEnv) continue;
-      ensure();
-      cur.items.push({ k: 'envnote', seq: m.seq, text: txt, prev: lastEnv });
-      lastEnv = txt;
-      continue;
-    }
-    if (m.kind === 'summary') { // 压缩摘要注入：在发生位置展示
-      ensure();
-      cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
-      continue;
-    }
-    if (m.kind === 'prompt') {      // 提示词快照：只在首轮或内容变更时产生条目
-      let sys = '', env = '', tools = null;
-      try {
-        const j = JSON.parse(String(m.content ?? '{}'));
-        sys = j.sys || ''; env = j.env || '';
-        if (Array.isArray(j.tools)) tools = j.tools;
-      } catch (e) { /* 忽略坏行 */ }
-      ensure();
-      const toolsJson = tools == null ? '' : JSON.stringify(tools);
-      if (!sawPrompt) {
-        // 首轮：完整展示拼装结构。系统提示词挂在回合头上（渲染在用户消息
-        // 上方），运行环境+工具定义作为尾部条目紧随用户消息；
-        // lastEnv 同步为本轮环境，随后的同文快照行会被去重
-        cur.sysHead = sys; cur.sysHeadSeq = m.seq;
-        cur.items.push({ k: 'prompttail', seq: m.seq, env, tools });
-        lastEnv = env;
-      } else {
-        if (sys !== lastSys) cur.items.push({ k: 'syschange', seq: m.seq, sys, prev: lastSys });
-        if (toolsJson !== lastToolsJson) cur.items.push({ k: 'toolschange', seq: m.seq, tools, prevTools: lastTools });
-        // 环境变化不在这里记：随后的 env 快照行（有变化才会入库）负责展示
-      }
-      sawPrompt = true; lastSys = sys; lastToolsJson = toolsJson; lastTools = tools;
-      continue;
-    }
-    if (m.role === 'user') {
-      const txt = String(m.content ?? '');
-      if (isSysNote(txt)) { ensure(); cur.items.push({ k: 'note', m }); continue; }
-      cur = { userMsg: m, items: [] };
-      turns.push(cur);
-      continue;
-    }
-    if (m.role === 'assistant') {
-      ensure();
-      if (m.thinking) cur.items.push({ k: 'think', seq: m.seq, text: m.thinking });
-      if (m.content) cur.items.push({ k: 'text', seq: m.seq, m, text: String(m.content) });
-      for (const tc of m.tool_calls || []) {
-        const n = (tc.function && tc.function.name) || '';
-        cur.items.push({
-          k: (n === 'dispatch_task' || n === 'dispatch_sub' || n === 'send_to_session') ? 'subtask' : 'tool',
-          seq: m.seq, tc, result: resultOf[tc.id],
-        });
-      }
-    }
+    const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
+    if (build) build(m, st);
   }
-  return turns;
+  return st.turns;
 }
 
 // 用户消息气泡：右下悬停操作（复制 / 编辑重发）。编辑只对真实用户消息开放
@@ -3010,7 +3036,8 @@ function handleEvent(ev, view) {
       // 思考块实时渲染不消失（工具调用落地后仍在），seq 用作回合标识与搜索定位
       if (ev.thinking) ev.message.thinking = ev.thinking;
       if (ev.seq) ev.message.seq = ev.seq;
-      if (ev.kind) ev.message.kind = ev.kind; // prompt 快照行等带 kind 的消息
+      if (ev.kind) ev.message.kind = ev.kind; // 行类型：与存储 kind 一致（契约见《消息类型规范.md》）
+      if (ev.origin) ev.message.origin = ev.origin;
       view.state.msgs.push(ev.message);
       renderMessages(view.state.msgs, view);
       break;

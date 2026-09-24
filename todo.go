@@ -1089,9 +1089,8 @@ func (s *todoScheduler) handToAssistant(task *TaskItem, record *RunRecord) (stri
 		return "", err
 	}
 	text := fmt.Sprintf("【待办任务派发｜%s】\n任务：%s\n\n%s", triggerLabel(record.Trigger), task.Title, task.Description)
-	um := TextMessage("user", text)
-	sm := s.app.appendMessage(sess, um)
-	s.app.broadcast(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, SessionID: sess.ID})
+	sm := s.app.appendRow(sess, StoredMessage{Message: TextMessage("user", text), Kind: kindReport, Origin: "todo", CreatedAt: now()})
+	s.app.broadcast(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindReport, Origin: "todo", SessionID: sess.ID})
 
 	// 主对话正忙就先只落消息（它会在下一轮自然读到）；空闲则立刻跑一轮。
 	if run, ok := s.app.beginRun(sess.ID); ok {

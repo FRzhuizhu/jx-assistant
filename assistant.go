@@ -225,7 +225,7 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		}
 		inherited = n
 	}
-	t.app.appendMessage(sub, TextMessage("user", "【派发子对话】\n\n"+p.Task))
+	t.app.appendRow(sub, StoredMessage{Message: TextMessage("user", "【派发子对话】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
 	hint := ""
 	if inherited > 0 {
 		hint = fmt.Sprintf("（已继承本会话上下文 %d 条，子对话能看到此前的聊天记录）", inherited)
@@ -275,7 +275,7 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	// 工作任务永远不带上下文：像用户发消息一样，只收到一段自足的任务描述，
 	// 与派发方的聊天记录完全隔离（要上下文的场景用 dispatch_sub 的继承模式）
-	t.app.appendMessage(sub, TextMessage("user", "【数字助理派发】\n\n"+p.Task))
+	t.app.appendRow(sub, StoredMessage{Message: TextMessage("user", "【数字助理派发】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
 	return t.launchSub(sub, "")
 }
 
@@ -312,7 +312,7 @@ func runSendToSession(t *toolContext, args json.RawMessage) (string, error) {
 	if m.Mode == "assistant" {
 		return "", fmt.Errorf("目标会话是另一个总控会话，不能作为派发目标")
 	}
-	t.app.appendMessage(m, TextMessage("user", "【数字助理转达】\n\n"+p.Task))
+	t.app.appendRow(m, StoredMessage{Message: TextMessage("user", "【数字助理转达】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
 	return t.launchSub(m, "")
 }
 

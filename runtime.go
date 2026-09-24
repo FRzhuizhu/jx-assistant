@@ -341,14 +341,16 @@ func (a *App) runGoalRounds(ctx context.Context, sess *SessionMeta, emit func(Ev
 		if round+1 >= maxGoalRounds {
 			sm := a.appendRow(sess, StoredMessage{
 				Message: TextMessage("user", "【目标续跑】已达到自动续跑上限（"+itoa(maxGoalRounds)+" 轮），暂停自动推进；目标尚未标记完成。可补充指示后继续。"),
-				Kind:    "report", CreatedAt: now(),
+				Kind: kindReport, Origin: "goal", CreatedAt: now(),
 			})
-			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindReport, Origin: "goal"})
 			return nil
 		}
-		gm := TextMessage("user", "<goal_round> 继续推进当前目标（第 "+itoa(round+2)+" 轮）。若已达成或确认无法推进，调用 update_goal 汇报并写最终总结；否则继续执行下一步，保持进度、不要重复已完成的步骤。")
-		sm := a.appendMessage(sess, gm)
-		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+		sm := a.appendRow(sess, StoredMessage{
+			Message: TextMessage("user", "<goal_round> 继续推进当前目标（第 "+itoa(round+2)+" 轮）。若已达成或确认无法推进，调用 update_goal 汇报并写最终总结；否则继续执行下一步，保持进度、不要重复已完成的步骤。"),
+			Kind: kindReport, Origin: "goal", CreatedAt: now(),
+		})
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindReport, Origin: "goal"})
 	}
 }
 
@@ -401,7 +403,7 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 		}
 		a.broadcastPending(m.ID)
 		sm := a.appendMessage(m, TextMessage("user", pm.Content))
-		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat})
 		err = a.runGoalRounds(run.ctx, m, emit)
 		a.requeueSteer(m.ID)
 	}
@@ -472,7 +474,7 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 		a.broadcast(Event{Type: "sub_end", SessionID: sub.ID, Error: err.Error()})
 		_ = a.Store.AppendRow(sub.ID, &StoredMessage{
 			Message: TextMessage("user", "【执行中断】上一轮执行中断："+err.Error()+"。可发「继续」接续。"),
-			Kind:    "report", CreatedAt: now(),
+			Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
 		})
 	} else {
 		a.broadcast(Event{Type: "sub_end", SessionID: sub.ID})
@@ -491,7 +493,7 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
 		Message: TextMessage("user", "【派发回报】任务会话「"+sub.Title+"」（"+sub.ID+"）本轮结束。\n\n"+summary+
 			"\n\n"+followUp),
-		Kind: "report", CreatedAt: now(),
+		Kind: kindReport, Origin: "dispatch", CreatedAt: now(),
 	})
 	// 先登记消化回报的续跑轮再广播回报就绪：前端收到 report_ready 重查会话时
 	// 必见 running，能立刻接上这轮流、实时看输出。父会话空闲才续跑（助理＝
@@ -523,7 +525,7 @@ func (a *App) recoverInterrupted() {
 	for _, s := range sessions {
 		_ = a.Store.AppendRow(s.ID, &StoredMessage{
 			Message: TextMessage("user", "【系统中断】服务在执行期间重启，本会话当时被中断。可发「继续」接续执行。"),
-			Kind:    "report", CreatedAt: now(),
+			Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
 		})
 		_ = a.Store.UpdateStatus(s.ID, "idle")
 	// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
@@ -536,7 +538,7 @@ func (a *App) recoverInterrupted() {
 		if _, perr := a.Store.Get(owner); perr == nil {
 			_ = a.Store.AppendRow(owner, &StoredMessage{
 				Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
-				Kind:    "report", CreatedAt: now(),
+				Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
 			})
 		}
 	}

@@ -18,7 +18,7 @@ func (a *App) auditWrite(sess *SessionMeta, payload map[string]any) {
 		return
 	}
 	_ = a.Store.AppendRow(sess.ID, &StoredMessage{
-		Message: TextMessage("system", string(b)), Kind: "audit", CreatedAt: now(),
+		Message: TextMessage("system", string(b)), Kind: kindAudit, CreatedAt: now(),
 	})
 }
 
@@ -94,6 +94,6 @@ func (a *App) recordLastRequest(sess *SessionMeta, url, model string, step, msgs
 		return
 	}
 	_ = a.Store.ReplaceRequestRow(sess.ID, &StoredMessage{
-		Message: TextMessage("system", string(b)), Kind: "request", CreatedAt: now(),
+		Message: TextMessage("system", string(b)), Kind: kindRequest, CreatedAt: now(),
 	})
 }

@@ -354,7 +354,7 @@ func (s *Store) migrateLegacy(legacyDir string) error {
 						continue
 					}
 					seq++
-					_ = s.AppendRow(id, &StoredMessage{Message: m, Seq: seq, Kind: "chat", CreatedAt: meta.CreatedAt})
+					_ = s.AppendRow(id, &StoredMessage{Message: m, Seq: seq, Kind: kindChat, CreatedAt: meta.CreatedAt})
 				}
 				f.Close()
 			}
@@ -575,7 +575,7 @@ func (s *Store) RunningSessions() ([]*SessionMeta, error) {
 
 // Append 追加一条普通对话消息（kind=chat），seq 自动递增，并刷新会话更新时间。
 func (s *Store) Append(id string, m Message) error {
-	return s.AppendRow(id, &StoredMessage{Message: m, Kind: "chat", CreatedAt: now()})
+	return s.AppendRow(id, &StoredMessage{Message: m, Kind: kindChat, CreatedAt: now()})
 }
 
 // AppendRow 追加一条完整消息记录；Seq 为 0 时自动分配。
