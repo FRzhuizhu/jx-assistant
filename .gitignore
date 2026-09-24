@@ -8,3 +8,4 @@ node_modules/
 __pycache__/
 data-tamper-test/
 _dsh_session1.jsonl
+技能/_runtime/
