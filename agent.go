@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -267,18 +268,30 @@ func detectOSDesc() string {
 	return desc + " · " + ps + "（run_command 支持 powershell 与 cmd）"
 }
 
-// maybeAppendEnvSnapshot 环境快照 diff：与最近一条 kind=env 快照比较，
+// maybeAppendEnvSnapshot 环境快照 diff：与最近一条 kind=env 快照比较（比较时
+// 剔除历史快照尾部的技能变更行，避免变更说明自我累积、每步重复落快照），
 // 内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条），并实时推给前端。
-func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Event)) {
+// 用户技能清单有增减时，在新快照尾部追加一行「（技能变更：…）」——上文历史
+// 快照一律不动，变更信息始终补在最底下（缓存友好）。返回最终落库与使用的
+// 快照内容（调用方用它继续构造上下文）。
+func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Event)) string {
+	var prev string
+	havePrev := false
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err == nil {
 		for i := len(raw) - 1; i >= 0; i-- {
 			if raw[i].Kind == "env" {
-				if raw[i].Text() == env {
-					return
-				}
+				prev, havePrev = raw[i].Text(), true
 				break
 			}
+		}
+	}
+	if havePrev && stripSkillChangeNote(prev) == env {
+		return env
+	}
+	if havePrev {
+		if note := skillChangeNote(stripSkillChangeNote(prev), env); note != "" {
+			env = env + "\n（" + note + "）"
 		}
 	}
 	// 上下文材料行（env/摘要/快照）一律存 role=system：它们不是用户发言，
@@ -287,6 +300,78 @@ func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Ev
 	if emit != nil {
 		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "env"})
 	}
+	return env
+}
+
+// stripSkillChangeNote 去掉快照尾部的技能变更行，得到用于比较的规范内容。
+func stripSkillChangeNote(env string) string {
+	i := strings.LastIndex(env, "\n（技能变更：")
+	if i < 0 || !strings.HasSuffix(env, "）") {
+		return env
+	}
+	return env[:i]
+}
+
+// skillChangeNote 对比新旧环境快照里的用户技能名单，生成一行变更说明；
+// 没有变化或首次出现清单（prev 为空）时返回空串。旧格式（全文注入时代的
+// 「## 用户技能：名字」段）与新清单格式都识别。
+func skillChangeNote(prev, cur string) string {
+	if prev == "" {
+		return ""
+	}
+	oldNames := skillNamesInEnv(prev)
+	newNames := skillNamesInEnv(cur)
+	if len(oldNames) == 0 && len(newNames) == 0 {
+		return ""
+	}
+	var add, del []string
+	for n := range newNames {
+		if !oldNames[n] {
+			add = append(add, n)
+		}
+	}
+	for n := range oldNames {
+		if !newNames[n] {
+			del = append(del, n)
+		}
+	}
+	sort.Strings(add)
+	sort.Strings(del)
+	var parts []string
+	if len(add) > 0 {
+		parts = append(parts, "新增技能："+strings.Join(add, "、"))
+	}
+	if len(del) > 0 {
+		parts = append(parts, "移除技能："+strings.Join(del, "、"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "技能变更：" + strings.Join(parts, "；")
+}
+
+// skillNamesInEnv 从环境快照文本里提取用户技能名集合：新清单行
+// 「  - 名字（id=…）」与旧全文段的「## 用户技能：名字」都识别；
+// 变更说明行自身不是技能，跳过。
+func skillNamesInEnv(env string) map[string]bool {
+	out := map[string]bool{}
+	for _, line := range strings.Split(env, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "（技能变更") {
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			rest := strings.TrimPrefix(line, "- ")
+			if i := strings.Index(rest, "（id="); i > 0 {
+				out[rest[:i]] = true
+				continue
+			}
+		}
+		if strings.HasPrefix(line, "## 用户技能：") {
+			out[strings.TrimSpace(strings.TrimPrefix(line, "## 用户技能："))] = true
+		}
+	}
+	return out
 }
 
 // planSuspendedTask 是计划模式下暂停的 task 会话工具（目录不变，调用时拦截）。
@@ -374,7 +459,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		interjectsBefore(emit)
 		// 环境快照每步重算 + diff：内容（含模式中途变化）有变才落新快照
 		env := a.envPrompt(sess)
-		a.maybeAppendEnvSnapshot(sess, env, emit)
+		env = a.maybeAppendEnvSnapshot(sess, env, emit)
 		msgs := a.buildContext(sess, sys, env)
 		// 视觉模型：把工具结果引用的图片内联为内容块；纯文本模型原样透传
 		msgs = inlineImagesForRequest(a, msgs, target)

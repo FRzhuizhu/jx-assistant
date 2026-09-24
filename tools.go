@@ -121,7 +121,7 @@ func (a *App) toolsFor(mode string) []Tool {
 	return append([]Tool{
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
-		pdfTool(), ocrTool(), officeSkillTool(),
+		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
 		snapshotFileTool(), deliverResultTool(), dispatchSubTool(),
 		askUserQuestionTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),

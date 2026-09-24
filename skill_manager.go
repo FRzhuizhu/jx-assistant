@@ -22,8 +22,7 @@ import (
 var builtinSkillIDs = map[string]bool{"pdf": true, "ocr": true, "office": true}
 
 const (
-	userSkillBodyMax   = 6000  // 单个技能注入的正文上限（字符）
-	userSkillsTotalMax = 20000 // 全部用户技能注入的总上限（字符）
+	userSkillBodyMax = 6000 // read_skill 返回的单个技能说明上限（字符）
 )
 
 type userSkillEntry struct {
@@ -253,44 +252,78 @@ func (a *App) deleteUserSkill(id string) error {
 	return a.saveSkillsState(st)
 }
 
-// userSkillsPromptBlock 生成追加在系统提示词末尾的用户技能段；
-// 只统计 task 会话会注入的内容，单技能与总量都有上限（防灌爆上下文）。
+// userSkillsPromptBlock 生成用户技能清单段（归入环境快照，变化补在对话尾部）：
+// 只列 名字（id）与一句话描述，正文不注入——模型要用哪个技能，先调用
+// read_skill(id) 按需读完整说明（对齐 ZCode 的技能模式：清单先行、内容按需，
+// 技能增减不动工具定义、不打断前缀缓存）。
 func (a *App) userSkillsPromptBlock() string {
 	list, err := a.listSkills()
-	if err != nil {
-		return ""
-	}
-	if len(list.User) == 0 {
+	if err != nil || len(list.User) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	total := 0
-	used := 0
 	for _, s := range list.User {
 		if !s.Enabled {
 			continue
 		}
-		userDir, err := a.userSkillsDir()
-		if err != nil {
-			break
-		}
-		_, _, body := skillMeta(filepath.Join(userDir, s.ID))
-		body = stripFrontmatter(body)
-		if r := []rune(body); len(r) > userSkillBodyMax {
-			body = string(r[:userSkillBodyMax]) + "\n…（技能说明过长已截断）"
-		}
-		b.WriteString("\n## 用户技能：" + s.Name + "\n" + body + "\n")
-		total += len([]rune(body))
-		used++
-		if total >= userSkillsTotalMax {
-			b.WriteString("\n（技能数量过多，超出部分未加载）\n")
-			break
+		if s.Description == "" {
+			b.WriteString("  - " + s.Name + "（id=" + s.ID + "）\n")
+		} else {
+			b.WriteString("  - " + s.Name + "（id=" + s.ID + "）：" + s.Description + "\n")
 		}
 	}
-	if used == 0 {
+	if b.Len() == 0 {
 		return ""
 	}
-	return "# 用户技能（可开关的外围能力说明）\n" + b.String()
+	return "# 用户技能清单（要用某个技能时，先调用 read_skill 读它的完整说明）\n" + b.String()
+}
+
+// readUserSkillTool 是用户技能的按需读取工具：清单只报名字与描述，
+// 完整 SKILL.md 说明用它加载。工具常驻目录，技能增减不改变工具定义。
+func readUserSkillTool() Tool {
+	return Tool{
+		Spec: toolSpec("read_skill", "读取一个用户技能的完整使用说明（SKILL.md 原文）。环境快照里的「用户技能清单」只列名字与一句话描述；动手用某个技能之前，先调用本工具看完整说明。",
+			objSchema(map[string]any{
+				"id": strProp("技能 id，来自环境快照里的用户技能清单"),
+			}, "id")),
+		Run: runReadUserSkill,
+	}
+}
+
+func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(p.ID)
+	// 只允许读清单在列（存在且已启用）的技能：id 经名单校验，不拿用户输入拼路径
+	inList := false
+	if list, err := t.app.listSkills(); err == nil {
+		for _, s := range list.User {
+			if s.ID == id && s.Enabled {
+				inList = true
+				break
+			}
+		}
+	}
+	if !inList {
+		return "", fmt.Errorf("技能 %s 不在当前清单里（不存在或已停用），请用清单里给出的 id", id)
+	}
+	userDir, err := t.app.userSkillsDir()
+	if err != nil {
+		return "", err
+	}
+	_, _, body := skillMeta(filepath.Join(userDir, id))
+	body = stripFrontmatter(body)
+	if strings.TrimSpace(body) == "" {
+		return "", fmt.Errorf("技能 %s 没有可用的说明正文", id)
+	}
+	if r := []rune(body); len(r) > userSkillBodyMax {
+		body = string(r[:userSkillBodyMax]) + "\n…（说明过长已截断，完整内容见技能目录）"
+	}
+	return body, nil
 }
 
 func sanitizeSkillID(name string) string {
