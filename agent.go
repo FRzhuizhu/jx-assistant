@@ -100,6 +100,15 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 
 纯聊天、简单问答直接回答，不必派发。用中文与用户交流，语气专业、简洁。`
 
+// fileToolsPrompt 是有文件写入能力的工作准则补充（task / office 模式共用）：
+// 什么时候自动有快照、什么时候必须手动打快照、成果怎么交付。
+const fileToolsPrompt = `
+## 文件修改与交付规范
+
+1. write_file / edit_file 的修改自动记录历史快照，用户编辑历史消息时可以把文件一并回退，无需你做额外操作。
+2. 通过 run_command、外部程序或文档运行库（Office 的 python-docx/openpyxl/python-pptx 等）修改文件无法自动追踪：改动一个已存在的重要文件前，必须先调用 snapshot_file 打快照，否则该文件无法回退；新建文件无需快照。
+3. 产出最终交付文件后（无论什么方式生成），调用 deliver_result 登记交付清单——用户界面会展示交付卡片并提供下载，这是用户拿到成果的正式入口；只在回复里贴路径不算交付。每轮可多次调用，后登记的会并列展示。`
+
 // systemPrompt 是会话内固定的系统提示词：只有基础提示词 + 软件版本标识。
 // 刻意不含任何易变信息（时间/权限/模式/环境）——它们全部进 envPrompt 的
 // 尾部快照（对齐 DSH 的缓存策略：前缀稳定命中 KV 缓存，易变内容在尾部
@@ -113,6 +122,11 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 		base = auxPrompt
 	case "office":
 		base = officePrompt
+	}
+	// 文件修改与交付规范只给有写入能力的模式（task / office）；
+	// assistant 只编排不亲手改文件，aux 只读，都不需要
+	if sess.Mode == "task" || sess.Mode == "office" {
+		base += fileToolsPrompt
 	}
 	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动）"
 }
@@ -433,7 +447,9 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				// exit_plan_mode 批准后 PlanMode 即刻置 false，同一回合内自动放行
 				out = "计划模式下该工具已暂停：" + tc.Function.Name + "。当前仅可只读探索；请完成调研后调用 exit_plan_mode 提交计划供用户批准。"
 			} else if run, ok := runs[tc.Function.Name]; ok {
-				res, rerr := run(&toolContext{ctx: ctx, app: a, sess: sess, emit: emit}, json.RawMessage(tc.Function.Arguments))
+				tctx := &toolContext{ctx: ctx, app: a, sess: sess, emit: emit,
+					seq: asm.Seq, callID: tc.ID, toolName: tc.Function.Name}
+				res, rerr := run(tctx, json.RawMessage(tc.Function.Arguments))
 				if rerr != nil {
 					out = "工具执行失败: " + rerr.Error()
 				} else {

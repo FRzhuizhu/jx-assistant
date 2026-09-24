@@ -1295,6 +1295,8 @@ async function openSubSession(id) {
     subState.msgs = data.messages || [];
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
     subState.pendingQueue = (data.pending && data.pending.queue) || [];
+    subState.checkpoints = data.checkpoints || [];
+    subState.deliveries = data.deliveries || [];
     subState.streamText = '';
     subState.streamThinking = '';
     subRenderHeader();
@@ -1445,6 +1447,8 @@ async function openSession(id) {
   state.msgs = data.messages || [];
   state.pendingSteer = (data.pending && data.pending.steer) || [];
   state.pendingQueue = (data.pending && data.pending.queue) || [];
+  state.checkpoints = data.checkpoints || [];
+  state.deliveries = data.deliveries || [];
   // 计划/目标二选一：旧数据可能两个都开着，收敛为只留计划并落库
   if (state.cur.planMode && state.cur.goalMode) {
     state.cur.goalMode = false;
@@ -2045,6 +2049,113 @@ function subTaskCard(tc, result) {
   return d;
 }
 
+/* ---------- 文件改动面板与交付成果卡片（文件快照子系统的前端半边） ---------- */
+
+// 文件改动面板：一回合内动过的文件（自动快照 + 手动 snapshot_file 都算），
+// 折叠条显示「修改 N / 新增 M」，点开是文件清单；「撤销」把这轮文件改动
+// 恢复到该轮之前（对话记录不动，服务端 fail-closed 校验）
+function fileChangesPanel(cps, seqs, view) {
+  // 同文件多次改动只显示一行，类型按最早一条（改动前是否存在）
+  const byPath = new Map();
+  for (const c of cps) {
+    if (!byPath.has(c.path)) byPath.set(c.path, c);
+  }
+  const modified = [], added = [];
+  for (const c of byPath.values()) (c.existedBefore ? modified : added).push(c);
+  const sec = document.createElement('div');
+  sec.className = 'proc-row file-panel';
+  const head = document.createElement('div');
+  head.className = 'proc-head';
+  const label = '文件改动 · 修改 ' + modified.length + ' · 新增 ' + added.length;
+  head.innerHTML = chev('p-chev') + '<span class="p-name">' + label + '</span>' +
+    '<span class="p-sub">· 可撤销</span>';
+  const undo = document.createElement('button');
+  undo.type = 'button';
+  undo.className = 'fp-undo';
+  undo.textContent = '撤销';
+  undo.title = '把这轮文件改动恢复到该轮之前（对话记录不变）';
+  undo.onclick = async (e) => {
+    e.stopPropagation();
+    if (view.state.streaming) return;
+    const detail = modified.map((c) => '恢复 ' + c.path).concat(added.map((c) => '删除 ' + c.path)).join('\n');
+    if (!(await confirmCenter('撤销本轮文件改动？\n' + detail + '\n（已按快照校验，外部改过的文件会被拒绝）'))) return;
+    undo.disabled = true;
+    try {
+      const d = await api('/api/sessions/' + view.state.cur.id + '/file-rewind', {
+        method: 'POST', body: JSON.stringify({ seqs }),
+      });
+      view.hint.textContent = '已恢复 ' + (d.restored || 0) + ' 个文件、撤回 ' + (d.deleted || 0) + ' 个新建文件';
+      setTimeout(() => { view.hint.textContent = ''; }, 4000);
+      if (view === mainView) openSession(view.state.cur.id); else openSubSession(view.state.cur.id);
+    } catch (err) {
+      undo.disabled = false;
+      const list = (err.unsafe || []).map((u) => u.path + '：' + (u.reason || '被外部修改')).join('\n');
+      if (err.blocked && list) {
+        alert('以下文件在快照后被外部修改，无法安全回退：\n' + list);
+      } else {
+        alert('撤销失败：' + err.message);
+      }
+    }
+  };
+  head.appendChild(undo);
+  const body = document.createElement('div');
+  body.className = 'proc-body';
+  const one = (tag, c) => {
+    const row = document.createElement('div');
+    row.className = 'fp-file';
+    row.innerHTML = '<span class="fp-tag ' + (tag === '新增' ? 'add' : 'mod') + '">' + tag + '</span>' +
+      '<span class="fp-path">' + esc(c.path) + '</span>' +
+      '<span class="fp-size">' + fmtBytes(c.afterSize || 0) + '</span>';
+    return row;
+  };
+  modified.forEach((c) => body.appendChild(one('修改', c)));
+  added.forEach((c) => body.appendChild(one('新增', c)));
+  sec.appendChild(head);
+  sec.appendChild(body);
+  bindProcToggle(sec);
+  hideEl(body);
+  return sec;
+}
+
+function fmtBytes(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+// 交付成果卡片：deliver_result 登记的最终交付文件，逐个提供下载
+function deliveryCard(dvs, sid) {
+  const card = document.createElement('div');
+  card.className = 'delivery-card';
+  const head = document.createElement('div');
+  head.className = 'dc-head';
+  head.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>' +
+    '<span class="dc-title">交付成果</span><span class="dc-count">' + dvs.length + ' 个文件</span>';
+  card.appendChild(head);
+  dvs.forEach((d) => {
+    const row = document.createElement('div');
+    row.className = 'dc-file';
+    const nm = document.createElement('span');
+    nm.className = 'dc-name';
+    nm.title = d.path;
+    nm.textContent = d.path.split('/').pop();
+    row.appendChild(nm);
+    if (d.note) {
+      const note = document.createElement('span');
+      note.className = 'dc-note';
+      note.textContent = d.note;
+      row.appendChild(note);
+    }
+    const dl = document.createElement('a');
+    dl.className = 'dc-dl';
+    dl.href = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
+    dl.textContent = '下载';
+    row.appendChild(dl);
+    card.appendChild(row);
+  });
+  return card;
+}
+
 function renderMessages(msgs, view) {
   view = view || mainView;
   const box = view.col;
@@ -2077,8 +2188,20 @@ function renderMessages(msgs, view) {
   turns.forEach((turn, ti) => {
     if (turn.userMsg) box.appendChild(userBubble(turn.userMsg, view));
     const key = sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti);
-    if (ti === turns.length - 1 && view.state.streaming) renderStreamingTurn(box, turn, key);
-    else renderFinishedTurn(box, turn, key);
+    const streaming = ti === turns.length - 1 && view.state.streaming;
+    if (streaming) renderStreamingTurn(box, turn, key);
+    else {
+      renderFinishedTurn(box, turn, key);
+      // 完成态回合的收尾件：文件改动面板（可撤销）与交付成果卡片
+      const seqSet = new Set();
+      turn.items.forEach((it) => { if (it.seq != null) seqSet.add(it.seq); });
+      if (seqSet.size) {
+        const cps = (view.state.checkpoints || []).filter((c) => seqSet.has(c.seq));
+        if (cps.length) box.appendChild(fileChangesPanel(cps, [...seqSet], view));
+        const dvs = (view.state.deliveries || []).filter((d) => seqSet.has(d.seq));
+        if (dvs.length) box.appendChild(deliveryCard(dvs, sid));
+      }
+    }
   });
   // 已插话、等下一次调用模型生效的消息：直接落在对话最底下（与已发送的用户消息
   // 同一套气泡外观，只多一个「插话中」角标），落库后由 message 事件替换成正常气泡
@@ -2660,9 +2783,12 @@ function handleEvent(ev, view) {
   switch (ev.type) {
     case 'edited': {
       // 编辑重发的截断确认：服务端已删掉 seq 之后的记录并改写正文，
-      // 本地对齐后模型续跑的输出会接着这条消息往下走
+      // 本地对齐后模型续跑的输出会接着这条消息往下走；该点之后的
+      // 文件快照与交付登记也已被服务端一并清掉
       view.state.msgs = view.state.msgs.filter((x) => x.seq <= ev.seq);
       view.state.msgs.forEach((x) => { if (x.seq === ev.seq) x.content = ev.delta; });
+      if (view.state.checkpoints) view.state.checkpoints = view.state.checkpoints.filter((c) => c.seq <= ev.seq);
+      if (view.state.deliveries) view.state.deliveries = view.state.deliveries.filter((d) => d.seq <= ev.seq);
       renderMessages(view.state.msgs, view);
       break;
     }
@@ -2970,8 +3096,23 @@ async function send(forceContent, view) {
 
 /* ---------- 编辑历史用户消息并重发（语义对齐 ZCode 的 editUserQuery：
    同会话内截断后重发——该消息之后的记录从当前对话移除、模型回到这条消息
-   重新执行；已做的文件修改不回退（本项目无文件快照）。想保留原路线，
-   先用助手回答下的「分支」按钮把对话另存一份再编辑。 ---------- */
+   重新执行。两种提交档（对齐 ZCode 的双提交按钮）：
+   - 发送：仅重置对话，文件保持现状；
+   - 回退文件并发送：把这条消息之后有快照的文件一并恢复到当时（服务端
+     fail-closed 校验，被外部改过的文件会整单拒绝并给出逃生口）。
+   想保留原路线，先用助手回答下的「分支」按钮把对话另存一份再编辑。 ---------- */
+
+// 编辑点之后将被回退的文件清单（同一文件按最早一条快照算状态），确认框用
+function rewindFileList(view, seq) {
+  const byPath = new Map();
+  for (const c of (view.state.checkpoints || [])) {
+    if (c.seq <= seq) continue;
+    if (!byPath.has(c.path)) byPath.set(c.path, c);
+  }
+  const restore = [], drop = [];
+  for (const c of byPath.values()) (c.existedBefore ? restore : drop).push(c.path);
+  return { restore, drop };
+}
 
 // 进入编辑态：气泡原位换成输入框（Esc/取消还原，Ctrl+Enter 或按钮提交）
 function editUserMsg(m, view, wrap) {
@@ -2994,15 +3135,21 @@ function editUserMsg(m, view, wrap) {
   cancel.className = 'ed-btn';
   cancel.type = 'button';
   cancel.textContent = '取消';
+  const rewind = document.createElement('button');
+  rewind.className = 'ed-btn rewind';
+  rewind.type = 'button';
+  rewind.title = '恢复这条消息之后的文件改动（按快照校验），再重置对话并发送';
+  rewind.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>回退文件并发送';
   const ok = document.createElement('button');
   ok.className = 'ed-btn primary';
   ok.type = 'button';
   ok.textContent = '发送';
   row.appendChild(cancel);
+  row.appendChild(rewind);
   row.appendChild(ok);
   const note = document.createElement('div');
   note.className = 'ed-note';
-  note.textContent = '发送后将从这条消息重新执行，它之后的对话记录会被移除（已做的文件修改不回退）';
+  note.textContent = '「发送」仅重置对话；「回退文件并发送」会同时把之后的文件改动恢复到当时（未做快照的文件无法回退）';
   box.appendChild(ta);
   box.appendChild(row);
   box.appendChild(note);
@@ -3018,24 +3165,41 @@ function editUserMsg(m, view, wrap) {
     }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ok.click(); }
   });
-  ok.onclick = async () => {
+  const submit = async (mode) => {
     const content = ta.value.trim();
-    if (!content) return;
+    if (!content) return false;
     const later = view.state.msgs.filter((x) => x.seq > m.seq).length;
-    if (later > 0) {
-      const sure = await confirmCenter(`这条消息之后还有 ${later} 条记录，重新发送后将全部移除（不回退已做的文件修改；要保留原路线请先用「分支」）。确定吗？`);
-      if (!sure) return;
+    if (later > 0 || mode === 'rewind') {
+      let msg = `这条消息之后还有 ${later} 条记录，重新发送后将全部移除（要保留原路线请先用「分支」）。`;
+      if (mode === 'rewind') {
+        const { restore, drop } = rewindFileList(view, m.seq);
+        const parts = [];
+        if (restore.length) parts.push('恢复 ' + restore.length + ' 个文件（' + restore.join('、') + '）');
+        if (drop.length) parts.push('撤回 ' + drop.length + ' 个新建文件（' + drop.join('、') + '）');
+        if (!parts.length) parts.push('这条消息之后没有可回退的文件快照（只重置对话）');
+        msg = '将回退文件并重发：\n· ' + parts.join('\n· ') + '\n同时' + msg;
+      } else {
+        msg += '\n已做的文件修改不回退；要连文件一起回退请用「回退文件并发送」。';
+      }
+      if (!(await confirmCenter(msg))) return false;
     }
     ok.disabled = true;
+    rewind.disabled = true;
     cancel.disabled = true;
-    if (await resendEdit(m, content, view)) close();
-    else { ok.disabled = false; cancel.disabled = false; }
+    if (await resendEdit(m, content, view, mode)) { close(); return true; }
+    ok.disabled = false;
+    rewind.disabled = false;
+    cancel.disabled = false;
+    return false;
   };
+  ok.onclick = () => submit('preserve');
+  rewind.onclick = () => submit('rewind');
 }
 
 // 编辑重发的请求与收流：结构与 send() 的发后处理一致；成功返回 true（此时
-// edited 确认帧已把本地记录截断对齐），失败/中止返回 false 保留编辑框
-async function resendEdit(m, content, view) {
+// edited 确认帧已把本地记录截断对齐），失败/中止返回 false 保留编辑框。
+// mode=rewind 时文件被外部改过会收到 blocked：就地给出「改为仅重发对话」逃生口
+async function resendEdit(m, content, view, mode) {
   view = view || mainView;
   if (!view.state.cur || view.state.streaming) return false;
   view.state.streaming = true;
@@ -3045,18 +3209,28 @@ async function resendEdit(m, content, view) {
   view.state.streamThinking = '';
   if (view === mainView) JX.emit('send', { content });
   let aborted = false;
-  try {
+  // blocked（文件被外部改过）时给逃生口：改按 preserve 档就地重发一次
+  const postEdit = async (wm) => {
     const res = await fetch(`/api/sessions/${view.state.cur.id}/edit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seq: m.seq, content }),
+      body: JSON.stringify({ seq: m.seq, content, workspaceMode: wm }),
       signal: view.state.abort.signal,
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
+      if (d.blocked && wm === 'rewind') {
+        const list = (d.unsafe || []).map((u) => u.path + '：' + (u.reason || '被外部修改')).join('\n');
+        const fallback = await confirmCenter('以下文件在快照之后被外部修改，无法安全回退：\n' + list + '\n\n改为仅重发对话（不动这些文件）？');
+        if (fallback) return postEdit('preserve');
+      }
       throw new Error(d.error || res.statusText);
     }
     await consumeStream(res, view);
+    return true;
+  };
+  try {
+    await postEdit(mode === 'rewind' ? 'rewind' : 'preserve');
   } catch (e) {
     if (e.name === 'AbortError') {
       aborted = true; // 用户主动停止：保留编辑框，可改完再试
@@ -3133,6 +3307,8 @@ async function reloadMessages(view) {
     view.state.msgs = d.messages || [];
     view.state.pendingSteer = (d.pending && d.pending.steer) || [];
     view.state.pendingQueue = (d.pending && d.pending.queue) || [];
+    view.state.checkpoints = d.checkpoints || [];
+    view.state.deliveries = d.deliveries || [];
   } catch (e) { return; /* 取不到就保持现状 */ }
   renderQueueDock(view);
   renderMessages(view.state.msgs, view);

@@ -414,6 +414,18 @@ func (c *remoteClient) writeFile(p string, data []byte) error {
 	return nil
 }
 
+// remove 删除远程文件（文件快照回退里"撤回新建文件"用；不存在视为成功）。
+func (c *remoteClient) remove(p string) error {
+	sc, err := c.sftpClient()
+	if err != nil {
+		return err
+	}
+	if err := sc.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除远程文件失败: %w", err)
+	}
+	return nil
+}
+
 // envEntry 统一形态定义在 tools.go（执行环境抽象），此处不再重复。
 
 func (c *remoteClient) listDir(p string) ([]envEntry, error) {

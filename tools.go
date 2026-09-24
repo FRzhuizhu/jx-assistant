@@ -49,12 +49,16 @@ type Tool struct {
 }
 
 // toolContext 是一次工具执行的上下文：请求级取消信号、应用引用、
-// 当前会话（决定工作区范围与权限模式）与事件上报函数。
+// 当前会话（决定工作区范围与权限模式）与事件上报函数。seq/callID/toolName
+// 标出本次调用所在的助手步骤，文件快照据此锚定回退位置。
 type toolContext struct {
-	ctx  context.Context
-	app  *App
-	sess *SessionMeta
-	emit func(Event)
+	ctx      context.Context
+	app      *App
+	sess     *SessionMeta
+	emit     func(Event)
+	seq      int64
+	callID   string
+	toolName string
 }
 
 // isRemote 判断会话是否挂载了 SSH 远程工作区。
@@ -118,6 +122,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(),
+		snapshotFileTool(), deliverResultTool(),
 		askUserQuestionTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)
@@ -193,6 +198,21 @@ func (t *toolContext) envWriteFileWithGrant(p string, data []byte, g *Grant) err
 		return err
 	}
 	return t.envWriteFile(p, data)
+}
+
+// envDeleteFile 删除文件（文件快照回退里"撤回新建文件"用；本地与远程一致）。
+func (t *toolContext) envDeleteFile(p string) error {
+	if t.isRemote() {
+		rc, err := t.app.getRemoteClient(t.sess)
+		if err != nil {
+			return err
+		}
+		return rc.remove(p)
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (t *toolContext) envListDir(p string) ([]envEntry, error) {
@@ -394,7 +414,8 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := t.envWriteFileWithGrant(path, []byte(p.Content), grant); err != nil {
+	// 带快照写入：改动前内容自动落 checkpoint，编辑历史消息时可回退
+	if err := t.snapshotWrite(path, grant, []byte(p.Content)); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("已写入 %s（%d 字节）", filepath.ToSlash(path), len(p.Content)), nil
@@ -460,10 +481,142 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	} else {
 		updated = strings.Replace(content, p.OldString, p.NewString, 1)
 	}
-	if err := t.envWriteFileWithGrant(path, []byte(updated), grant); err != nil {
+	// 带快照写入：改动前内容自动落 checkpoint（上面 envReadFile 读到的即旧内容）
+	if err := t.snapshotWrite(path, grant, []byte(updated)); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("已编辑 %s（替换 %d 处）", filepath.ToSlash(path), replaced), nil
+}
+
+// ---------- 文件快照与交付登记（不可追踪修改的配套工具） ----------
+
+func arrayProp(desc string, items map[string]any) map[string]any {
+	return map[string]any{"type": "array", "description": desc, "items": items}
+}
+
+func snapshotFileTool() Tool {
+	return Tool{
+		Spec: toolSpec("snapshot_file",
+			"为工作区文件打一条历史快照（记录当前内容），供编辑历史消息时回退文件。write_file/edit_file 的修改会自动记录快照，无需本工具；凡是准备通过 run_command、外部程序、Office 文档运行库等无法自动追踪的方式修改一个已存在的重要文件，必须先调用本工具，否则该文件将无法回退。",
+			objSchema(map[string]any{
+				"path": strProp("目标文件路径（相对或绝对）"),
+			}, "path")),
+		Run: runSnapshotFile,
+	}
+}
+
+func runSnapshotFile(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	abs, err := t.resolve(p.Path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := t.authorize(permAction{Op: "read", Tool: "snapshot_file", Path: abs}); err != nil {
+		return "", err
+	}
+	var before []byte
+	existed := true
+	isDir, size, serr := t.envStat(abs)
+	switch {
+	case serr != nil && os.IsNotExist(serr):
+		existed = false
+	case serr != nil:
+		return "", fmt.Errorf("无法读取文件状态: %w", serr)
+	case isDir:
+		return "", fmt.Errorf("目标是一个目录，快照只支持文件")
+	case size > snapshotMaxFileBytes:
+		return "", fmt.Errorf("文件超过单文件快照上限（%d MB），无法快照", snapshotMaxFileBytes>>20)
+	default:
+		if before, err = t.envReadFile(abs); err != nil {
+			return "", err
+		}
+	}
+	cp := &Checkpoint{
+		SessionID: t.sess.ID, Seq: t.seq, ToolCallID: t.callID, ToolName: t.toolName,
+		Path: t.displayPath(abs), ExistedBefore: existed, Before: before,
+		AfterHash: hashBytes(before), AfterSize: size, CreatedAt: now(),
+	}
+	if err := t.app.Store.AppendCheckpoint(cp); err != nil {
+		return "", fmt.Errorf("快照落库失败: %w", err)
+	}
+	if existed {
+		return fmt.Sprintf("已记录 %s 的快照（%d 字节）。之后可以用不可追踪的方式修改它；用户编辑历史消息时可回退到此刻的内容。", cp.Path, len(before)), nil
+	}
+	return fmt.Sprintf("%s 当前不存在，已记录\"新增文件\"状态：之后创建它，用户编辑历史消息时会把它作为本轮新增撤回。", cp.Path), nil
+}
+
+func deliverResultTool() Tool {
+	return Tool{
+		Spec: toolSpec("deliver_result",
+			"登记本轮的最终交付文件：用户界面会展示交付卡片并提供下载，这是用户拿到成果的正式入口。产出成果文件（尤其是 docx/xlsx/pptx 等经程序生成的文档）后必须调用；只在回复里贴路径不算交付。",
+			objSchema(map[string]any{
+				"files": arrayProp("交付文件清单", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": strProp("文件路径（相对或绝对）"),
+						"note": strProp("一句话说明这个文件是什么（可选）"),
+					},
+					"required": []string{"path"},
+				}),
+				"summary": strProp("本次交付的整体说明（可选）"),
+			}, "files")),
+		Run: runDeliverResult,
+	}
+}
+
+func runDeliverResult(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Files []struct {
+			Path string `json:"path"`
+			Note string `json:"note"`
+		} `json:"files"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if len(p.Files) == 0 {
+		return "", fmt.Errorf("files 不能为空")
+	}
+	registered := []string{}
+	missing := []string{}
+	for _, f := range p.Files {
+		abs, err := t.resolve(f.Path)
+		if err != nil {
+			return "", err
+		}
+		if _, err := t.authorize(permAction{Op: "read", Tool: "deliver_result", Path: abs}); err != nil {
+			return "", err
+		}
+		if isDir, _, serr := t.envStat(abs); serr != nil || isDir {
+			missing = append(missing, f.Path)
+			continue
+		}
+		d := &Delivery{
+			SessionID: t.sess.ID, Seq: t.seq, Path: t.displayPath(abs),
+			Note: strings.TrimSpace(f.Note), CreatedAt: now(),
+		}
+		if p.Summary != "" {
+			d.Note = strings.TrimSpace(d.Note + "；" + p.Summary)
+		}
+		if err := t.app.Store.AddDelivery(d); err != nil {
+			return "", fmt.Errorf("交付登记落库失败: %w", err)
+		}
+		registered = append(registered, d.Path)
+	}
+	if len(registered) == 0 {
+		return "", fmt.Errorf("以下文件不存在，未登记任何交付：%s", strings.Join(missing, "、"))
+	}
+	out := fmt.Sprintf("已登记 %d 个交付文件，用户界面已展示并提供下载：%s", len(registered), strings.Join(registered, "、"))
+	if len(missing) > 0 {
+		out += "。以下文件不存在已跳过：" + strings.Join(missing, "、")
+	}
+	return out, nil
 }
 
 func listDirTool() Tool {

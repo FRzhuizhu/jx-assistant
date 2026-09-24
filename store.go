@@ -194,6 +194,39 @@ var storeMigrations = []migration{
 			`UPDATE sessions SET origin='human' WHERE mode='aux' AND origin=''`,
 		},
 	},
+	{
+		// 文件快照（checkpoint）与交付成果（delivery）：对齐 ZCode 的 workspace
+		// checkpoint 机制。checkpoint 记录一次文件改动前的内容（write_file /
+		// edit_file 自动记录，snapshot_file 由模型在不可追踪修改前手动记录），
+		// 编辑历史消息回退或按轮撤销时据此恢复；delivery 是模型调用
+		// deliver_result 登记的最终交付文件清单，前端展示并提供下载。
+		id: "0008_snapshots",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS checkpoints (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				seq INTEGER NOT NULL,
+				tool_call_id TEXT NOT NULL DEFAULT '',
+				tool_name TEXT NOT NULL DEFAULT '',
+				path TEXT NOT NULL,
+				existed_before INTEGER NOT NULL DEFAULT 1,
+				before_content BLOB,
+				after_hash TEXT NOT NULL DEFAULT '',
+				after_size INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, seq)`,
+			`CREATE TABLE IF NOT EXISTS deliveries (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				seq INTEGER NOT NULL,
+				path TEXT NOT NULL,
+				note TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_deliveries_session ON deliveries(session_id, seq)`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
@@ -711,6 +744,16 @@ func (s *Store) EditUserMessage(sessionID string, seq int64, content string) (in
 		_ = tx.Rollback()
 		return 0, err
 	}
+	// 编辑点之后的文件快照与交付登记一并清除：它们锚定的消息行已不存在，
+	// 留着会让下次回退拿到错误的状态基线
+	if _, err := tx.Exec(`DELETE FROM checkpoints WHERE session_id=? AND seq>?`, sessionID, seq); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM deliveries WHERE session_id=? AND seq>?`, sessionID, seq); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
 	return removed, tx.Commit()
 }
 
@@ -726,6 +769,243 @@ func (s *Store) SetCompact(sessionID string, seq int64, compact string) error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`UPDATE messages SET compact=? WHERE session_id=? AND seq=?`, compact, sessionID, seq)
 	return err
+}
+
+/* ---------- 文件快照与交付成果 ---------- */
+
+// Checkpoint 是一条文件改动快照：改动发生前该文件的内容。before_content 为
+// 工作区相对路径（脱离工作区的绝对写入存原样绝对路径）；after_hash 供回退前
+// 校验"文件自这次改动后没被外部改过"。
+type Checkpoint struct {
+	ID            int64  `json:"id"`
+	SessionID     string `json:"sessionId"`
+	Seq           int64  `json:"seq"`
+	ToolCallID    string `json:"-"`
+	ToolName      string `json:"toolName"`
+	Path          string `json:"path"`
+	ExistedBefore bool   `json:"existedBefore"`
+	Before        []byte `json:"-"`
+	AfterHash     string `json:"-"`
+	AfterSize     int64  `json:"afterSize"`
+	CreatedAt     string `json:"createdAt"`
+}
+
+// Delivery 是一条交付登记：模型调用 deliver_result 记下的最终成果文件。
+type Delivery struct {
+	ID        int64  `json:"id"`
+	SessionID string `json:"sessionId"`
+	Seq       int64  `json:"seq"`
+	Path      string `json:"path"`
+	Note      string `json:"note"`
+	CreatedAt string `json:"createdAt"`
+}
+
+const checkpointCols = `id, session_id, seq, tool_call_id, tool_name, path, existed_before, before_content, after_hash, after_size, created_at`
+
+func scanCheckpoint(sc interface{ Scan(dest ...any) error }) (*Checkpoint, error) {
+	cp := &Checkpoint{}
+	var existed int
+	err := sc.Scan(&cp.ID, &cp.SessionID, &cp.Seq, &cp.ToolCallID, &cp.ToolName, &cp.Path,
+		&existed, &cp.Before, &cp.AfterHash, &cp.AfterSize, &cp.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	cp.ExistedBefore = existed == 1
+	return cp, nil
+}
+
+// AppendCheckpoint 落一条快照（写失败只影响回退能力，调用方按 best-effort 处理）。
+func (s *Store) AppendCheckpoint(cp *Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO checkpoints
+		(session_id, seq, tool_call_id, tool_name, path, existed_before, before_content, after_hash, after_size, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		cp.SessionID, cp.Seq, cp.ToolCallID, cp.ToolName, cp.Path, boolInt(cp.ExistedBefore),
+		cp.Before, cp.AfterHash, cp.AfterSize, cp.CreatedAt)
+	return err
+}
+
+// CheckpointsAfter 取 seq 之后（不含）的全部快照，按落库顺序（即改动发生顺序）。
+// 这是「编辑历史消息回退」的取数范围。
+func (s *Store) CheckpointsAfter(sessionID string, seq int64) ([]*Checkpoint, error) {
+	rows, err := s.db.Query(`SELECT `+checkpointCols+` FROM checkpoints
+		WHERE session_id=? AND seq>? ORDER BY id`, sessionID, seq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Checkpoint{}
+	for rows.Next() {
+		if cp, err := scanCheckpoint(rows); err == nil {
+			out = append(out, cp)
+		}
+	}
+	return out, rows.Err()
+}
+
+// CheckpointsIn 取指定 seq 集合内的快照（「按轮撤销」的取数范围）。
+func (s *Store) CheckpointsIn(sessionID string, seqs []int64) ([]*Checkpoint, error) {
+	if len(seqs) == 0 {
+		return []*Checkpoint{}, nil
+	}
+	args := []any{sessionID}
+	marks := []string{}
+	for _, q := range seqs {
+		marks = append(marks, "?")
+		args = append(args, q)
+	}
+	rows, err := s.db.Query(`SELECT `+checkpointCols+` FROM checkpoints
+		WHERE session_id=? AND seq IN (`+strings.Join(marks, ",")+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Checkpoint{}
+	for rows.Next() {
+		if cp, err := scanCheckpoint(rows); err == nil {
+			out = append(out, cp)
+		}
+	}
+	return out, rows.Err()
+}
+
+// DeleteCheckpoints 删除指定 id 的快照（回退成功后调用，锚定消息未变但状态已还原）。
+func (s *Store) DeleteCheckpoints(sessionID string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	args := []any{sessionID}
+	marks := []string{}
+	for _, id := range ids {
+		marks = append(marks, "?")
+		args = append(args, id)
+	}
+	_, err := s.db.Exec(`DELETE FROM checkpoints WHERE session_id=? AND id IN (`+strings.Join(marks, ",")+`)`, args...)
+	return err
+}
+
+// PruneCheckpointsOlderThan 清理超龄快照（保留策略：按天），返回删除条数。
+func (s *Store) PruneCheckpointsOlderThan(cutoff string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`DELETE FROM checkpoints WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// SnapshotBytes 统计会话快照占用的字节数（保留策略：按量）。
+func (s *Store) SnapshotBytes(sessionID string) (int64, error) {
+	var n sql.NullInt64
+	err := s.db.QueryRow(`SELECT SUM(LENGTH(before_content)) FROM checkpoints WHERE session_id=?`, sessionID).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n.Int64, nil
+}
+
+// EvictCheckpointsOver 把会话快照总量压到 maxBytes 以下（从最旧开始驱逐），
+// 返回删除条数。按量保留的兜底：超龄清理管不到的突发大文件由这里限住。
+func (s *Store) EvictCheckpointsOver(sessionID string, maxBytes int64) (int64, error) {
+	total, err := s.SnapshotBytes(sessionID)
+	if err != nil || total <= maxBytes {
+		return 0, err
+	}
+	ids := []int64{}
+	rows, err := s.db.Query(`SELECT id, LENGTH(before_content) FROM checkpoints
+		WHERE session_id=? ORDER BY id`, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type ev struct {
+		id int64
+		sz int64
+	}
+	all := []ev{}
+	for rows.Next() {
+		var e ev
+		if err := rows.Scan(&e.id, &e.sz); err == nil {
+			all = append(all, e)
+		}
+	}
+	for _, e := range all {
+		if total <= maxBytes {
+			break
+		}
+		ids = append(ids, e.id)
+		total -= e.sz
+	}
+	if err := s.DeleteCheckpoints(sessionID, ids); err != nil {
+		return 0, err
+	}
+	return int64(len(ids)), nil
+}
+
+// AddDelivery 落一条交付登记。
+func (s *Store) AddDelivery(d *Delivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO deliveries (session_id, seq, path, note, created_at)
+		VALUES(?,?,?,?,?)`, d.SessionID, d.Seq, d.Path, d.Note, d.CreatedAt)
+	return err
+}
+
+// DeliveriesFor 返回会话全部交付登记（按落库顺序），供前端分组到对应回合。
+func (s *Store) DeliveriesFor(sessionID string) ([]*Delivery, error) {
+	rows, err := s.db.Query(`SELECT id, session_id, seq, path, note, created_at
+		FROM deliveries WHERE session_id=? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Delivery{}
+	for rows.Next() {
+		var d Delivery
+		if err := rows.Scan(&d.ID, &d.SessionID, &d.Seq, &d.Path, &d.Note, &d.CreatedAt); err == nil {
+			out = append(out, &d)
+		}
+	}
+	return out, rows.Err()
+}
+
+// CopySnapshots 把源会话的快照与交付登记按 seq 映射复制到新会话（分支对话用）。
+func (s *Store) CopySnapshots(fromID, toID string, seqMap map[int64]int64) error {
+	cps, err := s.CheckpointsAfter(fromID, 0) // seq 从 1 起，>0 即全部
+	if err != nil {
+		return err
+	}
+	for _, cp := range cps {
+		nq, ok := seqMap[cp.Seq]
+		if !ok {
+			continue
+		}
+		nc := *cp
+		nc.ID, nc.SessionID, nc.Seq = 0, toID, nq
+		if err := s.AppendCheckpoint(&nc); err != nil {
+			return err
+		}
+	}
+	dvs, err := s.DeliveriesFor(fromID)
+	if err != nil {
+		return err
+	}
+	for _, d := range dvs {
+		nq, ok := seqMap[d.Seq]
+		if !ok {
+			continue
+		}
+		nd := *d
+		nd.ID, nd.SessionID, nd.Seq = 0, toID, nq
+		if err := s.AddDelivery(&nd); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SearchMessages 跨会话全文搜索（当前 LIKE 实现；个人规模数据足够，量大后可升 FTS）。

@@ -29,6 +29,9 @@ type Config struct {
 	KeepRounds       int     `json:"keepRounds"`       // 保留最近 N 轮不压缩
 	RuleInterval     int     `json:"ruleInterval"`     // 规则压缩的间隔轮数
 	CompactThreshold float64 `json:"compactThreshold"` // 模型摘要自动触发阈值（0.8/0.9）
+	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（旧配置缺省回落默认值；-1 = 该项关闭）
+	SnapshotDays  int `json:"snapshotDays"`  // 快照保留天数，默认 7；-1=永不过期
+	SnapshotMaxMB int `json:"snapshotMaxMB"` // 每会话快照总量上限（MB），默认 32；-1=不限量
 }
 
 func DefaultConfig() *Config {
@@ -48,6 +51,8 @@ func DefaultConfig() *Config {
 		KeepRounds:            5,
 		RuleInterval:          5,
 		CompactThreshold:      0.8,
+		SnapshotDays:          7,
+		SnapshotMaxMB:         32,
 	}
 }
 
@@ -88,6 +93,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.BindHost == "" {
 		cfg.BindHost = def.BindHost
+	}
+	if cfg.SnapshotDays == 0 {
+		cfg.SnapshotDays = def.SnapshotDays
+	}
+	if cfg.SnapshotMaxMB == 0 {
+		cfg.SnapshotMaxMB = def.SnapshotMaxMB
 	}
 	if cfg.CompactMode != "rule" && cfg.CompactMode != "llm" && cfg.CompactMode != "off" {
 		cfg.CompactMode = def.CompactMode

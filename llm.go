@@ -312,11 +312,20 @@ func mockStream(req ChatRequest, cb StreamCallbacks) error {
 			"command": "echo shell-ok",
 			"shell":   "cmd",
 		})
+	case 2:
+		// 演示交付链路：产出成果文件后用 deliver_result 登记，前端出交付卡片
+		emitCall("deliver_result", map[string]any{
+			"files": []any{map[string]any{
+				"path": "mock-演示.txt",
+				"note": "演示模式生成的成果文件",
+			}},
+			"summary": "本轮演示的交付成果",
+		})
 	default:
 		segs := []string{
 			"演示模式：",
 			"我已调用 write_file 创建了「mock-演示.txt」，又用 run_command 执行了 cmd 命令，",
-			"主循环、工具调用、会话持久化与流式输出链路均正常。",
+			"并用 deliver_result 登记了交付成果（见交付卡片）；文件快照、交付与回退链路均正常。",
 			"在设置中填入 API Key 并把 baseURL 改回真实服务地址，即可使用真实模型。",
 		}
 		if cb.OnText != nil {

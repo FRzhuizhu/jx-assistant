@@ -100,6 +100,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.recoverInterrupted()
 	// 待办与定时任务：载入清单并起调度循环（组件关掉时整拍跳过，见 todo.go）
 	a.Todos = newTodoScheduler(a)
+	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
+	go a.snapshotJanitor()
 	return a, nil
 }
 
@@ -148,6 +150,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
 	mux.HandleFunc("POST /api/sessions/{id}/edit", a.handleEdit)
+	mux.HandleFunc("POST /api/sessions/{id}/file-rewind", a.handleFileRewind)
+	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
 	mux.HandleFunc("GET /api/questions", a.handleListQuestions)
@@ -1039,9 +1043,23 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// running 与 pending 以内存运行时为准：刷新页面后据此自动接上执行流、
 	// 恢复「已插话/已排队」的显示，不依赖刷新前的页面状态
+	cps, err := a.Store.CheckpointsAfter(m.ID, 0) // seq 从 1 起，>0 即全部
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	for _, cp := range cps {
+		cp.Before = nil // 正文不下发，前端只做清单展示
+	}
+	dvs, err := a.Store.DeliveriesFor(m.ID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{
 		"meta": m, "messages": msgs,
 		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
+		"checkpoints": cps, "deliveries": dvs,
 	})
 }
 
@@ -1457,31 +1475,43 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	seqMap := map[int64]int64{} // 源 seq → 新会话 seq（AppendRow 顺序分配），供快照/交付按图复制
 	for _, x := range msgs {
-		_ = a.Store.AppendRow(fork.ID, &StoredMessage{
-			Message: x.Message, Kind: x.Kind, CreatedAt: fork.CreatedAt,
-		})
+		row := &StoredMessage{Message: x.Message, Kind: x.Kind, CreatedAt: fork.CreatedAt}
+		if err := a.Store.AppendRow(fork.ID, row); err == nil {
+			seqMap[x.Seq] = row.Seq
+		}
+	}
+	// 文件快照与交付登记跟着消息一起搬过去：分支里同样能回退文件、看交付
+	if err := a.Store.CopySnapshots(m.ID, fork.ID, seqMap); err != nil {
+		log.Printf("[快照] 分支 %s 复制快照失败（分支仍可用，只是缺文件历史）: %v", fork.ID, err)
 	}
 	a.broadcast(Event{Type: "session_updated", SessionID: fork.ID})
 	writeJSON(w, 200, fork)
 }
 
 // handleEdit 编辑历史用户消息并重发：截断该消息之后的全部记录、改写正文、
-// 立即续跑一轮。语义对齐 ZCode 的 editUserQuery——同会话内截断重发，不建
-// 子会话、不回退已做的文件修改（本项目无文件快照，等价于其 workspaceMode
-// 的 preserve 档）。仅空闲会话可编辑；系统注入行（回报/上传/目标续跑/继承
-// 标记）不可编辑。
+// 立即续跑一轮。语义对齐 ZCode 的 editUserQuery——同会话内截断重发；文件
+// 回退是可选档（workspaceMode=rewind，对齐其"对话+文件重置"提交按钮）：
+// 先做安全预检（fail-closed：有外部修改过的文件就整体拒绝并回清单），
+// 文件全部恢复成功才截断对话——文件与对话要么都退、要么都不退。
+// 仅空闲会话可编辑；系统注入行（回报/上传/目标续跑/继承标记）不可编辑。
 func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
 		return
 	}
 	var body struct {
-		Seq     int64  `json:"seq"`
-		Content string `json:"content"`
+		Seq           int64  `json:"seq"`
+		Content       string `json:"content"`
+		WorkspaceMode string `json:"workspaceMode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Seq <= 0 || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "需要 seq 与非空 content")
+		return
+	}
+	if body.WorkspaceMode != "preserve" && body.WorkspaceMode != "" && body.WorkspaceMode != "rewind" {
+		writeErr(w, 400, "workspaceMode 只能是 preserve 或 rewind")
 		return
 	}
 	if _, ok := w.(http.Flusher); !ok {
@@ -1513,11 +1543,40 @@ func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "只有真实的用户消息可以编辑")
 		return
 	}
+	// 文件回退：预检不安全就整体拒绝（对话不裁剪），把清单回给前端选"仅重发对话"
+	var restored []*rewindPlan
+	if body.WorkspaceMode == "rewind" {
+		tctx := &toolContext{app: a, sess: m}
+		safe, unsafe, perr := a.planRewind(tctx, m.ID, body.Seq, nil)
+		if perr != nil {
+			lock.Unlock()
+			writeErr(w, 500, "文件回退预检失败: "+perr.Error())
+			return
+		}
+		if len(unsafe) > 0 {
+			lock.Unlock()
+			writeJSON(w, 409, map[string]any{
+				"error":   "有文件在快照之后被外部修改，无法安全回退；可改为仅重发对话（不动文件）",
+				"blocked": true, "unsafe": unsafe, "safe": safe,
+			})
+			return
+		}
+		restored = safe
+	}
 	content := strings.TrimSpace(body.Content)
 	if _, err := a.Store.EditUserMessage(m.ID, body.Seq, content); err != nil {
 		lock.Unlock()
 		writeErr(w, 500, "编辑落库失败: "+err.Error())
 		return
+	}
+	if restored != nil {
+		tctx := &toolContext{app: a, sess: m}
+		if aerr := a.applyRewind(tctx, restored); aerr != nil {
+			lock.Unlock()
+			log.Printf("[快照] 会话 %s 编辑回退文件失败（已尝试补偿）: %v", m.ID, aerr)
+			writeErr(w, 500, "文件回退失败（已自动恢复原状）: "+aerr.Error())
+			return
+		}
 	}
 	run, ok := a.beginRun(m.ID)
 	if !ok {
@@ -1529,6 +1588,118 @@ func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
 	// opening 先发 edited 确认帧：前端据此把本地记录截断对齐，再跟随续跑输出
 	opening := []Event{{Type: "edited", Seq: body.Seq, Delta: content}}
 	a.serveRun(w, r, m, run, opening)
+}
+
+// handleFileRewind 按轮撤销文件改动：不裁剪对话，只把 seqs 范围内记录的文件
+// 改动恢复到该轮之前（对齐 ZCode 文件摘要面板上的「撤销」）。同样 fail-closed：
+// 有不安全文件就整体拒绝；成功后落一条可见交代并清掉这批快照。
+func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	var body struct {
+		Seqs []int64 `json:"seqs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Seqs) == 0 {
+		writeErr(w, 400, "需要非空 seqs（该回合的消息序号集合）")
+		return
+	}
+	if a.IsRunning(m.ID) {
+		writeErr(w, 409, "该会话正在执行中，等本轮结束后再撤销")
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	safe, unsafe, err := a.planRewind(tctx, m.ID, 0, body.Seqs)
+	if err != nil {
+		writeErr(w, 500, "文件回退预检失败: "+err.Error())
+		return
+	}
+	if len(unsafe) > 0 {
+		writeJSON(w, 409, map[string]any{
+			"error":   "有文件在快照之后被外部修改，无法安全回退",
+			"blocked": true, "unsafe": unsafe, "safe": safe,
+		})
+		return
+	}
+	if len(safe) == 0 {
+		writeJSON(w, 200, map[string]any{"restored": 0})
+		return
+	}
+	if err := a.applyRewind(tctx, safe); err != nil {
+		log.Printf("[快照] 会话 %s 按轮撤销失败（已尝试补偿）: %v", m.ID, err)
+		writeErr(w, 500, "文件回退失败（已自动恢复原状）: "+err.Error())
+		return
+	}
+	// 这批快照已完成使命：状态已还原，留着会让下次回退拿到错误基线
+	cps, _ := a.Store.CheckpointsIn(m.ID, body.Seqs)
+	ids := make([]int64, 0, len(cps))
+	for _, cp := range cps {
+		ids = append(ids, cp.ID)
+	}
+	_ = a.Store.DeleteCheckpoints(m.ID, ids)
+	names := []string{}
+	restored, deleted := 0, 0
+	for _, p := range safe {
+		if p.Action == "delete" {
+			deleted++
+		} else {
+			restored++
+		}
+		names = append(names, p.Path)
+	}
+	note := fmt.Sprintf("【文件回退】用户撤销了本轮文件改动：恢复 %d 个文件、撤回 %d 个新建文件（%s）。",
+		restored, deleted, strings.Join(names, "、"))
+	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: "report", CreatedAt: now()})
+	m.UpdatedAt = now()
+	_ = a.Store.SaveMeta(m)
+	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+	writeJSON(w, 200, map[string]any{"restored": restored, "deleted": deleted})
+}
+
+// handleDeliveryDownload 提供交付文件的下载。只放行已登记进 deliveries 的
+// 路径（用户主动下载，不走模型权限审批；未登记的任意路径一律 404，防越权读）。
+func (a *App) handleDeliveryDownload(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	want := strings.TrimSpace(r.URL.Query().Get("path"))
+	if want == "" {
+		writeErr(w, 400, "需要 path")
+		return
+	}
+	dvs, err := a.Store.DeliveriesFor(m.ID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	listed := false
+	for _, d := range dvs {
+		if d.Path == want {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		http.NotFound(w, r)
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	abs, err := tctx.resolve(want)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := tctx.envReadFile(abs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	name := path.Base(filepath.ToSlash(want))
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(data)
 }
 
 // handleListApprovals 返回待决定的审批（前端轮询兜底）。
