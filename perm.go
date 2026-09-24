@@ -5,15 +5,18 @@ package main
 //
 //  1. 三档沙箱策略（会话粒度，权限芯片可选）：read-only（沙箱内执行、
 //     无任何写授权）/ workspace-write（沙箱内执行、授权工作区+私有临时
-//     目录）/ full（不受限）。强制力来自操作系统：Windows 受限令牌+ACL
-//     （sandbox_windows.go）、Linux Landlock（经 sandboxhelper 自限制）、
-//     SSH 远程经上传到远端的同一 helper。文件工具以路径边界为沙箱。
+//     目录）/ full（不受限，且预设捆绑点亮「允许沙箱外执行/操作浏览器/
+//     操作电脑」能力，勾选置灰不可单独关闭）。强制力来自操作系统：
+//     Windows 受限令牌+ACL（sandbox_windows.go）、Linux Landlock（经
+//     sandboxhelper 自限制）、SSH 远程经上传到远端的同一 helper。
+//     文件工具以路径边界为沙箱。
 //  2. 拒绝驱动的升级（对齐官方 bash 工具）：不做威胁命令黑名单、不做
 //     执行前预检——命令先按会话策略进沙箱真实执行；写操作被操作系统
 //     拒绝时结果带 [sandbox: write denied under <mode> mode] 标记，模型
 //     同轮可带 sandbox_permissions（够用的最宽档）+ justification 重试
-//     一次，该重试弹审批卡由用户决定，批准后以更宽策略执行这一次；
-//     「始终允许」= 会话切到完全访问（官方预设捆绑：完全访问=不再审批）。
+//     一次，该重试弹审批卡由用户决定，批准后以更宽策略执行这一次。
+//     「始终允许」= 常设授权：命令升级点亮对应能力开关；工作区外写入
+//     把会话切到完全访问（捆绑能力一并点亮，不再审批）。
 //     被拒绝的升级对该命令终局。
 //  3. 一次性授权凭证（Grant）：每次写文件/执行命令签发短时效凭证，
 //     执行器核销后才动手；过期或重复核销即拒绝（fail closed）。
@@ -39,12 +42,15 @@ const (
 	permFull        = "full"            // 完全访问（不受限）
 	capUnsandboxed  = "unsandboxed"     // 能力：允许沙箱外（不受限）执行命令
 	capSandboxWrite = "sandbox-write"   // 能力：允许命令在沙箱内写入（只读档位下）
-	capFsEscape     = "fs-escape"       // 能力：允许读写工作区外的文件
 	capBrowser      = "browser"         // 能力：允许操作浏览器（browser_* 工具）
 	capComputer     = "computer"        // 能力：允许操作电脑（computer_* 工具）
 	grantTTL        = 5 * time.Minute   // 授权凭证有效期
 	approvalTTL     = 2 * time.Minute   // 审批等待上限，超时视为拒绝
 )
+
+// fullAccessCaps 是「完全访问」预设捆绑的能力：会话切到完全访问时，
+// 这三项在权限面板强制勾选并置灰（不可单独关闭），权限引擎同样视为开启。
+var fullAccessCaps = []string{capUnsandboxed, capBrowser, capComputer}
 
 // escalationCapability 返回某类升级请求对应的能力开关 id：
 // 「始终允许」点亮它，之后该类动作不再逐次审批（常设授权）。
@@ -59,7 +65,16 @@ func escalationCapability(req string) string {
 }
 
 // hasCapability 判断会话是否开启了某个能力开关（权限面板右侧多选）。
+// 完全访问模式下捆绑能力（沙箱外执行/操作浏览器/操作电脑）一律视为
+// 开启——与前端联动一致：切到完全访问，这三项强制点亮且不可关闭。
 func hasCapability(s *SessionMeta, cap string) bool {
+	if permModeOf(s) == permFull {
+		for _, c := range fullAccessCaps {
+			if c == cap {
+				return true
+			}
+		}
+	}
 	for _, c := range s.Tools {
 		if c == cap {
 			return true
@@ -74,6 +89,31 @@ func (a *App) addCapability(s *SessionMeta, cap string) {
 		return
 	}
 	s.Tools = append(s.Tools, cap)
+	_ = a.Store.SaveMeta(s)
+	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
+}
+
+// bundleFullAccessCaps 把完全访问捆绑的能力并入 tools（纯内存合并，不落库；
+// 会话创建/改权限时用，保证存储状态与面板勾选一致）。
+func bundleFullAccessCaps(tools []string) []string {
+	have := make(map[string]bool, len(tools))
+	for _, c := range tools {
+		have[c] = true
+	}
+	out := tools
+	for _, c := range fullAccessCaps {
+		if !have[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// switchToFullAccess 把会话权限切到完全访问并点亮捆绑能力（工作区外写入
+// 「始终允许」用）：持久化并广播，前端权限面板随之刷新。
+func (a *App) switchToFullAccess(s *SessionMeta) {
+	s.Permission = permFull
+	s.Tools = bundleFullAccessCaps(s.Tools)
 	_ = a.Store.SaveMeta(s)
 	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
 }
@@ -201,8 +241,9 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 }
 
 // resolveApproval 登记用户的决定并唤醒等待中的工具执行。
-// always=true 表示用户点了「始终允许」：给会话开启「允许工作区外执行命令」
-// 能力（权限面板勾选点亮，持久化并广播），本次放行，之后的越界执行不再审批。
+// always=true 表示用户点了「始终允许」（常设授权）：命令升级点亮对应
+// 能力开关、工作区外写入把会话切到完全访问（权限面板同步刷新），
+// 本次放行，之后的同类动作不再审批。
 func (a *App) resolveApproval(id string, approved, always bool) error {
 	a.permMu.Lock()
 	ap, ok := a.approvals[id]
@@ -407,33 +448,30 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		if blocked == "" {
 			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, sandboxPolicyForMode(mode)), nil
 		}
-		// 能力「读写工作区外的文件」已点亮 → 用户已常设批准，直接放行。
-		if hasCapability(t.sess, capFsEscape) {
-			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path+"（fs-escape 能力）", permFull), nil
-		}
 		// 升级申请：模型带 sandbox_permissions=full + justification → 弹审批，
-		// 「始终允许」点亮 fs-escape 能力，之后写工作区外不再逐次审批。
+		// 权限申请是「把会话提升为完全访问」。「允许」= 本次以完全访问执行；
+		// 「始终允许」= 会话切到完全访问（捆绑能力一并点亮），此后不再逐次审批。
 		req := strings.TrimSpace(act.EscalateTo)
 		if req == permFull || req == "danger-full-access" {
 			just := strings.TrimSpace(act.Justification)
 			if just == "" {
 				return nil, fmt.Errorf("sandbox_permissions 必须搭配一句 justification（给用户看的理由），本次缺少")
 			}
-			summary := fmt.Sprintf("写入沙箱边界之外：%s｜理由：%s", truncateRunes(act.Path, 160), truncateRunes(just, 120))
+			summary := fmt.Sprintf("提升为完全访问以写入工作区外：%s｜理由：%s", truncateRunes(act.Path, 160), truncateRunes(just, 120))
 			if t.emit != nil {
-				t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批（工作区外写文件）…"})
+				t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批（提升为完全访问）…"})
 			}
 			approved, always := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
-				fmt.Sprintf("当前会话为 %s，模型请求写入工作区之外（%s）", permModeLabel(mode), act.Path))
+				fmt.Sprintf("当前会话为「%s」，模型请求写入工作区之外（%s）。「允许」=本次放行；「始终允许」=把会话切到「完全访问」", permModeLabel(mode), act.Path))
 			if !approved {
 				return nil, fmt.Errorf("用户未批准该写入，未执行。请停止并如实说明，不要绕过")
 			}
 			if always {
-				t.app.addCapability(t.sess, capFsEscape)
+				t.app.switchToFullAccess(t.sess)
 			}
 			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, permFull), nil
 		}
-		hint := "可在重试时带 sandbox_permissions=full 与一句 justification 申请写入（弹审批由用户决定）"
+		hint := "可在重试时带 sandbox_permissions=full 与一句 justification 申请把会话提升为完全访问（弹审批由用户决定）"
 		if blocked == "read-only" {
 			return nil, fmt.Errorf("[fs sandbox: write denied under read-only mode] 目标 %s（当前会话为只读）。%s；或让用户把权限芯片切到「工作区内读写」", act.Path, hint)
 		}

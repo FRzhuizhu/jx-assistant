@@ -10,8 +10,12 @@ import (
 	"os"
 )
 
-// Main 非 Linux 平台不可用。
+// Main 非 Linux 平台不可用（version 子命令除外）。
 func Main(args []string) int {
+	if len(args) > 0 && args[0] == "version" {
+		fmt.Println(Version)
+		return 0
+	}
 	fmt.Fprintln(os.Stderr, "JX_SANDBOX_UNAVAILABLE: 本 helper 仅支持 Linux")
 	return 126
 }

@@ -341,11 +341,11 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write_file", "创建或覆盖文件。按会话权限模式的文件沙箱执行：工作区内读写只允许写工作区内，被拒绝时可带 sandbox_permissions=full 与 justification 申请写入（弹审批）。",
+		Spec: toolSpec("write_file", "创建或覆盖文件。按会话权限模式的文件沙箱执行：工作区内读写只允许写工作区内，被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("目标文件路径（相对或绝对）"),
 				"content":             strProp("要写入的完整内容"),
-				"sandbox_permissions": strProp("仅在被拒绝后的重试中使用：full，申请写入沙箱边界之外（弹审批）"),
+				"sandbox_permissions": strProp("仅在被拒绝后的重试中使用：full，申请把会话提升为完全访问以写入工作区之外（弹审批）"),
 				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户说明理由"),
 			}, "path", "content")),
 		Run: runWriteFile,

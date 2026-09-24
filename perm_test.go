@@ -316,3 +316,91 @@ func TestAuthorizeDenialDriven(t *testing.T) {
 		t.Fatalf("普通 exec 应保持 workspace-write 策略: g=%v err=%v", g3, err)
 	}
 }
+
+// TestFullAccessBundlesCapabilities：完全访问=三项捆绑能力强制视为开启；
+// 普通模式下能力仍以勾选为准。
+func TestFullAccessBundlesCapabilities(t *testing.T) {
+	full := &SessionMeta{Permission: permFull}
+	for _, c := range fullAccessCaps {
+		if !hasCapability(full, c) {
+			t.Errorf("完全访问应视为开启能力 %s", c)
+		}
+	}
+	if hasCapability(full, capSandboxWrite) {
+		t.Error("sandbox-write 不在捆绑清单内，完全访问不应点亮它")
+	}
+	plain := &SessionMeta{Permission: permWorkspace, Tools: []string{capBrowser}}
+	if hasCapability(plain, capUnsandboxed) {
+		t.Error("未勾选的能力不应开启")
+	}
+	if !hasCapability(plain, capBrowser) {
+		t.Error("勾选的能力应开启")
+	}
+	if got := bundleFullAccessCaps([]string{capBrowser}); len(got) != 3 {
+		t.Errorf("bundleFullAccessCaps 应补齐三项捆绑能力，得到 %v", got)
+	}
+}
+
+// TestWriteEscalationToFullAccess：工作区外写入的升级不再点亮单独能力，
+// 「允许」= 本次以完全访问执行；「始终允许」= 会话切到完全访问，
+// 捆绑能力一并点亮（持久化），之后工作区外写不再审批。
+func TestWriteEscalationToFullAccess(t *testing.T) {
+	a, sess, tc := escalationApp(t)
+
+	// 「允许」：本次以完全访问放行，会话仍为工作区内读写
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if aps := a.pendingApprovals(); len(aps) == 1 {
+				_ = a.resolveApproval(aps[0].ID, true, false)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	g, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\a.txt`,
+		EscalateTo: permFull, Justification: "需要写工作区外的配置文件"})
+	if err != nil || g.Policy != permFull {
+		t.Fatalf("批准后应以完全访问放行本次写入: g=%v err=%v", g, err)
+	}
+	if sess.Permission != permWorkspace {
+		t.Fatalf("仅「允许」不应改变会话权限，得到 %s", sess.Permission)
+	}
+
+	// 「始终允许」：会话切到完全访问，捆绑能力一并点亮
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if aps := a.pendingApprovals(); len(aps) == 1 {
+				_ = a.resolveApproval(aps[0].ID, true, true)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\b.txt`,
+		EscalateTo: permFull, Justification: "这次用始终允许"}); err != nil {
+		t.Fatalf("始终允许路径应放行: %v", err)
+	}
+	if sess.Permission != permFull {
+		t.Fatalf("始终允许应把会话切到完全访问，得到 %s", sess.Permission)
+	}
+	for _, c := range fullAccessCaps {
+		if !hasCapability(sess, c) {
+			t.Errorf("完全访问应捆绑点亮 %s: %v", c, sess.Tools)
+		}
+	}
+	// 切换已持久化：从存储重读仍然生效
+	reloaded, err := a.Store.Get(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Permission != permFull {
+		t.Fatalf("完全访问应已落库，重读到 %s", reloaded.Permission)
+	}
+	// 完全访问下：工作区外写直接放行（不再弹审批），策略为 full
+	g3, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\c.txt`})
+	if err != nil || g3.Policy != permFull {
+		t.Fatalf("完全访问下工作区外写应直接放行: g=%v err=%v", g3, err)
+	}
+}

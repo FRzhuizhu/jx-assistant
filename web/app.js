@@ -1475,7 +1475,18 @@ function handleGlobalEvent(ev) {
     case 'report_ready':
     case 'session_updated':
       if (!viewing && ev.type === 'session_updated') dotDone[ev.sessionId] = dotDone[ev.sessionId] || aRunJustEnded(ev.sessionId);
-      loadSessions();
+      loadSessions().then(() => {
+        // 权限被审批提升（如「始终允许」把会话切到完全访问）时，
+        // 流式中的当前会话也立即同步权限芯片/面板
+        if (state.cur && state.cur.id === ev.sessionId && state.streaming) {
+          const m = (state.sessions || []).find((s) => s.id === ev.sessionId);
+          if (m) {
+            state.cur.permission = m.permission;
+            state.cur.tools = m.tools;
+            syncComposer();
+          }
+        }
+      });
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrent();
       break;
@@ -1554,7 +1565,7 @@ function renderApprovals() {
       (ap.reason ? '<p>' + esc(ap.reason) + '</p>' : '') + '</div>' +
       '<div class="ap-actions">' +
       '<button class="ok" data-act="ok">允许</button>' +
-      '<button class="ok always" data-act="always" title="开启「允许工作区外执行命令」能力（权限面板勾选点亮），此后沙箱外执行不再逐次审批">始终允许</button>' +
+      '<button class="ok always" data-act="always" title="常设授权：命令升级点亮对应能力开关；工作区外写入会把会话切到「完全访问」（三项能力捆绑点亮），此后不再逐次审批">始终允许</button>' +
       '<button class="deny" data-act="deny">拒绝</button>' +
       '</div>';
     card.querySelectorAll('button').forEach((b) => {
@@ -2285,11 +2296,20 @@ function remoteDisplay(r) {
   return user + '@' + r.host + port + ':' + (r.dir || '/');
 }
 
+// 完全访问预设捆绑的能力：切到完全访问即强制勾选、置灰不可关闭（后端权限引擎同样视为开启）
+const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer'];
+
 function renderPermPop() {
   const s = sessionOrDraft();
   const pop = $('perm-pop');
+  const full = s.permission === 'full';
   pop.querySelectorAll('input[name=perm]').forEach((r) => { r.checked = r.value === s.permission; });
-  pop.querySelectorAll('input[data-tool]').forEach((c) => { c.checked = s.tools.includes(c.dataset.tool); });
+  pop.querySelectorAll('input[data-tool]').forEach((c) => {
+    const forced = full && FULL_BUNDLED_TOOLS.includes(c.dataset.tool);
+    c.checked = forced || s.tools.includes(c.dataset.tool);
+    c.disabled = forced; // 完全访问下捆绑能力不可关闭
+    c.closest('.perm-opt').classList.toggle('forced', forced);
+  });
 }
 
 function renderWsPop() {
@@ -3096,10 +3116,16 @@ $('ws-pop-add').onclick = async () => {
 };
 // 「添加远程工作目录」：打开 SSH 表单（与加号菜单里的是同一个）
 $('ws-pop-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', $('ws-row')); };
-// 权限面板：单选立即生效，多选即时收集
+// 权限面板：单选立即生效，多选即时收集；切到完全访问时三项捆绑能力联动勾上
 $('perm-pop').addEventListener('change', (e) => {
   if (e.target.name === 'perm') {
-    patchDraftOrSession({ permission: e.target.value });
+    if (e.target.value === 'full') {
+      const set = new Set(sessionOrDraft().tools || []);
+      FULL_BUNDLED_TOOLS.forEach((t) => set.add(t));
+      patchDraftOrSession({ permission: 'full', tools: [...set] }).then(renderPermPop);
+    } else {
+      patchDraftOrSession({ permission: e.target.value }).then(renderPermPop);
+    }
   } else if (e.target.dataset.tool) {
     const s = sessionOrDraft();
     const set = new Set(s.tools || []);

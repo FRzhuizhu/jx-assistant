@@ -53,9 +53,16 @@ const (
 	sysPrctl           = 157
 )
 
-// Main 是 helper 的入口：jx-sandbox restrict --mode M --workspace W --temp T -- cmd…
+// Main 是 helper 的入口：
+//   - jx-sandbox version：打印版本号退出（ensureRemoteHelper 校验用）
+//   - jx-sandbox restrict --mode M --workspace W --temp T|auto -- cmd…
+//
 // 返回进程退出码。
 func Main(args []string) int {
+	if len(args) > 0 && args[0] == "version" {
+		fmt.Println(Version)
+		return 0
+	}
 	mode, ws, temp, cmd, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "用法: jx-sandbox restrict --mode read-only|workspace-write --workspace DIR --temp DIR|auto -- cmd…")
@@ -123,6 +130,10 @@ func Restrict(mode, ws, temp string, cmd []string) ([]string, error) {
 			return nil, fmt.Errorf("创建私有临时目录失败: %w", err)
 		}
 		temp = td
+	}
+	// 显式或 auto 给出的临时目录都注入 TMPDIR：否则子进程往默认 /tmp 写
+	// 临时文件会被 Landlock 拒掉（TMPDIR 指向授权目录才可写）。
+	if mode == "workspace-write" && temp != "" {
 		_ = os.Setenv("TMPDIR", temp)
 	}
 	if err := noNewPrivs(); err != nil {

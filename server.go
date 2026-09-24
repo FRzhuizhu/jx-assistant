@@ -805,6 +805,9 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  now(),
 		UpdatedAt:  now(),
 	}
+	if permModeOf(m) == permFull {
+		m.Tools = bundleFullAccessCaps(m.Tools) // 完全访问：预设捆绑能力一并点亮
+	}
 	if err := a.Store.Create(m); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -870,6 +873,9 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Permission != nil {
 		m.Permission = strings.TrimSpace(*body.Permission)
+		if permModeOf(m) == permFull {
+			m.Tools = bundleFullAccessCaps(m.Tools) // 切到完全访问：捆绑能力联动点亮
+		}
 	}
 	if body.Thinking != nil {
 		switch t := strings.TrimSpace(*body.Thinking); t {

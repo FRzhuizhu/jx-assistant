@@ -11,8 +11,10 @@ import (
 // SessionMeta 是一个会话的元信息；消息正文存于 messages 表。
 // mode: task=普通任务会话 assistant=数字助理总控 aux=辅助答疑对话
 // permission: workspace-write=工作区内读写 full=完全访问 read-only=只读
-// （后端权限引擎强制执行，见 perm.go；tools 为启用的能力开关 id 列表，
-// 其中 unsandboxed=允许工作区外执行命令，越界执行逐次审批）
+// （后端权限引擎强制执行，见 perm.go；tools 为启用的能力开关 id 列表：
+// unsandboxed=允许工作区外执行命令、sandbox-write=只读档下沙箱内写入、
+// browser/computer=操作浏览器/电脑；完全访问模式下 unsandboxed/browser/
+// computer 三项强制视为开启，面板勾选联动点亮且不可单独关闭）
 // remote 非空时会话挂载 SSH 远程工作区：文件工具走 SFTP、命令走远程 shell。
 type SessionMeta struct {
 	ID         string           `json:"id"`

@@ -444,6 +444,10 @@ svg { width: 16px; height: 16px; flex: none; }
 .po-text { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .po-text svg { width: 15px; height: 15px; color: var(--text-3); flex-shrink: 0; }
 .perm-opt input { accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; }
+/* 完全访问下捆绑能力强制勾选：置灰且不可关闭 */
+.perm-opt.forced { opacity: .55; cursor: not-allowed; }
+.perm-opt.forced:hover { background: none; }
+.perm-opt.forced input { cursor: not-allowed; }
 
 /* 目录选择面板（仅新建对话）：搜索 + 目录列表 + 底部动作按钮 */
 .ws-pop { min-width: 360px; }
