@@ -109,13 +109,12 @@ func runReadSummary(t *toolContext, args json.RawMessage) (string, error) {
 
 func dispatchTaskTool() Tool {
 	return Tool{
-		Spec: toolSpec("dispatch_task", "新建一个任务会话并把需求交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，任务会话完成后你会自动收到压缩摘要。任务描述必须完整自洽，包含任务会话所需的全部上下文、验收标准与工作目录。",
+		Spec: toolSpec("dispatch_task", "新建一个工作任务会话并把需求交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，任务完成后你会自动收到压缩摘要。工作任务与我们的聊天记录完全隔离——你就像用户一样只给它发一段自足的消息，task 必须写全目标、验收标准、涉及目录等全部上下文。",
 			objSchema(map[string]any{
-				"task":            strProp("完整任务描述，自带全部上下文（目标、验收标准、涉及目录）"),
-				"title":           strProp("给新会话起的标题，可省略"),
-				"workspace":       strProp("可选：子任务的工作目录（绝对路径），默认沿用当前工作区"),
-				"model":           strProp("可选：任务会话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
-				"inherit_context": boolProp("可选：是否把本对话（我们的聊天记录）完整继承给任务会话，默认 false。任务需要了解此前讨论的来龙去脉、或需要复用本对话里已经交代过的背景时才设 true；一次性的独立任务保持默认——任务描述写清楚更省 token。"),
+				"task":      strProp("完整任务描述，自带全部上下文（目标、验收标准、涉及目录）——工作任务看不到本对话的任何记录"),
+				"title":     strProp("给新任务起的标题，可省略"),
+				"workspace": strProp("可选：工作任务的工作目录（绝对路径），默认沿用当前工作区"),
+				"model":     strProp("可选：任务会话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
 			}, "task")),
 		Run: runDispatchTask,
 	}
@@ -159,12 +158,13 @@ func (t *toolContext) dispatchExtras(sub *SessionMeta, model string) {
 
 func dispatchSubTool() Tool {
 	return Tool{
-		Spec: toolSpec("dispatch_sub", "新建一个子对话（挂在本对话下，右栏可见），把一块自洽的子任务交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，子对话完成后结果自动回报到本对话并触发你继续。子对话只有一级，不能再派发。",
+		Spec: toolSpec("dispatch_sub", "新建一个子对话（挂在本对话下，右栏可见），把一块自洽的子任务交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，子对话完成后结果自动回报到本对话并触发你继续。子对话只有一级，不能再派发。可选继承本对话的完整聊天记录（inherit_context），两种模式按需选择。",
 			objSchema(map[string]any{
-				"task":      strProp("完整子任务描述，自带全部上下文（目标、验收标准、涉及目录）"),
-				"title":     strProp("给子对话起的标题，可省略"),
-				"workspace": strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区"),
-				"model":     strProp("可选：子对话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
+				"task":            strProp("完整子任务描述，自带全部上下文（目标、验收标准、涉及目录）"),
+				"title":           strProp("给子对话起的标题，可省略"),
+				"workspace":       strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区"),
+				"model":           strProp("可选：子对话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
+				"inherit_context": boolProp("可选：是否把本对话（我们的聊天记录）完整继承给子对话，默认 false。子任务需要了解此前讨论的来龙去脉、或需要复用本对话里已经交代过的背景时设 true，task 就只用写「接下来要做什么」；一次性的独立子任务保持默认——任务描述写清楚更省 token。"),
 			}, "task")),
 		Run: runDispatchSub,
 	}
@@ -172,13 +172,16 @@ func dispatchSubTool() Tool {
 
 // runDispatchSub 派发子对话：被派发的是挂在当前会话下的 task 会话（右栏抽屉
 // 可见），回报链就是 parent_id。主对话与工作任务（task/office）都可派；
-// 子对话本身不能再派发（只有一级）。
+// 子对话本身不能再派发（只有一级）。两种上下文模式：默认只给一段自足的
+// task；inherit_context=true 时先完整继承本会话聊天记录（前端折叠成一条），
+// task 排在继承块之后（子对话读到的最后一条用户消息是自己的任务）。
 func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Task      string `json:"task"`
-		Title     string `json:"title"`
-		Workspace string `json:"workspace"`
-		Model     string `json:"model"`
+		Task           string `json:"task"`
+		Title          string `json:"title"`
+		Workspace      string `json:"workspace"`
+		Model          string `json:"model"`
+		InheritContext bool   `json:"inherit_context"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -212,17 +215,30 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	if err := t.app.Store.Create(sub); err != nil {
 		return "", err
 	}
+	// 带上下文模式：把本会话的完整历史复制进子对话，task 排在继承块之后——
+	// 子对话读到的最后一条用户消息是自己的任务，而不是本会话里某句旧话
+	inherited := 0
+	if p.InheritContext {
+		n, err := t.app.copyInheritedContext(t.sess.ID, sub.ID)
+		if err != nil {
+			return "", fmt.Errorf("继承本会话上下文失败：%w", err)
+		}
+		inherited = n
+	}
 	t.app.appendMessage(sub, TextMessage("user", "【派发子对话】\n\n"+p.Task))
-	return t.launchSub(sub, "")
+	hint := ""
+	if inherited > 0 {
+		hint = fmt.Sprintf("（已继承本会话上下文 %d 条，子对话能看到此前的聊天记录）", inherited)
+	}
+	return t.launchSub(sub, hint)
 }
 
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Task           string `json:"task"`
-		Title          string `json:"title"`
-		Workspace      string `json:"workspace"`
-		Model          string `json:"model"`
-		InheritContext bool   `json:"inherit_context"`
+		Task      string `json:"task"`
+		Title     string `json:"title"`
+		Workspace string `json:"workspace"`
+		Model     string `json:"model"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -257,23 +273,10 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if err := t.app.Store.Create(sub); err != nil {
 		return "", err
 	}
-	// 继承上下文：把主对话的完整历史复制进任务会话（前端折叠成一条「来自主对话」）
-	inherited := 0
-	if p.InheritContext {
-		n, err := t.app.copyInheritedContext(t.sess.ID, sub.ID)
-		if err != nil {
-			return "", fmt.Errorf("继承主对话上下文失败：%w", err)
-		}
-		inherited = n
-	}
-	// 派发需求在继承块之后落库：任务会话读到的最后一条用户消息是自己的任务，
-	// 而不是主对话里某句旧话
+	// 工作任务永远不带上下文：像用户发消息一样，只收到一段自足的任务描述，
+	// 与派发方的聊天记录完全隔离（要上下文的场景用 dispatch_sub 的继承模式）
 	t.app.appendMessage(sub, TextMessage("user", "【数字助理派发】\n\n"+p.Task))
-	hint := ""
-	if inherited > 0 {
-		hint = fmt.Sprintf("（已继承主对话上下文 %d 条，任务会话能看到我们此前的聊天记录）", inherited)
-	}
-	return t.launchSub(sub, hint)
+	return t.launchSub(sub, "")
 }
 
 func sendToSessionTool() Tool {

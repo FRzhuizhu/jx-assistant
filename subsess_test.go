@@ -280,9 +280,10 @@ func TestCreateSessionInheritContext(t *testing.T) {
 	}
 }
 
-// 派发工具：默认不带上下文；inherit_context 时继承；子对话里调用被硬拦。
-// 用 mock 模型跑真实链路：launchSub 会在后台真的执行子会话（不发网络请求）。
-func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
+// 派发工作任务：永远不带上下文（传了 inherit_context 也被忽略）；
+// 子对话里调用被硬拦。用 mock 模型跑真实链路：launchSub 会在后台真的执行
+// 子会话（不发网络请求）。
+func TestDispatchTaskNoContextAndNestingGuard(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	a.Cfg.BaseURL = "mock" // 后台子会话走内置演示模型，离线可跑
 	assistant := &SessionMeta{ID: "a1", Mode: "assistant", Workspace: "ws", CreatedAt: now(), UpdatedAt: now()}
@@ -292,7 +293,7 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	_ = a.Store.Append("a1", TextMessage("user", "帮我把日志整理一下"))
 	_ = a.Store.Append("a1", Message{Role: "assistant", Content: "好的，我安排一下"})
 
-	// 默认：任务会话只收到派发需求，不带主对话历史；
+	// 派发工作任务：只收到一段自足需求，不带主对话历史；
 	// 派发的是顶层工作任务（左侧列表可见），回报链记在 dispatched_by
 	ctx := &toolContext{app: a, sess: assistant, emit: func(Event) {}}
 	out, err := runDispatchTask(ctx, json.RawMessage(`{"task":"整理日志"}`))
@@ -322,56 +323,38 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	}
 	raw, _ := a.Store.RawMessagesAll(plain.ID)
 	if len(raw) != 1 || !strings.Contains(raw[0].Text(), "【数字助理派发】") {
-		t.Fatalf("默认派发应只有一条需求消息，实际 %d 条", len(raw))
+		t.Fatalf("派发应只有一条需求消息，实际 %d 条", len(raw))
 	}
 	if strings.Contains(out, "已继承") {
-		t.Fatalf("默认派发不该声称继承上下文: %s", out)
+		t.Fatalf("派发工作任务不该声称继承上下文: %s", out)
 	}
 
-	// 带上下文：继承主对话历史，标记行在最前，派发需求在其后
-	out, err = runDispatchTask(ctx, json.RawMessage(`{"task":"接着刚才的聊","inherit_context":true}`))
+	// 工具已无 inherit_context 参数：即使旧模型传了也被忽略，工作任务与
+	// 派发方聊天记录完全隔离
+	out, err = runDispatchTask(ctx, json.RawMessage(`{"task":"再派一个","inherit_context":true}`))
 	if err != nil {
-		t.Fatalf("带上下文派发失败: %v", err)
+		t.Fatalf("派发失败: %v", err)
 	}
-	if !strings.Contains(out, "已继承主对话上下文") {
-		t.Fatalf("返回文案应说明已继承上下文: %s", out)
+	if strings.Contains(out, "已继承") {
+		t.Fatalf("工作任务不支持继承，返回文案异常: %s", out)
 	}
 	subs = byMe()
-	var inherited *SessionMeta
+	var second *SessionMeta
 	for _, k := range subs {
 		if k.ID != plain.ID {
-			inherited = k
+			second = k
 		}
 	}
-	if inherited == nil {
-		t.Fatal("找不到继承上下文的任务会话")
+	if second == nil {
+		t.Fatal("找不到第二次派生的任务会话")
 	}
-	raw, _ = a.Store.RawMessagesAll(inherited.ID)
-	if len(raw) < 3 || raw[0].Kind != inheritKind {
-		t.Fatalf("继承派发应带标记行 + 历史，实际 %d 条（首行 kind=%q）", len(raw), raw[0].Kind)
-	}
-	last := raw[len(raw)-1]
-	if !strings.Contains(last.Text(), "接着刚才的聊") {
-		t.Fatalf("派发需求应排在继承块之后，实际末尾为 %q", last.Text())
-	}
-	// 子任务会话里模型可见：主对话的聊天记录在前，自己的任务在后
-	sub := &SessionMeta{ID: inherited.ID, Mode: "task"}
-	cm := a.buildContext(sub, "task 系统提示词", "env")
-	var sawParent, sawTask bool
-	for _, msg := range cm {
-		if strings.Contains(msg.Text(), "帮我把日志整理一下") {
-			sawParent = true
-		}
-		if strings.Contains(msg.Text(), "接着刚才的聊") {
-			sawTask = true
-		}
-	}
-	if !sawParent || !sawTask {
-		t.Fatalf("子任务应同时看到主对话历史与自己的任务（sawParent=%v sawTask=%v）", sawParent, sawTask)
+	raw, _ = a.Store.RawMessagesAll(second.ID)
+	if len(raw) != 1 {
+		t.Fatalf("传 inherit_context 也不该继承（应只有 1 条需求消息），实际 %d 条", len(raw))
 	}
 
 	// 二级守卫：子对话（带 ParentID）调用派发被拒
-	subCtx := &toolContext{app: a, sess: &SessionMeta{ID: inherited.ID, Mode: "assistant", ParentID: "a1"}, emit: func(Event) {}}
+	subCtx := &toolContext{app: a, sess: &SessionMeta{ID: second.ID, Mode: "assistant", ParentID: "a1"}, emit: func(Event) {}}
 	if _, err := runDispatchTask(subCtx, json.RawMessage(`{"task":"再派一个"}`)); err == nil {
 		t.Fatal("子对话里的派发应被拒绝")
 	} else if !strings.Contains(err.Error(), "子对话不能再派发子对话") {
@@ -384,7 +367,8 @@ func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 }
 
 // dispatch_sub 派发子对话：主对话与工作任务都可派（挂在当前会话下，
-// 右栏抽屉可见）；子对话本身不能再派（只有一级）。
+// 右栏抽屉可见）；两种上下文模式（默认自足 / inherit_context 继承本会话）；
+// 子对话本身不能再派（只有一级）。
 func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	a.Cfg.BaseURL = "mock" // 后台子会话走内置演示模型，离线可跑
@@ -397,7 +381,7 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 		t.Fatalf("建任务会话失败: %v", err)
 	}
 
-	// 工作任务派子对话：挂在任务下、mode=task
+	// 工作任务派子对话（默认不带上下文）：挂在任务下、mode=task
 	tctx := &toolContext{app: a, sess: task, emit: func(Event) {}}
 	out, err := runDispatchSub(tctx, json.RawMessage(`{"task":"把附录单独整理成一份"}`))
 	if err != nil {
@@ -405,6 +389,9 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	}
 	if !strings.Contains(out, "已派发后台执行") {
 		t.Fatalf("返回文案异常: %s", out)
+	}
+	if strings.Contains(out, "已继承") {
+		t.Fatalf("默认派发不该声称继承上下文: %s", out)
 	}
 	kids, _ := a.Store.Children("t1")
 	if len(kids) != 1 || kids[0].Mode != "task" || kids[0].ParentID != "t1" || kids[0].DispatchedBy != "" {
@@ -414,6 +401,50 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	raw, _ := a.Store.RawMessagesAll(kids[0].ID)
 	if len(raw) != 1 || !strings.Contains(raw[0].Text(), "【派发子对话】") {
 		t.Fatalf("子对话应只含一条派发需求，实际 %d 条", len(raw))
+	}
+	plainKid := kids[0].ID
+
+	// 带上下文模式：继承任务历史，标记行在最前，派发需求在其后
+	_ = a.Store.Append("t1", TextMessage("user", "帮我把日志整理一下"))
+	_ = a.Store.Append("t1", Message{Role: "assistant", Content: "好的，我安排一下"})
+	out, err = runDispatchSub(tctx, json.RawMessage(`{"task":"接着刚才的聊","inherit_context":true}`))
+	if err != nil {
+		t.Fatalf("带上下文派发子对话失败: %v", err)
+	}
+	if !strings.Contains(out, "已继承本会话上下文") {
+		t.Fatalf("返回文案应说明已继承上下文: %s", out)
+	}
+	kids, _ = a.Store.Children("t1")
+	var inherited *SessionMeta
+	for _, k := range kids {
+		if k.ID != plainKid {
+			inherited = k
+		}
+	}
+	if inherited == nil {
+		t.Fatal("找不到继承上下文的子对话")
+	}
+	raw, _ = a.Store.RawMessagesAll(inherited.ID)
+	if len(raw) < 3 || raw[0].Kind != inheritKind {
+		t.Fatalf("继承派发应带标记行 + 历史，实际 %d 条（首行 kind=%q）", len(raw), raw[0].Kind)
+	}
+	if last := raw[len(raw)-1]; !strings.Contains(last.Text(), "接着刚才的聊") {
+		t.Fatalf("派发需求应排在继承块之后，实际末尾为 %q", last.Text())
+	}
+	// 子对话里模型可见：父会话的聊天记录在前，自己的任务在后
+	sub := &SessionMeta{ID: inherited.ID, Mode: "task"}
+	cm := a.buildContext(sub, "task 系统提示词", "env")
+	var sawParent, sawTask bool
+	for _, msg := range cm {
+		if strings.Contains(msg.Text(), "帮我把日志整理一下") {
+			sawParent = true
+		}
+		if strings.Contains(msg.Text(), "接着刚才的聊") {
+			sawTask = true
+		}
+	}
+	if !sawParent || !sawTask {
+		t.Fatalf("子对话应同时看到父会话历史与自己的任务（sawParent=%v sawTask=%v）", sawParent, sawTask)
 	}
 
 	// 主对话也能派子对话
@@ -431,8 +462,8 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	if _, err := runDispatchSub(sctx, json.RawMessage(`{"task":"再派一个"}`)); err == nil || !strings.Contains(err.Error(), "只有一级") {
 		t.Fatalf("子对话再派应被拒（只有一级），实际 err=%v", err)
 	}
-	// 被拒不留下新会话
-	if n := len(mustChildren(t, a, "t1")); n != 1 {
+	// 被拒不留下新会话（仍是原有的 2 个：默认派发 + 继承派发）
+	if n := len(mustChildren(t, a, "t1")); n != 2 {
 		t.Fatalf("被拒的派发不该留下会话，实际 %d 个", n)
 	}
 }
