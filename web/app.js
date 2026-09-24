@@ -194,12 +194,15 @@ function lsSet(k, v) {
 const viewCfg = Object.assign({ group: 'ws', sort: 'updated' }, lsGet('jx.view', {}));
 const wsCollapsed = lsGet('jx.wscol', {});   // 工作区分组折叠状态
 
-// 已知工作区 = 手动添加 ∪ 会话用过 ∪ 默认
+// 已知工作区 = 手动添加 ∪ 会话用过 ∪ 默认，再剔除被「彻底删除/清空」拉黑的目录。
+// 默认工作区路径来自配置、没法注销，只能靠这份黑名单才能从列表里消失；
+// 名下一旦又有会话，loadSessions 会按会话重新建组（不查黑名单），不会藏掉对话。
 function knownWorkspaces() {
   const set = new Set(lsGet('jx.wslist', []));
   if (state.defaultWs) set.add(state.defaultWs);
   (state.sessions || []).forEach((x) => { if (x.workspace) set.add(x.workspace); });
-  return [...set];
+  const hidden = lsGet('jx.wshidden', []);
+  return [...set].filter((ws) => !hidden.includes(ws));
 }
 
 function wsOf(s) {
@@ -336,7 +339,7 @@ function renderTitleHits(hits, q) {
     b.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>' +
       '<span class="ssr-main">' + hi(h.title || '(未命名)', q) + '</span>';
-    b.onclick = () => { closeSideSearch(); if (!state.streaming) openSession(h.sessionId); };
+    b.onclick = () => { closeSideSearch(); openSession(h.sessionId); };
     box.appendChild(b);
   });
 }
@@ -376,7 +379,6 @@ function contentHitItem(h, q) {
 // 跳到会话并定位到命中消息：滚动到视野中心并闪烁高亮
 async function jumpToMessage(sessionId, seq) {
   closeSideSearch();
-  if (state.streaming) return;
   if (!state.cur || state.cur.id !== sessionId) {
     await openSession(sessionId);
   }
@@ -459,6 +461,8 @@ async function pickWorkFolder() {
 function rememberWorkspace(ws) {
   if (!ws) return;
   lsSet('jx.wslist', [...new Set([...lsGet('jx.wslist', []), ws])]);
+  const h = lsGet('jx.wshidden', []);
+  if (h.includes(ws)) lsSet('jx.wshidden', h.filter((x) => x !== ws)); // 手动重新添加 = 取消拉黑
 }
 
 // 侧栏「添加工作目录」：弹选择框并登记
@@ -569,7 +573,7 @@ function openSessionMenu(s, rect) {
       try {
         const fork = await api('/api/sessions/' + s.id + '/fork', { method: 'POST' });
         await loadSessions();
-        if (!state.streaming) openSession(fork.id);
+        openSession(fork.id);
       } catch (e) { alert('分支失败：' + e.message); }
     } },
     { label: '移入回收站', danger: true, fn: async () => {
@@ -589,10 +593,15 @@ function sessionItem(s) {
   if (dotApproval[s.id]) dot = ' ap';
   else if (dotDone[s.id]) dot = ' done';
   else if (s.unread) dot = ' unread';
+  // 正在执行的会话（含切走后仍在后台跑的那一轮）：时间位换成「⟳ 运行中」，
+  // 让用户知道切走不等于停掉
+  const timeCell = s.status === 'running'
+    ? '<span class="s-time running" title="正在执行（切走不影响，切回来会接上）">⟳ 运行中</span>'
+    : `<span class="s-time">${esc(relTime(s.updatedAt))}</span>`;
   item.innerHTML =
     `<span class="dot${dot}"></span>` +
     `<span class="s-title">${esc(s.title || '(未命名)')}</span>` +
-    `<span class="s-time">${esc(relTime(s.updatedAt))}</span>` +
+    timeCell +
     `<span class="row-acts">` +
       (binView ? `<button class="ra-restore" title="恢复"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>` : '') +
       `<button class="ra-copy" title="复制标题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>` +
@@ -600,7 +609,7 @@ function sessionItem(s) {
     `</span>`;
   item.onclick = (e) => {
     if (e.target.closest('.row-acts')) return;
-    if (!state.streaming) openSession(s.id);
+    openSession(s.id);
   };
   item.querySelector('.ra-copy').onclick = (e) => {
     e.stopPropagation();
@@ -669,21 +678,26 @@ async function restoreSession(s) {
   loadSessions();
 }
 
-// 彻底删除工作目录：删除其名下全部会话记录并移除目录登记（不碰磁盘文件夹）
+// 彻底删除工作目录：删除其名下全部会话记录、注销登记并拉黑（不碰磁盘文件夹）
 async function deleteWorkspace(ws) {
   const name = lsGet('jx.wsalias', {})[ws] || baseName(ws) || '默认工作区';
   const targets = (state.sessions || []).filter((s) => s.mode !== 'assistant' && wsOf(s) === ws);
-  const isDefault = !!state.defaultWs && ws === state.defaultWs;
-  const hint = isDefault ? '\n注意：这是默认工作区，目录名由配置决定，删除后仍会保留一个空目录。' : '';
-  if (!(await confirmCenter(`彻底删除工作目录「${name}」及其 ${targets.length} 个对话？\n只从应用中移除记录，不会删除磁盘上的文件夹。${hint}\n此操作不可恢复。`))) return;
+  if (!(await confirmCenter(`彻底删除工作目录「${name}」及其 ${targets.length} 个对话？\n只从应用中移除记录，不会删除磁盘上的文件夹。默认工作区路径来自配置，删除后也不会再显示空目录，直到你重新添加它。\n此操作不可恢复。`))) return;
   for (const s of targets) {
     try { await api('/api/sessions/' + s.id, { method: 'DELETE' }); } catch (e) { /* 已不存在则跳过 */ }
     removeSessionLocalData(s.id);
   }
   unregisterWorkspace(ws);
+  hideWorkspace(ws);
   lsSet('jx.wskeep', lsGet('jx.wskeep', []).filter((x) => !targets.some((t) => t.id === x)));
   if (state.cur && targets.some((t) => t.id === state.cur.id)) { state.cur = null; state.msgs = []; resetEmpty(); }
   loadSessions();
+}
+
+// 拉黑一个目录：即使它是默认工作区（配置无法注销）也不再出现在列表，
+// 直到被手动重新添加、或名下重新有了会话（会话建组不查黑名单，天然复活）
+function hideWorkspace(ws) {
+  lsSet('jx.wshidden', [...new Set([...lsGet('jx.wshidden', []), ws])]);
 }
 
 // 注销一个工作目录的全部本地登记（列表/回收站/别名/折叠状态）
@@ -719,7 +733,7 @@ async function emptyRecycleBin() {
     try { await api('/api/sessions/' + s.id, { method: 'DELETE' }); } catch (e) { /* 已不存在则跳过 */ }
     removeSessionLocalData(s.id);
   }
-  for (const ws of recycledWs) unregisterWorkspace(ws);
+  for (const ws of recycledWs) { unregisterWorkspace(ws); hideWorkspace(ws); }
   lsSet('jx.wskeep', []); // 目录登记都注销了，保留名单随之失效
   if (state.cur && targets.some((t) => t.id === state.cur.id)) { state.cur = null; state.msgs = []; resetEmpty(); }
   loadSessions();
@@ -920,6 +934,7 @@ async function loadSessionsNow() {
           lsSet('jx.wsrecycled', [...new Set([...lsGet('jx.wsrecycled', []), ws])]);
           loadSessions();
         } },
+        { label: '彻底删除目录', danger: true, fn: () => deleteWorkspace(ws) },
       ];
       openCtxMenu(acts, r.left, r.bottom + 4);
     };
@@ -1289,6 +1304,9 @@ function renderSubDDPop() {
 
 // 子对话只在右栏显示，绝不切换主对话区
 async function openSubSession(id) {
+  // 右栏换子对话：同样先放开本地这条流（后端执行照旧，回来自动接上）
+  if (subState.streaming && (!subState.cur || subState.cur.id !== id)) detachStream(subView);
+  navBusy.sub = true;
   try {
     const data = await api('/api/sessions/' + id);
     subState.cur = data.meta;
@@ -1311,7 +1329,9 @@ async function openSubSession(id) {
     autoGrow($('sub-input'));
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
     if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
-  } catch (e) { /* 打不开就保持原状 */ }
+  } catch (e) { /* 打不开就保持原状 */ } finally {
+    navBusy.sub = false;
+  }
 }
 
 async function newAuxChat() {
@@ -1432,7 +1452,7 @@ async function openAssistant() {
 
 // 「新工作任务」不立即建会话：留在首页聚焦输入框，发出第一条消息才真正创建
 function goHomeNewTask() {
-  if (state.streaming) return;
+  detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   state.cur = null;
   loadTodos();
   state.msgs = [];
@@ -1443,6 +1463,18 @@ function goHomeNewTask() {
 }
 
 async function openSession(id) {
+  // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
+  // 不这样做的话旧会话的增量会被写进新会话的界面
+  if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
+  navBusy.main = true;
+  try {
+    await loadSessionInto(id);
+  } finally {
+    navBusy.main = false;
+  }
+}
+
+async function loadSessionInto(id) {
   const data = await api('/api/sessions/' + id);
   state.cur = data.meta;
   state.msgs = data.messages || [];
@@ -1946,10 +1978,10 @@ async function forkFromAnswer(m, btn) {
     });
     await loadSessions();
     if (mainView.state.cur && mainView.state.cur.id === m.sessionId) {
-      if (!state.streaming) openSession(fork.id);
+      openSession(fork.id);
     } else if (subState.cur && subState.cur.id === m.sessionId) {
       refreshDrawer();
-      if (!subState.streaming) openSubSession(fork.id);
+      openSubSession(fork.id);
     }
   } catch (e) {
     alert('分支失败：' + e.message);
@@ -2046,7 +2078,7 @@ function subTaskCard(tc, result) {
     (sid ? `<div class="st-foot"><button class="st-open">${running ? '查看会话' : '打开会话'}</button></div>` : '') +
     (done && !dispatched && out ? `<details class="st-detail"><summary>执行摘要</summary><pre>${esc(out)}</pre></details>` : '');
   const openBtn = d.querySelector('.st-open');
-  if (openBtn) openBtn.onclick = () => { if (!state.streaming) openSession(sid); };
+  if (openBtn) openBtn.onclick = () => openSession(sid);
   if (running) renderSubActs(sid);
   return d;
 }
@@ -2328,8 +2360,18 @@ function removeLive(view) {
   if (live) live.remove();
 }
 
+// 打开/切换会话的导航状态：切换在途时，旧会话事件触发的「就地翻新」要让路，
+// 否则一次切换会被旧会话的刷新顶回去（表现为点了别的会话却切不动）
+const navBusy = { main: false, sub: false };
+
 function refreshCurrent() {
+  if (navBusy.main) return; // 正在切换：别插队
   if (state.cur && !state.streaming) openSession(state.cur.id);
+}
+
+function refreshCurrentSub() {
+  if (navBusy.sub) return;
+  if (subState.cur && !subState.streaming) openSubSession(subState.cur.id);
 }
 
 function handleGlobalEvent(ev) {
@@ -2355,7 +2397,7 @@ function handleGlobalEvent(ev) {
       dotDone[ev.sessionId] = true;
       loadSessions();
       refreshDrawer();
-      if (subViewing && !subState.streaming) openSubSession(ev.sessionId); // 右栏子对话就地翻新
+      if (subViewing && !subState.streaming) refreshCurrentSub(); // 右栏子对话就地翻新
       if (!state.streaming) renderMessages(state.msgs); // 卡片状态就地翻新
       break;
     case 'delta':
@@ -2378,11 +2420,11 @@ function handleGlobalEvent(ev) {
       break;
     case 'stopped':
       if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
-      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); openSubSession(ev.sessionId); }
+      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); refreshCurrentSub(); }
       break;
     case 'done':
       if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
-      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); openSubSession(ev.sessionId); }
+      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); refreshCurrentSub(); }
       if (state.cur && state.cur.mode === 'assistant') setFace('done', 4000);
       break;
     case 'report_ready':
@@ -2950,16 +2992,21 @@ async function retryRun(view) {
       method: 'POST', signal: view.state.abort.signal,
     });
     if (!res.ok) throw new Error(res.statusText || '重试失败');
-    await consumeStream(res, view);
+    await consumeStream(res, view, cur.id);
   } catch (e) {
     if (e.name === 'AbortError') aborted = true;
     else showRunError(view, '重试失败：' + e.message);
   }
-  await endTurn(view, aborted);
+  await endTurn(view, aborted, { sid: cur.id, abort: view.state.abort });
 }
 
 // endTurn 一轮结束后的收尾（send / retry / attach 共用）：收流式、对齐状态、刷新周边
-async function endTurn(view, aborted) {
+// endTurn 一轮结束后的收尾（send / retry / edit / attach 共用）。
+// stream = {sid, abort} 用于辨认「这条流还算不算当前界面的」：用户中途切到别的
+// 会话（detachStream）或又接了别的流时，这条流的收尾不再动界面。
+async function endTurn(view, aborted, stream) {
+  if (stream && (view.state.abort !== stream.abort ||
+      !view.state.cur || view.state.cur.id !== stream.sid)) return;
   removeLive(view);
   view.state.streaming = false;
   view.state.attached = false;
@@ -3136,6 +3183,7 @@ async function send(forceContent, view) {
     }
   }
 
+  const sid = view.state.cur.id; // 这条流所属的会话：切走后它的帧与收尾都不再动界面
   view.state.streaming = true;
   setStreamUI(true, view);
   view.state.abort = new AbortController();
@@ -3146,7 +3194,7 @@ async function send(forceContent, view) {
 
   let aborted = false;
   try {
-    const res = await fetch(`/api/sessions/${view.state.cur.id}/chat`, {
+    const res = await fetch(`/api/sessions/${sid}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
@@ -3156,7 +3204,7 @@ async function send(forceContent, view) {
       const d = await res.json().catch(() => ({}));
       throw new Error(d.error || res.statusText);
     }
-    await consumeStream(res, view);
+    await consumeStream(res, view, sid);
   } catch (e) {
     if (e.name === 'AbortError') {
       aborted = true; // 用户主动停止（已另行请求后端停止）：排队消息保留
@@ -3168,7 +3216,7 @@ async function send(forceContent, view) {
       if (!(await backendRunning(view.state.cur.id, view))) showRunError(view, '请求失败：' + e.message);
     }
   }
-  await endTurn(view, aborted);
+  await endTurn(view, aborted, { sid, abort: view.state.abort });
 }
 
 /* ---------- 编辑历史用户消息并重发（语义对齐 ZCode 的 editUserQuery：
@@ -3279,6 +3327,7 @@ function editUserMsg(m, view, wrap) {
 async function resendEdit(m, content, view, mode) {
   view = view || mainView;
   if (!view.state.cur || view.state.streaming) return false;
+  const sid = view.state.cur.id; // 这条流所属的会话：切走后它的帧与收尾都不再动界面
   view.state.streaming = true;
   setStreamUI(true, view);
   view.state.abort = new AbortController();
@@ -3288,7 +3337,7 @@ async function resendEdit(m, content, view, mode) {
   let aborted = false;
   // blocked（文件被外部改过）时给逃生口：改按 preserve 档就地重发一次
   const postEdit = async (wm) => {
-    const res = await fetch(`/api/sessions/${view.state.cur.id}/edit`, {
+    const res = await fetch(`/api/sessions/${sid}/edit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ seq: m.seq, content, workspaceMode: wm }),
@@ -3303,7 +3352,7 @@ async function resendEdit(m, content, view, mode) {
       }
       throw new Error(d.error || res.statusText);
     }
-    await consumeStream(res, view);
+    await consumeStream(res, view, sid);
     return true;
   };
   try {
@@ -3317,20 +3366,23 @@ async function resendEdit(m, content, view, mode) {
       showRunError(view, '编辑发送失败：' + e.message); // 真实失败进报错条，不插进对话区
     }
   }
-  await endTurn(view, aborted);
+  await endTurn(view, aborted, { sid, abort: view.state.abort });
   return !aborted;
 }
 
 /* ---------- 事件流读取与「接回执行中会话」 ---------- */
 
-// consumeStream 读一条 SSE 响应直到流结束，每帧交给 handleEvent
-async function consumeStream(res, view) {
+// consumeStream 读一条 SSE 响应直到流结束，每帧交给 handleEvent。
+// sid 是这条流所属的会话：中途切到别的会话后本函数立刻收手——帧不能再写进
+// 新会话的界面（后端执行不受影响，回来时重新接上即可）。
+async function consumeStream(res, view, sid) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    if (sid && (!view.state.cur || view.state.cur.id !== sid)) return; // 已切走：丢弃
     buf += dec.decode(value, { stream: true });
     let idx;
     while ((idx = buf.indexOf('\n\n')) >= 0) {
@@ -3340,6 +3392,22 @@ async function consumeStream(res, view) {
       try { handleEvent(JSON.parse(frame.slice(5)), view); } catch (e) { /* 跳过坏帧 */ }
     }
   }
+}
+
+// detachStream 放开当前这条本地流：只断开界面侧的读取，后端执行照旧跑完；
+// 换会话/回首页/新建对话前必须调用，否则旧会话的增量会写进新会话的界面。
+function detachStream(view) {
+  view = view || mainView;
+  if (!view.state.streaming) return;
+  const abort = view.state.abort;
+  view.state.streaming = false;
+  view.state.attached = false;
+  view.state.abort = null;
+  view.state.streamText = '';
+  view.state.streamThinking = '';
+  removeLive(view);
+  setStreamUI(false, view);
+  if (abort) { try { abort.abort(); } catch (e) { /* 已经断了 */ } }
 }
 
 async function backendRunning(sid, view) {
@@ -3383,19 +3451,22 @@ async function attachRun(view) {
   if (!cur || view.state.streaming) return;
   view.state.streaming = true;
   view.state.attached = true;
-  view.state.abort = new AbortController();
+  const abort = new AbortController();
+  view.state.abort = abort;
   view.state.streamText = '';
   view.state.streamThinking = '';
   hideRunError(view); // 执行还在跑：报错条收掉
   setStreamUI(true, view);
   await reloadMessages(view); // 先对齐到服务端现状，再接流
   try {
-    const res = await fetch(`/api/sessions/${cur.id}/stream`, { signal: view.state.abort.signal });
+    const res = await fetch(`/api/sessions/${cur.id}/stream`, { signal: abort.signal });
     if (!res.ok || !res.body) throw new Error(res.statusText || '无法接上执行流');
-    await consumeStream(res, view);
+    await consumeStream(res, view, cur.id);
   } catch (e) {
     if (e.name !== 'AbortError') console.warn('[JX] 接回执行流失败', e);
   }
+  // 中途切到别的会话（detachStream）/ 又接了别的流：这条流的收尾不再动界面
+  if (view.state.abort !== abort) return;
   removeLive(view);
   view.state.streaming = false;
   view.state.attached = false;
@@ -3410,7 +3481,7 @@ async function attachRun(view) {
     refreshCtxChip(subView);
   }
   // 本轮可能是排队消息驱动的：它发完还有下一条，继续跟着看
-  if (view.state.cur && view.state.cur.id === cur.id) {
+  if (view.state.cur && view.state.cur.id === cur.id && view.state.abort === abort) {
     if (await backendRunning(cur.id, view)) attachRun(view);
   }
 }
@@ -4640,7 +4711,7 @@ $('side-search-close').onclick = closeSideSearch;
 $('btn-new-assistant').onclick = () => {
   if (binView) setBinView(false);
   setFace('thinking', 1600); // 进入时压眼扫视
-  if (!state.streaming) openAssistant();
+  openAssistant();
 };
 $('btn-send').onclick = send;
 $('btn-stop').onclick = () => stopRun(mainView);
