@@ -38,8 +38,8 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   Remove-Item——可删除用户可删的外部文件；-Force 走文件 DELETE 权利则
   被正常拦截），自报 partial。对抗验证用例见 sbx_adversarial_test.go
   （穿越/Junction/删外部/注册表/子进程继承/网络/硬链接七项）。
-- **Linux 后端已知限制**：/dev/null 不在授权目录内，沙箱内 `2>/dev/null`
-  类重定向会失败（官方 POSIX 后端额外放行该 sink；是否跟进待定）。
+- **Linux 后端**：额外放行 `/dev/null` sink（对齐官方 POSIX 后端），沙箱内
+  `>/dev/null`、`2>/dev/null` 类重定向正常工作。
 - **Linux 后端**（`sandboxhelper`，对齐官方 Landlock 方案）：非特权
   Landlock ruleset「handled」全部写类访问，workspace-write 下仅给工作区与
   私有临时目录加 path-beneath 规则；`PR_SET_NO_NEW_PRIVS` 防提权。本地
@@ -178,9 +178,9 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
   `init()` 建立界面与状态，`dispose()` 完整撤销（删节点、卸样式、清监听）。
   设置页切换开关时**前端即时加载/卸载，不需要刷新页面、不需要重启服务**；
   组件未提供 `dispose` 时退化为提示刷新。
-- 示例组件：`accent-theme`（输入区调色盘，8 预设 + 自定义强调色，选择记入
-  本机，热开关完整还原/恢复）、`input-counter`（输入字数实时统计，最小组件
-  模板——新建组件直接复制该目录改 manifest 与 client.js 即可）。
+- 示例组件：`input-counter`（输入字数实时统计，最小组件模板——新建组件
+  直接复制该目录改 manifest 与 client.js 即可）。界面强调色（点缀色）原为
+  示例组件，现已并入主程序 `web/app.js`（常规 → 外观 → 点缀色）。
 
 ## 插件与插件兼容层
 

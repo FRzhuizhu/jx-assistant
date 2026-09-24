@@ -2436,7 +2436,7 @@ async function openSettings() {
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
   selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
-  selRefs.theme.set(lsGet('jx.theme', 'light'));
+  syncThemeCards();
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
   selRefs.midrun.set(lsGet('jx.midrun', 'interject'));
   renderPluginList();
@@ -3252,11 +3252,79 @@ makeSelect('sel-fontsize', 'fontsize', [
   { v: '18', label: '18 px' },
   { v: '20', label: '20 px' },
 ], (v) => applyChatFont(parseFloat(v) || 14));
-makeSelect('sel-theme', 'theme', [
-  { v: 'light', label: '白色' },
-  { v: 'dark', label: '黑色' },
-  { v: 'auto', label: '跟随系统' },
-], (v) => { lsSet('jx.theme', v); applyTheme(); });
+// 主题色：白/黑/跟随系统的预览卡片，点选即时生效
+function syncThemeCards() {
+  const cur = lsGet('jx.theme', 'light');
+  document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
+    b.classList.toggle('cur', b.dataset.v === cur);
+  });
+}
+document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
+  b.onclick = () => { lsSet('jx.theme', b.dataset.v); applyTheme(); syncThemeCards(); };
+});
+
+// 点缀色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
+const ACCENTS = [
+  ['默认蓝', '#4d6bfe', '#3d5bef'],
+  ['紫', '#8250df', '#6f42c1'],
+  ['绿', '#1f9d55', '#188a49'],
+  ['橘', '#bc4c00', '#a34400'],
+  ['红', '#c22f2f', '#ab2727'],
+  ['青', '#0d7ea5', '#0b6d8d'],
+  ['粉', '#bf3989', '#a63075'],
+  ['金', '#9a6700', '#855900'],
+];
+
+let accentStyleEl = null;
+
+function applyAccent(color, hover, save) {
+  if (!accentStyleEl) {
+    accentStyleEl = document.createElement('style');
+    accentStyleEl.id = 'accent-style';
+    document.head.appendChild(accentStyleEl);
+  }
+  accentStyleEl.textContent = ':root{--accent:' + color + ';--accent-hover:' + hover + ';}';
+  if (save) lsSet('jx.accent', color + '|' + hover);
+}
+
+function buildAccentRow() {
+  const row = $('accent-row');
+  if (!row) return;
+  const saved = lsGet('jx.accent', lsGet('cx:accent', '')); // 迁移旧组件的本地存储
+  row.innerHTML = '';
+  for (const [name, c, h] of ACCENTS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'acc-swatch';
+    b.style.background = c;
+    b.title = name;
+    if (saved.startsWith(c + '|')) b.classList.add('cur');
+    b.onclick = () => {
+      applyAccent(c, h, true);
+      row.querySelectorAll('.acc-swatch').forEach((s) => s.classList.remove('cur'));
+      b.classList.add('cur');
+    };
+    row.appendChild(b);
+  }
+  const custom = document.createElement('input');
+  custom.type = 'color';
+  custom.title = '自定义颜色';
+  custom.oninput = () => {
+    const c = custom.value;
+    const d = c.replace(/^#(..)(..)(..)$/, (_, r, g, bl) => {
+      const f = (x) => Math.max(0, parseInt(x, 16) - 18).toString(16).padStart(2, '0');
+      return '#' + f(r) + f(g) + f(bl);
+    });
+    applyAccent(c, d, true);
+    row.querySelectorAll('.acc-swatch').forEach((s) => s.classList.remove('cur'));
+  };
+  row.appendChild(custom);
+  if (saved) {
+    const [c, h] = saved.split('|');
+    applyAccent(c, h || c, false);
+  }
+}
+buildAccentRow();
 makeSelect('sel-sendkey', 'sendkey', [
   { v: 'enter', label: 'Enter 发送，Shift+Enter 换行' },
   { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter 换行' },

@@ -647,29 +647,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .jx-section { margin-top: 4px; }
 #plugin-composer-controls { display: inline-flex; align-items: center; gap: 6px; }
 
-/* ---------- 组件示例样式（accent-theme / input-counter） ---------- */
-#cx-accent-btn {
-  width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border);
-  background: transparent; color: var(--text-3); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-#cx-accent-btn svg { width: 15px; height: 15px; }
-#cx-accent-btn:hover { color: var(--accent); border-color: var(--accent); }
-#cx-accent-pop {
-  position: absolute; z-index: 60; display: flex; gap: 7px; align-items: center;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
-  padding: 8px 10px; box-shadow: 0 6px 18px rgba(0,0,0,.10);
-}
-#cx-accent-pop.hidden { display: none; }
-.cx-swatch {
-  width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent;
-  cursor: pointer; padding: 0; outline: 1px solid var(--border-2);
-}
-.cx-swatch.cur { border-color: var(--bg); outline: 2px solid var(--text); }
-#cx-accent-pop input[type=color] {
-  width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 6px;
-  background: none; padding: 0; cursor: pointer;
-}
+/* ---------- 组件样式（input-counter） ---------- */
 #cx-counter {
   font-size: 11.5px; color: var(--text-3); margin-left: auto; align-self: center;
   padding: 0 4px; user-select: none;
@@ -911,9 +889,17 @@ mark {
 .session-item .dot.done { display: inline-block; background: #2ea043; }
 .session-item .dot.unread { display: inline-block; background: #d33; }
 
-/* ---------- 设置页：强调色选择 ---------- */
-.cx-accent-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 2px 0 4px; }
-#settings .cx-swatch.cur { border-color: var(--bg); outline: 2px solid var(--text); }
+/* ---------- 设置页：点缀色（内置色板） ---------- */
+#accent-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 2px 0 4px; }
+.acc-swatch {
+  width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
+  cursor: pointer; padding: 0; outline: 1px solid var(--border-2);
+}
+.acc-swatch.cur { border-color: var(--bg); outline: 2px solid var(--text); }
+#accent-row input[type=color] {
+  width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 6px;
+  background: none; padding: 0; cursor: pointer;
+}
 
 /* ---------- 设置浮窗：宽双栏（左目录 + 右内容页） ---------- */
 .settings-card {
@@ -966,11 +952,34 @@ mark {
 .sf-desc { font-size: 11.5px; color: var(--text-3); margin: 6px 0 0; line-height: 1.5; }
 .gen-section { margin-top: 18px; }
 .gen-section > h4 { font-size: 13.5px; margin: 0 0 8px; color: var(--text-2); }
-#appearance-slot:empty::after {
-  content: '在「内置组件」里启用「强调色主题」后，可在此切换界面强调色。';
-  font-size: 12px; color: var(--text-3);
+/* 主题色预览卡片：三张迷你窗口图，一眼看出页面配色 */
+.theme-cards { display: flex; gap: 10px; max-width: 420px; }
+.theme-card {
+  flex: 1; display: flex; flex-direction: column; gap: 6px;
+  padding: 6px; border: 1px solid var(--border-2); border-radius: 12px;
+  background: var(--bg); cursor: pointer;
+  transition: border-color .12s, box-shadow .12s;
 }
-#appearance-slot h4 { display: none; } /* 组件自带的「界面强调色」小标题与「外观」重复，藏掉 */
+.theme-card:hover { border-color: var(--text-3); }
+.theme-card.cur { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.tc-prev {
+  position: relative; display: flex; height: 58px;
+  border-radius: 8px; overflow: hidden; border: 1px solid var(--border);
+}
+.tc-prev.light { background: #ffffff; }
+.tc-prev.dark { background: #15171c; border-color: #2a2e36; }
+.tc-prev.auto { background: linear-gradient(90deg, #ffffff 0 50%, #15171c 50% 100%); }
+.tc-side { width: 26%; height: 100%; display: block; }
+.tc-prev.light .tc-side { background: #f2f3f5; border-right: 1px solid #e6e8eb; }
+.tc-prev.dark .tc-side { background: #191c21; border-right: 1px solid #2a2e36; }
+.tc-prev.auto .tc-side {
+  background: linear-gradient(90deg, #f2f3f5 0 50%, #191c21 50% 100%);
+  border-right: 1px solid rgba(128, 135, 146, .4);
+}
+.tc-main { flex: 1; display: flex; align-items: center; justify-content: center; }
+.tc-main b { width: 44%; height: 6px; border-radius: 3px; background: var(--accent); display: block; }
+.tc-name { font-size: 12px; color: var(--text-2); text-align: center; }
+.theme-card.cur .tc-name { color: var(--accent); font-weight: 600; }
 
 /* ---------- 设置：模型页（提供方卡片） ---------- */
 .pf-add {
