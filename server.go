@@ -30,7 +30,8 @@ type App struct {
 	Store      *Store
 	Plugins    *PluginRegistry
 	Components *ComponentRegistry
-	static     fs.FS // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	Todos      *todoScheduler // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
+	static     fs.FS          // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
 	mu           sync.Mutex
 	sessLocks    map[string]*sync.Mutex
@@ -93,6 +94,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
 	a.recoverInterrupted()
+	// 待办与定时任务：载入清单并起调度循环（组件关掉时整拍跳过，见 todo.go）
+	a.Todos = newTodoScheduler(a)
 	return a, nil
 }
 
@@ -151,6 +154,14 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/components", a.handleListComponents)
 	mux.HandleFunc("POST /api/components", a.handleSetComponent)
 	mux.Handle("GET /_components/", http.HandlerFunc(a.handleComponentAsset))
+	// 待办与定时任务（组件 todo-scheduler 的宿主半边）：组件未启用时这些接口一律 404
+	mux.HandleFunc("GET /api/todos", a.handleTodoList)
+	mux.HandleFunc("POST /api/todos", a.handleTodoCreate)
+	mux.HandleFunc("POST /api/todos/update", a.handleTodoUpdate)
+	mux.HandleFunc("POST /api/todos/delete", a.handleTodoDelete)
+	mux.HandleFunc("POST /api/todos/run", a.handleTodoRun)
+	mux.HandleFunc("POST /api/todos/missed", a.handleTodoMissed)
+	mux.HandleFunc("GET /api/todos/workspaces", a.handleTodoWorkspaces)
 	a.Plugins.MountRoutes(a, mux)
 	mux.HandleFunc("GET /", a.handleStatic)
 	return mux

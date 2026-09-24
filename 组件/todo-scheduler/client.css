@@ -1,0 +1,155 @@
+/* 组件：待办与定时任务 —— 面板样式。
+ *
+ * 全部复用宿主的 CSS 变量（--border / --text / --accent …）与既有组件类：
+ *   .side-btn     侧边栏入口（与「新工作任务 / 数字助理主对话」同一组件）
+ *   .modal .modal-card  面板与表单的全屏弹窗外壳（与设置弹窗同一组件）
+ *   .pr-toggle    启用开关（与设置页同一组件）
+ *   .sf-label     字段标签（与设置页同一组件）
+ *   .modal-actions button  表单底部按钮（与设置弹窗同一组件）
+ * 这里只补面板自己的排布。 */
+
+/* 侧边栏入口的选中态（打开面板时高亮，与 .foot-btn.active 同一观感） */
+.side-btn.active { background: rgba(77, 107, 254, .10); border-color: var(--accent); color: var(--accent); }
+
+/* ---------- 面板外壳：沿用设置弹窗的宽卡片，内容一列居中 ---------- */
+#todo-board { z-index: 55; }
+.td-card {
+  width: min(880px, 94vw); height: min(720px, 88vh);
+  max-width: none; padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.td-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  padding: 20px 24px 14px; border-bottom: 1px solid var(--border-2); flex: none;
+}
+.td-title { font-size: 16px; margin: 0; }
+.td-intro { font-size: 12.5px; color: var(--text-2); margin: 5px 0 0; line-height: 1.55; max-width: 620px; }
+.td-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.td-head-actions button.primary {
+  padding: 7px 14px; border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; font-size: 13px; cursor: pointer;
+}
+.td-head-actions button.primary:hover { background: var(--accent-hover); }
+.td-x {
+  width: 30px; height: 30px; border: none; background: none; border-radius: 8px;
+  color: var(--text-3); font-size: 15px; cursor: pointer; line-height: 1;
+}
+.td-x:hover { background: var(--hover); color: var(--text); }
+
+.td-notice { margin: 10px 24px 0; font-size: 12.5px; color: #d13438; white-space: pre-wrap; flex: none; }
+.td-missed {
+  margin: 12px 24px 0; border: 1px solid var(--amber); border-radius: 10px;
+  background: var(--amber-bg); padding: 10px 14px; flex: none;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.td-missed-title { font-size: 12.5px; color: var(--amber); line-height: 1.5; }
+.td-missed-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12.5px; }
+
+.td-list {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 14px 24px 20px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.td-empty { text-align: center; color: var(--text-3); font-size: 13px; padding: 48px 0; }
+.td-foot { flex: none; border-top: 1px solid var(--border-2); padding: 8px 24px; font-size: 11.5px; color: var(--text-3); }
+
+/* ---------- 任务卡片 ---------- */
+.td-task {
+  border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 9px; background: var(--bg);
+}
+.td-task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.td-task-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.td-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.td-badge {
+  font-size: 11px; line-height: 17px; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-2); white-space: nowrap;
+}
+.td-badge.off { color: var(--text-3); border-style: dashed; }
+.td-badge.kind { color: var(--accent); border-color: rgba(77, 107, 254, .45); }
+.td-badge.warn { color: #d13438; border-color: currentColor; }
+.td-name { font-size: 14px; font-weight: 600; line-height: 1.4; word-break: break-word; }
+.td-cmd {
+  margin: 0; font-family: Consolas, Menlo, monospace; font-size: 12px; line-height: 1.6;
+  color: var(--text-2); background: var(--code-bg); border-radius: 6px; padding: 6px 10px;
+  word-break: break-all; white-space: pre-wrap;
+}
+.td-desc { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.td-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--text-3); }
+.td-meta b { font-weight: 500; color: var(--text-2); }
+.td-lastline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); word-break: break-word; }
+.td-dot { width: 7px; height: 7px; border-radius: 50%; background: #c6cbd2; flex: none; }
+.td-dot.ok { background: var(--green); }
+.td-dot.failed { background: #d13438; }
+.td-dot.running { background: var(--accent); }
+
+.td-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.td-actions button, .td-missed-row button {
+  padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font-size: 12.5px; cursor: pointer;
+}
+.td-actions button:hover, .td-missed-row button:hover { background: var(--hover); }
+.td-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.td-actions button.primary:hover { background: var(--accent-hover); }
+.td-actions button.ghost { border-color: transparent; background: none; color: var(--text-2); }
+.td-actions button.ghost:hover { background: var(--hover); }
+.td-actions button.danger { border-color: #d13438; color: #d13438; background: none; }
+.td-actions button.danger:hover { background: rgba(209, 52, 56, .08); }
+.td-link {
+  background: none; border: none; padding: 0; font-size: 12.5px;
+  color: var(--accent); cursor: pointer; text-decoration: underline;
+}
+
+.td-records {
+  border-top: 1px solid var(--border-2); padding-top: 9px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.td-record {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  font-size: 12px; line-height: 1.6; color: var(--text-2);
+}
+.td-when { color: var(--text-3); flex: none; }
+.td-sum { white-space: pre-wrap; word-break: break-word; }
+
+/* ---------- 新建/编辑表单（盖在面板之上的第二个弹窗） ---------- */
+#todo-form { z-index: 60; }
+.td-form-card { width: min(680px, 94vw); max-height: 88vh; }
+.td-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+.td-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.td-field.span2 { grid-column: 1 / -1; }
+.td-field .sf-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.td-field input:not([type=checkbox]), .td-field select, .td-field textarea {
+  box-sizing: border-box; width: 100%; font-size: 13px; padding: 8px 11px;
+  border: 1px solid var(--border-2); border-radius: 8px; background: var(--bg);
+  color: var(--text); font-family: inherit; outline: none;
+}
+.td-field input:focus, .td-field select:focus, .td-field textarea:focus { border-color: var(--accent); }
+.td-field textarea { resize: vertical; min-height: 84px; }
+.td-hint { font-size: 11.5px; color: var(--text-3); margin: 0; line-height: 1.5; }
+.td-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.td-seg button {
+  padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer;
+}
+.td-seg button:hover { background: var(--hover); }
+.td-seg button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.td-days { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; min-height: 34px; }
+.td-day { display: flex; gap: 4px; align-items: center; font-size: 12.5px; }
+.td-day input { width: auto; }
+/* 面板沿用了 .modal-card 外壳，而宿主对 .modal-card label / label input 有整行规则；
+   这里把它们在我们自己的作用域内收敛回控件本来的样子（组件不该被宿主样式改形）。 */
+.td-card .pr-toggle, .td-form-card .pr-toggle { display: inline-flex; margin: 0; }
+.td-form-card .td-field { display: flex; flex-direction: column; gap: 6px; margin: 0; font-size: inherit; color: inherit; }
+.td-form-card .td-day { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--text); }
+.td-form-card .td-day input, .td-card .pr-toggle input, .td-form-card .pr-toggle input { width: auto; margin: 0; }
+.td-dir-row { display: flex; gap: 8px; align-items: center; }
+.td-dir-row input { flex: 1; min-width: 0; }
+.td-dir-row button {
+  flex: none; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font-size: 12.5px; cursor: pointer;
+}
+.td-dir-row button:hover { background: var(--hover); }
+.td-err { font-size: 12.5px; color: #d13438; grid-column: 1 / -1; margin: 0; }
+
+@media (max-width: 720px) {
+  .td-grid { grid-template-columns: 1fr; }
+}

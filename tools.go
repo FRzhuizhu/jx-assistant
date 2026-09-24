@@ -103,9 +103,12 @@ func (t *toolContext) resolve(p string) (string, error) {
 // （见 agent.go 的 suspendedInPlan）；exit_plan_mode / update_goal 因此常驻。
 func (a *App) toolsFor(mode string) []Tool {
 	history := []Tool{searchSessionsTool(), readSessionMessagesTool()}
+	// 待办与定时任务工具（组件 todo-scheduler）：除辅助对话（定位是只答疑）外
+	// 各模式都有；组件关掉时为空。
+	todos := a.todoTools()
 	if mode == "assistant" {
 		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool(),
-			exitPlanModeTool(), updateGoalTool()}, history...)
+			exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	}
 	if mode == "aux" {
 		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
@@ -118,7 +121,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		// 三个工具的 Go 实现文件未入库（悬空引用导致编译失败），补交后恢复本行。
 		askUserQuestionTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
-	}, append(append(browserTools(), computerTools()...), history...)...)
+	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)
 }
 
 // ---------- Schema 辅助 ----------

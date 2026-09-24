@@ -1,0 +1,596 @@
+/* 组件：待办与定时任务 —— 浏览器半边。
+ *
+ * 侧边栏「数字助理主对话」下方插一个入口按钮（与相邻按钮同一个 .side-btn 组件），
+ * 点击打开全屏面板（复用设置弹窗的 .modal/.modal-card 外壳）：
+ *   - 一条持久化的任务清单：新建 / 编辑 / 删除（两段确认）/ 启用停用 / 立即执行；
+ *   - 两类任务：AI 任务（到点把描述转交数字助理）与程序任务（到点运行命令）；
+ *   - 执行记录（时间、触发方式、成败、摘要、「查看会话」跳转）；
+ *   - 程序没开着时错过的执行不自动补跑，面板顶部提示「补跑 / 忽略」。
+ *
+ * 数据与调度全在宿主半边（todo.go 的 /api/todos*），这里只管界面与调用。
+ * dispose 撤掉按钮、面板、表单、事件流与全部监听——组件可热关闭。 */
+(function () {
+  if (!window.CX) return;
+
+  const ID = 'todo-scheduler';
+  const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const KINDS = ['manual', 'once', 'daily', 'weekly', 'weekdays', 'interval'];
+  const KIND_LABEL = {
+    manual: '不定时', once: '定时一次', daily: '每天',
+    weekly: '每周某几天', weekdays: '仅工作日', interval: '每隔（分钟）',
+  };
+  const STATUS_LABEL = { ok: '完成', failed: '失败', running: '执行中' };
+  const TRIGGER_LABEL = { schedule: '定时', manual: '手动', 'catch-up': '补跑' };
+
+  /* 运行期状态：清单 + 工作目录候选 + 界面开关。 */
+  const st = {
+    tasks: [], records: [], missed: [], store: '',
+    workspaces: [], busy: false, armedDelete: '', expanded: {}, editing: null,
+  };
+  let btn = null, panel = null, formEl = null, sse = null, disposing = false;
+
+  /* ---------- 小工具 ---------- */
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+
+  function fmt(ms) {
+    if (!ms || ms <= 0) return '—';
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return '—';
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  /* epoch 毫秒 → datetime-local 输入值（本地时区）。 */
+  function toLocalInput(ms) {
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function scheduleText(s) {
+    if (!s) return '—';
+    switch (s.kind) {
+      case 'manual': return '不定时';
+      case 'once': return '定时一次 · ' + fmt(s.at);
+      case 'daily': return '每天 · ' + s.time;
+      case 'weekly': return '每周' + (s.days || []).slice().sort().map((d) => WEEK[d]).join('、') + ' · ' + s.time;
+      case 'weekdays': return '仅工作日 · ' + s.time;
+      case 'interval': return '每隔 ' + s.everyMinutes + ' 分钟';
+    }
+    return '—';
+  }
+
+  const isCmd = (t) => t.executor === 'command';
+
+  /* ---------- 侧边栏入口 ---------- */
+
+  function mountButton() {
+    const actions = document.querySelector('#sidebar .actions');
+    if (!actions) return;
+    btn = document.createElement('button');
+    btn.id = 'btn-todo-scheduler';
+    btn.className = 'side-btn';
+    btn.title = '待办清单与定时任务';
+    btn.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M5 3L2 6M19 3l3 3"/></svg>' +
+      '待办与定时任务';
+    btn.onclick = () => { if (panel && !panel.classList.contains('hidden')) closePanel(); else openPanel(); };
+    // 位置：紧跟「数字助理主对话」，在工作区段头之上
+    const anchor = document.getElementById('btn-new-assistant');
+    if (anchor && anchor.parentElement === actions) anchor.insertAdjacentElement('afterend', btn);
+    else actions.appendChild(btn);
+  }
+
+  /* ---------- 面板骨架 ---------- */
+
+  function mountPanel() {
+    panel = document.createElement('div');
+    panel.id = 'todo-board';
+    panel.className = 'modal hidden';
+    panel.innerHTML =
+      '<div class="modal-card td-card">' +
+        '<div class="td-head">' +
+          '<div>' +
+            '<h3 class="td-title">待办事项与定时任务</h3>' +
+            '<p class="td-intro">一条一条记下要做的工作。AI 任务到点转交给数字助理执行，程序任务到点直接运行命令；结果和会话入口都在这里看。</p>' +
+          '</div>' +
+          '<div class="td-head-actions">' +
+            '<button type="button" id="td-new" class="primary">＋ 新建任务</button>' +
+            '<button type="button" id="td-close" class="td-x" title="关闭">✕</button>' +
+          '</div>' +
+        '</div>' +
+        '<p id="td-notice" class="td-notice hidden"></p>' +
+        '<div id="td-missed" class="td-missed hidden"></div>' +
+        '<div id="td-list" class="td-list"></div>' +
+        '<div class="td-foot"><span id="td-store"></span></div>' +
+      '</div>';
+    document.body.appendChild(panel);
+    panel.onmousedown = (e) => { if (e.target === panel) closePanel(); };
+    panel.querySelector('#td-close').onclick = closePanel;
+    panel.querySelector('#td-new').onclick = () => openForm(null);
+  }
+
+  function mountForm() {
+    formEl = document.createElement('div');
+    formEl.id = 'todo-form';
+    formEl.className = 'modal hidden';
+    formEl.innerHTML = '<div class="modal-card td-form-card" id="td-form-card"></div>';
+    document.body.appendChild(formEl);
+    formEl.onmousedown = (e) => { if (e.target === formEl) closeForm(); };
+  }
+
+  /* ---------- 面板渲染 ---------- */
+
+  function openPanel() {
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    if (btn) btn.classList.add('active');
+    render();
+    void load();
+    openStream();
+  }
+
+  function closePanel() {
+    if (!panel) return;
+    panel.classList.add('hidden');
+    if (btn) btn.classList.remove('active');
+    closeForm();
+    closeStream();
+  }
+
+  async function load() {
+    try {
+      const d = await api('/api/todos');
+      if (disposing) return;
+      st.tasks = d.tasks || [];
+      st.records = d.records || [];
+      st.missed = d.missed || [];
+      st.store = d.store || '';
+      notice('');
+    } catch (e) {
+      notice('加载失败：' + (e.message || e));
+    }
+    if (panel && !panel.classList.contains('hidden')) render();
+  }
+
+  function notice(text) {
+    const el = panel && panel.querySelector('#td-notice');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('hidden', !text);
+  }
+
+  function recordsOf(taskId) {
+    return st.records.filter((r) => r.taskId === taskId);
+  }
+
+  function render() {
+    const list = panel.querySelector('#td-list');
+    const missedBox = panel.querySelector('#td-missed');
+    const missed = st.missed || [];
+
+    missedBox.classList.toggle('hidden', missed.length === 0);
+    if (missed.length) {
+      missedBox.innerHTML = '<div class="td-missed-title">服务没开着的时候，有 ' + missed.length +
+        ' 条任务错过了执行时间（只提示最近一次，不会连环补跑）：</div>' +
+        missed.map((m) => {
+          const t = st.tasks.find((x) => x.id === m.taskId);
+          return '<div class="td-missed-row"><span>' + esc(t ? t.title : m.taskId) + '｜' + fmt(m.slotTime) + '</span>' +
+            '<span class="td-actions">' +
+            '<button type="button" data-missed="run" data-id="' + esc(m.taskId) + '">补跑一次</button>' +
+            '<button type="button" class="ghost" data-missed="dismiss" data-id="' + esc(m.taskId) + '">忽略</button>' +
+            '</span></div>';
+        }).join('');
+    }
+
+    if (!st.tasks.length) {
+      list.innerHTML = '<div class="td-empty">还没有任务。点右上角「新建任务」记一条。</div>';
+    } else {
+      list.innerHTML = st.tasks.map(cardHTML).join('');
+    }
+    panel.querySelector('#td-store').textContent = st.store ? '数据位置：' + st.store : '';
+
+    // 列表内的事件：统一委托到容器
+    list.onclick = onListClick;
+    missedBox.onclick = onMissedClick;
+  }
+
+  function cardHTML(t) {
+    const cmd = isCmd(t);
+    const recs = recordsOf(t.id);
+    const expanded = !!st.expanded[t.id];
+    const badges =
+      '<span class="td-badge kind">' + (cmd ? '程序任务' : 'AI 任务') + '</span>' +
+      '<span class="td-badge' + (t.enabled ? '' : ' off') + '">' + esc(scheduleText(t.schedule)) + '</span>' +
+      (t.enabled ? '' : '<span class="td-badge off">已停用</span>') +
+      (cmd && t.permission === 'full' ? '<span class="td-badge warn">不受限</span>' : '');
+
+    let html = '<div class="td-task" data-id="' + esc(t.id) + '">';
+    html += '<div class="td-task-head"><div class="td-task-main">';
+    html += '<div class="td-badges">' + badges + '</div>';
+    html += '<div class="td-name">' + esc(t.title) + '</div>';
+    html += '</div><label class="pr-toggle" title="启用 / 停用">' +
+      '<input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? ' checked' : '') + '>' +
+      '<span></span></label></div>';
+
+    if (cmd && t.command) html += '<p class="td-cmd">$ ' + esc(t.command) + '</p>';
+    if (t.description) html += '<p class="td-desc">' + esc(t.description) + '</p>';
+
+    html += '<div class="td-meta">';
+    html += '<span><b>' + (cmd ? '工作目录' : '执行者') + '</b>：' +
+      (cmd ? esc(t.dir || '未指定（编辑里选一个）') : '数字助理主对话') + '</span>';
+    if (t.enabled && t.schedule.kind === 'manual') html += '<span>不定时 · 手动执行</span>';
+    if (t.enabled && t.nextRunAt) html += '<span><b>下次执行</b>：' + fmt(t.nextRunAt) + '</span>';
+    html += '<span><b>上次执行</b>：' + fmt(t.lastRunAt) + '</span>';
+    html += '</div>';
+
+    if (t.lastStatus) {
+      html += '<div class="td-lastline"><i class="td-dot ' + esc(t.lastStatus) + '"></i><span>' +
+        esc(STATUS_LABEL[t.lastStatus] || t.lastStatus) + (t.lastError ? '：' + esc(t.lastError) : '') + '</span></div>';
+    }
+
+    html += '<div class="td-actions">' +
+      '<button type="button" class="primary" data-act="run" data-id="' + esc(t.id) + '">立即执行</button>' +
+      '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
+      '<button type="button" class="' + (st.armedDelete === t.id ? 'danger' : 'ghost') + '" data-act="delete" data-id="' + esc(t.id) + '">' +
+        (st.armedDelete === t.id ? '删除这条任务？执行记录会保留' : '删除') + '</button>' +
+      (recs.length ? '<button type="button" class="td-link" data-act="records" data-id="' + esc(t.id) + '">执行记录（' +
+        recs.length + '）' + (expanded ? '▴' : '▾') + '</button>' : '') +
+      '</div>';
+
+    if (expanded) {
+      const recent = recs.slice().sort((a, b) => b.startedAt - a.startedAt).slice(0, 5);
+      html += '<div class="td-records">' + recent.map((r) => {
+        let line = '<div class="td-record"><span class="td-when">' + fmt(r.startedAt) + '</span>' +
+          '<i class="td-dot ' + esc(r.status) + '"></i>' +
+          '<span>' + esc(TRIGGER_LABEL[r.trigger] || r.trigger) + '</span>' +
+          '<span class="td-sum">' + esc(r.summary || r.error || '') + '</span>';
+        if (r.sessionId) {
+          line += '<button type="button" class="td-link" data-act="session" data-sid="' + esc(r.sessionId) + '">查看会话</button>';
+        }
+        return line + '</div>';
+      }).join('') + '</div>';
+    }
+    return html + '</div>';
+  }
+
+  function onListClick(e) {
+    const el = e.target.closest('button[data-act], input[data-act]');
+    if (!el) return;
+    const id = el.dataset.id;
+    const task = st.tasks.find((t) => t.id === id);
+    switch (el.dataset.act) {
+      case 'toggle': void act(() => api('/api/todos/update', {
+        method: 'POST', body: JSON.stringify({ id, enabled: el.checked }),
+      })); break;
+      case 'run': void act(() => runNow(id, task)); break;
+      case 'edit': openForm(task); break;
+      case 'delete':
+        if (st.armedDelete !== id) { st.armedDelete = id; render(); setTimeout(() => { if (st.armedDelete === id) { st.armedDelete = ''; render(); } }, 5000); return; }
+        st.armedDelete = '';
+        void act(() => api('/api/todos/delete', { method: 'POST', body: JSON.stringify({ id }) }));
+        break;
+      case 'records': st.expanded[id] = !st.expanded[id]; render(); break;
+      case 'session':
+        closePanel();
+        if (typeof openSession === 'function') openSession(el.dataset.sid);
+        break;
+    }
+  }
+
+  function onMissedClick(e) {
+    const el = e.target.closest('button[data-missed]');
+    if (!el) return;
+    void act(() => api('/api/todos/missed', {
+      method: 'POST', body: JSON.stringify({ id: el.dataset.id, action: el.dataset.missed }),
+    }));
+  }
+
+  /* 业务动作的统一包装：忙碌态 + 事后刷新；runNow 的业务失败变成页面提示。 */
+  async function act(fn) {
+    if (st.busy) return;
+    st.busy = true;
+    notice('');
+    try {
+      const r = await fn();
+      if (r && r.ok === false && r.error) notice(r.error);
+    } catch (err) {
+      notice(String(err.message || err));
+    } finally {
+      st.busy = false;
+      await load();
+    }
+  }
+
+  async function runNow(id, task) {
+    const r = await api('/api/todos/run', { method: 'POST', body: JSON.stringify({ id }) });
+    if (r.ok && r.sessionId && !isCmd(task || {})) {
+      notice('已转交数字助理（会话 ' + r.sessionId + '）。');
+    }
+    return r;
+  }
+
+  /* ---------- 表单 ---------- */
+
+  function blankForm() {
+    return {
+      editingId: '', title: '', description: '', executor: 'assistant', kind: 'manual',
+      onceAt: '', time: '09:00', days: [false, true, true, true, true, true, false],
+      everyMinutes: '30', dir: '', command: '', shell: 'powershell', permission: 'workspace-write',
+      enabled: true,
+    };
+  }
+
+  function taskToForm(t) {
+    const f = blankForm();
+    f.editingId = t.id;
+    f.title = t.title;
+    f.description = t.description;
+    f.executor = isCmd(t) ? 'command' : 'assistant';
+    f.kind = t.schedule.kind;
+    if (t.schedule.kind === 'once') f.onceAt = toLocalInput(t.schedule.at);
+    if (t.schedule.time) f.time = t.schedule.time;
+    if (t.schedule.kind === 'weekly') f.days = [0, 1, 2, 3, 4, 5, 6].map((d) => (t.schedule.days || []).indexOf(d) >= 0);
+    if (t.schedule.kind === 'interval') f.everyMinutes = String(t.schedule.everyMinutes);
+    f.dir = t.dir || '';
+    f.command = t.command || '';
+    f.shell = t.shell || 'powershell';
+    f.permission = t.permission || 'workspace-write';
+    f.enabled = t.enabled;
+    return f;
+  }
+
+  function formRequest(f) {
+    let schedule;
+    if (f.kind === 'manual') schedule = { kind: 'manual' };
+    else if (f.kind === 'once') schedule = { kind: 'once', at: new Date(f.onceAt).getTime() };
+    else if (f.kind === 'interval') schedule = { kind: 'interval', everyMinutes: Number(f.everyMinutes) };
+    else if (f.kind === 'weekly') schedule = { kind: 'weekly', time: f.time, days: f.days.map((on, d) => (on ? d : -1)).filter((d) => d >= 0) };
+    else schedule = { kind: f.kind, time: f.time };
+    return {
+      id: f.editingId, title: f.title.trim(), description: f.description.trim(),
+      executor: f.executor, schedule,
+      dir: f.executor === 'command' ? f.dir : '',
+      command: f.executor === 'command' ? f.command.trim() : '',
+      shell: f.shell, permission: f.permission, enabled: f.enabled,
+    };
+  }
+
+  function formError(f) {
+    if (!f.title.trim()) return '请填写标题';
+    if (!f.description.trim()) return '请填写详细描述 / 要求';
+    if (f.executor === 'command') {
+      if (!f.command.trim()) return '程序任务需要填写要运行的命令';
+      if (!f.dir) return '程序任务必须选择工作目录';
+    }
+    if (f.kind === 'once' && !f.onceAt) return '请选择执行时间';
+    if (f.kind === 'weekly' && !f.days.some((d) => d)) return '请至少勾选一个星期';
+    if (f.kind === 'interval' && !(Number.isInteger(Number(f.everyMinutes)) && Number(f.everyMinutes) >= 1)) return '请填写 1 以上的间隔分钟数';
+    return '';
+  }
+
+  function recalcOnceDefault(f) {
+    if (!f.onceAt) {
+      const d = new Date(Date.now() + 30 * 60 * 1000);
+      d.setSeconds(0, 0);
+      f.onceAt = toLocalInput(d.getTime());
+    }
+  }
+
+  async function openForm(task) {
+    st.editing = task ? taskToForm(task) : blankForm();
+    if (st.editing.kind === 'once') recalcOnceDefault(st.editing);
+    try {
+      const d = await api('/api/todos/workspaces');
+      st.workspaces = d.items || [];
+    } catch (e) { st.workspaces = []; }
+    if (!st.editing.dir && st.workspaces.length) st.editing.dir = st.workspaces[0].path;
+    renderForm();
+    formEl.classList.remove('hidden');
+  }
+
+  function closeForm() {
+    st.editing = null;
+    if (formEl) formEl.classList.add('hidden');
+  }
+
+  function renderForm() {
+    const f = st.editing;
+    if (!f) return;
+    const cmd = f.executor === 'command';
+    const card = formEl.querySelector('#td-form-card');
+    // 字段容器用 div 而非 label：宿主 .modal-card label 的规则会把控件撑成整行、文字挤到下一行
+    const field = (label, inner, span2) =>
+      '<div class="td-field' + (span2 ? ' span2' : '') + '"><span class="sf-label">' + label + '</span>' + inner + '</div>';
+    const kindOptions = KINDS.map((k) =>
+      '<option value="' + k + '"' + (f.kind === k ? ' selected' : '') + '>' + KIND_LABEL[k] + '</option>').join('');
+    const wsOptions = st.workspaces.map((w) =>
+      '<option value="' + esc(w.path) + '"' + (f.dir === w.path ? ' selected' : '') + '>' + esc(w.path) + '</option>').join('');
+
+    card.innerHTML =
+      '<h3>' + (f.editingId ? '编辑任务' : '新建任务') + '</h3>' +
+      '<div class="td-grid">' +
+        field('任务类型',
+          '<div class="td-seg">' +
+            '<button type="button" class="' + (cmd ? '' : 'primary') + '" data-f="executor" data-v="assistant">AI 任务</button>' +
+            '<button type="button" class="' + (cmd ? 'primary' : '') + '" data-f="executor" data-v="command">程序任务</button>' +
+          '</div>' +
+          '<p class="td-hint">' + (cmd
+            ? '到点在工作目录直接运行命令（不经过模型），退出码和输出记进执行记录。'
+            : '到点把描述转交给数字助理主对话，由它安排执行（派子会话、选工作区、汇报结果）。') + '</p>', true) +
+        field('标题',
+          '<input id="td-f-title" type="text" placeholder="例如：每周整理一次周报" value="' + esc(f.title) + '">', true) +
+        field('详细描述 / 要求',
+          '<textarea id="td-f-desc" rows="4">' + esc(f.description) + '</textarea>' +
+          '<p class="td-hint">AI 任务：原样转交数字助理；程序任务：作为备注留在任务里。请写成自足的一段话。</p>', true) +
+        field('执行方式', '<select id="td-f-kind">' + kindOptions + '</select>') +
+        (f.kind === 'once'
+          ? field('执行时间', '<input id="td-f-once" type="datetime-local" value="' + esc(f.onceAt) + '">')
+          : (f.kind === 'daily' || f.kind === 'weekly' || f.kind === 'weekdays'
+            ? field('时刻', '<input id="td-f-time" type="time" value="' + esc(f.time) + '">')
+            : (f.kind === 'interval'
+              ? field('间隔分钟数', '<input id="td-f-every" type="number" min="1" value="' + esc(f.everyMinutes) + '">')
+              : ''))) +
+        (f.kind === 'weekly'
+          ? field('星期', '<div class="td-days">' + WEEK.map((name, d) =>
+              '<label class="td-day"><input type="checkbox" data-d="' + d + '"' + (f.days[d] ? ' checked' : '') + '>' + name + '</label>').join('') +
+            '</div>', true)
+          : '') +
+        (cmd
+          ? field('命令', '<input id="td-f-cmd" type="text" placeholder="例如：git pull" value="' + esc(f.command) + '">') +
+            field('终端', '<select id="td-f-shell">' +
+              '<option value="powershell"' + (f.shell === 'powershell' ? ' selected' : '') + '>PowerShell</option>' +
+              '<option value="cmd"' + (f.shell === 'cmd' ? ' selected' : '') + '>CMD</option></select>')
+          : '') +
+        (cmd
+          ? field('工作目录',
+              '<select id="td-f-dir-sel"><option value="">— 从常用目录里挑 —</option>' + wsOptions + '</select>' +
+              '<div class="td-dir-row"><input id="td-f-dir" type="text" placeholder="工作目录绝对路径" value="' + esc(f.dir) + '">' +
+              '<button type="button" id="td-f-pick">浏览…</button></div>', true) +
+            field('权限', '<select id="td-f-perm">' +
+              '<option value="workspace-write"' + (f.permission !== 'full' ? ' selected' : '') + '>沙箱内（只能写工作目录，推荐）</option>' +
+              '<option value="full"' + (f.permission === 'full' ? ' selected' : '') + '>完全访问（不受限，谨慎）</option></select>', true)
+          : '') +
+        field('启用', '<label class="pr-toggle"><input id="td-f-enabled" type="checkbox"' + (f.enabled ? ' checked' : '') + '><span></span></label>') +
+      '</div>' +
+      '<p id="td-form-err" class="td-err hidden"></p>' +
+      '<div class="modal-actions"><button type="button" id="td-form-cancel">取消</button>' +
+      '<button type="button" id="td-form-save" class="accent">保存</button></div>';
+
+    // 表单内的交互：输入即时回写 st.editing，结构变化（执行方式/类型）重绘
+    card.querySelectorAll('input[type=text], input[type=password], textarea, input[type=number], input[type=time], input[type=datetime-local]')
+      .forEach((el) => { el.oninput = () => { readForm(); }; });
+    card.querySelectorAll('select').forEach((el) => { el.onchange = () => { readForm(); rerenderOnKind(); }; });
+    card.querySelectorAll('input[type=checkbox][data-d]').forEach((el) => {
+      el.onchange = () => { st.editing.days[Number(el.dataset.d)] = el.checked; };
+    });
+    card.querySelectorAll('button[data-f=executor]').forEach((el) => {
+      el.onclick = () => { readForm(); st.editing.executor = el.dataset.v; renderForm(); };
+    });
+    const pick = card.querySelector('#td-f-pick');
+    if (pick) {
+      pick.onclick = async () => {
+        try {
+          readForm();
+          const r = await api('/api/pick-folder' + (st.editing.dir ? '?start=' + encodeURIComponent(st.editing.dir) : ''));
+          if (r && r.path) { st.editing.dir = r.path; renderForm(); }
+        } catch (e) { showFormErr('无法打开文件夹选择框：' + (e.message || e)); }
+      };
+    }
+    const dirSel = card.querySelector('#td-f-dir-sel');
+    if (dirSel) {
+      // 只作「常用目录」快捷填入，真正的值始终在工作目录输入框里
+      dirSel.onchange = () => {
+        if (!dirSel.value) return;
+        readForm();
+        st.editing.dir = dirSel.value;
+        renderForm();
+      };
+    }
+    card.querySelector('#td-form-cancel').onclick = closeForm;
+    card.querySelector('#td-form-save').onclick = () => { void saveForm(); };
+  }
+
+  /* 从表单控件回读用户输入（重绘前必须先调用，否则输入丢失）。 */
+  function readForm() {
+    const f = st.editing;
+    const card = formEl.querySelector('#td-form-card');
+    const val = (id) => { const el = card.querySelector('#' + id); return el ? el.value : ''; };
+    f.title = val('td-f-title');
+    f.description = val('td-f-desc');
+    f.kind = val('td-f-kind') || f.kind;
+    if (f.kind === 'once' && card.querySelector('#td-f-once')) f.onceAt = val('td-f-once');
+    if (card.querySelector('#td-f-time')) f.time = val('td-f-time');
+    if (card.querySelector('#td-f-every')) f.everyMinutes = val('td-f-every');
+    if (card.querySelector('#td-f-cmd')) f.command = val('td-f-cmd');
+    if (card.querySelector('#td-f-shell')) f.shell = val('td-f-shell');
+    if (card.querySelector('#td-f-perm')) f.permission = val('td-f-perm');
+    if (card.querySelector('#td-f-dir')) f.dir = val('td-f-dir').trim();
+    const on = card.querySelector('#td-f-enabled');
+    if (on) f.enabled = on.checked;
+  }
+
+  /* 执行方式/任务类型变了就重绘（控件结构随之变化）；普通键入不重绘，避免打断输入。 */
+  function rerenderOnKind() {
+    readForm();
+    if (st.editing.kind === 'once') recalcOnceDefault(st.editing);
+    renderForm();
+  }
+
+  function showFormErr(msg) {
+    const el = formEl.querySelector('#td-form-err');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.toggle('hidden', !msg);
+  }
+
+  async function saveForm() {
+    const f = st.editing;
+    if (!f) return;
+    const problem = formError(f);
+    if (problem) { showFormErr(problem); return; }
+    const body = formRequest(f);
+    try {
+      if (f.editingId) await api('/api/todos/update', { method: 'POST', body: JSON.stringify(body) });
+      else await api('/api/todos', { method: 'POST', body: JSON.stringify(body) });
+      closeForm();
+      await load();
+    } catch (e) {
+      showFormErr(String(e.message || e));
+    }
+  }
+
+  /* ---------- 事件流（调度触发的执行、模型改清单都即时反映） ---------- */
+
+  function openStream() {
+    if (sse || typeof EventSource !== 'function') return;
+    try {
+      sse = new EventSource('/api/events');
+      sse.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          if (ev.type !== 'todo_tasks') return;
+          if (panel && !panel.classList.contains('hidden')) void load();
+        } catch (err) { /* 坏帧跳过 */ }
+      };
+    } catch (e) { sse = null; }
+  }
+
+  function closeStream() {
+    if (sse) { try { sse.close(); } catch (e) { /* 已关闭 */ } sse = null; }
+  }
+
+  /* ---------- 全局键盘 ---------- */
+
+  function onKey(e) {
+    if (e.key !== 'Escape') return;
+    if (formEl && !formEl.classList.contains('hidden')) { closeForm(); return; }
+    if (panel && !panel.classList.contains('hidden')) closePanel();
+  }
+
+  /* ---------- 注册 ---------- */
+
+  CX.register({
+    id: ID,
+    init() {
+      disposing = false;
+      mountButton();
+      mountPanel();
+      mountForm();
+      document.addEventListener('keydown', onKey);
+    },
+    dispose() {
+      disposing = true;
+      closeStream();
+      document.removeEventListener('keydown', onKey);
+      if (btn) { btn.remove(); btn = null; }
+      if (panel) { panel.remove(); panel = null; }
+      if (formEl) { formEl.remove(); formEl = null; }
+      st.tasks = []; st.records = []; st.missed = []; st.editing = null;
+    },
+  });
+})();

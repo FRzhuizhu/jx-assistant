@@ -48,15 +48,20 @@ type SearchHit struct {
 }
 
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex // 串行化写；配合单连接与 WAL，个人负载下无争用问题
+	db   *sql.DB
+	path string
+	mu   sync.Mutex // 串行化写；配合单连接与 WAL，个人负载下无争用问题
 }
+
+// dataPath 返回库文件路径（界面「数据位置」展示用）。
+func (s *Store) dataPath() string { return s.path }
 
 func NewStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + filepath.ToSlash(filepath.Join(dataDir, "jx.db")) +
+	dbPath := filepath.Join(dataDir, "jx.db")
+	dsn := "file:" + filepath.ToSlash(dbPath) +
 		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -64,7 +69,7 @@ func NewStore(dataDir string) (*Store, error) {
 	}
 	// 单连接：SQLite 是单写者模型，全部语句走一个连接最稳，也彻底避开 BUSY
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, path: dbPath}
 	if err := s.createSchema(); err != nil {
 		db.Close()
 		return nil, err
@@ -287,6 +292,23 @@ func (s *Store) setMeta(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO meta(k,v) VALUES(?,?)
 		ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
 	return err
+}
+
+// ---------- 全局附属数据（待办与定时任务清单，存 meta 表） ----------
+
+// SetGlobalData 写入一条全局附属数据（key 自动加 globaldata: 前缀）。
+func (s *Store) SetGlobalData(key, value string) error {
+	return s.setMeta("globaldata:"+key, value)
+}
+
+// GetGlobalData 读取全局附属数据；不存在返回空串。
+func (s *Store) GetGlobalData(key string) string {
+	var v string
+	err := s.db.QueryRow(`SELECT v FROM meta WHERE k=?`, "globaldata:"+key).Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
 }
 
 // ---------- 会话附属数据（todo 清单等，存 meta 表） ----------
