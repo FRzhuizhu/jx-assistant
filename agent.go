@@ -13,6 +13,8 @@ type Event struct {
 	Type       string   `json:"type"` // message|delta|tool_start|tool_end|tool_wait|sub_start|sub_end|title|done|error|approval_required|approval_resolved|question_required|question_resolved|todos
 	Delta      string   `json:"delta,omitempty"`
 	Message    *Message `json:"message,omitempty"`
+	Thinking   string   `json:"thinking,omitempty"` // message 事件附带该步思考原文（前端实时渲染思考块用）
+	Seq        int64    `json:"seq,omitempty"`      // message 事件附带该消息的会话内序号（前端定位/回合标识用）
 	Name       string   `json:"name,omitempty"`
 	Args       string   `json:"args,omitempty"`
 	Output     string   `json:"output,omitempty"`
@@ -148,17 +150,22 @@ func buildLLMMessages(sys string, history []Message) []Message {
 	return msgs
 }
 
-func (a *App) appendMessage(sess *SessionMeta, m Message) {
-	_ = a.Store.Append(sess.ID, m)
+// appendMessage 落库并返回带 seq 的记录（seq 供 SSE message 事件回传前端定位用）
+func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
+	sm := &StoredMessage{Message: m, Kind: "chat", CreatedAt: now()}
+	_ = a.Store.AppendRow(sess.ID, sm)
 	sess.UpdatedAt = now()
 	_ = a.Store.SaveMeta(sess)
+	return sm
 }
 
 // appendMessageThinking 同 appendMessage，但带上该步的思考过程原文。
-func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) {
-	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: m, Thinking: thinking, CreatedAt: now()})
+func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) *StoredMessage {
+	sm := &StoredMessage{Message: m, Kind: "chat", Thinking: thinking, CreatedAt: now()}
+	_ = a.Store.AppendRow(sess.ID, sm)
 	sess.UpdatedAt = now()
 	_ = a.Store.SaveMeta(sess)
+	return sm
 }
 
 // RunAgent 是核心主循环：组装上下文 → 流式请求模型 → 执行工具 → 回填结果，
@@ -188,8 +195,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		got := false
 		for _, content := range a.drainInterjects(sess.ID) {
 			um := TextMessage("user", content)
-			a.appendMessage(sess, um)
-			emit(Event{Type: "message", Message: &um})
+			sm := a.appendMessage(sess, um)
+			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
 			got = true
 		}
 		return got
@@ -239,8 +246,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		if len(calls) == 0 {
 			if strings.TrimSpace(text.String()) != "" {
 				msg := TextMessage("assistant", text.String())
-				a.appendMessageThinking(sess, msg, reasoning.String())
-				emit(Event{Type: "message", Message: &msg})
+				sm := a.appendMessageThinking(sess, msg, reasoning.String())
+				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq})
 			}
 			// 本轮将结束时来了插话：不收尾，带着插话继续下一轮
 			if interjectsBefore(emit) {
@@ -256,8 +263,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		if strings.TrimSpace(text.String()) != "" {
 			am.Content = text.String()
 		}
-		a.appendMessageThinking(sess, am, reasoning.String())
-		emit(Event{Type: "message", Message: &am})
+		asm := a.appendMessageThinking(sess, am, reasoning.String())
+		emit(Event{Type: "message", Message: &asm.Message, Thinking: reasoning.String(), Seq: asm.Seq})
 
 		interrupted := false
 		for _, tc := range calls {
@@ -283,8 +290,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				out = "（工具执行完成，无输出）"
 			}
 			tm := Message{Role: "tool", Content: out, ToolCallID: tc.ID}
-			a.appendMessage(sess, tm)
-			emit(Event{Type: "message", Message: &tm})
+			tsm := a.appendMessage(sess, tm)
+			emit(Event{Type: "message", Message: &tsm.Message, Seq: tsm.Seq})
 			emit(Event{Type: "tool_end", Name: tc.Function.Name, Output: truncateRunes(out, 2000)})
 		}
 		if interrupted {

@@ -1401,8 +1401,8 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer a.EndRun(m.ID)
 
 	um := TextMessage("user", body.Content)
-	a.appendMessage(m, um)
-	emit(Event{Type: "message", Message: &um})
+	sm := a.appendMessage(m, um)
+	emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
 
 	if m.Title == "" {
 		m.Title = truncateRunes(body.Content, 24)

@@ -357,8 +357,13 @@ async function jumpToMessage(sessionId, seq) {
   }
   // 用 setTimeout 而非 rAF：页面在后台时 rAF 会被暂停，定位就丢了
   setTimeout(() => {
-    const el = document.querySelector('.msg[data-seq="' + seq + '"]');
+    const el = document.querySelector('[data-seq="' + seq + '"]');
     if (!el) return;
+    // 目标在折叠段/收起的过程行里：先展开再定位
+    const sec = el.closest ? el.closest('.tf-sec') : null;
+    if (sec) { setSecOpen(sec, true); if (sec.dataset.key) turnOpen[sec.dataset.key] = true; }
+    const row = el.closest ? el.closest('.proc-row') : null;
+    if (row) setProcOpen(row, true);
     el.scrollIntoView({ block: 'center' });
     el.classList.add('search-flash');
     setTimeout(() => el.classList.remove('search-flash'), 2400);
@@ -914,30 +919,307 @@ async function openSession(id) {
   JX.emit('session:open', state.cur);
 }
 
-/* ---------- 消息渲染 ---------- */
+/* ---------- 消息渲染（回合分组 + 折叠体系，逻辑对齐数字助理2 的 dsh-transcript-fold） ---------- */
 
-function toolCard(tc, result) {
-  const d = document.createElement('details');
-  d.className = 'tool-card' + (result ? '' : ' running');
+// 折叠阈值：流式尾部窗口行数；中间正文豁免阈值（非空行数 / 全角当量字数，全角记 1 半角记 0.5）
+const TAIL_ROWS = 10;
+const LONG_TEXT_LINES = 3;
+const LONG_TEXT_CHARS = 85;
+
+// 回合展开记忆：key = 会话id:回合首条seq。手动展开过的回合不再被自动折回——
+// 流式期间新来的思考/工具行、回合收尾重渲都保持展开（数字助理2 修过的同类 bug）
+const turnOpen = {};
+
+function isSysNote(txt) {
+  return txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') || txt.startsWith('【文件上传】');
+}
+
+function cjkWidth(t) {
+  let w = 0;
+  for (const ch of String(t || '')) w += ch.charCodeAt(0) >= 0x2e80 ? 1 : 0.5;
+  return w;
+}
+
+// 中间正文够长则常显不折叠（其上下各折一条折叠条）
+function isLongText(t) {
+  t = String(t || '').trim();
+  if (!t) return false;
+  return t.split('\n').filter((l) => l.trim()).length >= LONG_TEXT_LINES || cjkWidth(t) >= LONG_TEXT_CHARS;
+}
+
+function fmtCount(n) { return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n); }
+
+function chev(cls) {
+  return '<svg class="' + cls + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+}
+
+// 折叠容器用 until-found 而非纯 display:none：浏览器 Ctrl+F 命中折叠内容时会自动揭开并触发 beforematch
+function hideEl(el) { el.setAttribute('hidden', 'until-found'); }
+function showEl(el) { el.removeAttribute('hidden'); }
+
+/* ---------- 过程行：思考行与工具行统一单行样式，点开看详情 ---------- */
+
+function setProcOpen(row, open) {
+  row.classList.toggle('open', open);
+  const body = row.querySelector('.proc-body');
+  if (body) { if (open) showEl(body); else hideEl(body); }
+}
+
+function bindProcToggle(row) {
+  row.querySelector('.proc-head').onclick = () => setProcOpen(row, !row.classList.contains('open'));
+  if (!row.classList.contains('open')) hideEl(row.querySelector('.proc-body'));
+}
+
+// 思考行：标题带字数，点开看原文
+function thinkRow(text, seq, opts = {}) {
+  const row = document.createElement('div');
+  row.className = 'proc-row' + (opts.open ? ' open' : '');
+  if (seq != null) row.dataset.seq = seq;
+  row.innerHTML =
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">思考</span><span class="p-sub">· ' + fmtCount(String(text).length) + ' 字</span></div>' +
+    '<div class="proc-body"><div class="tk-text"></div></div>';
+  row.querySelector('.tk-text').textContent = text;
+  bindProcToggle(row);
+  return row;
+}
+
+// 工具行：只显示工具名与运行态，点开看参数/结果（含图片信封与 4000 字截断）
+function toolRow(tc, result, opts = {}) {
+  const row = document.createElement('div');
   const name = (tc.function && tc.function.name) || '?';
+  row.className = 'proc-row' + (result ? '' : ' running');
+  if (opts.seq != null) row.dataset.seq = opts.seq;
+  row.innerHTML =
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">' + esc(name) + '</span>' +
+    (result ? '' : '<span class="p-sub">· 运行中…</span>') + '</div>' +
+    '<div class="proc-body"></div>';
+  const body = row.querySelector('.proc-body');
   let argsDisp = (tc.function && tc.function.arguments) || '';
   try { argsDisp = JSON.stringify(JSON.parse(argsDisp), null, 2); } catch (e) { /* 原样显示 */ }
-  let out = String((result && result.content) || '');
-  // 图片信封：抽出来渲染成 <img>，正文里不再重复显示
-  const imgFiles = [];
-  out = out.replace(/<image attachment="([^"]+)"[^>]*\/>\n?/g, (_, f) => { imgFiles.push(f); return ''; });
-  if (out.length > 4000) out = out.slice(0, 4000) + '\n…';
-  const imgsHtml = imgFiles.length
-    ? `<div class="tc-imgs">` + imgFiles.map((f) =>
-        `<a href="/attachments/${encodeURIComponent(f)}" target="_blank" title="点击查看原图">` +
-        `<img class="tc-img" src="/attachments/${encodeURIComponent(f)}" loading="lazy" alt="图片附件"></a>`
-      ).join('') + `</div>`
-    : '';
-  d.innerHTML =
-    `<summary>工具调用：${esc(name)}${result ? '' : ' — 运行中…'}</summary>` +
-    `<div class="tc-args"><b>参数</b><pre>${esc(argsDisp)}</pre></div>` +
-    (result ? `<div class="tc-out"><b>结果</b><pre>${esc(out)}</pre>${imgsHtml}</div>` : '');
-  return d;
+  const cap1 = document.createElement('div');
+  cap1.className = 'pb-cap';
+  cap1.textContent = '参数';
+  const pre1 = document.createElement('pre');
+  pre1.textContent = argsDisp || '（无）';
+  body.appendChild(cap1);
+  body.appendChild(pre1);
+  if (result) {
+    let out = String(result.content || '');
+    const imgFiles = [];
+    out = out.replace(/<image attachment="([^"]+)"[^>]*\/>\n?/g, (_, f) => { imgFiles.push(f); return ''; });
+    if (out.length > 4000) out = out.slice(0, 4000) + '\n…';
+    const cap2 = document.createElement('div');
+    cap2.className = 'pb-cap';
+    cap2.textContent = '结果';
+    const pre2 = document.createElement('pre');
+    pre2.textContent = out || '（无输出）';
+    body.appendChild(cap2);
+    body.appendChild(pre2);
+    if (imgFiles.length) {
+      const imgs = document.createElement('div');
+      imgs.className = 'tc-imgs';
+      for (const f of imgFiles) {
+        const a = document.createElement('a');
+        a.href = '/attachments/' + encodeURIComponent(f);
+        a.target = '_blank';
+        a.title = '点击查看原图';
+        const im = document.createElement('img');
+        im.className = 'tc-img';
+        im.loading = 'lazy';
+        im.alt = '图片附件';
+        im.src = '/attachments/' + encodeURIComponent(f);
+        a.appendChild(im);
+        imgs.appendChild(a);
+      }
+      body.appendChild(imgs);
+    }
+  }
+  bindProcToggle(row);
+  return row;
+}
+
+/* ---------- 折叠段：折叠条 + 隐藏容器 ---------- */
+
+function foldLabel(cnt) {
+  const parts = [];
+  if (cnt.think) parts.push(cnt.think + ' 次思考');
+  if (cnt.tool) parts.push(cnt.tool + ' 次工具调用');
+  if (!parts.length) parts.push('已折叠 ' + cnt.rows + ' 行');
+  return parts.join(' · ');
+}
+
+function secCount(items) {
+  const cnt = { think: 0, tool: 0, rows: items.length };
+  for (const it of items) {
+    if (it.k === 'think') cnt.think++;
+    else if (it.k === 'tool' || it.k === 'subtask') cnt.tool++;
+  }
+  return cnt;
+}
+
+// 折叠段 = 折叠条按钮 + until-found 隐藏容器；点击只切本段显隐，不触发整列重渲（滚动位置不跳）
+function foldSection(items, key, opts = {}) {
+  const sec = document.createElement('div');
+  sec.className = 'tf-sec';
+  if (key) sec.dataset.key = key;
+  const bar = document.createElement('button');
+  bar.type = 'button';
+  bar.className = 'turn-fold';
+  const label = document.createElement('span');
+  label.className = 'tf-label';
+  const cnt = secCount(items);
+  label.textContent = opts.prefix
+    ? opts.prefix(cnt)
+    : foldLabel(cnt);
+  bar.appendChild(label);
+  bar.insertAdjacentHTML('beforeend', chev('tf-chev'));
+  const body = document.createElement('div');
+  body.className = 'tf-body';
+  for (const it of items) body.appendChild(renderItem(it));
+  const open = opts.open === true;
+  bar.classList.toggle('open', open);
+  if (open) showEl(body); else hideEl(body);
+  bar.onclick = () => {
+    const nowOpen = body.hasAttribute('hidden');
+    setSecOpen(sec, nowOpen);
+    if (nowOpen) turnOpen[key] = true; // 手动展开记忆：之后不再自动折回
+    else delete turnOpen[key];        // 收起后回到自动折叠
+  };
+  sec.appendChild(bar);
+  sec.appendChild(body);
+  return sec;
+}
+
+function setSecOpen(sec, open) {
+  const bar = sec.querySelector('.turn-fold');
+  const body = sec.querySelector('.tf-body');
+  if (!bar || !body) return;
+  bar.classList.toggle('open', open);
+  if (open) showEl(body); else hideEl(body);
+}
+
+// Ctrl+F 命中折叠内容时浏览器揭开 hidden，这里同步箭头态（过程行与折叠段都处理）
+document.addEventListener('beforematch', (e) => {
+  const row = e.target && e.target.closest ? e.target.closest('.proc-row') : null;
+  if (row) setProcOpen(row, true);
+  const sec = e.target && e.target.closest ? e.target.closest('.tf-sec') : null;
+  if (sec) setSecOpen(sec, true);
+});
+
+/* ---------- 回合分组与条目渲染 ---------- */
+
+// 按真实用户发言切回合；系统通知（回报/中断/上传）归入当前回合且常显；
+// assistant 消息按序拆成思考/正文/工具条目，tool 消息经 resultOf 配对进条目
+function groupTurns(msgs, resultOf) {
+  const turns = [];
+  let cur = null;
+  const ensure = () => {
+    if (!cur) { cur = { userMsg: null, items: [] }; turns.push(cur); }
+  };
+  for (const m of msgs) {
+    if (m.role === 'user') {
+      const txt = String(m.content ?? '');
+      if (isSysNote(txt)) { ensure(); cur.items.push({ k: 'note', m }); continue; }
+      cur = { userMsg: m, items: [] };
+      turns.push(cur);
+      continue;
+    }
+    if (m.role === 'assistant') {
+      ensure();
+      if (m.thinking) cur.items.push({ k: 'think', seq: m.seq, text: m.thinking });
+      if (m.content) cur.items.push({ k: 'text', seq: m.seq, m, text: String(m.content) });
+      for (const tc of m.tool_calls || []) {
+        const n = (tc.function && tc.function.name) || '';
+        cur.items.push({
+          k: (n === 'dispatch_task' || n === 'send_to_session') ? 'subtask' : 'tool',
+          seq: m.seq, tc, result: resultOf[tc.id],
+        });
+      }
+    }
+  }
+  return turns;
+}
+
+function userBubble(m) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg user';
+  wrap.dataset.seq = m.seq; // 搜索命中定位用
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.textContent = String(m.content ?? '');
+  wrap.appendChild(b);
+  return wrap;
+}
+
+// 悬停操作：复制原文 / 手动压缩 / 插件扩展位
+function msgActions(m) {
+  const acts = document.createElement('div');
+  acts.className = 'msg-actions';
+  const cp = document.createElement('button');
+  cp.className = 'act-copy';
+  const cpOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制';
+  cp.innerHTML = cpOrig;
+  cp.onclick = () => {
+    navigator.clipboard.writeText(String(m.content ?? '')).then(() => {
+      cp.textContent = '已复制';
+      setTimeout(() => { cp.innerHTML = cpOrig; }, 1200);
+    });
+  };
+  acts.appendChild(cp);
+  const cb = document.createElement('button');
+  cb.className = 'act-copy act-compact';
+  cb.textContent = '压缩';
+  cb.title = '把此消息之前的旧对话压缩为一条摘要（最近几轮保持原样）';
+  cb.onclick = async () => {
+    if (!state.cur || state.streaming) return;
+    cb.textContent = '压缩中…';
+    cb.disabled = true;
+    try {
+      await api('/api/sessions/' + state.cur.id + '/compact', { method: 'POST' });
+      cb.textContent = '已压缩';
+      await openSession(state.cur.id);
+      setTimeout(() => { cb.textContent = '压缩'; cb.disabled = false; }, 1500);
+    } catch (e) {
+      alert('压缩失败：' + e.message);
+      cb.textContent = '压缩';
+      cb.disabled = false;
+    }
+  };
+  acts.appendChild(cb);
+  for (const fn of JX._msgActions) { try { fn(acts, m); } catch (e) { console.warn('[JX] action', e); } }
+  return acts;
+}
+
+function renderItem(it) {
+  if (it.k === 'think') return thinkRow(it.text, it.seq);
+  if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
+  if (it.k === 'subtask') {
+    const w = document.createElement('div');
+    if (it.seq != null) w.dataset.seq = it.seq;
+    w.appendChild(subTaskCard(it.tc, it.result));
+    return w;
+  }
+  if (it.k === 'text') {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg assistant';
+    wrap.dataset.seq = it.seq; // 搜索命中定位用
+    const body = document.createElement('div');
+    body.className = 'md';
+    body.innerHTML = md(it.text);
+    wrap.appendChild(body);
+    wrap.appendChild(msgActions(it.m));
+    return wrap;
+  }
+  // 系统通知：常显独立块
+  const wrap = document.createElement('div');
+  wrap.className = 'msg sysnote';
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.textContent = String(it.m.content ?? '');
+  wrap.appendChild(b);
+  return wrap;
 }
 
 /* 数字助理派发/转达的子任务卡片：后台执行期间显示实时工具活动，完成后标已完成 */
@@ -1014,91 +1296,14 @@ function renderMessages(msgs) {
   for (const m of msgs) {
     if (m.role === 'tool' && m.tool_call_id) resultOf[m.tool_call_id] = m;
   }
-  for (const m of msgs) {
-    if (m.role === 'user') {
-      const txt = String(m.content ?? '');
-      // 系统注入的回报/中断/上传记录：以系统通知样式呈现，不冒充用户发言
-      if (txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') || txt.startsWith('【文件上传】')) {
-        const wrap = document.createElement('div');
-        wrap.className = 'msg sysnote';
-        const b = document.createElement('div');
-        b.className = 'bubble';
-        b.textContent = txt;
-        wrap.appendChild(b);
-        box.appendChild(wrap);
-        continue;
-      }
-      const wrap = document.createElement('div');
-      wrap.className = 'msg user';
-      wrap.dataset.seq = m.seq; // 搜索命中定位用
-      const b = document.createElement('div');
-      b.className = 'bubble';
-      b.textContent = txt;
-      wrap.appendChild(b);
-      box.appendChild(wrap);
-    } else if (m.role === 'assistant') {
-      const wrap = document.createElement('div');
-      wrap.className = 'msg assistant';
-      wrap.dataset.seq = m.seq; // 搜索命中定位用
-      const body = document.createElement('div');
-      body.className = 'md';
-      // 该步的思考过程（入库原文），折叠展示
-      if (m.thinking) {
-        const tk = document.createElement('details');
-        tk.className = 'think-card';
-        tk.innerHTML = `<summary>思考过程</summary><pre class="tk-body">${esc(m.thinking)}</pre>`;
-        wrap.appendChild(tk);
-      }
-      if (m.content) body.innerHTML = md(m.content);
-      for (const tc of m.tool_calls || []) {
-        const n = (tc.function && tc.function.name) || '';
-        if (n === 'dispatch_task' || n === 'send_to_session') {
-          body.appendChild(subTaskCard(tc, resultOf[tc.id]));
-        } else {
-          body.appendChild(toolCard(tc, resultOf[tc.id]));
-        }
-      }
-      wrap.appendChild(body);
-      // 悬停操作：复制原文 / 手动压缩
-      const acts = document.createElement('div');
-      acts.className = 'msg-actions';
-      const cp = document.createElement('button');
-      cp.className = 'act-copy';
-      const cpOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制';
-      cp.innerHTML = cpOrig;
-      cp.onclick = () => {
-        navigator.clipboard.writeText(String(m.content ?? '')).then(() => {
-          cp.textContent = '已复制';
-          setTimeout(() => { cp.innerHTML = cpOrig; }, 1200);
-        });
-      };
-      acts.appendChild(cp);
-      const cb = document.createElement('button');
-      cb.className = 'act-copy act-compact';
-      cb.textContent = '压缩';
-      cb.title = '把此消息之前的旧对话压缩为一条摘要（最近几轮保持原样）';
-      cb.onclick = async () => {
-        if (!state.cur || state.streaming) return;
-        cb.textContent = '压缩中…';
-        cb.disabled = true;
-        try {
-          await api('/api/sessions/' + state.cur.id + '/compact', { method: 'POST' });
-          cb.textContent = '已压缩';
-          await openSession(state.cur.id);
-          setTimeout(() => { cb.textContent = '压缩'; cb.disabled = false; }, 1500);
-        } catch (e) {
-          alert('压缩失败：' + e.message);
-          cb.textContent = '压缩';
-          cb.disabled = false;
-        }
-      };
-      acts.appendChild(cb);
-      for (const fn of JX._msgActions) { try { fn(acts, m); } catch (e) { console.warn('[JX] action', e); } }
-      wrap.appendChild(acts);
-      box.appendChild(wrap);
-    }
-    // role === 'tool' 的消息已配对进工具卡片，跳过
-  }
+  const sid = (state.cur && state.cur.id) || '';
+  const turns = groupTurns(msgs, resultOf);
+  turns.forEach((turn, ti) => {
+    if (turn.userMsg) box.appendChild(userBubble(turn.userMsg));
+    const key = sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti);
+    if (ti === turns.length - 1 && state.streaming) renderStreamingTurn(box, turn, key);
+    else renderFinishedTurn(box, turn, key);
+  });
   // 等待队列：本轮执行中排入的消息，徽标 + 可移出
   state.queue.forEach((q, qi) => {
     const wrap = document.createElement('div');
@@ -1122,6 +1327,57 @@ function renderMessages(msgs) {
   $('messages').scrollTop = $('messages').scrollHeight;
 }
 
+// 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与系统通知也常显；
+// 其余过程按相邻常显块切分成折叠段（每段一条折叠条，显示思考/工具计数）
+function renderFinishedTurn(box, turn, key) {
+  const items = turn.items;
+  let answerIdx = -1;
+  items.forEach((it, i) => { if (it.k === 'text') answerIdx = i; });
+  const anchors = new Set();
+  if (answerIdx >= 0) anchors.add(answerIdx);
+  items.forEach((it, i) => {
+    if (i === answerIdx) return;
+    if (it.k === 'note' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
+  });
+  let seg = [];
+  const flushSeg = () => {
+    if (!seg.length) return;
+    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true }));
+    seg = [];
+  };
+  items.forEach((it, i) => {
+    if (anchors.has(i)) { flushSeg(); box.appendChild(renderItem(it)); }
+    else seg.push(it);
+  });
+  flushSeg();
+}
+
+// 进行中回合：过程行只露最近 TAIL_ROWS 行（尾部窗口），上方折叠成一条"已折叠 N 行"折叠条；
+// 运行中的子任务卡钉在窗口上方常显（实时进度不中断）；手动展开过则全部显示
+function renderStreamingTurn(box, turn, key) {
+  const items = turn.items;
+  if (items.length <= TAIL_ROWS) {
+    items.forEach((it) => box.appendChild(renderItem(it)));
+    return;
+  }
+  const foldFrom = items.length - TAIL_ROWS;
+  const segItems = [];
+  const pinned = [];
+  items.forEach((it, i) => {
+    if (i >= foldFrom) return;
+    if (it.k === 'subtask' && !it.result) pinned.push(it);
+    else segItems.push(it);
+  });
+  if (segItems.length) {
+    box.appendChild(foldSection(segItems, key, {
+      open: turnOpen[key] === true,
+      prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.think || c.tool) ? ' · ' + foldLabel(c) : ''),
+    }));
+  }
+  pinned.forEach((it) => box.appendChild(renderItem(it)));
+  items.slice(foldFrom).forEach((it) => box.appendChild(renderItem(it)));
+}
+
 let rafPending = false;
 function liveRender() {
   if (rafPending) return;
@@ -1133,16 +1389,21 @@ function liveRender() {
       el = document.createElement('div');
       el.className = 'msg assistant';
       el.id = 'live-bubble';
-      el.innerHTML = '<details class="think-card" open><summary>思考过程</summary><pre class="tk-body"></pre></details><div class="md"></div>';
+      el.innerHTML =
+        '<div class="proc-row running open" id="live-think">' +
+          '<div class="proc-head">' + chev('p-chev') + '<span class="p-name">思考中…</span></div>' +
+          '<div class="proc-body"><div class="tk-text"></div></div>' +
+        '</div><div class="md"></div>';
       $('msg-col').appendChild(el);
+      bindProcToggle(el.querySelector('#live-think'));
     }
-    const tk = el.querySelector('.think-card');
-    const tkBody = el.querySelector('.tk-body');
+    const tk = el.querySelector('#live-think');
     const thinking = state.streamThinking || '';
     if (thinking) {
       tk.style.display = '';
-      tkBody.textContent = thinking;
-      tk.querySelector('summary').textContent = '思考中…';
+      const tkt = tk.querySelector('.tk-text');
+      tkt.textContent = thinking;
+      tkt.scrollTop = tkt.scrollHeight; // 长思考自动滚到最新
     } else {
       tk.style.display = 'none';
     }
@@ -1601,6 +1862,10 @@ function handleEvent(ev) {
       state.streamThinking = '';
       const live = document.getElementById('live-bubble');
       if (live) live.remove();
+      // 后端 message 事件带该步思考原文与消息 seq：
+      // 思考块实时渲染不消失（工具调用落地后仍在），seq 用作回合标识与搜索定位
+      if (ev.thinking) ev.message.thinking = ev.thinking;
+      if (ev.seq) ev.message.seq = ev.seq;
       state.msgs.push(ev.message);
       renderMessages(state.msgs);
       break;
@@ -1794,8 +2059,9 @@ async function send(forceContent) {
   }
   const live = document.getElementById('live-bubble');
   if (live) live.remove();
-  renderMessages(state.msgs);
+  // 先收流式标记再重渲：最后一帧要按"已完成回合"折叠呈现，而不是停留在流式尾部窗口
   state.streaming = false;
+  renderMessages(state.msgs);
   setStreamUI(false);
   loadSessions();
   loadStatus();
@@ -2149,7 +2415,7 @@ async function openSettings() {
   selRefs.compactThreshold.set(String(c.compactThreshold || 0.8));
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
-  selRefs.fontsize.set(lsGet('jx.fontscale', '1'));
+  selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
   selRefs.theme.set(lsGet('jx.theme', 'light'));
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
   selRefs.midrun.set(lsGet('jx.midrun', 'interject'));
@@ -2662,15 +2928,78 @@ async function saveSettings() {
 
 /* ---------- 常规页：本机浏览器偏好（语言/字体/发送行为，即时生效） ---------- */
 
-function applyFontScale(v) {
-  const z = parseFloat(v) || 1;
-  document.body.style.zoom = z === 1 ? '' : String(z);
-  lsSet('jx.fontscale', String(z));
+// 字号只作用于对话区（.msg-col 的 --chat-fs，内部字号均为 em 相对值），
+// 侧栏/设置/输入框不受影响；具体 px 值直接可调
+function applyChatFont(px) {
+  document.documentElement.style.setProperty('--chat-fs', px + 'px');
+  lsSet('jx.fontpx', String(px));
 }
 
-function restoreFontScale() {
-  const z = parseFloat(lsGet('jx.fontscale', '1')) || 1;
-  if (z !== 1) document.body.style.zoom = String(z);
+function restoreChatFont() {
+  const px = parseFloat(lsGet('jx.fontpx', '14')) || 14;
+  document.documentElement.style.setProperty('--chat-fs', px + 'px');
+}
+
+/* ---------- 对话区宽度拖拽：左右把手对称调宽，偏好记入本机 ---------- */
+
+function contentWidth() {
+  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--content-w')) || 860;
+}
+
+function setContentWidth(px, save) {
+  // 夹取 640px ~ 滚动区可用宽-176（每侧留 88px 边缘预算）
+  const max = Math.max(640, (($('messages') && $('messages').clientWidth) || window.innerWidth) - 176);
+  px = Math.round(Math.min(Math.max(px, 640), max));
+  document.documentElement.style.setProperty('--content-w', px + 'px');
+  if (save) lsSet('jx.contentWidth', String(px));
+}
+
+function restoreContentWidth() {
+  const px = parseFloat(lsGet('jx.contentWidth', ''));
+  if (px >= 640) setContentWidth(px);
+}
+
+function setupWidthHandles() {
+  const wrap = $('messages');
+  if (!wrap) return;
+  // 把滚动区包进一层定位容器：把手不能直接放滚动容器里（会随内容滚走）
+  let zone = document.getElementById('msg-zone');
+  if (!zone) {
+    zone = document.createElement('div');
+    zone.id = 'msg-zone';
+    wrap.parentNode.insertBefore(zone, wrap);
+    zone.appendChild(wrap);
+  }
+  for (const side of ['left', 'right']) {
+    const h = document.createElement('div');
+    h.className = 'w-handle ' + side;
+    h.title = '拖动调整对话区宽度（双击恢复默认）';
+    zone.appendChild(h);
+    let startX = 0, startW = 860;
+    h.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = contentWidth();
+      h.classList.add('dragging');
+      try { h.setPointerCapture(e.pointerId); } catch (err) { /* 旧浏览器忽略 */ }
+    });
+    h.addEventListener('pointermove', (e) => {
+      if (!h.classList.contains('dragging')) return;
+      const dx = (e.clientX - startX) * 2 * (side === 'right' ? 1 : -1); // 居中对称放大
+      setContentWidth(startW + dx);
+    });
+    const up = () => {
+      if (!h.classList.contains('dragging')) return;
+      h.classList.remove('dragging');
+      setContentWidth(contentWidth(), true); // 松手落盘
+    };
+    h.addEventListener('pointerup', up);
+    h.addEventListener('pointercancel', up);
+    h.addEventListener('dblclick', () => {
+      document.documentElement.style.removeProperty('--content-w');
+      lsSet('jx.contentWidth', null);
+    });
+  }
 }
 
 /* ---------- 初始化 ---------- */
@@ -2888,11 +3217,15 @@ makeSelect('sel-lang', 'lang', [
   { v: 'en', label: 'English（翻译逐步补齐）' },
 ], (v) => lsSet('jx.lang', v));
 makeSelect('sel-fontsize', 'fontsize', [
-  { v: '0.9', label: '小' },
-  { v: '1', label: '标准' },
-  { v: '1.125', label: '大' },
-  { v: '1.25', label: '特大' },
-], (v) => applyFontScale(v));
+  { v: '12', label: '12 px' },
+  { v: '13', label: '13 px' },
+  { v: '14', label: '14 px（默认）' },
+  { v: '15', label: '15 px' },
+  { v: '16', label: '16 px' },
+  { v: '17', label: '17 px' },
+  { v: '18', label: '18 px' },
+  { v: '20', label: '20 px' },
+], (v) => applyChatFont(parseFloat(v) || 14));
 makeSelect('sel-theme', 'theme', [
   { v: 'light', label: '白色' },
   { v: 'dark', label: '黑色' },
@@ -2965,7 +3298,9 @@ $('input').addEventListener('input', () => {
 });
 
 restoreHomeDraftLS(); // 先恢复上次草稿（输入与全部选择），再渲染首页
-restoreFontScale();   // 恢复常规页选的字体大小
+restoreChatFont();    // 恢复常规页选的对话区字号（px）
+restoreContentWidth();// 恢复上次拖定的对话区宽度
+setupWidthHandles();  // 对话区两侧拖拽把手
 applyTheme();         // 恢复常规页选的主题色（白/黑/跟随系统）
 applySidebarState();
 resetEmpty();
