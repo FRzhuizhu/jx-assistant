@@ -22,6 +22,13 @@ import (
 var desktopDefault string
 
 func main() {
+	// 顶层进程树兜底：自身挂入 kill-on-close Job，正常退出 / 被强杀 /
+	// 崩溃时内核终止它启动过的全部后代（含沙箱外 start 出来的孙进程、
+	// chromedp 浏览器、技能 python）——不留无人认领的后台残留。
+	if err := setupKillOnCloseJob(); err != nil {
+		log.Printf("顶层进程树兜底未启用: %v", err)
+	}
+
 	// 本地 Linux 沙箱的自重入口：主进程以隐藏参数重启自身施加 Landlock
 	// 限制，随后 exec 目标命令（Go 无法 fork，这是最干净的进程级限制路径）。
 	if len(os.Args) > 1 && os.Args[1] == "__jx-sandbox-restrict" {
