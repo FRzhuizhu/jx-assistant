@@ -54,12 +54,12 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
 ## 自带的 MD 查看器（md-viewer/）
 
 项目自带一个独立小应用「MD 查看器」：双击 .md 文件弹出独立窗口，用系统
-WebView2 内核渲染（样式与渲染库都在 `viewer-template.html` 一个文件里），
-不依赖 Python，主线程序没在运行也能单独使用。
+WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
+`MD查看器.exe` 一个文件），不依赖 Python，主线程序没在运行也能单独使用。
 
-- 单次使用不改系统关联：右键 .md → 打开方式 → 选 `md-viewer/MD查看器.exe`；
-  想设为默认：右键 `md-viewer/install.ps1` → 使用 PowerShell 运行，
-  还原用同目录的 `还原关联.ps1`。
+- 第一次使用：双击运行 `md-viewer/MD查看器.exe` 自动完成注册，之后
+  双击 .md 文件选择「MD查看器」并勾选「始终使用此应用」即可；
+  取消关联用 `MD查看器.exe /unregister`（或说明窗口里的「取消关联」按钮）。
 - 未装 WebView2 运行时自动降级用系统浏览器打开；详见 `md-viewer/使用说明.txt`。
 
 ## 权限与执行模型（移植 DSH 官方沙箱机制，本栈重写）
