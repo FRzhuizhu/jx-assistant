@@ -93,7 +93,8 @@ func (a *App) toolsFor(mode string) []Tool {
 	return append([]Tool{
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
-		pdfTool(), ocrTool(), officeSkillTool(),
+		// pdfTool(), ocrTool(), officeSkillTool(), // TODO: 远程 8f65e86 只提交了 scripts/check_office.py，
+		// 三个工具的 Go 实现文件未入库（悬空引用导致编译失败），补交后恢复本行。
 		askUserQuestionTool(), exitPlanModeTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(browserTools(), computerTools()...), history...)...)
