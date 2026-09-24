@@ -1,0 +1,12 @@
+{
+  "id": "pdf",
+  "name": "PDF 文档",
+  "version": "1.0.0",
+  "description": "诊断文字层可信度，抽取文字与表格，把页面渲染成图片或抽取内嵌图片。",
+  "entry": "scripts/pdf_tool.py",
+  "python": {
+    "minVersion": "3.9",
+    "modules": ["pypdfium2", "pdfplumber", "pypdf"],
+    "wheels": ["pypdfium2", "pdfplumber", "pypdf"]
+  }
+}

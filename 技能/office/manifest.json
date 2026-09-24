@@ -1,0 +1,13 @@
+{
+  "id": "office",
+  "name": "Office 文档",
+  "version": "1.0.0",
+  "description": "创建、读取、修改并校验 docx / xlsx / pptx 文档。",
+  "entry": "scripts/check_office.py",
+  "guide": "SKILL.md",
+  "variants": {
+    "docx": { "modules": ["docx"], "wheels": ["python-docx"] },
+    "xlsx": { "modules": ["openpyxl"], "wheels": ["openpyxl"] },
+    "pptx": { "modules": ["pptx"], "wheels": ["python-pptx"] }
+  }
+}

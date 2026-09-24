@@ -195,24 +195,32 @@ report_ready），前端常驻订阅：主对话里的子任务卡片实时滚�
 Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键拉取模型清单；
 会话顶栏可单独切换本会话模型；派发时可指定子会话模型（providerId/modelId）。
 
-## 能力组件（图片 / 文档 / 浏览器 / 电脑）
+## 技能（图片 / PDF / OCR / Office）与能力组件
 
-在基础工具之上的能力扩展，均为本栈重写（设计参考 DSH / ZCode 的对应机制）：
+在基础工具之上，能力分两类组织：
+
+**技能（`技能/` 目录）**——文件类能力，标准技能包形态：
+每个技能一个独立文件夹 = `SKILL.md`（标准 frontmatter 说明）+
+`manifest.json`（Python 依赖清单）+ `scripts/`（执行脚本）。
+自带三个技能：`pdf`（diagnose/text/table/image/embed 五模式，先诊断
+文字层可信度再选通路）、`ocr`（离线 RapidOCR 识别图片文字）、
+`office`（docx/xlsx/pptx 操作要点与结构校验）。自带技能常开、不可
+删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（指向
+本机含 SKILL.md 的文件夹）、开关、删除。开启的用户技能，其说明
+**追加在系统提示词最末尾**——稳定前缀不变，开关不影响缓存命中率。
+
+**运行环境自举**：优先使用系统 Python（快路径）；解释器缺失或依赖
+不全时，自动下载便携 Python（python.org embeddable，约 11MB）+
+从清华镜像安装依赖 wheel，装配到 `技能/_runtime/python`——首次
+需联网，装好后离线可用，新机器即装即用。`skillsDir` 配置可指定
+技能目录位置（默认取可执行文件旁，不可写时落数据目录）。
+
+**能力组件（与权限绑定的操作类能力）**：
 
 - **图片查看**：`read_image` 工具 + 内容寻址附件库（`data/attachments/`）+
-  `GET /attachments/` 端点。工具结果只带文本信封；前端在工具卡片直接渲染原图；
-  视觉模型在请求组装时按预算内联 base64（单次最多 8 张，超限卸载），
-  纯文本模型降级为信封占位不报错。
-- **PDF**：`pdf` 工具（mode = diagnose / text / table / image / embed）。
-  先跑 diagnose 按字符分布判断文字层可信度（text-usable / text-suspect /
-  image-only）再选通路；image 模式把页面渲染成 PNG 并以图片信封返回。
-  依赖本机 Python + `pypdfium2`（text/table 另需 `pdfplumber`、`pypdf`）。
-- **OCR**：`ocr` 工具（mode = text / lines，可 `outlined` 描红对照图），
-  离线引擎 RapidOCR（PP-OCRv4）。依赖 `rapidocr-onnxruntime`。
-- **Office**：`office_skill` 工具返回 docx / xlsx / pptx 的操作要点
-  （python-docx / openpyxl / python-pptx）、中文字体陷阱与生成后的
-  结构校验命令（`scripts/check_office.py`，纯标准库）。
-  组件脚本内嵌于可执行文件，首次使用落盘到临时目录。
+  `GET /attachments/` 端点。工具结果只带文本信封；前端在工具卡片直接
+  渲染原图；视觉模型按预算内联 base64（单次最多 8 张），纯文本模型
+  降级为信封占位不报错。
 - **浏览器操作**（能力开关 `browser`）：`browser_open / content / click /
   type / evaluate / screenshot / close` 七件工具，chromedp（纯 Go CDP）
   驱动本机 Chrome / Edge，有头模式运行。

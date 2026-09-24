@@ -172,6 +172,14 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString(extra + "\n")
 		}
 	}
+	// 自带技能一览（静态）；用户技能段也归入快照——开关技能只影响尾部
+	// 快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
+	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南），需要时直接调用对应工具\n")
+	if sess.Mode == "task" {
+		if block := a.userSkillsPromptBlock(); block != "" {
+			b.WriteString(block + "\n")
+		}
+	}
 	return b.String()
 }
 

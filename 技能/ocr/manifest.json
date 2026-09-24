@@ -1,0 +1,12 @@
+{
+  "id": "ocr",
+  "name": "图片 OCR",
+  "version": "1.0.0",
+  "description": "离线识别图片中的文字（RapidOCR / PP-OCRv4），返回全文与逐块置信度、位置。",
+  "entry": "scripts/ocr_tool.py",
+  "python": {
+    "minVersion": "3.9",
+    "modules": ["rapidocr_onnxruntime"],
+    "wheels": ["rapidocr-onnxruntime"]
+  }
+}
