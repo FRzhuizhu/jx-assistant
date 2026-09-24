@@ -19,8 +19,11 @@ type Config struct {
 	Workspace  string        `json:"workspace"`
 	MaxSteps   int           `json:"maxSteps"`
 	AllowShell bool          `json:"allowShell"`
-	DataDir    string        `json:"dataDir"`
-	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
+	// 沙箱密级关卡：low=受限子进程降 Low 完整性（默认，路线无关封堵写/删）
+	// off=回退官方同款（仅 WRITE_RESTRICTED 双检）
+	SandboxIntegrityLevel string `json:"sandboxIntegrityLevel"`
+	DataDir               string `json:"dataDir"`
+	SkillsDir             string `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
 	// 上下文压缩设置
 	CompactMode      string  `json:"compactMode"`      // rule=规则压缩(默认) llm=模型摘要 off=关闭
 	KeepRounds       int     `json:"keepRounds"`       // 保留最近 N 轮不压缩
@@ -31,19 +34,20 @@ type Config struct {
 func DefaultConfig() *Config {
 	wd, _ := os.Getwd()
 	return &Config{
-		Port:       8788,
-		BindHost:   "127.0.0.1",
-		BaseURL:    "https://api.deepseek.com/v1",
-		APIKey:     "",
-		Model:      "deepseek-chat",
-		Workspace:  wd,
-		MaxSteps:   30,
-		AllowShell: true,
-		DataDir:    "data",
-		CompactMode:      "rule",
-		KeepRounds:       5,
-		RuleInterval:     5,
-		CompactThreshold: 0.8,
+		Port:                  8788,
+		BindHost:              "127.0.0.1",
+		BaseURL:               "https://api.deepseek.com/v1",
+		APIKey:                "",
+		Model:                 "deepseek-chat",
+		Workspace:             wd,
+		MaxSteps:              30,
+		AllowShell:            true,
+		SandboxIntegrityLevel: "low",
+		DataDir:               "data",
+		CompactMode:           "rule",
+		KeepRounds:            5,
+		RuleInterval:          5,
+		CompactThreshold:      0.8,
 	}
 }
 
@@ -96,6 +100,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.CompactThreshold <= 0.5 || cfg.CompactThreshold >= 1 {
 		cfg.CompactThreshold = def.CompactThreshold
+	}
+	if cfg.SandboxIntegrityLevel != "off" {
+		cfg.SandboxIntegrityLevel = "low"
 	}
 	// 老配置兼容：没有 Providers 时把旧的三元组折算成第一个 provider
 	if len(cfg.Providers) == 0 {

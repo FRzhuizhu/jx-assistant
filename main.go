@@ -33,6 +33,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
+	sandboxIntegrityLow = cfg.SandboxIntegrityLevel != "off"
 	if *port > 0 {
 		cfg.Port = *port
 	}

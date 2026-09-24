@@ -62,6 +62,26 @@ const (
 	// 写授权掩码：官方 GRANT_MASK —— 写/追加/写属性/写EA/DELETE/DELETE_CHILD/
 	// 同步，刻意剔除 READ_CONTROL（受限子进程不得改 DACL/夺所有权以逃逸）
 	fileGenericWrite = 0x112156
+	// 强制完整性（密级关卡）相关常量：
+	// TokenIntegrityLevel 的 TOKEN_INFORMATION_CLASS 值；
+	// SYSTEM_MANDATORY_LABEL_ACE_TYPE：SACL 里的密级标签 ACE；
+	// NO_WRITE_UP：低密进程不得写/删本对象（Windows 默认密级策略）；
+	// SE_GROUP_INTEGRITY：TOKEN_MANDATORY_LABEL.Label.Attributes 必带位；
+	// LABEL_SECURITY_INFORMATION（winnt.h，x/sys 同值 0x10）：Get/SetNamedSecurityInfo
+	// 读写强制密级标签专用信息位（独立于 SACL_SECURITY_INFORMATION，
+	// 不要求 SeSecurityPrivilege；0x80 是 PROCESS_TRUST_LABEL，写入要特权，勿混）。
+	tokenIntegrityLevelClass  = 25
+	systemMandatoryLabelAce   = 0x11
+	mandatoryNoWriteUp        = 0x1
+	seGroupIntegrity          = 0x20
+	labelSecurityInfo         = 0x10
+	fileAttributeReparsePoint = 0x400
+	// SetErrorMode 标志（子进程继承）：抑制关键错误弹窗/崩溃框/文件打开错误框。
+	// 缺了它，DLL 初始化失败（0xC0000142）等硬错误会挂起等待 UI，命令看起来
+	// 永远不返回（官方 win32-abi.ts 加 SetErrorMode 绑定同款用途）。
+	semFailCriticalErrors = 0x0001
+	semNoGPFaultErrorBox  = 0x0002
+	semNoOpenFileErrorBox = 0x8000
 )
 
 var (
@@ -71,6 +91,11 @@ var (
 	procSetNamedSecurityInfoW = advapi32.NewProc("SetNamedSecurityInfoW")
 	procGetTokenInformation   = advapi32.NewProc("GetTokenInformation")
 	procSetTokenInformation   = advapi32.NewProc("SetTokenInformation")
+	procSetErrorMode          = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetErrorMode")
+
+	// labeledTrees 记录本进程已补打过密级标签的工作区树（lower 路径）。
+	// 标签与工作区 ACE 同为常驻授权：每棵树每个进程生命周期只全树补打一次。
+	labeledTrees sync.Map
 )
 
 // sidForPath 从路径派生稳定合成 SID：S-1-80-<h0>-<h1>-<h2>-<h3>。
@@ -100,6 +125,148 @@ func sidBytes(sid *windows.SID) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// lowIntegritySid 构造 Low 完整性 SID：S-1-16-4096
+// （SECURITY_MANDATORY_LABEL_AUTHORITY + SECURITY_MANDATORY_LOW_RID）。
+func lowIntegritySid() *windows.SID {
+	b := make([]byte, 12) // rev(1)+count(1)+auth(6)+subauth(4)
+	b[0] = 1
+	b[1] = 1 // SubAuthorityCount = 1
+	b[7] = 16
+	binary.LittleEndian.PutUint32(b[8:], 0x1000) // RID = 4096 = Low
+	return (*windows.SID)(unsafe.Pointer(&b[0]))
+}
+
+// setTokenLowIntegrity 把令牌完整性级别降为 Low（S-1-16-4096）。
+// 降级无需特权。密级关卡的「门」侧：低密进程对密级更高的对象的写/删
+// 被内核 NO_WRITE_UP 在访问检查末端统一拒绝——不区分走文件 DELETE 还是
+// 父目录 FILE_DELETE_CHILD 哪条路线（Chrome 沙箱同款机制）。fail closed。
+func setTokenLowIntegrity(tok windows.Token) error {
+	// TOKEN_MANDATORY_LABEL = SID_AND_ATTRIBUTES{ SID*; Attributes }
+	lbl := struct {
+		Sid        *windows.SID
+		Attributes uint32
+	}{lowIntegritySid(), seGroupIntegrity}
+	r1, _, callErr := procSetTokenInformation.Call(
+		uintptr(tok), tokenIntegrityLevelClass,
+		uintptr(unsafe.Pointer(&lbl)), unsafe.Sizeof(lbl))
+	if r1 == 0 {
+		return fmt.Errorf("SetTokenInformation(TokenIntegrityLevel) 失败: %v", callErr)
+	}
+	return nil
+}
+
+// grantLabelAce 给对象打「低密可写」标签（SACL 里的 SYSTEM_MANDATORY_LABEL_ACE：
+// Low + NO_WRITE_UP）。inherit 控制 OI|CI 继承位（目录用 true，随系统自动
+// 传播到既有/新建子对象，与 grantWriteAce 的 ACE 同一继承机制）。
+// 幂等：已有同 SID 的标签 ACE 即返回。任何失败都返回错误（fail closed）。
+func grantLabelAce(path string, inherit bool) error {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	sideb, err := sidBytes(lowIntegritySid())
+	if err != nil {
+		return err
+	}
+	// 读现有标签查幂等（LABEL_SECURITY_INFO 读回的是标签 ACE 集）
+	var sd *windows.SECURITY_DESCRIPTOR
+	var sacl *windows.ACL
+	r1, _, _ := procGetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, labelSecurityInfo,
+		0, 0, 0, uintptr(unsafe.Pointer(&sacl)), uintptr(unsafe.Pointer(&sd)))
+	if r1 == 0 {
+		defer windows.LocalFree(windows.Handle(unsafe.Pointer(sd)))
+		if sb, err := aclBytes(sacl); err == nil {
+			for i := 8; i+8 <= len(sb); {
+				size := int(binary.LittleEndian.Uint16(sb[i+2:]))
+				if size < 8 || i+size > len(sb) {
+					break
+				}
+				if sb[i] == systemMandatoryLabelAce &&
+					binary.LittleEndian.Uint32(sb[i+4:]) == mandatoryNoWriteUp &&
+					string(sb[i+8:i+size]) == string(sideb) {
+					return nil
+				}
+				i += size
+			}
+		}
+	}
+	// 新标签 ACE：type(1) flags(1) size(2) mask(4) sid（与 allow ACE 同布局）
+	ace := make([]byte, 8+len(sideb))
+	ace[0] = systemMandatoryLabelAce
+	if inherit {
+		ace[1] = objectInherit | containerInherit
+	}
+	binary.LittleEndian.PutUint16(ace[2:], uint16(len(ace)))
+	binary.LittleEndian.PutUint32(ace[4:], mandatoryNoWriteUp)
+	copy(ace[8:], sideb)
+	// 标签 ACE 单独成 ACL（LABEL_SECURITY_INFO 只动强制标签部分）
+	nacl := make([]byte, 8+len(ace))
+	nacl[0] = aclRevision
+	binary.LittleEndian.PutUint16(nacl[2:], uint16(len(nacl)))
+	binary.LittleEndian.PutUint16(nacl[4:], 1)
+	copy(nacl[8:], ace)
+	if pad := (4 - len(nacl)%4) % 4; pad > 0 {
+		nacl = append(nacl, make([]byte, pad)...)
+		binary.LittleEndian.PutUint16(nacl[2:], uint16(len(nacl)))
+	}
+	nptr := (*windows.ACL)(unsafe.Pointer(&nacl[0]))
+	r1, _, callErr := procSetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, labelSecurityInfo,
+		0, 0, 0, uintptr(unsafe.Pointer(nptr)))
+	if r1 != 0 {
+		return fmt.Errorf("SetNamedSecurityInfo(标签 %s) 失败: %v", path, callErr)
+	}
+	return nil
+}
+
+// ---------- Job Object（官方 createKillOnCloseJob 同款） ----------
+
+type joBasicLimitInfo struct {
+	PerProcessUserTimeLimit int64
+	PerJobUserTimeLimit     int64
+	LimitFlags              uint32
+	MinimumWorkingSetSize   uintptr
+	MaximumWorkingSetSize   uintptr
+	ActiveProcessLimit      uint32
+	Affinity                uintptr
+	PriorityClass           uint32
+	SchedulingClass         uint32
+}
+
+type joExtendedLimitInfo struct {
+	Basic               joBasicLimitInfo
+	ReadOperationCount  int64
+	WriteOperationCount int64
+	OtherOperationCount int64
+	ReadTransferCount   int64
+	WriteTransferCount  int64
+	OtherTransferCount  int64
+	ProcessMemoryLimit  uintptr
+	JobMemoryLimit      uintptr
+	PeakProcessMemory   uintptr
+	PeakJobMemory       uintptr
+}
+
+// createKillOnCloseJob 建 kill-on-close Job：句柄关闭即终止整棵进程树。
+// 这是生命周期兜底（超时/取消 TerminateJobObject 整树杀；主进程崩溃时
+// 句柄被系统关闭 → 残留孙进程自动清场），不涉文件权限。
+func createKillOnCloseJob() (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	var info joExtendedLimitInfo
+	info.Basic.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		windows.CloseHandle(job)
+		return 0, err
+	}
+	return job, nil
 }
 
 // grantWriteAce 把「允许 writeSID 写入」的 ACE 合入目录 DACL（幂等）。
@@ -211,18 +378,29 @@ func aclBytes(acl *windows.ACL) ([]byte, error) {
 // confinedChild 是一个已启动的受限子进程（前台与后台作业共用）。
 type confinedChild struct {
 	proc, thread windows.Handle
+	job          windows.Handle // kill-on-close Job：整树生命周期兜底
 	stdoutR      *os.File
 	stderrR      *os.File
 	tempDir      string
 }
 
 // kill 终止子进程（job_kill / 超时用）。
-func (c *confinedChild) kill() { windows.TerminateProcess(c.proc, 1) }
+func (c *confinedChild) kill() {
+	if c.job != 0 {
+		windows.TerminateJobObject(c.job, 1) // 整树终止（含孙进程）
+		return
+	}
+	windows.TerminateProcess(c.proc, 1)
+}
 
 // cleanup 释放句柄并删除私有临时目录（授权 ACE 随目录消失）。
+// 关闭 Job 句柄即触发 kill-on-close：子进程派生的残留孙进程一并清场。
 func (c *confinedChild) cleanup() {
 	windows.CloseHandle(c.proc)
 	windows.CloseHandle(c.thread)
+	if c.job != 0 {
+		windows.CloseHandle(c.job)
+	}
 	c.stdoutR.Close()
 	c.stderrR.Close()
 	os.RemoveAll(c.tempDir)
@@ -247,6 +425,21 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	if err := grantWriteAce(tempDir, tempSid); err != nil {
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("sandbox unavailable: 授权临时目录失败: %w", err)
+	}
+	// 2b) 密级标签（Low + NO_WRITE_UP，OI|CI 随系统传播到子对象）：
+	// 与降密级（3c）配套的「地盘」侧。低密子进程只能写/删打过 Low 标签的
+	// 对象；外部对象默认 Medium 标签，写/删在内核密级岗被拒——不区分走
+	// 文件 DELETE 还是父目录 FILE_DELETE_CHILD 哪条路线（判定实验已证实
+	// 后者绕过 WRITE_RESTRICTED 双检，密级岗正是其路线无关的封堵）。
+	if sandboxIntegrityLow {
+		if err := grantLabelAce(r.Workspace, true); err != nil {
+			os.RemoveAll(tempDir)
+			return nil, fmt.Errorf("sandbox unavailable: 工作区打密级标签失败: %w", err)
+		}
+		if err := grantLabelAce(tempDir, true); err != nil {
+			os.RemoveAll(tempDir)
+			return nil, fmt.Errorf("sandbox unavailable: 临时目录打密级标签失败: %w", err)
+		}
 	}
 
 	// 3) 受限令牌（官方 token.ts 配方）：
@@ -306,6 +499,14 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	if err := grantTokenDefaultDacl(restricted, grantSid); err != nil {
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("sandbox unavailable: %w", err)
+	}
+
+	// 3c) 降密级到 Low（密级关卡的「门」侧，见 2b 注释）。
+	if sandboxIntegrityLow {
+		if err := setTokenLowIntegrity(restricted); err != nil {
+			os.RemoveAll(tempDir)
+			return nil, fmt.Errorf("sandbox unavailable: %w", err)
+		}
 	}
 
 	// 4) 解析 shell 与命令行（父进程解析，子进程环境可能不全）
@@ -369,6 +570,17 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 		return nil, err
 	}
 	defer nul.Close()
+	// Go 打开的句柄默认不带继承位，显式补上（否则 STARTF_USESTDHANDLES
+	// 挂的是无效句柄，靠子进程不读 stdin 才没出事）。
+	if err := windows.SetHandleInformation(windows.Handle(nul.Fd()),
+		windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		stdoutR.Close()
+		stderrR.Close()
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("NUL 句柄标记继承失败: %w", err)
+	}
+	// SetErrorMode 子进程继承（官方 win32-abi.ts 同款）：硬错误不弹框不挂起。
+	procSetErrorMode.Call(uintptr(semFailCriticalErrors | semNoGPFaultErrorBox | semNoOpenFileErrorBox))
 	si := &windows.StartupInfo{
 		StdInput:  windows.Handle(nul.Fd()),
 		StdOutput: windows.Handle(stdoutW.Fd()),
@@ -377,20 +589,53 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	}
 	var pi windows.ProcessInformation
 
-	// 6) CreateProcessAsUser 启动受限子进程（官方同款）。所需主令牌特权
-	// 来自源句柄的 TOKEN_ASSIGN_PRIMARY（见上面 OpenProcessToken）。
+	// 5b) kill-on-close Job（官方 createKillOnCloseJob 同款）：进程树生命周期兜底。
+	job, err := createKillOnCloseJob()
+	if err != nil {
+		stdoutR.Close()
+		stderrR.Close()
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("sandbox unavailable: 创建 Job 对象失败: %w", err)
+	}
+
+	// 6) CreateProcessAsUser 以挂起态启动（官方 spawnJobProcess 同款），
+	// 分配进 Job 后再恢复初始线程——保证不会出现「已跑起来但不在 Job 里」
+	// 的逃逸窗口。所需主令牌特权来自源句柄的 TOKEN_ASSIGN_PRIMARY。
 	err = windows.CreateProcessAsUser(restricted, appPtr, cmdPtr, nil, nil, true,
-		windows.CREATE_UNICODE_ENVIRONMENT, envBlock, dirPtr, si, &pi)
+		windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_SUSPENDED,
+		envBlock, dirPtr, si, &pi)
 	// 父进程侧的写端立即关闭，避免读不完
 	stdoutW.Close()
 	stderrW.Close()
 	if err != nil {
+		windows.CloseHandle(job)
 		stdoutR.Close()
 		stderrR.Close()
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("sandbox unavailable: CreateProcess(受限令牌) 失败: %w", err)
 	}
-	return &confinedChild{proc: pi.Process, thread: pi.Thread, stdoutR: stdoutR, stderrR: stderrR, tempDir: tempDir}, nil
+	if err := windows.AssignProcessToJobObject(job, pi.Process); err != nil {
+		windows.TerminateProcess(pi.Process, 1) // fail closed：不以失控状态放行
+		windows.CloseHandle(pi.Process)
+		windows.CloseHandle(pi.Thread)
+		windows.CloseHandle(job)
+		stdoutR.Close()
+		stderrR.Close()
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("sandbox unavailable: AssignProcessToJobObject 失败: %w", err)
+	}
+	if _, err := windows.ResumeThread(pi.Thread); err != nil {
+		windows.TerminateJobObject(job, 1)
+		windows.CloseHandle(pi.Process)
+		windows.CloseHandle(pi.Thread)
+		windows.CloseHandle(job)
+		stdoutR.Close()
+		stderrR.Close()
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("sandbox unavailable: ResumeThread 失败: %w", err)
+	}
+	return &confinedChild{proc: pi.Process, thread: pi.Thread, job: job,
+		stdoutR: stdoutR, stderrR: stderrR, tempDir: tempDir}, nil
 }
 
 // drain 把两路输出合并写入 w（阻塞到流关闭，适合放 goroutine）。
@@ -445,6 +690,9 @@ func spawnConfinedWindows(ctx context.Context, r sandboxRun) (string, error) {
 	go child.drain(&buf)
 	timedOut := child.wait(ctx, r.Timeout)
 	res := strings.TrimRight(buf.String(), "\r\n")
+	if len(res) > 64*1024 {
+		res = res[:64*1024] + "\n[输出过长已截断]"
+	}
 	if timedOut {
 		res += "\n[命令超时或被取消，已终止]"
 	}
