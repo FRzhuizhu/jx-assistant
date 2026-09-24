@@ -1,0 +1,55 @@
+//go:build linux
+
+package main
+
+// 本地 Linux 沙箱：经主程序自重入 sandboxhelper 的 Landlock 限制器，
+// 限制施加后 exec 目标命令（Go 无法 fork，自重入是最干净的路径）。
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+// spawnConfinedLinuxReexec 在 Landlock 沙箱内执行一条命令。
+func spawnConfinedLinuxReexec(r sandboxRun) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("sandbox unavailable: 定位自身失败: %w", err)
+	}
+	sh := "/bin/sh"
+	if _, err := os.Stat(sh); err != nil {
+		sh, err = exec.LookPath("sh")
+		if err != nil {
+			return "", fmt.Errorf("sandbox unavailable: 找不到 sh: %w", err)
+		}
+	}
+	wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
+	args := []string{
+		"__jx-sandbox-restrict", "restrict",
+		"--mode", r.Policy, "--workspace", r.Workspace, "--temp", "auto",
+		"--", sh, "-c", wrapped,
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Dir = r.Dir
+	cmd.Env = sandboxEnv(false)
+	out, err := cmd.CombinedOutput()
+	note := ""
+	if len(out) > 64*1024 {
+		out = out[:64*1024]
+		note += "\n[输出过长已截断]"
+	}
+	res := strings.TrimRight(string(out), "\r\n") + note
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			res += fmt.Sprintf("\n[exit code %d]", ee.ExitCode())
+		} else {
+			return "", fmt.Errorf("sandbox unavailable: 启动受限进程失败: %w", err)
+		}
+	}
+	if strings.TrimSpace(res) == "" {
+		res = "（命令执行完成，无输出）"
+	}
+	return res, nil
+}

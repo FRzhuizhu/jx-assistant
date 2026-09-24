@@ -1,25 +1,27 @@
 package main
 
-// 权限与授权引擎：移植 DSH（DeepSeek 官方 Agent）权限管理的核心理念，
-// 按本栈重写。模型如下：
+// 权限与授权引擎：移植 DSH（DeepSeek 官方 Agent）的沙箱与权限模型，
+// 与官方同构的三层结构：
 //
-//  1. 三档权限模式（会话粒度，权限芯片可选）：只读 / 工作区内读写 / 完全访问。
-//  2. 沙箱内执行：命令默认在会话工作区内执行——工作目录锁定、环境变量
-//     最小化（剔除一切非白名单变量）、限时、输出截断；沙箱内允许联网。
-//  3. 授权凭证（Grant）：每一次敏感操作（写文件 / 执行命令）都必须先由
-//     权限引擎评估并签发一张短时效、一次性的凭证，执行器核销凭证后才
-//     真正动手；凭证与具体动作绑定，过期或已核销即失效（fail closed）。
-//  4. 能力开关 + 逐次审批：工作区外执行命令需要先在权限面板开启
-//     「允许工作区外执行命令」能力；开启后每次越界执行仍要经用户批准
-//     （前端弹审批卡，可选"本会话总是允许"），未开启能力则直接拒绝。
-//     完全访问模式不弹审批。
-//  5. 受保护路径：助手自身的配置与数据目录（内含 API Key 与全部会话
-//     记录）在任何模式下都禁止模型读写——防自我提权与密钥泄漏。
-//  6. 危险命令硬拦截：不可逆的破坏性命令（格式化盘 / 删根目录 / 写引导
-//     等）在任何模式下都拒绝。
+//  1. 三档沙箱策略（会话粒度，权限芯片可选）：read-only（沙箱内执行、
+//     无任何写授权）/ workspace-write（沙箱内执行、授权工作区+私有临时
+//     目录）/ full（不受限）。强制力来自操作系统：Windows 受限令牌+ACL
+//     （sandbox_windows.go）、Linux Landlock（经 sandboxhelper 自限制）、
+//     SSH 远程经上传到远端的同一 helper。文件工具以路径边界为沙箱。
+//  2. 拒绝驱动的升级（对齐官方 bash 工具）：不做威胁命令黑名单、不做
+//     执行前预检——命令先按会话策略进沙箱真实执行；写操作被操作系统
+//     拒绝时结果带 [sandbox: write denied under <mode> mode] 标记，模型
+//     同轮可带 sandbox_permissions（够用的最宽档）+ justification 重试
+//     一次，该重试弹审批卡由用户决定，批准后以更宽策略执行这一次；
+//     「始终允许」= 会话切到完全访问（官方预设捆绑：完全访问=不再审批）。
+//     被拒绝的升级对该命令终局。
+//  3. 一次性授权凭证（Grant）：每次写文件/执行命令签发短时效凭证，
+//     执行器核销后才动手；过期或重复核销即拒绝（fail closed）。
+//  4. 受保护路径：助手自身的配置与数据目录（内含 API Key 与全部会话
+//     记录）任何模式下工具都禁止访问——确定性的路径边界检查。
 //
-// 远程工作区（SSH）会话走同一套引擎：工作区边界换为远程目录，
-// 路径按 POSIX 规则判断。
+// 远程工作区（SSH）会话走同一套引擎：工作区边界换为远程目录，命令经
+// 远端 helper 在远端沙箱内执行（官方 sandbox-ssh 同思路）。
 
 import (
 	"context"
@@ -32,35 +34,28 @@ import (
 )
 
 const (
-	permReadOnly   = "read-only"       // 只读
-	permWorkspace  = "workspace-write" // 工作区内读写（默认）
-	permFull       = "full"            // 完全访问
-	capUnsandboxed = "unsandboxed"     // 能力：允许工作区外执行命令（逐次审批）
-	capBrowser     = "browser"         // 能力：允许操作浏览器（browser_* 工具）
-	capComputer    = "computer"        // 能力：允许操作电脑（computer_* 工具）
-	grantTTL       = 5 * time.Minute   // 授权凭证有效期
-	approvalTTL    = 2 * time.Minute   // 审批等待上限，超时视为拒绝
+	permReadOnly    = "read-only"       // 只读（沙箱内执行但无任何写授权）
+	permWorkspace   = "workspace-write" // 工作区内读写（默认）
+	permFull        = "full"            // 完全访问（不受限）
+	capUnsandboxed  = "unsandboxed"     // 能力：允许沙箱外（不受限）执行命令
+	capSandboxWrite = "sandbox-write"   // 能力：允许命令在沙箱内写入（只读档位下）
+	capFsEscape     = "fs-escape"       // 能力：允许读写工作区外的文件
+	capBrowser      = "browser"         // 能力：允许操作浏览器（browser_* 工具）
+	capComputer     = "computer"        // 能力：允许操作电脑（computer_* 工具）
+	grantTTL        = 5 * time.Minute   // 授权凭证有效期
+	approvalTTL     = 2 * time.Minute   // 审批等待上限，超时视为拒绝
 )
 
-// permModeOf 返回会话的权限模式（未设置时默认工作区内读写）。
-func permModeOf(s *SessionMeta) string {
-	switch s.Permission {
-	case permReadOnly, permFull, permWorkspace:
-		return s.Permission
-	default:
-		return permWorkspace
-	}
-}
-
-func permModeLabel(mode string) string {
-	switch mode {
-	case permReadOnly:
-		return "只读"
+// escalationCapability 返回某类升级请求对应的能力开关 id：
+// 「始终允许」点亮它，之后该类动作不再逐次审批（常设授权）。
+func escalationCapability(req string) string {
+	switch req {
 	case permFull:
-		return "完全访问"
-	default:
-		return "工作区内读写"
+		return capUnsandboxed
+	case permWorkspace:
+		return capSandboxWrite
 	}
+	return ""
 }
 
 // hasCapability 判断会话是否开启了某个能力开关（权限面板右侧多选）。
@@ -73,28 +68,61 @@ func hasCapability(s *SessionMeta, cap string) bool {
 	return false
 }
 
+// addCapability 给会话开启能力开关并持久化（「始终允许」用）。
+func (a *App) addCapability(s *SessionMeta, cap string) {
+	if hasCapability(s, cap) {
+		return
+	}
+	s.Tools = append(s.Tools, cap)
+	_ = a.Store.SaveMeta(s)
+	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
+}
+
+// permModeOf 返回会话的权限模式（未设置时默认工作区内读写）。
+func permModeOf(s *SessionMeta) string {
+	switch s.Permission {
+	case permReadOnly, permFull, permWorkspace:
+		return s.Permission
+	default:
+		return permWorkspace
+	}
+}
+
+// permModeLabel 返回权限模式的中文展示名。
+func permModeLabel(mode string) string {
+	switch mode {
+	case permReadOnly:
+		return "只读"
+	case permFull:
+		return "完全访问"
+	default:
+		return "工作区内读写"
+	}
+}
+
 // ---------- 授权凭证 ----------
 
 // Grant 是一次敏感操作的执行凭证：短时效、一次性、与动作绑定。
 // 策略评估通过（或用户审批通过）才签发；执行器核销后才执行。
+// Policy 是本次执行使用的沙箱策略（read-only / workspace-write / full），
+// 执行器据此选择受限启动或普通启动。
 type Grant struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId"`
 	Tool      string `json:"tool"`
-	Op        string `json:"op"`                // write | exec
-	Summary   string `json:"summary"`           // 人类可读的动作摘要
-	Escaped   bool   `json:"escaped,omitempty"` // 沙箱外（工作区外执行）
-	FullEnv   bool   `json:"fullEnv,omitempty"` // 执行命令时携带完整环境变量
+	Op        string `json:"op"`      // write | exec
+	Summary   string `json:"summary"` // 人类可读的动作摘要
+	Policy    string `json:"policy"`  // 本次执行的沙箱策略档位
 	issuedAt  time.Time
 	expiresAt time.Time
 	used      bool
 }
 
 // issueGrant 签发一张授权凭证（不做事前评估——调用方必须已经过 authorize）。
-func (a *App) issueGrant(sessionID, tool, op, summary string, escaped, fullEnv bool) *Grant {
+func (a *App) issueGrant(sessionID, tool, op, summary, policy string) *Grant {
 	g := &Grant{
 		ID: "g-" + newID(), SessionID: sessionID, Tool: tool, Op: op, Summary: summary,
-		Escaped: escaped, FullEnv: fullEnv,
+		Policy:   policy,
 		issuedAt: time.Now(), expiresAt: time.Now().Add(grantTTL),
 	}
 	a.permMu.Lock()
@@ -173,6 +201,8 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 }
 
 // resolveApproval 登记用户的决定并唤醒等待中的工具执行。
+// always=true 表示用户点了「始终允许」：给会话开启「允许工作区外执行命令」
+// 能力（权限面板勾选点亮，持久化并广播），本次放行，之后的越界执行不再审批。
 func (a *App) resolveApproval(id string, approved, always bool) error {
 	a.permMu.Lock()
 	ap, ok := a.approvals[id]
@@ -184,6 +214,8 @@ func (a *App) resolveApproval(id string, approved, always bool) error {
 	if !ok {
 		return fmt.Errorf("审批请求不存在或已处理（可能已超时）")
 	}
+	// 注意：always 的能力点亮在 authorize 里按升级类别进行（那里知道
+	// 请求的是哪一类动作），这里只负责唤醒等待中的工具执行。
 	return nil
 }
 
@@ -198,37 +230,12 @@ func (a *App) pendingApprovals() []*Approval {
 	return out
 }
 
-// ---------- 会话级"总是允许" ----------
-
-// allowSignature 稳定签名：同一动作（同命令同目录 / 同路径）再次出现时匹配。
-func allowSignature(op, summary string) string { return op + "|" + summary }
-
-func isRemembered(sess *SessionMeta, op, summary string) bool {
-	sig := allowSignature(op, summary)
-	for _, s := range sess.Allowed {
-		if s == sig {
-			return true
-		}
-	}
-	return false
-}
-
-// rememberAllowed 把"本会话总是允许"落库到会话元信息。
-func (a *App) rememberAllowed(sess *SessionMeta, op, summary string) {
-	sig := allowSignature(op, summary)
-	for _, s := range sess.Allowed {
-		if s == sig {
-			return
-		}
-	}
-	sess.Allowed = append(sess.Allowed, sig)
-	_ = a.Store.SaveMeta(sess)
-}
-
-// ---------- 受保护路径与危险命令 ----------
+// ---------- 受保护路径 ----------
 
 // isProtectedPath 判断路径是否落在助手自身的配置 / 数据目录内。
-// 这些位置存着 API Key 与全部会话记录，任何权限模式都禁读禁写。
+// 这些位置存着 API Key 与全部会话记录，任何模式下工具都禁止访问。
+// 这是确定性的路径边界检查（同官方 fs-sandbox 的路径判断），
+// 不是威胁命令猜测。
 func (a *App) isProtectedPath(p string, remote bool) bool {
 	if remote || p == "" {
 		return false
@@ -242,7 +249,11 @@ func (a *App) isProtectedPath(p string, remote bool) bool {
 	return false
 }
 
-// destructiveCmds 危险命令硬拦截表：不可逆破坏在任何模式下都拒绝。
+// ---------- 危险命令护栏（可开关组件） ----------
+
+// destructiveCmds 危险命令拦截表：不可逆破坏在任何模式下都拒绝。
+// 官方没有这层（官方靠 OS 沙箱兜底）；这是本产品自己的加固，做成
+// 可开关组件（组件/dangerous-cmd-guard，缺省启用），用户可关。
 var destructiveCmds = []struct {
 	re  *regexp.Regexp
 	why string
@@ -252,7 +263,7 @@ var destructiveCmds = []struct {
 	{regexp.MustCompile(`(?i)\bmkfs(\.\w+)?\b`), "格式化文件系统"},
 	{regexp.MustCompile(`(?i)\bdd\s+[^|]*of=/dev/`), "直写块设备"},
 	{regexp.MustCompile(`(?i)\brm\s+(-[a-z]*r[a-z]*f*|-rf)\s+(/|~|\$HOME)(\s|/|$|\*)`), "递归删除根目录或用户主目录"},
-	{regexp.MustCompile(`(?i)\b(rd|rmdir)\s+.*[a-z]:\\+\s*$`), "递归删除盘根目录"},
+	{regexp.MustCompile(`(?i)\b(rd|rmdir)\b(\s+/[a-z0-9]+)*[\s"']*([a-z]):\\+["'\s]*$`), "递归删除盘根目录"},
 	{regexp.MustCompile(`(?i)\bdel\s+(/f\s+|/s\s+|/q\s+)+.*[a-z]:\\?\s*$`), "递归强删盘根目录"},
 	{regexp.MustCompile(`(?i)\breg\s+(delete|add)\s+.*hklm`), "修改系统注册表 HKLM"},
 	{regexp.MustCompile(`(?i)\b(bcdedit|diskpart|vssadmin\s+delete|wbadmin\s+delete|cipher\s+/w)\b`), "系统级破坏工具"},
@@ -267,6 +278,17 @@ func destructiveCommandHit(cmd string) string {
 		}
 	}
 	return ""
+}
+
+// guardEnabled 危险命令护栏是否开启：组件缺省启用，组件缺失视为开启。
+func (a *App) guardEnabled() bool {
+	if a.Components == nil {
+		return true
+	}
+	if _, ok := a.Components.Manifest("dangerous-cmd-guard"); !ok {
+		return true
+	}
+	return a.Components.IsEnabled("dangerous-cmd-guard")
 }
 
 // ---------- 工作区边界（本地 Windows / 远程 POSIX 双规则） ----------
@@ -321,11 +343,42 @@ type permAction struct {
 	Tool    string
 	Path    string // write：目标绝对路径
 	Command string // exec：完整命令
-	Cwd     string // exec：工作目录（空 = 会话工作区，即沙箱内）
+	Cwd     string // exec：工作目录（空 = 会话工作区；仅决定进程 cwd，不再做边界判断）
+
+	EscalateTo    string // exec：模型请求的更宽沙箱档位（官方 sandbox_permissions）
+	Justification string // exec：模型给出的升级理由（官方 justification）
 }
 
-// authorize 是所有工具的权限入口：评估 → 放行（敏感操作签发凭证）或
-// 拒绝（带可操作的中文原因）。需要用户批准时同步等待审批结果。
+// sandboxPolicyForMode 把会话权限模式映射为本次命令执行的沙箱策略档位。
+// 这就是「预设捆绑」：模式即策略，完全访问 = 不受限。
+func sandboxPolicyForMode(mode string) string {
+	switch mode {
+	case permReadOnly:
+		return permReadOnly
+	case permFull:
+		return permFull
+	default:
+		return permWorkspace
+	}
+}
+
+// sandboxPolicyRank 返回策略档位的宽窄序（窄 < 宽），用于升级方向校验。
+func sandboxPolicyRank(p string) int {
+	switch p {
+	case permReadOnly:
+		return 0
+	case permWorkspace:
+		return 1
+	case permFull:
+		return 2
+	}
+	return -1
+}
+
+// authorize 是所有工具的权限入口。exec 不再预检命令内容：命令先以会话
+// 策略档进沙箱真实执行，被拒绝后模型带 sandbox_permissions+justification
+// 重试（act.EscalateTo），该重试在这里弹审批、由用户决定后以更宽策略
+// 放行这一次。拒绝驱动，不做威胁命令猜测。
 func (t *toolContext) authorize(act permAction) (*Grant, error) {
 	mode := permModeOf(t.sess)
 	remote := t.isRemote()
@@ -336,61 +389,103 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 
 	switch act.Op {
 	case "read", "info", "net":
-		// 只读与联网在三种模式下都放行（受保护路径除外；
-		// web_fetch 的内网目标限制在工具内自行判断）。
+		// 只读与联网放行（受保护路径除外；web_fetch 的内网目标
+		// 限制在工具内自行判断）。
 		return nil, nil
 
 	case "write":
+		// 文件工具的沙箱：路径边界是确定性的路径判断（fs-sandbox 等价物）。
+		blocked := ""
 		switch mode {
 		case permReadOnly:
-			return nil, fmt.Errorf("权限拒绝：当前会话为「只读」模式，不能写文件。请让用户在权限芯片中切换为「工作区内读写」或「完全访问」")
+			blocked = "read-only"
 		case permWorkspace:
 			if !t.inWorkspace(act.Path) {
-				return nil, fmt.Errorf("权限拒绝：%s 不在工作区 %s 内（「工作区内读写」模式只允许写工作区）。请让用户把会话切到「完全访问」模式，或把文件放进工作区", act.Path, t.workspace())
+				blocked = "workspace-write"
 			}
 		}
-		return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, false, false), nil
+		if blocked == "" {
+			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, sandboxPolicyForMode(mode)), nil
+		}
+		// 能力「读写工作区外的文件」已点亮 → 用户已常设批准，直接放行。
+		if hasCapability(t.sess, capFsEscape) {
+			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path+"（fs-escape 能力）", permFull), nil
+		}
+		// 升级申请：模型带 sandbox_permissions=full + justification → 弹审批，
+		// 「始终允许」点亮 fs-escape 能力，之后写工作区外不再逐次审批。
+		req := strings.TrimSpace(act.EscalateTo)
+		if req == permFull || req == "danger-full-access" {
+			just := strings.TrimSpace(act.Justification)
+			if just == "" {
+				return nil, fmt.Errorf("sandbox_permissions 必须搭配一句 justification（给用户看的理由），本次缺少")
+			}
+			summary := fmt.Sprintf("写入沙箱边界之外：%s｜理由：%s", truncateRunes(act.Path, 160), truncateRunes(just, 120))
+			if t.emit != nil {
+				t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批（工作区外写文件）…"})
+			}
+			approved, always := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
+				fmt.Sprintf("当前会话为 %s，模型请求写入工作区之外（%s）", permModeLabel(mode), act.Path))
+			if !approved {
+				return nil, fmt.Errorf("用户未批准该写入，未执行。请停止并如实说明，不要绕过")
+			}
+			if always {
+				t.app.addCapability(t.sess, capFsEscape)
+			}
+			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, permFull), nil
+		}
+		hint := "可在重试时带 sandbox_permissions=full 与一句 justification 申请写入（弹审批由用户决定）"
+		if blocked == "read-only" {
+			return nil, fmt.Errorf("[fs sandbox: write denied under read-only mode] 目标 %s（当前会话为只读）。%s；或让用户把权限芯片切到「工作区内读写」", act.Path, hint)
+		}
+		return nil, fmt.Errorf("[fs sandbox: write denied under workspace-write mode] 目标 %s 不在工作区 %s 内。%s", act.Path, t.workspace(), hint)
 
 	case "exec":
 		if !t.app.Cfg.AllowShell {
 			return nil, fmt.Errorf("shell 执行已在设置中禁用（allowShell=false）")
 		}
-		if mode == permReadOnly {
-			return nil, fmt.Errorf("权限拒绝：当前会话为「只读」模式，不能执行命令。请让用户在权限芯片中切换权限")
+		// 危险命令护栏（组件开关，缺省开）：不可逆破坏直接拒绝，
+		// 不进入"先执行后升级"的流程——这类命令不该有被放行的机会。
+		if t.app.guardEnabled() {
+			if why := destructiveCommandHit(act.Command); why != "" {
+				return nil, fmt.Errorf("权限拒绝：该命令被「危险命令拦截」护栏拦截（%s）。如确实需要，请让用户在设置→组件中评估该开关后手动执行", why)
+			}
 		}
-		if why := destructiveCommandHit(act.Command); why != "" {
-			return nil, fmt.Errorf("权限拒绝：该命令被安全策略硬拦截（%s）。如确实需要执行，请让用户手动在终端完成", why)
+		policy := sandboxPolicyForMode(mode)
+
+		// 升级重试：模型因真实拒绝请求更宽档位（官方 sandbox_permissions 语义）。
+		// 已开启「允许工作区外执行命令」能力 → 视为用户已常设批准，直接放行；
+		// 未开启 → 每次升级弹审批，用户可点「始终允许」把能力勾选点亮。
+		if req := strings.TrimSpace(act.EscalateTo); req != "" {
+			if sandboxPolicyRank(req) <= sandboxPolicyRank(policy) {
+				return nil, fmt.Errorf("sandbox_permissions=%s 无效：当前策略已是 %s，无需升级或请求了更窄的档位。请直接重跑命令", req, policy)
+			}
+			if req != permWorkspace && req != permFull {
+				return nil, fmt.Errorf("sandbox_permissions 仅支持 workspace-write 或 danger-full-access（当前支持的最宽档位），收到 %s", req)
+			}
+			capID := escalationCapability(req)
+			if !hasCapability(t.sess, capID) {
+				just := strings.TrimSpace(act.Justification)
+				if just == "" {
+					return nil, fmt.Errorf("sandbox_permissions 必须搭配一句 justification（给用户看的理由），本次缺少")
+				}
+				summary := fmt.Sprintf("沙箱升级到 %s：%s｜理由：%s", req, truncateRunes(act.Command, 160), truncateRunes(just, 120))
+				if t.emit != nil {
+					t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批沙箱升级…"})
+				}
+				approved, always := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
+					fmt.Sprintf("模型请求把沙箱档位从 %s 升级到 %s 来重跑被拒绝的命令", policy, req))
+				if !approved {
+					return nil, fmt.Errorf("用户未批准沙箱升级（%s），该命令本轮终局：停止并如实说明，不要换着法绕过；其他命令仍可正常执行", req)
+				}
+				if always {
+					// 「始终允许」= 点亮这类升级对应的能力开关（权限面板
+					// 可见），之后该类动作不再逐次审批（常设授权）。
+					t.app.addCapability(t.sess, capID)
+				}
+			}
+			policy = req
 		}
-		cwd := strings.TrimSpace(act.Cwd)
-		if cwd == "" {
-			cwd = t.workspace()
-		}
-		// 沙箱内执行：工作目录在工作区内，最小环境变量。
-		if t.inWorkspace(cwd) {
-			return t.app.issueGrant(t.sess.ID, act.Tool, "exec",
-				truncateRunes(act.Command, 200), false, false), nil
-		}
-		// —— 沙箱外执行（工作区外命令）：完全访问直接放行；
-		// 其余模式要求「工作区外执行命令」能力 + 逐次审批。 ——
-		if mode != permFull && !hasCapability(t.sess, capUnsandboxed) {
-			return nil, fmt.Errorf("权限拒绝：命令的工作目录 %s 在工作区之外（沙箱外执行）。请让用户在权限芯片中开启「允许工作区外执行命令」能力，开启后每次越界执行都会弹出审批由用户决定", cwd)
-		}
-		summary := fmt.Sprintf("在工作区外执行（目录 %s）：%s", cwd, truncateRunes(act.Command, 200))
-		if mode == permFull || isRemembered(t.sess, "exec", summary) {
-			return t.app.issueGrant(t.sess.ID, act.Tool, "exec", summary, true, true), nil
-		}
-		if t.emit != nil {
-		t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批（沙箱外执行）…"})
-	}
-		approved, always := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
-			"该命令将在工作区之外的目录执行（沙箱外执行）")
-		if !approved {
-			return nil, fmt.Errorf("用户未批准该沙箱外执行，未执行。可询问用户是否改用工作区内目录，或换一种做法")
-		}
-		if always {
-			t.app.rememberAllowed(t.sess, "exec", summary)
-		}
-		return t.app.issueGrant(t.sess.ID, act.Tool, "exec", summary, true, true), nil
+		return t.app.issueGrant(t.sess.ID, act.Tool, "exec", truncateRunes(act.Command, 200), policy), nil
 	}
 	return nil, fmt.Errorf("权限引擎：未知操作类型 %s", act.Op)
 }

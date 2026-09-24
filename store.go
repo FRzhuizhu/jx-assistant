@@ -271,9 +271,27 @@ func (s *Store) setMeta(k, v string) error {
 	return err
 }
 
+// ---------- 会话附属数据（todo 清单等，存 meta 表） ----------
+
+// SetSessionData 写入一条会话附属数据（key 自动加 sessdata: 前缀）。
+func (s *Store) SetSessionData(sessionID, key, value string) error {
+	return s.setMeta("sessdata:"+key+":"+sessionID, value)
+}
+
+// GetSessionData 读取会话附属数据；不存在返回空串。
+func (s *Store) GetSessionData(sessionID, key string) string {
+	var v string
+	err := s.db.QueryRow(`SELECT v FROM meta WHERE k=?`,
+		"sessdata:"+key+":"+sessionID).Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
 // ---------- 会话 ----------
 
-const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, allowed, archived, unread, status, created_at, updated_at, thinking`
+const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking`
 
 func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 
@@ -292,21 +310,15 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 			remote = string(b)
 		}
 	}
-	allowed := ""
-	if len(m.Allowed) > 0 {
-		if b, err := json.Marshal(m.Allowed); err == nil {
-			allowed = string(b)
-		}
-	}
-	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, mode=excluded.mode,
 		workspace=excluded.workspace, parent_id=excluded.parent_id, provider=excluded.provider,
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
 		goal_mode=excluded.goal_mode, tools=excluded.tools, remote=excluded.remote,
-		allowed=excluded.allowed, archived=excluded.archived, unread=excluded.unread,
+		archived=excluded.archived, unread=excluded.unread,
 		status=excluded.status, updated_at=excluded.updated_at, thinking=excluded.thinking`,
 		m.ID, m.Title, m.Mode, m.Workspace, m.ParentID, m.Provider, m.Model,
-		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote, allowed,
+		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote,
 		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt, m.Thinking)
 	return err
 }
@@ -320,10 +332,10 @@ func permOf(m *SessionMeta) string {
 
 func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) {
 	m := &SessionMeta{}
-	var perm, tools, remote, allowed string
+	var perm, tools, remote string
 	var plan, goal, arch, unread int
 	err := sc.Scan(&m.ID, &m.Title, &m.Mode, &m.Workspace, &m.ParentID,
-		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote, &allowed,
+		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote,
 		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Thinking)
 	if err != nil {
 		return nil, err
@@ -341,9 +353,6 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 		if json.Unmarshal([]byte(remote), r) == nil && r.Host != "" {
 			m.Remote = r
 		}
-	}
-	if allowed != "" {
-		_ = json.Unmarshal([]byte(allowed), &m.Allowed)
 	}
 	return m, nil
 }

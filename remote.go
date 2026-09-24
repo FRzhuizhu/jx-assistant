@@ -96,14 +96,16 @@ func (r *RemoteWorkspace) Display() string {
 
 // remoteClient 是一个会话的远程连接：SSH 通道 + 惰性建立的 SFTP 通道。
 type remoteClient struct {
-	client   *ssh.Client
-	spec     *RemoteWorkspace
-	home     string // 远程用户主目录（懒探测缓存）
-	mu       sync.Mutex
-	sftp     *sftp.Client
-	sftpErr  error
-	lastUsed time.Time
-	stop     chan struct{}
+	client     *ssh.Client
+	spec       *RemoteWorkspace
+	home       string // 远程用户主目录（懒探测缓存）
+	mu         sync.Mutex
+	sftp       *sftp.Client
+	sftpErr    error
+	lastUsed   time.Time
+	stop       chan struct{}
+	arch       string // 远端架构（amd64/arm64，探测后缓存）
+	helperPath string // 远端沙箱 helper 路径（上传后缓存）
 }
 
 // capWriter 是截断到上限的输出收集器（远程命令输出防爆）。

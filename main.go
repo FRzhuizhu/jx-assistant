@@ -9,11 +9,20 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"time"
+
+	"jxassistant/sandboxhelper"
 )
 
 func main() {
+	// 本地 Linux 沙箱的自重入口：主进程以隐藏参数重启自身施加 Landlock
+	// 限制，随后 exec 目标命令（Go 无法 fork，这是最干净的进程级限制路径）。
+	if len(os.Args) > 1 && os.Args[1] == "__jx-sandbox-restrict" {
+		os.Exit(sandboxhelper.Main(os.Args[2:]))
+	}
+
 	cfgPath := flag.String("config", "config.json", "配置文件路径")
 	port := flag.Int("port", 0, "覆盖配置中的监听端口")
 	noOpen := flag.Bool("noopen", false, "启动后不自动打开浏览器")
