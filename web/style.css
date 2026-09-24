@@ -92,15 +92,21 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .s-time { font-size: 11.5px; color: var(--text-3); flex: none; }
 
 .sidebar-foot {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px; border-top: 1px solid var(--border-2);
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 4px 10px 12px;
 }
-#btn-settings {
-  display: flex; align-items: center; gap: 7px;
-  background: none; border: none; color: var(--text-2);
-  font-size: 13px; cursor: pointer; padding: 6px 4px;
+.foot-top { display: flex; justify-content: flex-end; padding: 4px 4px 2px; }
+/* 底部整行按钮（回收站/设置）：无边框，悬停/选中整行落一层胶囊底（仿参考站） */
+.foot-btn {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; height: 42px; padding: 0 10px;
+  background: none; border: none; border-radius: 12px;
+  color: var(--text); font-size: 14px; cursor: pointer; text-align: left;
 }
-#btn-settings:hover { color: var(--text); }
+.foot-btn svg { color: var(--text-2); }
+.foot-btn:hover { background: var(--hover); }
+.foot-btn.active { background: var(--active); }
+.foot-btn.active, .foot-btn.active svg { color: var(--accent); }
 .pill {
   font-size: 11.5px; padding: 3px 9px; border-radius: 999px;
 }
@@ -219,6 +225,19 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   transition: transform .1s; transform: rotate(-90deg);
 }
 .turn-fold.open .tf-chev { transform: rotate(0); }
+
+/* 继承段（子对话开头的「来自主对话」）：整段一条折叠条，展开后左侧竖线标示来历 */
+.tf-sec.inherit { margin: 0 0 16px; }
+.tf-sec.inherit > .turn-fold {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--code-bg); padding: 7px 10px; margin: 0;
+  color: var(--text-2); font-size: .93em;
+}
+.tf-sec.inherit > .turn-fold:hover { background: var(--hover); color: var(--text); }
+.tf-sec.inherit > .tf-body {
+  border-left: 2px solid var(--border-2);
+  margin: 12px 0 0 9px; padding: 2px 0 2px 15px;
+}
 
 /* 过程行：思考行与工具行统一样式（单行标题，点开看详情） */
 .proc-row { margin: 0; font-size: .89em; }
@@ -468,7 +487,6 @@ body.rp-open .w-handle { display: none; }
 #ctx-ring:hover .ctx-tip { opacity: 1; transform: translateY(0); }
 .ctx-tip .ctx-bar { margin: 7px 0 9px; height: 6px; }
 .ctx-tip .ctx-cat { font-size: 11.5px; padding: 2px 0; }
-.ctx-tip .ctx-cache { margin-top: 8px; padding-top: 7px; font-size: 11.5px; }
 .ctx-title { font-size: 12.5px; color: var(--text-2); }
 .ctx-total { font-size: 12px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .ctx-bar {
@@ -481,11 +499,13 @@ body.rp-open .w-handle { display: none; }
 .ctx-cat .cc-name { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-cat .cc-tok { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .ctx-cat .cc-pct { color: var(--text); font-variant-numeric: tabular-nums; width: 46px; text-align: right; }
-.ctx-cache {
+/* Token 用量分组（缓存命中/未缓存输入/缓存读取/输出）：标题行 + 右对齐数值 */
+.ctx-tok-head {
   margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border-2);
   display: flex; justify-content: space-between; font-size: 12px; color: var(--text-2);
 }
-.ctx-cache b { color: var(--text); font-variant-numeric: tabular-nums; }
+.ctx-tok-head b { color: var(--text); font-variant-numeric: tabular-nums; }
+.ctx-cat .cc-val { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* ---------- 对话区选中文字浮窗（复制 / 添加到当前对话 / 右侧辅助问答） ----------
    底色跟随系统主题（浅色=白底黑字，深色=黑底白字），不做彩色强调 */
@@ -933,6 +953,15 @@ mark {
 .ws-acts button svg { width: 13px; height: 13px; }
 .ws-acts button:hover { background: var(--hover); color: var(--text); }
 .ws-group-head:hover .ws-count { display: none; }
+
+/* ---------- 回收站视图（点底部「回收站」，整个工作区列表切成回收站） ---------- */
+.bin-label {
+  padding: 12px 14px 5px; font-size: 11.5px; color: var(--text-3); font-weight: 600;
+}
+body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站里只留搜索 */
+/* 回收站里的分组头：恢复按钮常驻显示（不靠悬停才出现） */
+.ws-group-head.bin .ws-acts { display: flex; }
+.ws-group-head.bin:hover .ws-count { display: block; }
 
 /* 上下文菜单（会话/工作区三个点共用） */
 .ctx-menu { min-width: 150px; }

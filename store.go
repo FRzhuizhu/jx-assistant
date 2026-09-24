@@ -176,6 +176,24 @@ var storeMigrations = []migration{
 			`ALTER TABLE sessions ADD COLUMN usage_calls INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		id:       "0006_usage_output",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE sessions ADD COLUMN usage_output INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
+	{
+		// 会话来源：human=人工建的子对话（克隆父上下文的分支）。
+		// 历史 aux 会话全是人工建的（当时 AI 派发一律建 task），一并回填，
+		// 保证右栏「人工/AI」来源标记不打乱。
+		id:       "0007_session_origin",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+			`UPDATE sessions SET origin='human' WHERE mode='aux' AND origin=''`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
@@ -331,7 +349,7 @@ func (s *Store) GetSessionData(sessionID, key string) string {
 
 // ---------- 会话 ----------
 
-const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_calls`
+const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin`
 
 func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 
@@ -350,7 +368,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 			remote = string(b)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, mode=excluded.mode,
 		workspace=excluded.workspace, parent_id=excluded.parent_id, provider=excluded.provider,
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
@@ -358,11 +376,13 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 		archived=excluded.archived, unread=excluded.unread,
 		status=excluded.status, updated_at=excluded.updated_at, thinking=excluded.thinking,
 		goal_text=excluded.goal_text, goal_status=excluded.goal_status, goal_rounds=excluded.goal_rounds,
-		usage_prompt=excluded.usage_prompt, usage_cache_hit=excluded.usage_cache_hit, usage_calls=excluded.usage_calls`,
+		usage_prompt=excluded.usage_prompt, usage_cache_hit=excluded.usage_cache_hit,
+		usage_output=excluded.usage_output, usage_calls=excluded.usage_calls, origin=excluded.origin`,
 		m.ID, m.Title, m.Mode, m.Workspace, m.ParentID, m.Provider, m.Model,
 		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote,
 		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt, m.Thinking,
-		m.GoalText, m.GoalStatus, m.GoalRounds, m.UsagePrompt, m.UsageCacheHit, m.UsageCalls)
+		m.GoalText, m.GoalStatus, m.GoalRounds, m.UsagePrompt, m.UsageCacheHit, m.UsageOutput, m.UsageCalls,
+		m.Origin)
 	return err
 }
 
@@ -380,7 +400,8 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 	err := sc.Scan(&m.ID, &m.Title, &m.Mode, &m.Workspace, &m.ParentID,
 		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote,
 		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Thinking,
-		&m.GoalText, &m.GoalStatus, &m.GoalRounds, &m.UsagePrompt, &m.UsageCacheHit, &m.UsageCalls)
+		&m.GoalText, &m.GoalStatus, &m.GoalRounds, &m.UsagePrompt, &m.UsageCacheHit, &m.UsageOutput, &m.UsageCalls,
+		&m.Origin)
 	if err != nil {
 		return nil, err
 	}
@@ -632,6 +653,14 @@ func (s *Store) RawMessages(id string, offset, limit int) ([]*StoredMessage, int
 		}
 	}
 	return out, total, rows.Err()
+}
+
+// LastSeq 返回会话当前的最后一个 seq（无消息返回 0）。
+// 上下文继承要一次性算好新 seq 再落库，需要这个基线。
+func (s *Store) LastSeq(id string) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM messages WHERE session_id=?`, id).Scan(&n)
+	return n, err
 }
 
 // RawMessagesAll 读取会话全部消息（含摘要行），供上下文组装与压缩使用。

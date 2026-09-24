@@ -26,11 +26,16 @@ type round struct {
 }
 
 // splitRounds 按用户消息分轮；开头若无用户消息（不应发生），并入第一轮。
+// 继承标记行（inherit）不是对话内容，跳过——否则它会自成伪轮，
+// 让子对话的压缩时机比同样长度的普通会话早一轮。
 func splitRounds(msgs []*StoredMessage) []round {
 	rounds := []round{}
 	cur := round{}
 	started := false
 	for _, m := range msgs {
+		if m.Kind == inheritKind {
+			continue
+		}
 		if m.Kind == "chat" && m.Role == "user" || m.Kind == "report" {
 			if started {
 				cur.endSeq = m.Seq - 1
@@ -110,7 +115,7 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 		out = append(out, TextMessage("user", s.Text()))
 	}
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" {
+		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == "inherit" {
 			continue
 		}
 		if ruleMode && m.Compact != "" {
@@ -135,6 +140,108 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 	// 环境快照固定在序列末尾（易变内容永远在尾部，前缀缓存不受影响）
 	out = append(out, TextMessage("user", env))
 	return out
+}
+
+// ---------- 子对话的上下文继承（分支克隆） ----------
+
+// inheritKind 是继承块标记行的 kind：子对话里它标出「以下内容来自主对话」，
+// 前端据它把整段折叠成一条「来自主对话」折叠条；组装上下文时该行跳过。
+const inheritKind = "inherit"
+
+// inheritMark 是继承标记行的正文（前端只需 count 来切分继承段与自有消息）。
+type inheritMark struct {
+	Parent string `json:"parent"`
+	Count  int    `json:"count"`
+}
+
+// copyInheritedContext 把父会话的完整消息历史复制进子会话，作为子对话继承的上下文。
+// 复制的是**原始行**（含摘要与压缩标记，逐行保序、seq 重排），不是渲染成的一段文本——
+// 这样复制后子会话的「模型可见序列」与父会话此前的请求逐条一致（同一套摘要边界、
+// 同一套规则压缩视图），DeepSeek 的前缀缓存才能命中整段父上下文。
+// 首行写一条 kind=inherit 标记行（前端折叠显示、组装时跳过），返回复制的行数。
+func (a *App) copyInheritedContext(parentID, childID string) (int, error) {
+	all, err := a.Store.RawMessagesAll(parentID)
+	if err != nil {
+		return 0, err
+	}
+	rows := make([]*StoredMessage, 0, len(all))
+	for _, x := range all {
+		if x.Kind == "request" {
+			continue // 模型输入快照是审计工件（不进 LLM 上下文），不带进子对话
+		}
+		rows = append(rows, x)
+	}
+	if a.IsRunning(parentID) {
+		// 父会话正在执行：只复制到最后一条已完成答复，避免把悬空的工具调用带进来
+		// （与「分支对话」同一判定：最后一条带正文且无工具调用的助手消息）
+		last := -1
+		for i, x := range rows {
+			if x.Role == "assistant" && len(x.ToolCalls) == 0 && strings.TrimSpace(x.Text()) != "" {
+				last = i
+			}
+		}
+		if last < 0 {
+			return 0, nil // 一条完整答复都还没有，没什么可继承的
+		}
+		rows = rows[:last+1]
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+
+	// 先算好整张新旧 seq 映射再落库：摘要的覆盖边界要按新 seq 重写，
+	// 否则子会话的组装边界会对不上（摘要按旧 seq 覆盖、新行全是新 seq）。
+	last, err := a.Store.LastSeq(childID)
+	if err != nil {
+		return 0, err
+	}
+	newOfOld := make(map[int64]int64, len(rows))
+	seq := last + 1 // 标记行占一个 seq
+	for _, x := range rows {
+		seq++
+		newOfOld[x.Seq] = seq
+	}
+	// 覆盖边界重映射：取「最后一个 oldSeq ≤ 边界」的已复制行。
+	// 摘要的 covers_up_to 必定 ≤ 它自己的 seq（摘要只覆盖排在它之前的行），
+	// 因此被复制的摘要总能找到对应行。
+	remap := func(oldCover int64) int64 {
+		var out int64
+		for _, x := range rows {
+			if x.Seq > oldCover {
+				break
+			}
+			if n, ok := newOfOld[x.Seq]; ok {
+				out = n
+			}
+		}
+		return out
+	}
+
+	mark, _ := json.Marshal(inheritMark{Parent: parentID, Count: len(rows)})
+	if err := a.Store.AppendRow(childID, &StoredMessage{
+		Message: TextMessage("user", string(mark)), Kind: inheritKind, CreatedAt: now(),
+	}); err != nil {
+		return 0, err
+	}
+	for _, x := range rows {
+		cp := &StoredMessage{
+			Message:    x.Message,
+			Kind:       x.Kind,
+			Origin:     x.Origin,
+			Compact:    x.Compact,
+			Superseded: x.Superseded,
+			Thinking:   x.Thinking,
+			CreatedAt:  x.CreatedAt,
+			Seq:        newOfOld[x.Seq],
+		}
+		if x.Kind == "summary" {
+			cp.CoversUpTo = remap(x.CoversUpTo)
+		}
+		if err := a.Store.AppendRow(childID, cp); err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
 }
 
 // estimateTokens 粗估一组消息的 token 量（中文为主的启发式）。
@@ -165,9 +272,11 @@ type ctxStats struct {
 	Total      int           `json:"total"`  // 下一次请求的估算总量
 	Categories []ctxCategory `json:"categories"`
 	Cache      struct {
-		PromptTokens int64   `json:"promptTokens"` // 历次调用 prompt_tokens 总和
-		CacheHit     int64   `json:"cacheHit"`     // 历次调用缓存命中总和
-		Rate         float64 `json:"rate"`         // 平均缓存命中率（0-1；无数据为 0）
+		PromptTokens int64   `json:"promptTokens"` // 历次调用 prompt_tokens 总和（输入）
+		CacheHit     int64   `json:"cacheHit"`     // 历次调用缓存命中总和（缓存读取）
+		Uncached     int64   `json:"uncached"`     // 未缓存输入 = prompt − hit
+		Output       int64   `json:"output"`       // 历次调用 completion_tokens 总和（输出）
+		Rate         float64 `json:"rate"`         // 缓存命中率（hit/prompt；无数据为 0）
 		Calls        int64   `json:"calls"`        // 模型调用次数
 	} `json:"cache"`
 }
@@ -211,7 +320,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			add("摘要", TextMessage("user", s.Text()))
 		}
 		for _, m := range raw {
-			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" {
+			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == "inherit" {
 				continue
 			}
 			if ruleMode && m.Compact != "" {
@@ -243,6 +352,11 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 	}
 	out.Cache.PromptTokens = sess.UsagePrompt
 	out.Cache.CacheHit = sess.UsageCacheHit
+	out.Cache.Output = sess.UsageOutput
+	out.Cache.Uncached = sess.UsagePrompt - sess.UsageCacheHit
+	if out.Cache.Uncached < 0 {
+		out.Cache.Uncached = 0
+	}
 	out.Cache.Calls = sess.UsageCalls
 	if sess.UsagePrompt > 0 {
 		out.Cache.Rate = float64(sess.UsageCacheHit) / float64(sess.UsagePrompt)
@@ -386,7 +500,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	b.WriteString("【待压缩的对话历史】\n")
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" {
+		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == inheritKind {
 			continue
 		}
 		role := map[string]string{"user": "用户", "assistant": "助手", "tool": "工具结果"}[m.Role]

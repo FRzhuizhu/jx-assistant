@@ -91,10 +91,10 @@ func runReadSessionMessages(t *toolContext, args json.RawMessage) (string, error
 	if err != nil {
 		return "", err
 	}
-	// 只保留对话流（跳过摘要行），按角色过滤
+	// 只保留对话流（跳过摘要行与继承标记行），按角色过滤
 	rows := []*StoredMessage{}
 	for _, m := range all {
-		if m.Kind == "summary" || m.Kind == "request" {
+		if m.Kind == "summary" || m.Kind == "request" || m.Kind == inheritKind {
 			continue
 		}
 		if p.Role != "" && m.Role != p.Role {

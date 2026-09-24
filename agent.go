@@ -86,7 +86,11 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 
 ## 怎么交代需求
 
-写进 dispatch_task / send_to_session 的 task 必须是一段自足的话：目标、验收标准、涉及的目录或文件、你知道的相关背景。别写「照上面说的做」这类指代——任务会话看不到我们的聊天记录。需要指定工作目录时用 workspace 参数给绝对路径。
+写进 dispatch_task / send_to_session 的 task 默认必须是一段自足的话：目标、验收标准、涉及的目录或文件、你知道的相关背景。别写「照上面说的做」这类指代——任务会话默认看不到我们的聊天记录。需要指定工作目录时用 workspace 参数给绝对路径。
+
+例外：这件事的来龙去脉本来就长在我们现在的对话里（用户前面说的要求、我们讨论定的方案、已经写在聊天里的背景），把整段历史继承过去比重新写一遍更省事也更准确——这时给 dispatch_task 设 inherit_context 为 true，子会话会完整继承我们此前的聊天记录（含系统提示词，因此也命中缓存，成本很低），task 就只用写「接下来要做什么」。一次性、独立的活儿保持默认，别为了省几句话把无关的历史都塞过去。
+
+子对话只有一级：子会话不能再派发子会话，你手上的编排工具只在主对话可用。
 
 ## 汇报
 
@@ -158,6 +162,9 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			status = "推进中"
 		}
 		b.WriteString("- 目标模式：目标「" + sess.GoalText + "」（当前状态：" + status + "）。自主持续推进，无需等待用户逐轮催促；达成或确认无法推进（缺权限/缺信息/外部受阻）时必须调用 update_goal（result=complete 或 blocked）并附 summary，然后面向用户做最终总结，不要空转。\n")
+	}
+	if sess.ParentID != "" {
+		b.WriteString("- 本会话是子对话（父会话 " + sess.ParentID + "）：子对话只有一级，不能再派发子对话。dispatch_task / send_to_session 调用会被拒绝；需要派发时把需求回报给用户，由主对话安排。\n")
 	}
 	// 插件兼容层的动态段（如语音听写提示）也归入环境快照——它们随时间变化
 	if a.Plugins != nil {
@@ -381,9 +388,10 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				emit(Event{Type: "reasoning", Delta: s})
 			},
 		OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
-		OnUsage: func(u Usage) { // 流尾用量累计落盘（缓存命中率数据源）
+		OnUsage: func(u Usage) { // 流尾用量按 token 累计落盘（缓存命中率/Token 用量面板数据源）
 			sess.UsagePrompt += int64(u.PromptTokens)
 			sess.UsageCacheHit += int64(u.PromptCacheHit)
+			sess.UsageOutput += int64(u.CompletionTokens)
 			sess.UsageCalls++
 			_ = a.Store.SaveMeta(sess)
 		},

@@ -249,6 +249,14 @@ function hi(text, q) {
   return out;
 }
 
+// 搜索范围跟随侧栏视图：正常工作区只搜正常内容，回收站只搜回收站内容。
+// ws = 回收目录列表；会话 workspace 可能存空串（默认工作区），默认目录被回收时把空串一并带上。
+function searchScopeQS() {
+  const recycled = lsGet('jx.wsrecycled', []);
+  const wss = (state.defaultWs && recycled.includes(state.defaultWs)) ? [...recycled, ''] : recycled;
+  return '&bin=' + (binView ? 1 : 0) + '&ws=' + encodeURIComponent(JSON.stringify(wss));
+}
+
 // 触发搜索（输入防抖 250ms）：标题路先行渲染，聊天记录路返回后逐条渐现
 function runSideSearch(qRaw) {
   const q = qRaw.trim();
@@ -280,7 +288,8 @@ function runSideSearch(qRaw) {
   const signal = searchAbort.signal;
   const eq = encodeURIComponent(q);
 
-  api('/api/search/title?q=' + eq, { signal }).then((d) => {
+  const scopeQS = searchScopeQS();
+  api('/api/search/title?q=' + eq + scopeQS, { signal }).then((d) => {
     if (token !== searchToken) return;
     renderTitleHits(d.hits || [], q);
   }).catch((e) => {
@@ -288,7 +297,7 @@ function runSideSearch(qRaw) {
     $('ssr-title').innerHTML = '<div class="ssr-empty">搜索失败：' + esc(e.message) + '</div>';
   });
 
-  api('/api/search/content?q=' + eq, { signal }).then((d) => {
+  api('/api/search/content?q=' + eq + scopeQS, { signal }).then((d) => {
     if (token !== searchToken) return;
     revealContentHits(d.hits || [], q, token);
   }).catch((e) => {
@@ -484,6 +493,23 @@ async function deleteSession(s) {
 }
 
 function openSessionMenu(s, rect) {
+  // 回收站视图里的会话菜单：恢复 / 重命名 / 彻底删除
+  if (binView) {
+    openCtxMenu([
+      ...(s.archived ? [{ label: '恢复', fn: async () => {
+        await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: false }) });
+        loadSessions();
+      } }] : []),
+      { label: '重命名', fn: async () => {
+        const t = prompt('重命名会话', s.title || '');
+        if (t === null || !t.trim()) return;
+        await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
+        loadSessions();
+      } },
+      { label: '彻底删除', danger: true, fn: () => deleteSession(s) },
+    ], rect.right - 8, rect.bottom + 4);
+    return;
+  }
   openCtxMenu([
     { label: '重命名', fn: async () => {
       const t = prompt('重命名会话', s.title || '');
@@ -551,18 +577,107 @@ function aRunJustEnded(id) {
   return was === 'running' && cur !== 'running';
 }
 
+/* ---------- 回收站视图：点底部「回收站」，整个工作区列表切成回收站 ----------
+   回收站内容 = 已移入回收站的工作目录（jx.wsrecycled）+ 已归档会话（archived=1）
+   以及挂在回收目录下的对话（它们在正常视图里被整组隐藏）。 */
+
+let binView = false;
+
+function setBinView(on) {
+  binView = !!on;
+  if (sideSearchOpen()) closeSideSearch(); // 切换视图前先还原搜索占领态（结果范围已随视图变化）
+  $('btn-recycle').classList.toggle('active', binView);
+  document.body.classList.toggle('bin-mode', binView);
+  $('ws-section-title').textContent = binView ? '回收站' : '工作区';
+  $('side-search-input').placeholder = binView ? '搜索回收站' : '搜索工作任务';
+  $('wst-search').title = binView ? '搜索回收站' : '搜索工作任务';
+  loadSessions();
+}
+
+function restoreWorkspace(ws) {
+  lsSet('jx.wsrecycled', lsGet('jx.wsrecycled', []).filter((x) => x !== ws));
+  loadSessions();
+}
+
+function renderBin(box) {
+  const aliasMap = lsGet('jx.wsalias', {});
+  const recycledWs = lsGet('jx.wsrecycled', []);
+  const sortIt = (arr) => viewCfg.sort === 'created'
+    ? [...arr].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    : arr;
+  // 回收站里的对话：已归档的，或挂在回收目录下（正常视图整组隐藏）的
+  const all = (state.sessions || []).filter((s) => s.mode !== 'assistant' && !s.parentId);
+  const inBin = all.filter((s) => s.archived || recycledWs.includes(wsOf(s)));
+  if (!recycledWs.length && !inBin.length) {
+    box.innerHTML = '<div class="ws-empty">回收站是空的</div>';
+    return;
+  }
+  if (recycledWs.length) {
+    const label = document.createElement('div');
+    label.className = 'bin-label';
+    label.textContent = '工作目录';
+    box.appendChild(label);
+  }
+  for (const ws of recycledWs) {
+    const items = sortIt(inBin.filter((s) => wsOf(s) === ws));
+    const group = document.createElement('div');
+    group.className = 'ws-group';
+    const collapsed = !!wsCollapsed[ws];
+    const head = document.createElement('div');
+    head.className = 'ws-group-head bin' + (collapsed ? ' collapsed' : '');
+    head.title = ws || '（未设置，使用默认工作区）';
+    head.innerHTML =
+      `<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>` +
+      `<svg class="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>` +
+      `<span class="ws-name">${esc(aliasMap[ws] || baseName(ws) || '默认工作区')}</span>` +
+      `<span class="ws-count">${items.length}</span>` +
+      `<span class="ws-acts">` +
+        `<button class="wa-restore" title="恢复到工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>` +
+      `</span>`;
+    head.onclick = (e) => {
+      if (e.target.closest('.ws-acts')) return;
+      wsCollapsed[ws] = !collapsed;
+      lsSet('jx.wscol', wsCollapsed);
+      loadSessions();
+    };
+    head.querySelector('.wa-restore').onclick = (e) => {
+      e.stopPropagation();
+      restoreWorkspace(ws);
+    };
+    group.appendChild(head);
+    if (!collapsed) {
+      const list = document.createElement('div');
+      list.className = 'ws-group-list';
+      for (const s of items) list.appendChild(sessionItem(s));
+      if (!items.length) list.innerHTML = '<div class="ws-empty">（无对话）</div>';
+      group.appendChild(list);
+    }
+    box.appendChild(group);
+  }
+  // 单独回收的对话：已归档、但其目录没被回收的
+  const flat = sortIt(inBin.filter((s) => !recycledWs.includes(wsOf(s))));
+  if (flat.length) {
+    const label = document.createElement('div');
+    label.className = 'bin-label';
+    label.textContent = '对话';
+    box.appendChild(label);
+    for (const s of flat) box.appendChild(sessionItem(s));
+  }
+}
+
 async function loadSessions() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
   (state.sessions || []).forEach((x) => { prevStatus[x.id] = x.status; });
+  const box = $('session-list');
+  box.innerHTML = '';
+  if (binView) { renderBin(box); return; } // 回收站视图：整个列表换成回收站内容
   // 左栏只放顶层未归档会话；助理主对话、子会话/辅助对话不占列表
   // （标题/内容的搜索在搜索面板里走 /api/search/*，这里不再本地过滤）
   let visible = state.sessions.filter((s) => s.mode !== 'assistant' && !s.parentId && !s.archived);
   if (viewCfg.sort === 'created') {
     visible.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   }
-  const box = $('session-list');
-  box.innerHTML = '';
   const recycled = new Set(lsGet('jx.wsrecycled', []));
   const aliasMap = lsGet('jx.wsalias', {});
   if (viewCfg.group === 'flat') {
@@ -988,7 +1103,7 @@ function renderSubDDPop() {
     item.innerHTML =
       `<span class="d-status ${s.status === 'running' ? 'run' : ''}">${s.status === 'running' ? '⟳' : '·'}</span>` +
       `<span class="d-title">${esc(s.title || '(未命名)')}</span>` +
-      (s.mode === 'aux' ? '<span class="d-src human">人工</span>' : '<span class="d-src">AI</span>') +
+      (s.mode === 'aux' || s.origin === 'human' ? '<span class="d-src human">人工</span>' : '<span class="d-src">AI</span>') +
       `<span class="d-time">${esc(relTime(s.updatedAt))}</span>`;
     item.onclick = () => { openSubSession(s.id); closePopovers(); };
     pop.appendChild(item);
@@ -1017,10 +1132,11 @@ async function newAuxChat() {
   const fid = drawerFamilyId();
   if (!fid) return;
   try {
-    const ws = (state.cur.parentId && state.cur.workspace) || '';
+    // 子对话＝当前对话的分支：后端照抄父会话的模式/工作区/权限/能力并完整复制历史，
+    // 系统提示词与上下文与主对话一致（继承段在对话里折叠成一条「来自主对话」）
     const s = await api('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'aux', parent: fid, title: '辅助对话', workspace: ws }),
+      body: JSON.stringify({ parent: fid, title: '子对话', inheritContext: true }),
     });
     await openSubSession(s.id);
     refreshDrawer();
@@ -1110,14 +1226,13 @@ async function openSession(id) {
   state.queue = loadQueueLS(id);
   $('sess-title').textContent = state.cur.title || '(未命名)';
   const badge = $('mode-badge');
-  if (state.cur.mode === 'assistant') {
-    badge.textContent = '数字助理';
-    badge.classList.remove('hidden');
-  } else if (state.cur.mode === 'aux') {
-    badge.textContent = '辅助对话';
-    badge.classList.remove('hidden');
-  } else if (state.cur.mode === 'office') {
-    badge.textContent = chatModeOf('office').label;
+  // 模式徽标；挂在主对话下的子对话再标出来历（它可能是 task/office/aux 任一模式）
+  const modeLabel = state.cur.mode === 'assistant' ? '数字助理'
+    : state.cur.mode === 'aux' ? '辅助对话'
+    : state.cur.mode === 'office' ? chatModeOf('office').label : '';
+  const badgeLabel = state.cur.parentId ? (modeLabel ? modeLabel + ' · 子对话' : '子对话') : modeLabel;
+  if (badgeLabel) {
+    badge.textContent = badgeLabel;
     badge.classList.remove('hidden');
   } else {
     badge.classList.add('hidden');
@@ -1425,12 +1540,56 @@ function setSecOpen(sec, open) {
   if (open) showEl(body); else hideEl(body);
 }
 
-// Ctrl+F 命中折叠内容时浏览器揭开 hidden，这里同步箭头态（过程行与折叠段都处理）
+/* 继承段：子对话开头的「来自主对话」历史，整段折叠成一条，点开是完整对话流。
+   内部复用主线渲染（用户气泡 + 回合渲染），所以外观与正文完全一致；
+   父对话的系统提示词快照行也在其中（一目了然「含系统提示词」）。 */
+function inheritBlock(items, resultOf, sid) {
+  const key = sid + ':inherit';
+  const sec = document.createElement('div');
+  sec.className = 'tf-sec inherit';
+  sec.dataset.key = key;
+  const bar = document.createElement('button');
+  bar.type = 'button';
+  bar.className = 'turn-fold';
+  const label = document.createElement('span');
+  label.className = 'tf-label';
+  // 环境快照行不显示（与正文一致），计数按可见条数
+  const n = items.filter((m) => m.kind !== 'env').length;
+  label.textContent = '来自主对话 · ' + n + ' 条（含系统提示词）';
+  bar.appendChild(label);
+  bar.insertAdjacentHTML('beforeend', chev('tf-chev'));
+  const body = document.createElement('div');
+  body.className = 'tf-body';
+  const turns = groupTurns(items, resultOf);
+  turns.forEach((turn, ti) => {
+    if (turn.userMsg) body.appendChild(userBubble(turn.userMsg));
+    renderFinishedTurn(body, turn, key + ':' + ti);
+  });
+  const open = turnOpen[key] === true;
+  bar.classList.toggle('open', open);
+  if (open) showEl(body); else hideEl(body);
+  bar.onclick = () => {
+    const nowOpen = body.hasAttribute('hidden');
+    setSecOpen(sec, nowOpen);
+    if (nowOpen) turnOpen[key] = true;
+    else delete turnOpen[key];
+  };
+  sec.appendChild(bar);
+  sec.appendChild(body);
+  return sec;
+}
+
+// Ctrl+F 命中折叠内容时浏览器揭开 hidden，这里同步箭头态（过程行与折叠段都处理；
+// 折叠段可以嵌套——继承段里还有回合折叠段，所以逐层往上同步）
 document.addEventListener('beforematch', (e) => {
-  const row = e.target && e.target.closest ? e.target.closest('.proc-row') : null;
-  if (row) setProcOpen(row, true);
-  const sec = e.target && e.target.closest ? e.target.closest('.tf-sec') : null;
-  if (sec) setSecOpen(sec, true);
+  let el = e.target;
+  while (el && el.closest) {
+    const row = el.closest('.proc-row');
+    if (row) { setProcOpen(row, true); el = row.parentElement; continue; }
+    const sec = el.closest('.tf-sec');
+    if (sec) { setSecOpen(sec, true); el = sec.parentElement; continue; }
+    break;
+  }
 });
 
 /* ---------- 回合分组与条目渲染 ---------- */
@@ -1640,7 +1799,22 @@ function renderMessages(msgs, view) {
     if (m.role === 'tool' && m.tool_call_id) resultOf[m.tool_call_id] = m;
   }
   const sid = (view.state.cur && view.state.cur.id) || '';
-  const turns = groupTurns(msgs, resultOf);
+  // 子对话开头的继承段（后端克隆父对话时写入的标记行 + N 条历史）：
+  // 折叠成一条「来自主对话」折叠条，其余消息照常渲染
+  let inherited = null, rest = msgs;
+  if (msgs[0].kind === 'inherit') {
+    let n = 0;
+    try { n = JSON.parse(String(msgs[0].content ?? '{}')).count || 0; } catch (e) { /* 坏行就当没有继承段 */ }
+    inherited = msgs.slice(1, 1 + n);
+    rest = msgs.slice(1 + n);
+  }
+  if (inherited && inherited.length) box.appendChild(inheritBlock(inherited, resultOf, sid));
+  if (inherited && !rest.length) {
+    const empty = document.createElement('div');
+    empty.innerHTML = view.emptyHTML;
+    box.appendChild(empty);
+  }
+  const turns = groupTurns(rest, resultOf);
   turns.forEach((turn, ti) => {
     if (turn.userMsg) box.appendChild(userBubble(turn.userMsg));
     const key = sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti);
@@ -2505,8 +2679,17 @@ function renderCtxTip() {
       `<span class="cc-name">${esc(c.name)}</span><span class="cc-tok">${fmtTokens(c.tokens)}</span>` +
       `<span class="cc-pct">${c.share}%</span></div>`;
   }
-  const rate = d.cache && d.cache.calls ? (d.cache.rate * 100).toFixed(1) + '%' : '—';
-  html += `<div class="ctx-cache"><span>缓存命中率（${(d.cache && d.cache.calls) || 0} 次）</span><b>${rate}</b></div>`;
+  // Token 用量分组（截图样式）：命中%按输入口径；未缓存/缓存读取/输出按 token 累计
+  const c = d.cache || {};
+  const has = c.calls > 0;
+  const tokFull = (n) => (n || 0).toLocaleString('en-US') + ' tok';
+  const rate = has && c.promptTokens ? Math.round(c.cacheHit * 100 / c.promptTokens) + '%' : '—';
+  html +=
+    `<div class="ctx-tok-head"><span>Token 用量</span><b>${has ? tokFull((c.promptTokens || 0) + (c.output || 0)) : '—'}</b></div>` +
+    `<div class="ctx-cat"><span class="cc-name">缓存命中</span><span class="cc-val">${rate}</span></div>` +
+    `<div class="ctx-cat"><span class="cc-name">未缓存输入</span><span class="cc-val">${has ? tokFull(c.uncached) : '—'}</span></div>` +
+    `<div class="ctx-cat"><span class="cc-name">缓存读取</span><span class="cc-val">${has ? tokFull(c.cacheHit) : '—'}</span></div>` +
+    `<div class="ctx-cat"><span class="cc-name">输出</span><span class="cc-val">${has ? tokFull(c.output) : '—'}</span></div>`;
   tip.innerHTML = html;
 }
 
@@ -2549,19 +2732,19 @@ function showSelPop() {
 async function askInAux(text) {
   if (!state.cur) return;
   rpOpen('subs');
-  let aux = subKids.find((s) => s.mode === 'aux');
+  // 复用已有的子对话（人工建的都算，含改造前建的老 aux）
+  let aux = subKids.find((s) => s.mode === 'aux' || s.origin === 'human');
   if (!aux) {
     const fid = drawerFamilyId();
     if (!fid) return;
     try {
-      const ws = (state.cur.parentId && state.cur.workspace) || '';
       aux = await api('/api/sessions', {
         method: 'POST',
-        body: JSON.stringify({ mode: 'aux', parent: fid, title: '辅助对话', workspace: ws }),
+        body: JSON.stringify({ parent: fid, title: '子对话', inheritContext: true }),
       });
       await refreshDrawer();
     } catch (e) {
-      alert('新建辅助对话失败：' + e.message);
+      alert('新建子对话失败：' + e.message);
       return;
     }
   }
@@ -3559,7 +3742,7 @@ function autoGrow(t) {
   t.style.height = Math.min(t.scrollHeight, 200) + 'px';
 }
 
-$('btn-new-task').onclick = goHomeNewTask;
+$('btn-new-task').onclick = () => { if (binView) setBinView(false); goHomeNewTask(); };
 $('btn-sidebar').onclick = toggleSidebar;
 $('wst-search').onclick = toggleSideSearch;
 $('wst-view').onclick = (e) => openViewMenu(e.currentTarget);
@@ -3575,12 +3758,14 @@ document.getElementById('side-search-input').addEventListener('keydown', (e) => 
 });
 $('side-search-close').onclick = closeSideSearch;
 $('btn-new-assistant').onclick = () => {
+  if (binView) setBinView(false);
   setFace('thinking', 1600); // 进入时压眼扫视
   if (!state.streaming) openAssistant();
 };
 $('btn-send').onclick = send;
 $('btn-stop').onclick = () => { if (state.abort) state.abort.abort(); };
 $('btn-settings').onclick = openSettings;
+$('btn-recycle').onclick = () => setBinView(!binView);
 $('set-cancel').onclick = () => $('settings').classList.add('hidden');
 $('set-save').onclick = saveSettings;
 $('btn-plus').onclick = () => openPopover('plus-menu', $('btn-plus'));

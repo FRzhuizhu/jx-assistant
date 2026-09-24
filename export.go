@@ -111,6 +111,13 @@ func renderExportMessages(b *strings.Builder, msgs []*StoredMessage) {
 				" · " + strconv.Itoa(len(r.Messages)) + " 条消息 · 含工具定义]**" + ts + "\n\n")
 			continue
 		}
+		if m.Kind == inheritKind {
+			// 继承标记行是内部数据（JSON），导出成一句人话
+			var im inheritMark
+			_ = json.Unmarshal([]byte(m.Text()), &im)
+			b.WriteString(fmt.Sprintf("> **【以下是本子对话继承自主对话 %s 的 %d 条历史】**%s\n\n", im.Parent, im.Count, ts))
+			continue
+		}
 		if m.Kind == "summary" {
 			label := "摘要"
 			if m.Origin == "manual" {

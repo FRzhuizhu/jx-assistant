@@ -303,8 +303,41 @@ func likePattern(q string) string {
 	return "%" + r.Replace(q) + "%"
 }
 
-// 可搜索的会话范围 = 侧栏可见范围：非助理主对话、非子会话、未归档。
-const searchableSessionsSQL = `mode != 'assistant' AND parent_id = '' AND archived = 0`
+// 可搜索的会话范围基座 = 侧栏可见范围：非助理主对话、非子会话。
+// 归档与目录过滤由 searchScopeWhere 按 bin/ws 参数装配（都缺省时等价旧行为 archived = 0）。
+const searchableSessionsBaseSQL = `mode != 'assistant' AND parent_id = ''`
+
+// searchScopeWhere 按请求参数组装会话范围条件（pfx 为列名前缀，如 "s."）：
+//   bin=1 → 回收站：已归档，或其工作目录在回收列表 ws 里；
+//   否则  → 正常工作区：未归档，且工作目录不在回收列表 ws 里。
+//
+// ws 为回收目录列表（JSON 数组，空串代表默认工作区），缺省或为空则不按目录过滤。
+// 这样正常搜索绝不落到回收站内容，回收站搜索也绝不落到正常内容。
+func searchScopeWhere(r *http.Request, pfx string) (string, []any) {
+	bin := r.URL.Query().Get("bin") == "1"
+	cond := pfx + "archived = 0"
+	if bin {
+		cond = pfx + "archived = 1"
+	}
+	var args []any
+	if raw := r.URL.Query().Get("ws"); raw != "" {
+		var wss []string
+		if json.Unmarshal([]byte(raw), &wss) == nil && len(wss) > 0 {
+			ph := make([]string, len(wss))
+			for i, w := range wss {
+				ph[i] = "?"
+				args = append(args, w)
+			}
+			joined := strings.Join(ph, ",")
+			if bin {
+				cond = "(" + pfx + "archived = 1 OR " + pfx + "workspace IN (" + joined + "))"
+			} else {
+				cond += " AND " + pfx + "workspace NOT IN (" + joined + ")"
+			}
+		}
+	}
+	return cond, args
+}
 
 // handleSearchTitle 按标题逐字搜索工作任务。
 func (a *App) handleSearchTitle(w http.ResponseWriter, r *http.Request) {
@@ -313,10 +346,12 @@ func (a *App) handleSearchTitle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"hits": []any{}})
 		return
 	}
+	scope, scopeArgs := searchScopeWhere(r, "")
 	rows, err := a.Store.db.Query(
 		`SELECT id, title, updated_at FROM sessions
-		 WHERE `+searchableSessionsSQL+` AND title LIKE ? ESCAPE '\'
-		 ORDER BY updated_at DESC LIMIT 50`, likePattern(q))
+		 WHERE `+searchableSessionsBaseSQL+` AND `+scope+` AND title LIKE ? ESCAPE '\'
+		 ORDER BY updated_at DESC LIMIT 50`,
+		append(scopeArgs, likePattern(q))...)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -342,15 +377,17 @@ func (a *App) handleSearchContent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"hits": []any{}})
 		return
 	}
+	scope, scopeArgs := searchScopeWhere(r, "s.")
 	rows, err := a.Store.db.Query(
 		`SELECT m.session_id, s.title, m.seq, m.role, m.content, m.created_at
 		 FROM messages m JOIN sessions s ON s.id = m.session_id
-		 WHERE s.`+searchableSessionsSQL+`
+		 WHERE s.`+searchableSessionsBaseSQL+` AND `+scope+`
 		   AND m.kind = 'chat' AND m.content IS NOT NULL
 		   AND (m.role = 'user'
 		        OR (m.role = 'assistant' AND (m.tool_calls IS NULL OR m.tool_calls = '')))
 		   AND m.content LIKE ? ESCAPE '\'
-		 ORDER BY s.updated_at DESC, m.seq ASC LIMIT 200`, likePattern(q))
+		 ORDER BY s.updated_at DESC, m.seq ASC LIMIT 200`,
+		append(scopeArgs, likePattern(q))...)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -778,19 +815,20 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Mode       string           `json:"mode"`
-		Workspace  string           `json:"workspace"`
-		Title      string           `json:"title"`
-		ParentID   string           `json:"parent"`
-		Provider   string           `json:"provider"`
-		Model      string           `json:"model"`
-		Permission string           `json:"permission"`
-		Thinking   string           `json:"thinking"`
-		PlanMode   bool             `json:"planMode"`
-		GoalMode   bool             `json:"goalMode"`
-		GoalText   string           `json:"goalText"`
-		Tools      []string         `json:"tools"`
-		Remote     *RemoteWorkspace `json:"remote"`
+		Mode           string           `json:"mode"`
+		Workspace      string           `json:"workspace"`
+		Title          string           `json:"title"`
+		ParentID       string           `json:"parent"`
+		Provider       string           `json:"provider"`
+		Model          string           `json:"model"`
+		Permission     string           `json:"permission"`
+		Thinking       string           `json:"thinking"`
+		PlanMode       bool             `json:"planMode"`
+		GoalMode       bool             `json:"goalMode"`
+		GoalText       string           `json:"goalText"`
+		Tools          []string         `json:"tools"`
+		Remote         *RemoteWorkspace `json:"remote"`
+		InheritContext bool             `json:"inheritContext"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体
 	if body.Mode != "assistant" && body.Mode != "aux" && body.Mode != "office" {
@@ -806,6 +844,21 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body.Remote = spec
+	}
+	// 父会话校验：只能挂在一级会话下。子对话不能再建子对话（与 dispatch_task 的
+	// 运行时守卫一起，保证只有一级）。
+	var parent *SessionMeta
+	if pid := strings.TrimSpace(body.ParentID); pid != "" {
+		p, err := a.Store.Get(pid)
+		if err != nil {
+			writeErr(w, 400, "父会话不存在："+pid)
+			return
+		}
+		if p.ParentID != "" {
+			writeErr(w, 400, "子对话不能再建子对话："+pid+" 已经是子对话（只允许一级）")
+			return
+		}
+		parent = p
 	}
 	m := &SessionMeta{
 		ID:         newID(),
@@ -825,6 +878,31 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  now(),
 		UpdatedAt:  now(),
 	}
+	// 人工建的子对话＝父对话的分支：模式/工作区/远程/模型/权限/能力全部照抄父会话。
+	// 这样系统提示词与工具目录与父完全一致——继承来的历史才能接在同一个前缀上，
+	// 命中模型的 KV 前缀缓存（工具目录或系统提示词一旦不同，后面整段都要重算）。
+	// 计划/目标模式刻意重置：子对话不该替父会话自动续跑。
+	if body.InheritContext {
+		if parent == nil {
+			writeErr(w, 400, "inheritContext 需要同时指定 parent")
+			return
+		}
+		m.Mode = parent.Mode
+		m.Workspace = parent.Workspace
+		m.Provider = parent.Provider
+		m.Model = parent.Model
+		m.Permission = parent.Permission
+		m.Thinking = parent.Thinking
+		m.Tools = parent.Tools
+		if parent.Remote != nil {
+			r := *parent.Remote
+			m.Remote = &r
+		}
+		m.Origin = "human"
+		if m.Title == "" {
+			m.Title = "子对话"
+		}
+	}
 	if permModeOf(m) == permFull {
 		m.Tools = bundleFullAccessCaps(m.Tools) // 完全访问：预设捆绑能力一并点亮
 	}
@@ -834,6 +912,14 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if err := a.Store.Create(m); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if body.InheritContext {
+		if _, err := a.copyInheritedContext(parent.ID, m.ID); err != nil {
+			// 上下文没复制成功就退回：留着半截继承的子对话比没有更糟
+			_ = a.Store.Delete(m.ID)
+			writeErr(w, 500, "继承父对话上下文失败: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, 200, m)
 }
@@ -1160,6 +1246,17 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 		}
 		if last >= 0 {
 			msgs = msgs[:last+1]
+		}
+	}
+	// 源会话若带继承标记行，分支复制后条目数可能被上面的截断改小，
+	// 重写标记里的计数——子对话前端靠它切分继承段，数字不对会错位
+	if len(msgs) > 0 && msgs[0].Kind == inheritKind {
+		var im inheritMark
+		if json.Unmarshal([]byte(msgs[0].Text()), &im) == nil {
+			im.Count = len(msgs) - 1
+			if b, err := json.Marshal(im); err == nil {
+				msgs[0].Message = TextMessage("user", string(b))
+			}
 		}
 	}
 	fork := &SessionMeta{

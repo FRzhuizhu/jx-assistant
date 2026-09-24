@@ -35,12 +35,15 @@ type SessionMeta struct {
 	GoalStatus string           `json:"goalStatus,omitempty"` // active=推进中 complete=已达成 blocked=受阻
 	GoalRounds int              `json:"goalRounds,omitempty"` // 自动续跑已用轮数
 	Tools      []string         `json:"tools,omitempty"`
+	Origin     string           `json:"origin,omitempty"` // 来源：human=人工建的子对话（右栏标记 + 划选送子对话复用判定）
 	Archived   bool             `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
 	Unread     bool             `json:"unread,omitempty"`   // 标为未读：侧栏红点
 	Status     string           `json:"status,omitempty"`   // idle | running
-	// 累计用量（来自每次模型调用的流尾 usage，供上下文面板显示缓存命中率）
-	UsagePrompt   int64 `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和
-	UsageCacheHit int64 `json:"usageCacheHit,omitempty"` // 历次调用 prompt_cache_hit_tokens 总和
+	// 累计用量（来自每次模型调用的流尾 usage，按 token 累加而非按次平均，
+	// 供上下文面板「Token 用量」分组：缓存命中% = hit/prompt）
+	UsagePrompt   int64 `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和（输入）
+	UsageCacheHit int64 `json:"usageCacheHit,omitempty"` // 历次调用 prompt_cache_hit_tokens 总和（缓存读取）
+	UsageOutput   int64 `json:"usageOutput,omitempty"`   // 历次调用 completion_tokens 总和（输出）
 	UsageCalls    int64 `json:"usageCalls,omitempty"`    // 模型调用次数
 	CreatedAt  string           `json:"createdAt"`
 	UpdatedAt  string           `json:"updatedAt"`
