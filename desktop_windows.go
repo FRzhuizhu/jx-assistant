@@ -1,0 +1,190 @@
+//go:build windows
+
+package main
+
+// 桌面壳（Windows）：用系统自带的 WebView2 运行时开原生窗口承载本地
+// 服务页面，替代「起服务 + 弹默认浏览器」的网页形态。
+//
+// - 运行时预检：Evergreen WebView2 未见时给安装指引（Win10/11 一般自带）；
+// - 单实例：命名互斥体，二次启动唤起已有窗口后退出；
+// - 窗口图标取自 exe 资源里的 RT_GROUP_ICON（id=1，见 打包/go-winres）。
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+	"unsafe"
+
+	webview2 "github.com/jchv/go-webview2"
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+)
+
+const (
+	desktopAppTitle  = "坚祥数字助理GO"
+	desktopMutexName = `Local\JX-Digital-Assistant-GO-SingleInstance`
+	// WebView2 Evergreen 的 EdgeUpdate 客户端键与官方引导器下载地址
+	webView2ClientKey       = `{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`
+	webView2BootstrapperURL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+)
+
+var (
+	desktopUser32          = windows.NewLazySystemDLL("user32.dll")
+	procDesktopShowWindow  = desktopUser32.NewProc("ShowWindow")
+	procDesktopMessageBoxW = desktopUser32.NewProc("MessageBoxW")
+)
+
+// webView2RuntimeAvailable 检测系统是否装了 WebView2 运行时：
+// 固定版本（环境变量指定目录）> Evergreen（HKLM/HKCU EdgeUpdate 的 pv 值）。
+func webView2RuntimeAvailable() bool {
+	if dir := os.Getenv("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"); dir != "" {
+		if _, err := os.Stat(filepath.Join(dir, "msedgewebview2.exe")); err == nil {
+			return true
+		}
+	}
+	for _, root := range []registry.Key{registry.LOCAL_MACHINE, registry.CURRENT_USER} {
+		for _, subkey := range []string{
+			`SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\` + webView2ClientKey,
+			`SOFTWARE\Microsoft\EdgeUpdate\Clients\` + webView2ClientKey,
+		} {
+			k, err := registry.OpenKey(root, subkey, registry.QUERY_VALUE)
+			if err != nil {
+				continue
+			}
+			pv, _, err := k.GetStringValue("pv")
+			k.Close()
+			if err == nil && pv != "" && pv != "0.0.0.0" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// acquireSingleInstance 创建命名互斥体；already=true 表示已有一个桌面实例
+// 在跑（此时 release 为空函数，调用方应唤起旧窗口后退出）。
+func acquireSingleInstance() (release func(), already bool) {
+	procCreateMutexW := windows.NewLazySystemDLL("kernel32.dll").NewProc("CreateMutexW")
+	name, err := windows.UTF16PtrFromString(desktopMutexName)
+	if err != nil {
+		return func() {}, false
+	}
+	h, _, callErr := procCreateMutexW.Call(0, 1, uintptr(unsafe.Pointer(name)))
+	if errno, ok := callErr.(syscall.Errno); ok && errno == windows.ERROR_ALREADY_EXISTS {
+		return func() {}, true
+	}
+	if h == 0 {
+		// 互斥体创建失败不拦截启动，退化为允许多开
+		return func() {}, false
+	}
+	return func() { _ = windows.CloseHandle(windows.Handle(h)) }, false
+}
+
+// activateExistingWindow 按标题找回已有桌面窗口并置前
+// （FindWindowW/SetForegroundWindow 复用 pickfolder_windows.go 的声明）。
+func activateExistingWindow() {
+	title, err := windows.UTF16PtrFromString(desktopAppTitle)
+	if err != nil {
+		return
+	}
+	hwnd, _, _ := procFindWindowW.Call(0, uintptr(unsafe.Pointer(title)))
+	if hwnd == 0 {
+		return
+	}
+	procDesktopShowWindow.Call(hwnd, 9) // SW_RESTORE
+	procSetForegroundWindow.Call(hwnd)
+}
+
+func desktopMessageBox(text, caption string) {
+	t, _ := windows.UTF16PtrFromString(text)
+	c, _ := windows.UTF16PtrFromString(caption)
+	procDesktopMessageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), 0x30) // MB_ICONWARNING
+}
+
+// desktopWorkspaceDefault 首启默认工作区不该落在安装目录：指到
+// 「文档\坚祥数字助理」。仅当当前值就是 exe 目录（默认生成的）时改写，
+// 返回是否发生了改写（调用方负责回写配置，避免设置页与实际不一致）。
+func desktopWorkspaceDefault(cfg *Config) bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	exeDir := filepath.Clean(filepath.Dir(exe))
+	ws, err := filepath.Abs(cfg.Workspace)
+	if err != nil || !stringsEqualFold(filepath.Clean(ws), exeDir) {
+		return false
+	}
+	docs := filepath.Join(os.Getenv("USERPROFILE"), "Documents")
+	if kf, err := windows.KnownFolderPath(windows.FOLDERID_Documents, 0); err == nil {
+		docs = kf
+	}
+	cfg.Workspace = filepath.Join(docs, "坚祥数字助理")
+	_ = os.MkdirAll(cfg.Workspace, 0755)
+	return true
+}
+
+func stringsEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// runDesktop 打开 WebView2 窗口并阻塞到窗口关闭。
+// JX_DESKTOP_AUTOCLOSE 秒数>0 时到点自动关窗（自动化冒烟用）。
+func runDesktop(url string) error {
+	if !webView2RuntimeAvailable() {
+		desktopMessageBox(
+			"未检测到 Microsoft WebView2 运行时（Windows 10 / 11 一般自带）。\n\n"+
+				"请先安装 WebView2 Runtime 再启动桌面版：\n"+webView2BootstrapperURL+"\n\n"+
+				"也可以不带 -desktop 参数运行，用浏览器模式使用。", desktopAppTitle)
+		return fmt.Errorf("缺少 WebView2 运行时")
+	}
+	release, already := acquireSingleInstance()
+	defer release()
+	if already {
+		activateExistingWindow()
+		return nil
+	}
+	w := webview2.NewWithOptions(webview2.WebViewOptions{
+		AutoFocus: true,
+		DataPath:  filepath.Join("data", "webview"),
+		WindowOptions: webview2.WindowOptions{
+			Title:  desktopAppTitle,
+			Width:  1280,
+			Height: 880,
+			IconId: 1, // 打包/go-winres 生成的 RT_GROUP_ICON 资源号
+			Center: true,
+		},
+	})
+	if w == nil {
+		return fmt.Errorf("创建桌面窗口失败")
+	}
+	w.Navigate(url)
+	if secs, err := strconv.Atoi(os.Getenv("JX_DESKTOP_AUTOCLOSE")); err == nil && secs > 0 {
+		go func() {
+			time.Sleep(time.Duration(secs) * time.Second)
+			// Terminate() 的 PostQuitMessage 只作用于调用线程，跨线程
+			// 无效；Destroy() 走 PostMessage(WMClose)，跨线程安全。
+			w.Destroy()
+		}()
+	}
+	w.Run()
+	w.Destroy()
+	return nil
+}

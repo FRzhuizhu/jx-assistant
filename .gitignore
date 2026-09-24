@@ -13,3 +13,5 @@ server-run.log
 config-uitest.json
 data-uitest/
 mock-演示.txt
+打包/stage/
+打包/输出/

@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/chromedp/chromedp v0.16.0
+	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/pkg/sftp v1.13.11
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
@@ -20,6 +21,7 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

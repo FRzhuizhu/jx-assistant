@@ -12,12 +12,40 @@
 go build -o jx-assistant.exe .
 .\jx-assistant.exe            # 首次启动自动生成 config.json 并打开浏览器
 .\jx-assistant.exe -port 9000 -noopen
+.\jx-assistant.exe -desktop   # 桌面模式：系统 WebView2 开原生窗口（不开浏览器）
 .\jx-assistant.exe -webdir web   # 开发模式：前端从磁盘读取，改 web/ 后刷新浏览器即生效
 go test .                         # 单测（权限引擎 / 压缩管线 / 摘要折叠）
 ```
 
 首次使用：左下角「设置」中填入 API Key；`baseURL` 兼容 OpenAI chat-completions
 接口。`baseURL` 填 `mock` 可进入**离线演示模式**，无需 Key 即可体验完整链路。
+
+## 桌面版（WebView2 壳）与安装包
+
+- `-desktop` 参数（或安装包里的发行 exe **默认**形态，构建时
+  `-ldflags "-X main.desktopDefault=1"` 注入）用系统自带的 WebView2
+  运行时开原生桌面窗口：标题「坚祥数字助理GO」，窗口/任务栏图标取 exe
+  内嵌 LOGO 资源（`打包/make_icon.py` 由 web/logo.png 生成多尺寸 ico，
+  go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1，
+  `iconres_windows_test.go` 探针防回归；`-browser` 参数可强制回浏览器形态）。
+- 桌面模式行为：相对路径（config / data / 技能）锚到 exe 目录（开发目录
+  有 go.mod 时不搬迁，避免扰动调试）；监听端口被占自动回退；命名互斥体
+  单实例，二次启动唤起已有窗口；首启默认工作区指到「文档\坚祥数字助理」
+  并回写配置；WebView2 运行时缺失时给官方下载指引。
+- **安装包**（Inno Setup，内置技能便携运行时，约 350MB 源经 LZMA2 压到
+  约 103MB，装完离线全功能）：
+
+  ```sh
+  winget install JRSoftware.InnoSetup      # 一次性装打包工具
+  powershell -NoProfile -ExecutionPolicy Bypass -File 打包\打包安装包.ps1
+  # 产物：打包\输出\坚祥数字助理GO-安装包-<版本>.exe
+  ```
+
+  安装到当前用户 `%LOCALAPPDATA%\Programs`（免管理员），中文向导、
+  桌面/开始菜单快捷方式、注册表卸载项；卸载默认保留会话数据。
+  脚本默认现场 `go build`；要排除工作区未提交改动时，先在干净 worktree
+  里构建，再以 `-ExeSource <exe路径>` 传入。打包产物（stage/、输出/）
+  已 gitignore，`config.json` 与 `data/` 永不进包。
 
 ## 权限与执行模型（移植 DSH 官方沙箱机制，本栈重写）
 

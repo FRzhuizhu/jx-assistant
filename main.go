@@ -8,13 +8,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"jxassistant/sandboxhelper"
 )
+
+// desktopDefault 由打包脚本注入（-ldflags -X）：=1 时默认桌面窗口形态。
+var desktopDefault string
 
 func main() {
 	// 本地 Linux 沙箱的自重入口：主进程以隐藏参数重启自身施加 Landlock
@@ -31,11 +36,39 @@ func main() {
 	port := flag.Int("port", 0, "覆盖配置中的监听端口")
 	noOpen := flag.Bool("noopen", false, "启动后不自动打开浏览器")
 	webDir := flag.String("webdir", "", "开发模式：前端从该磁盘目录提供（默认用内嵌副本）")
+	desktop := flag.Bool("desktop", false, "桌面模式：用系统 WebView2 开原生窗口（不开浏览器）")
+	browser := flag.Bool("browser", false, "强制浏览器模式（覆盖安装版默认的桌面模式）")
 	flag.Parse()
+
+	// 安装包构建时注入（-ldflags "-X main.desktopDefault=1"）：发行版
+	// 双击即开桌面窗口；开发版（jx-assistant.exe）不注入，保持浏览器形态。
+	wantDesktop := *desktop || desktopDefault == "1"
+
+	// 桌面/安装版：cwd 由快捷方式「起始位置」决定、不可靠，把工作目录
+	// 锚到 exe 旁，config/data/技能 等相对路径全部随之落位。开发目录
+	// （有 go.mod，含 go run 的临时目录场景之外）不搬迁，避免扰动调试。
+	if wantDesktop && !*browser {
+		if _, err := os.Stat("go.mod"); err != nil {
+			if exe, err := os.Executable(); err == nil {
+				if err := os.Chdir(filepath.Dir(exe)); err != nil {
+					log.Printf("切换到安装目录失败（按当前目录继续）: %v", err)
+				}
+			}
+		}
+		*noOpen = true
+	}
 
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
+	}
+	if wantDesktop && !*browser {
+		if desktopWorkspaceDefault(cfg) {
+			// 首启默认工作区改写后立即回写，设置页显示与实际保持一致
+			if serr := cfg.Save(*cfgPath); serr != nil {
+				log.Printf("回写默认工作区失败: %v", serr)
+			}
+		}
 	}
 	sandboxIntegrityLow = cfg.SandboxIntegrityLevel != "off"
 	if *port > 0 {
@@ -51,7 +84,34 @@ func main() {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	url := fmt.Sprintf("http://%s:%d", host, cfg.Port)
+	// 先占端口再起服务：桌面模式端口被占（如浏览器模式实例还在跑）时
+	// 自动回退到系统分配的可用端口，而不是直接退出。
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, cfg.Port))
+	if err != nil && wantDesktop && !*browser {
+		ln, err = net.Listen("tcp", host+":0")
+	}
+	if err != nil {
+		log.Fatalf("监听端口失败: %v", err)
+	}
+	url := "http://" + ln.Addr().String()
+	srv := &http.Server{Handler: withCORS(app.Routes())}
+
+	if wantDesktop && !*browser {
+		// 服务跑在后台 goroutine；窗口关闭即整体退出
+		go func() {
+			if serr := srv.Serve(ln); serr != nil && serr != http.ErrServerClosed {
+				log.Printf("HTTP 服务退出: %v", serr)
+				os.Exit(1)
+			}
+		}()
+		log.Printf("坚祥数字助理GO 桌面版已启动: %s", url)
+		if derr := runDesktop(url); derr != nil {
+			log.Fatalf("桌面模式启动失败: %v", derr)
+		}
+		log.Printf("桌面窗口已关闭，进程退出")
+		os.Exit(0)
+	}
+
 	log.Printf("坚祥数字助理（软著版）已启动: %s", url)
 	log.Printf("模型: %s @ %s（baseURL 填 mock 时为离线演示模式）", cfg.Model, cfg.BaseURL)
 	if *webDir != "" {
@@ -65,8 +125,7 @@ func main() {
 		}()
 	}
 
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", host, cfg.Port), Handler: withCORS(app.Routes())}
-	if err := srv.ListenAndServe(); err != nil {
+	if err := srv.Serve(ln); err != nil {
 		log.Fatalf("服务退出: %v", err)
 	}
 }

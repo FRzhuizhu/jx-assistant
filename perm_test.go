@@ -131,7 +131,11 @@ func TestGrantOneTimeConsume(t *testing.T) {
 }
 
 func TestProtectedPath(t *testing.T) {
-	root := `D:\智能体工作区\软著版数字助理`
+	// 用测试运行目录当受保护根（不落死绝对路径，仓库改名/换机不受影响）
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("取工作目录失败: %v", err)
+	}
 	a := &App{protectPaths: []string{
 		strings.ToLower(root + `\config.json`),
 		strings.ToLower(root + `\data`),
