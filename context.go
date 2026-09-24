@@ -110,7 +110,7 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 		out = append(out, TextMessage("user", s.Text()))
 	}
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" {
+		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" {
 			continue
 		}
 		if ruleMode && m.Compact != "" {
@@ -211,7 +211,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			add("摘要", TextMessage("user", s.Text()))
 		}
 		for _, m := range raw {
-			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" {
+			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" {
 				continue
 			}
 			if ruleMode && m.Compact != "" {
@@ -386,7 +386,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	b.WriteString("【待压缩的对话历史】\n")
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" {
+		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" {
 			continue
 		}
 		role := map[string]string{"user": "用户", "assistant": "助手", "tool": "工具结果"}[m.Role]

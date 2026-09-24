@@ -464,6 +464,16 @@ func (s *Store) Append(id string, m Message) error {
 	return s.AppendRow(id, &StoredMessage{Message: m, Kind: "chat", CreatedAt: now()})
 }
 
+// PruneKindRows 删除会话内指定 kind 较旧的行，只保留最近 keep 条
+// （模型输入快照等体积大的档案行防库膨胀用）。
+func (s *Store) PruneKindRows(sessionID, kind string, keep int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.db.Exec(`DELETE FROM messages WHERE session_id=? AND kind=? AND seq NOT IN
+		(SELECT seq FROM messages WHERE session_id=? AND kind=? ORDER BY seq DESC LIMIT ?)`,
+		sessionID, kind, sessionID, kind, keep)
+}
+
 // AppendRow 追加一条完整消息记录；Seq 为 0 时自动分配。
 func (s *Store) AppendRow(id string, sm *StoredMessage) error {
 	s.mu.Lock()

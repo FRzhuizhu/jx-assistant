@@ -1059,6 +1059,7 @@ function restoreHomeDraftLS() {
     const d = JSON.parse(localStorage.getItem('jx.homeDraft') || 'null');
     if (!d) return;
     homeDraft.workspace = d.workspace || '';
+    homeDraft.mode = CHAT_MODES.some((m) => m.v === d.mode) ? d.mode : 'office';
     homeDraft.permission = d.permission || 'workspace-write';
     homeDraft.provider = d.provider || '';
     homeDraft.model = d.model || '';
@@ -1114,6 +1115,9 @@ async function openSession(id) {
     badge.classList.remove('hidden');
   } else if (state.cur.mode === 'aux') {
     badge.textContent = '辅助对话';
+    badge.classList.remove('hidden');
+  } else if (state.cur.mode === 'office') {
+    badge.textContent = chatModeOf('office').label;
     badge.classList.remove('hidden');
   } else {
     badge.classList.add('hidden');
@@ -1211,6 +1215,84 @@ function promptRow(sys, env, seq) {
   wrap.appendChild(one('系统提示词', sys));
   wrap.appendChild(one('运行环境', env));
   return wrap;
+}
+
+// 模型输入行：该步真实发给模型的完整原始输入——消息列表逐条（含系统提示词、
+// 环境快照、摘要、压缩视图、上下文注入）+ 工具定义 JSON + 完整原始 JSON 切换
+function requestRow(r, raw, seq) {
+  const row = document.createElement('div');
+  row.className = 'proc-row';
+  if (seq != null) row.dataset.seq = seq;
+  const msgs = Array.isArray(r.messages) ? r.messages : [];
+  const tools = Array.isArray(r.tools) ? r.tools : [];
+  const sub = [msgs.length + ' 条消息'];
+  if (tools.length) sub.push(tools.length + ' 个工具');
+  if (r.model) sub.push(String(r.model));
+  row.innerHTML =
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">模型输入 #' + (r.step || '?') + '</span><span class="p-sub">· ' + esc(sub.join(' · ')) + '</span></div>' +
+    '<div class="proc-body"></div>';
+  const body = row.querySelector('.proc-body');
+
+  const cap1 = document.createElement('div');
+  cap1.className = 'pb-cap';
+  cap1.textContent = '消息列表（原样，' + msgs.length + ' 条）';
+  body.appendChild(cap1);
+  const list = document.createElement('div');
+  list.className = 'req-msgs';
+  for (const mm of msgs) {
+    const one = document.createElement('div');
+    one.className = 'req-msg';
+    const role = String((mm && mm.role) || '?');
+    const tag = document.createElement('span');
+    tag.className = 'req-role r-' + role;
+    tag.textContent = role + (mm && mm.tool_call_id ? ' · 结果' : '') +
+      (mm && Array.isArray(mm.tool_calls) && mm.tool_calls.length ? ' · 带' + mm.tool_calls.length + '个工具调用' : '');
+    one.appendChild(tag);
+    const pre = document.createElement('pre');
+    let text = '';
+    const c = mm && mm.content;
+    if (typeof c === 'string') text = c;
+    else if (Array.isArray(c)) {
+      // 视觉模型的内容块数组：文本拼出来，图片保留脱敏标注
+      text = c.map((p) => {
+        if (p && p.type === 'text') return p.text || '';
+        if (p && p.type === 'image_url' && p.image_url) return String(p.image_url.url || '');
+        return JSON.stringify(p);
+      }).join('\n');
+    } else if (c != null) text = JSON.stringify(c, null, 2);
+    if (mm && Array.isArray(mm.tool_calls) && mm.tool_calls.length) {
+      text += (text ? '\n' : '') + mm.tool_calls.map((tc) =>
+        '→ 调用 ' + ((tc.function && tc.function.name) || '?') + ' 参数：' + ((tc.function && tc.function.arguments) || '')).join('\n');
+    }
+    pre.textContent = text || '（无文本内容）';
+    one.appendChild(pre);
+    list.appendChild(one);
+  }
+  body.appendChild(list);
+
+  if (tools.length) {
+    const cap2 = document.createElement('div');
+    cap2.className = 'pb-cap';
+    cap2.textContent = '工具定义（' + tools.length + ' 个，原样 JSON）';
+    body.appendChild(cap2);
+    const pre = document.createElement('pre');
+    pre.textContent = JSON.stringify(tools, null, 2);
+    body.appendChild(pre);
+  }
+
+  const rawDet = document.createElement('details');
+  rawDet.className = 'req-raw';
+  const sum = document.createElement('summary');
+  sum.textContent = '查看完整原始 JSON（' + fmtCount(raw.length) + ' 字）';
+  rawDet.appendChild(sum);
+  const preRaw = document.createElement('pre');
+  preRaw.textContent = raw;
+  rawDet.appendChild(preRaw);
+  body.appendChild(rawDet);
+
+  bindProcToggle(row);
+  return row;
 }
 
 // 思考行：标题带字数，点开看原文
@@ -1370,6 +1452,15 @@ function groupTurns(msgs, resultOf) {
       cur.items.push({ k: 'prompt', seq: m.seq, sys, env });
       continue;
     }
+    if (m.kind === 'request') {     // 模型输入快照：该步真实发给模型的完整原始输入
+      let r = null, raw = String(m.content ?? '');
+      try { r = JSON.parse(raw); } catch (e) { /* 忽略坏行 */ }
+      if (r && Array.isArray(r.messages)) {
+        ensure();
+        cur.items.push({ k: 'request', seq: m.seq, r, raw });
+      }
+      continue;
+    }
     if (m.role === 'user') {
       const txt = String(m.content ?? '');
       if (isSysNote(txt)) { ensure(); cur.items.push({ k: 'note', m }); continue; }
@@ -1445,6 +1536,7 @@ function msgActions(m) {
 
 function renderItem(it) {
   if (it.k === 'prompt') return promptRow(it.sys, it.env, it.seq);
+  if (it.k === 'request') return requestRow(it.r, it.raw, it.seq);
   if (it.k === 'think') return thinkRow(it.text, it.seq);
   if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
   if (it.k === 'subtask') {
@@ -2257,7 +2349,7 @@ async function send(forceContent, view) {
       const s = await api('/api/sessions', {
         method: 'POST',
         body: JSON.stringify({
-          mode: 'task',
+          mode: homeDraft.mode === 'office' ? 'office' : 'task',
           workspace: homeDraft.workspace || '',
           remote: homeDraft.remote || null,
           permission: homeDraft.permission,
@@ -2606,7 +2698,37 @@ function renderModelPop() {
 /* ---------- 弹出面板系统：加号菜单 / 权限面板 / 模型面板 / 目录面板 ---------- */
 
 const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读写', 'full': '完全访问' };
-const homeDraft = { permission: 'workspace-write', provider: '', model: '', thinking: '', tools: [], planMode: false, goalMode: false, goalText: '', remote: null };
+// 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
+// 扩展模式（设计人员/编程人员等）＝在这里加一项 + 后端加对应提示词分支，
+// 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
+const CHAT_MODES = [
+  { v: 'office', label: '标准办公', desc: '面向日常办公：文档、资料、表格、沟通文案，成果落文件' },
+];
+const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', label: '标准办公', desc: '' };
+
+// 模式下拉：选项列表 + 当前项打勾
+function renderModePop() {
+  const box = $('mode-pop-list');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const m of CHAT_MODES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pop-item' + (homeDraft.mode === m.v ? ' sel' : '');
+    b.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>' +
+      '<span class="mp2-text"><b>' + esc(m.label) + '</b><i>' + esc(m.desc) + '</i></span>' +
+      (homeDraft.mode === m.v ? '<span class="pop-check">✓</span>' : '');
+    b.onclick = () => {
+      homeDraft.mode = m.v;
+      syncComposer();
+      closePopovers();
+    };
+    box.appendChild(b);
+  }
+}
+
+const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: [], planMode: false, goalMode: false, goalText: '', remote: null };
 
 function closePopovers() {
   document.querySelectorAll('.popover').forEach((p) => p.classList.add('hidden'));
@@ -2676,15 +2798,19 @@ function syncComposer() {
   } else {
     rb.classList.add('hidden');
   }
-  // 目录行只在新建对话（无会话）时出现
+  // 目录行/模式行只在新建对话（无会话）时出现
   const wsRow = $('ws-row');
+  const modeRow = $('mode-row');
   if (!state.cur) {
     wsRow.classList.remove('hidden');
+    modeRow.classList.remove('hidden');
     $('ws-row-name').textContent = homeDraft.remote
       ? remoteDisplay(homeDraft.remote)
       : (baseName(homeDraft.workspace || state.defaultWs || '') || '工作目录');
+    $('mode-row-name').textContent = chatModeOf(homeDraft.mode).label;
   } else {
     wsRow.classList.add('hidden');
+    modeRow.classList.add('hidden');
   }
   $('input').placeholder = state.cur ? '发消息或创建任务…' : '描述你想要构建的内容…';
   persistHomeDraftLS(); // 所有选择改动都会走到这里，统一落一次本地草稿
@@ -3467,6 +3593,12 @@ $('ws-row').onclick = () => {
   renderWsPop();
   openPopover('ws-pop', $('ws-row'));
 };
+
+// 模式选择：与工作目录胶囊同款交互（未来 设计人员/编程人员 等模式照标准办公加选项）
+$('mode-row').onclick = () => {
+  renderModePop();
+  openPopover('mode-pop', $('mode-row'));
+};
 $('ws-search').addEventListener('input', (e) => {
   $('ws-search-clear').classList.toggle('hidden', !e.target.value);
   renderWsPop();
@@ -3566,6 +3698,7 @@ $('perm-pop').addEventListener('change', (e) => {
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.popover') && !e.target.closest('#btn-plus') &&
       !e.target.closest('#perm-chip') && !e.target.closest('#model-chip') && !e.target.closest('#ws-row') &&
+      !e.target.closest('#mode-row') &&
       !e.target.closest('#sub-dd') &&
       !e.target.closest('.ws-tools') && !e.target.closest('.ws-acts') && !e.target.closest('.row-acts')) {
     closePopovers();

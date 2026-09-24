@@ -103,10 +103,17 @@
     <div id="composer-wrap">
       <div id="hint"></div>
       <div id="composer-area">
-        <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-          <b id="ws-row-name">工作目录</b>
-          <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        <div id="draft-chips">
+          <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <b id="ws-row-name">工作目录</b>
+            <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
+          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；数字助理主对话有专属模式，不在此选择）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>
+            <b id="mode-row-name">标准办公</b>
+            <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
         </div>
         <div id="composer">
         <textarea id="input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
@@ -428,6 +435,13 @@
       添加远程工作目录
     </button>
   </div>
+</div>
+
+<!-- 工作模式选择面板（仅新建对话时；选项由 app.js 的 CHAT_MODES 渲染，未来模式照标准办公加选项） -->
+<div id="mode-pop" class="popover mode-pop hidden">
+  <div class="pop-group">工作模式</div>
+  <div id="mode-pop-list"></div>
+  <div class="mode-pop-note">模式决定系统提示词与能力倾向；数字助理主对话有专属模式，从左上角进入。</div>
 </div>
 
 <!-- SSH 远程工作区（两步式：第一步连接配置→保存；第二步浏览远程目录→使用） -->

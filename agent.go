@@ -51,6 +51,19 @@ const taskPrompt = `你是「坚祥数字助理」的执行助手。你的职责
 4. 简洁沟通：过程从简、结论清晰，用中文回复用户；代码、路径与命令保持原文。
 5. 你还有 search_sessions / read_session_messages 两个历史工具：可以搜索并翻阅任何会话的原始记录（包括很久以前的，压缩不会破坏原始历史）。需要回忆之前的工作时优先用它。`
 
+// officePrompt 是「标准办公」模式的系统提示词：面向日常办公（文档、资料、表格、
+// 沟通文案），是未来 设计人员/编程人员 等扩展模式的样板——新模式 = 换这段提示词
+// （可选地再调 toolsFor 的工具集），其余机制完全复用。
+const officePrompt = `你是「坚祥数字助理」的标准办公模式助手，面向日常办公场景：撰写与润色文档、整理资料、处理表格数据、起草邮件与通知、做会议纪要、查证信息等。
+
+工作准则：
+1. 办公产出以文件交付：文档、表格、纪要等成果默认写入工作区文件（Markdown/CSV/HTML 等通用格式），并在回复里给出文件路径与内容要点；零散小问答直接回答即可。
+2. 动手优先：需要资料就检索文件与网页，需要数据就算（执行命令/脚本），不要凭空编造；查不到、算不了就如实说明。
+3. 格式规范：正式文稿注意结构（标题层级、列表、表格）；草拟内容符合中文办公文书习惯，称呼、落款按用户给定的场景补全。
+4. 遵守权限：按「运行环境」中的权限说明写文件与执行命令；被拒绝时如实告知原因并建议调整，绝不尝试绕过。
+5. 简洁沟通：过程从简、结论清晰，用中文回复；涉及数据与结论时注明来源（文件路径或网址）。
+6. 你还有 search_sessions / read_session_messages 两个历史工具：可以搜索并翻阅任何会话的原始记录，需要回忆之前的工作时优先用它。`
+
 const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入口。用户只对你提需求，由你决定这件事交给哪个会话去做。
 
 ## 你是谁
@@ -92,6 +105,8 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 		base = assistantPrompt
 	case "aux":
 		base = auxPrompt
+	case "office":
+		base = officePrompt
 	}
 	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动）"
 }
@@ -241,6 +256,54 @@ func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
 	return &sm
 }
 
+// requestSnapshotsKeep 每会话保留的模型输入快照条数（老快照自动裁剪，防库膨胀）
+const requestSnapshotsKeep = 30
+
+// sanitizeCaptureMessages 脱敏捕获用的消息：视觉模型内联的 base64 图片
+// 换成大小标注，其余原样保留（展示的是"真实输入"的完整结构）。
+func sanitizeCaptureMessages(msgs []Message) []Message {
+	out := make([]Message, len(msgs))
+	for i, m := range msgs {
+		if parts, ok := m.Content.([]ContentPart); ok {
+			stripped := make([]ContentPart, len(parts))
+			for j, p := range parts {
+				if p.ImageURL != nil && strings.HasPrefix(p.ImageURL.URL, "data:") {
+					p.ImageURL = &ImageURL{URL: fmt.Sprintf("[内联图片 data URI，约 %d KB，快照中已省略]", len(p.ImageURL.URL)/1024)}
+				}
+				stripped[j] = p
+			}
+			m.Content = stripped
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// appendRequestSnapshot 落库并推送一条「模型输入」快照（kind=request）：
+// 该步真实发给模型的完整原始输入——消息列表（含系统提示词、环境快照、摘要、
+// 压缩视图、上下文注入）、工具定义、模型与思考档位。前端在对话流里折叠展示。
+func (a *App) appendRequestSnapshot(sess *SessionMeta, emit func(Event), step int, req ChatRequest) {
+	payload := map[string]any{
+		"step":     step,
+		"model":    req.Model,
+		"messages": sanitizeCaptureMessages(req.Messages),
+		"tools":    req.Tools,
+	}
+	if req.Thinking != nil {
+		payload["thinking"] = req.Thinking.Type
+	}
+	if req.ReasoningEffort != "" {
+		payload["reasoningEffort"] = req.ReasoningEffort
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	sm := a.appendRow(sess, StoredMessage{Message: TextMessage("user", string(b)), Kind: "request", CreatedAt: now()})
+	emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "request"})
+	a.Store.PruneKindRows(sess.ID, "request", requestSnapshotsKeep)
+}
+
 // appendMessageThinking 同 appendMessage，但带上该步的思考过程原文。
 func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) *StoredMessage {
 	sm := &StoredMessage{Message: m, Kind: "chat", Thinking: thinking, CreatedAt: now()}
@@ -304,6 +367,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: defs}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
+		a.appendRequestSnapshot(sess, emit, step+1, req) // 该步真实输入原样落档，供前端查看
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall

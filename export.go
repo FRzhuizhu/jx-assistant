@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -96,6 +98,18 @@ func renderExportMessages(b *strings.Builder, msgs []*StoredMessage) {
 		ts := ""
 		if m.CreatedAt != "" {
 			ts = " · " + m.CreatedAt
+		}
+		if m.Kind == "request" {
+			// 模型输入快照体积大，导出只留一行占位（完整原文在应用内对话流展开查看）
+			var r struct {
+				Step     int    `json:"step"`
+				Model    string `json:"model"`
+				Messages []any  `json:"messages"`
+			}
+			_ = json.Unmarshal([]byte(m.Text()), &r)
+			b.WriteString("> **[模型输入 #" + strconv.Itoa(r.Step) + " · " + r.Model +
+				" · " + strconv.Itoa(len(r.Messages)) + " 条消息 · 含工具定义]**" + ts + "\n\n")
+			continue
 		}
 		if m.Kind == "summary" {
 			label := "摘要"

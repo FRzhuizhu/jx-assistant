@@ -10,6 +10,7 @@ import (
 
 // SessionMeta 是一个会话的元信息；消息正文存于 messages 表。
 // mode: task=普通任务会话 assistant=数字助理总控 aux=辅助答疑对话
+//      office=标准办公模式（扩展模式样板：设计人员/编程人员等未来模式照此新增）
 // permission: workspace-write=工作区内读写 full=完全访问 read-only=只读
 // （后端权限引擎强制执行，见 perm.go；tools 为启用的能力开关 id 列表：
 // unsandboxed=允许工作区外执行命令、sandbox-write=只读档下沙箱内写入、
