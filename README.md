@@ -51,6 +51,17 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   里构建，再以 `-ExeSource <exe路径>` 传入。打包产物（stage/、输出/）
   已 gitignore，`config.json` 与 `data/` 永不进包。
 
+## 自带的 MD 查看器（md-viewer/）
+
+项目自带一个独立小应用「MD 查看器」：双击 .md 文件弹出独立窗口，用系统
+WebView2 内核渲染（样式与渲染库都在 `viewer-template.html` 一个文件里），
+不依赖 Python，主线程序没在运行也能单独使用。
+
+- 单次使用不改系统关联：右键 .md → 打开方式 → 选 `md-viewer/MD查看器.exe`；
+  想设为默认：右键 `md-viewer/install.ps1` → 使用 PowerShell 运行，
+  还原用同目录的 `还原关联.ps1`。
+- 未装 WebView2 运行时自动降级用系统浏览器打开；详见 `md-viewer/使用说明.txt`。
+
 ## 权限与执行模型（移植 DSH 官方沙箱机制，本栈重写）
 
 与官方同构的完整沙箱栈——**OS 级强制隔离**，不是策略约定：
