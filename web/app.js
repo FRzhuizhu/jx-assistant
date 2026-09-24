@@ -160,8 +160,7 @@ async function loadStatus() {
   try {
     const st = await api('/api/status');
     state.defaultWs = st.workspace || '';
-    if (st.mock) { el.textContent = '演示模式'; el.className = 'pill warn'; }
-    else if (!st.hasKey) { el.textContent = '未配置 Key'; el.className = 'pill warn'; }
+    if (!st.hasKey) { el.textContent = '未配置 Key'; el.className = 'pill warn'; }
     else { el.textContent = '✓ 已连接'; el.className = 'pill ok'; }
     syncComposer();
   } catch (e) {
@@ -1043,7 +1042,7 @@ function resetEmpty() {
   placeComposer();
   // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
   $('input').value = homeDraft.text || '';
-  if ($('input').value) autoGrow();
+  autoGrow();
   syncComposer();
 }
 
@@ -1277,8 +1276,8 @@ async function openSubSession(id) {
     // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有就是空，不残留上一个子对话的字）
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
-      if ($('sub-input').value) autoGrow($('sub-input'));
     } catch (e) { $('sub-input').value = ''; }
+    autoGrow($('sub-input'));
   } catch (e) { /* 打不开就保持原状 */ }
 }
 
@@ -1450,8 +1449,8 @@ async function openSession(id) {
   // 输入框整体替换为该会话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个对话的字）
   try {
     $('input').value = localStorage.getItem(sessionDraftKey(id)) || '';
-    if ($('input').value) autoGrow();
   } catch (e) { $('input').value = ''; }
+  autoGrow();
   // 上次中断遗留的排队消息：会话空闲时从第一条继续
   if (state.queue.length && !state.streaming) setTimeout(flushQueue, 300);
   loadSessions();
@@ -3403,7 +3402,7 @@ async function openSettings() {
   try {
     const st = await api('/api/status');
     $('about-version').textContent = '版本 ' + (st.version || '-') + ' · ' + (st.model || '');
-    $('about-status').textContent = st.mock ? '当前：离线演示模式（mock）' : (st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key');
+    $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
   } catch (e) { $('about-status').textContent = '服务状态未知'; }
   $('settings').classList.remove('hidden');
 }

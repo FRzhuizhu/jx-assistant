@@ -318,8 +318,9 @@ const searchableSessionsBaseSQL = `mode != 'assistant' AND parent_id = ''`
 //   bin=1 → 回收站：已归档，或其工作目录在回收列表 ws 里；
 //   否则  → 正常工作区：未归档，且工作目录不在回收列表 ws 里。
 //
-// ws 为回收目录列表（JSON 数组，空串代表默认工作区），缺省或为空则不按目录过滤。
-// 这样正常搜索绝不落到回收站内容，回收站搜索也绝不落到正常内容。
+// ws 为回收目录列表（JSON 数组，空串代表默认工作区）；keep 为已单独恢复的
+// 会话 id 列表：正常侧豁免目录回收（照常可搜），回收站侧则排除（已不属于
+// 回收站）。参数缺省或为空时按旧行为处理，两边搜索互不越界。
 func searchScopeWhere(r *http.Request, pfx string) (string, []any) {
 	bin := r.URL.Query().Get("bin") == "1"
 	cond := pfx + "archived = 0"
@@ -327,21 +328,39 @@ func searchScopeWhere(r *http.Request, pfx string) (string, []any) {
 		cond = pfx + "archived = 1"
 	}
 	var args []any
-	if raw := r.URL.Query().Get("ws"); raw != "" {
-		var wss []string
-		if json.Unmarshal([]byte(raw), &wss) == nil && len(wss) > 0 {
-			ph := make([]string, len(wss))
-			for i, w := range wss {
-				ph[i] = "?"
-				args = append(args, w)
-			}
-			joined := strings.Join(ph, ",")
-			if bin {
-				cond = "(" + pfx + "archived = 1 OR " + pfx + "workspace IN (" + joined + "))"
-			} else {
-				cond += " AND " + pfx + "workspace NOT IN (" + joined + ")"
-			}
+	readList := func(key string) []string {
+		raw := r.URL.Query().Get(key)
+		if raw == "" {
+			return nil
 		}
+		var out []string
+		if json.Unmarshal([]byte(raw), &out) != nil {
+			return nil
+		}
+		return out
+	}
+	placeholders := func(vals []string) string {
+		ph := make([]string, len(vals))
+		for i, v := range vals {
+			ph[i] = "?"
+			args = append(args, v)
+		}
+		return strings.Join(ph, ",")
+	}
+	wss, keeps := readList("ws"), readList("keep")
+	if bin {
+		if len(wss) > 0 {
+			cond = "(" + pfx + "archived = 1 OR " + pfx + "workspace IN (" + placeholders(wss) + "))"
+		}
+		if len(keeps) > 0 {
+			cond += " AND " + pfx + "id NOT IN (" + placeholders(keeps) + ")"
+		}
+	} else if len(wss) > 0 {
+		inner := pfx + "workspace NOT IN (" + placeholders(wss) + ")"
+		if len(keeps) > 0 {
+			inner += " OR " + pfx + "id IN (" + placeholders(keeps) + ")"
+		}
+		cond += " AND (" + inner + ")"
 	}
 	return cond, args
 }

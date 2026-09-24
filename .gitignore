@@ -10,3 +10,6 @@ data-tamper-test/
 _dsh_session1.jsonl
 server-run.log
 技能/_runtime/
+config-uitest.json
+data-uitest/
+mock-演示.txt

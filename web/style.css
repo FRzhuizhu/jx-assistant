@@ -95,7 +95,9 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   display: flex; flex-direction: column; gap: 3px;
   padding: 4px 10px 12px;
 }
-.foot-top { display: flex; justify-content: flex-end; padding: 4px 4px 2px; }
+/* 连接状态胶囊：嵌在设置行右侧，行内居中（flex 的 align-items:center 管上下，
+   margin-left:auto 把它推到最右） */
+.foot-btn .pill { margin-left: auto; flex: none; }
 /* 底部整行按钮（回收站/设置）：无边框，悬停/选中整行落一层胶囊底（仿参考站） */
 .foot-btn {
   display: flex; align-items: center; gap: 8px;
@@ -822,11 +824,14 @@ body.rp-open .w-handle { display: none; }
 #plugin-composer-controls { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ---------- 组件样式（input-counter） ---------- */
+/* 输入字数：钉在对话框区域右上角的小胶囊，不参与输入区布局（不吃底部条的宽度） */
 #cx-counter {
-  font-size: 11.5px; color: var(--text-3); margin-left: auto; align-self: center;
-  padding: 0 4px; user-select: none;
+  position: absolute; top: 10px; right: 14px; z-index: 4;
+  font-size: 10.5px; line-height: 1; color: var(--text-3);
+  background: var(--chip); border-radius: 999px; padding: 3px 7px;
+  user-select: none; pointer-events: none;
 }
-#cx-counter.warn { color: var(--amber, #d69e2e); font-weight: 600; }
+#cx-counter.warn { color: #fff; background: var(--amber, #d69e2e); font-weight: 600; }
 
 /* ---------- 顶栏：收起/展开侧边栏 ---------- */
 #btn-sidebar {

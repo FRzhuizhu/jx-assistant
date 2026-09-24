@@ -1,5 +1,5 @@
 /* 组件：输入字数统计 —— 最小组件模板。
- * init：向输入框区域挂一个计数标签并监听 input；dispose：全撤。
+ * init：在对话框区域右上角挂一个小计数标签并监听输入框；dispose：全撤。
  * 新建组件时复制本目录，改 manifest 与本文件即可。 */
 (function () {
   let badge = null;
@@ -20,8 +20,9 @@
         };
         onInput = update;
         input.addEventListener('input', onInput);
-        const bar = document.querySelector('.composer-bar');
-        (bar || input.parentElement).appendChild(badge);
+        // 挂在对话框区域右上角（#msg-zone 是消息列的定位容器；拿不到就退回消息列）
+        const zone = document.getElementById('msg-zone') || document.getElementById('messages');
+        (zone || input.parentElement).appendChild(badge);
         update();
       },
       dispose() {
