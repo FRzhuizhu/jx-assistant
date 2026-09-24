@@ -77,6 +77,19 @@ func (p *pythonRuntime) hasModule(module string) bool {
 	return ok
 }
 
+// clearModuleCache 清掉该解释器的模块检查缓存：装完依赖后必须调用，
+// 否则会读到安装前的缓存负结果（缓存毒化）。
+func (p *pythonRuntime) clearModuleCache() {
+	pyMu.Lock()
+	defer pyMu.Unlock()
+	prefix := p.Exe + ":"
+	for k := range pyModuleCache {
+		if strings.HasPrefix(k, prefix) {
+			delete(pyModuleCache, k)
+		}
+	}
+}
+
 // run 执行一条脚本命令，返回标准输出；超时或非零退出返回错误（含 stderr 尾部）。
 func (p *pythonRuntime) run(args []string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

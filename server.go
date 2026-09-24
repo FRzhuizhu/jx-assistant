@@ -43,6 +43,9 @@ type App struct {
 	jobsMu       sync.Mutex
 	jobs         map[string]*jobRun // 会话内后台作业（jobs.go）
 	protectPaths []string           // 助手自身配置/数据目录，任何模式禁访问
+	skillsMu     sync.Mutex
+	skillsReady  bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
+	skillsDirOurs string // 已解析的技能目录（App 级缓存，避免跨实例污染）
 	remoteMu     sync.Mutex
 	remotes      map[string]*remoteClient // SSH 远程连接池（remote.go）
 	evtMu        sync.Mutex
@@ -141,6 +144,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/workspace/test", a.handleTestWorkspace)
 	mux.HandleFunc("POST /api/workspace/ls", a.handleWorkspaceLs)
 	mux.HandleFunc("GET /attachments/", a.handleAttachment)
+	mux.HandleFunc("GET /api/skills", a.handleListSkills)
+	mux.HandleFunc("POST /api/skills/add", a.handleAddSkill)
+	mux.HandleFunc("POST /api/skills/toggle", a.handleToggleSkill)
+	mux.HandleFunc("POST /api/skills/delete", a.handleDeleteSkill)
 	mux.HandleFunc("POST /api/sessions/{id}/remote", a.handleSetSessionRemote)
 	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
 	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)

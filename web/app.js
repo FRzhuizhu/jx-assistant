@@ -2156,6 +2156,7 @@ async function openSettings() {
   renderPluginList();
   mountPluginSections();
   renderComponentList();
+  renderSkillsPanel();
   setSettingsPane('general');
   // 关于页信息
   try {
@@ -2976,3 +2977,81 @@ loadApprovals();
 loadQuestions();
 setInterval(loadApprovals, 20000); // 审批轮询兜底（SSE 断连时也能拿到）
 setInterval(loadQuestions, 20000);
+
+/* ---------- 技能管理（/api/skills：自带只读展示，用户可加/开关/删） ---------- */
+
+async function renderSkillsPanel() {
+  const bBox = $('skill-builtin-list');
+  const uBox = $('skill-user-list');
+  if (!bBox || !uBox) return;
+  bBox.innerHTML = '加载中…';
+  uBox.innerHTML = '';
+  let data;
+  try { data = await api('/api/skills'); } catch (e) { bBox.textContent = '技能清单读取失败：' + e.message; return; }
+  bBox.innerHTML = '';
+
+  for (const s of (data.builtin || [])) {
+    const row = document.createElement('div');
+    row.className = 'plugin-row';
+    row.innerHTML =
+      `<div class="pr-info"><div class="pr-line"><b>${esc(s.name)}</b><span class="pr-ver">自带 · v${esc(s.version || '')}</span></div>` +
+      `<p>${esc(s.description || '')}</p></div>`;
+    const tag = document.createElement('span');
+    tag.className = 'skill-constant';
+    tag.textContent = '常开';
+    row.appendChild(tag);
+    bBox.appendChild(row);
+  }
+
+  for (const s of (data.user || [])) {
+    const row = document.createElement('div');
+    row.className = 'plugin-row';
+    row.innerHTML =
+      `<div class="pr-info"><div class="pr-line"><b>${esc(s.name)}</b><span class="pr-ver">${esc(s.id)}</span></div>` +
+      `<p>${esc(s.description || '')}</p></div>`;
+    const tg = document.createElement('label');
+    tg.className = 'pr-toggle';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!s.enabled;
+    cb.onchange = async () => {
+      cb.disabled = true;
+      try {
+        await api('/api/skills/toggle', { method: 'POST', body: JSON.stringify({ id: s.id, enabled: cb.checked }) });
+      } catch (e) {
+        alert('切换失败：' + e.message);
+        cb.checked = !cb.checked;
+      }
+      cb.disabled = false;
+    };
+    tg.appendChild(cb);
+    row.appendChild(tg);
+    const del = document.createElement('button');
+    del.className = 'skill-del';
+    del.textContent = '删除';
+    del.onclick = async () => {
+      if (!confirm('删除技能「' + s.name + '」？技能目录将被一并移除。')) return;
+      try {
+        await api('/api/skills/delete', { method: 'POST', body: JSON.stringify({ id: s.id }) });
+        renderSkillsPanel();
+      } catch (e) { alert('删除失败：' + e.message); }
+    };
+    row.appendChild(del);
+    uBox.appendChild(row);
+  }
+
+  if (!(data.user || []).length) {
+    uBox.innerHTML = '<div class="ws-pop-empty">还没有用户技能。把包含 SKILL.md 的文件夹路径粘贴到上方「添加」。</div>';
+  }
+}
+
+$('skill-add-btn').onclick = async () => {
+  const inp = $('skill-add-path');
+  const p = (inp.value || '').trim();
+  if (!p) return;
+  try {
+    await api('/api/skills/add', { method: 'POST', body: JSON.stringify({ path: p }) });
+    inp.value = '';
+    renderSkillsPanel();
+  } catch (e) { alert('添加失败：' + e.message); }
+};

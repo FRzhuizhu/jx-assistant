@@ -1,10 +1,10 @@
 package main
 
-// 文档组件：pdf / ocr / office_skill 三个模型工具。
-// 执行链路：工具 → 探测系统 Python → 运行内嵌落盘的组件脚本 →
-// JSON 结果摘要 + 图片信封回给模型。只读语义：diagnose/text/table/ocr
-// 不碰用户文件（报告与渲染图都落在系统临时目录并入库为附件）；
-// 模型确需把产物留在工作区时，用 outdir 参数（会走写权限）。
+// 技能工具层：pdf / ocr / office_skill 三个模型工具。
+// 技能的定义（SKILL.md / manifest.json / scripts）都在 技能/<技能名>/ 目录，
+// 本文件只做三件事：解析技能清单 → 装配运行环境（系统 Python 快路径，
+// 否则自动装配便携运行时）→ 执行技能脚本并把结果摘要回给模型。
+// 技能自身的用法说明存放在各 SKILL.md，office_skill 工具负责把它带给模型。
 
 import (
 	"encoding/json"
@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	docsExecTimeout  = 5 * time.Minute
-	digestMaxRunes   = 8000
-	imageAutoPages   = 5 // image 模式缺省最多渲染的页数，其余用 --pages 续读
-	embedAutoAttach  = 3 // embed 模式最多入库的内嵌图张数
+	docsExecTimeout = 5 * time.Minute
+	digestMaxRunes  = 8000
+	imageAutoPages  = 5 // image 模式缺省最多渲染的页数，其余用 --pages 续读
+	embedAutoAttach = 3 // embed 模式最多入库的内嵌图张数
 )
 
 // docsJSONDigest 截断脚本输出的 JSON，超限给续读提示。
@@ -32,23 +32,24 @@ func docsJSONDigest(report string, hint string) string {
 	return cut + "\n…（结果过长已截断）" + hint
 }
 
-// runDocsScript 找解释器、查依赖、跑脚本，返回标准输出。
-func runDocsScript(t *toolContext, script string, module string, install []string, args []string, timeout time.Duration) (string, error) {
-	py, err := findPython()
+// runSkillEntry 运行某技能 manifest 里声明的入口脚本：
+// 先装配运行环境（系统 Python 或便携运行时），再执行脚本，返回合并输出。
+func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.Duration) (string, error) {
+	manifest, skillDir, err := t.app.readSkillManifest(skillID)
 	if err != nil {
 		return "", err
 	}
-	if !py.hasModule(module) {
-		return "", fmt.Errorf("缺少 Python 模块 %s。%s", module, pyInstallHint(install...))
-	}
-	dir, err := ensureScripts()
+	py, err := t.app.ensureSkillRuntime(t, manifest.Python.Modules, manifest.Python.Wheels)
 	if err != nil {
 		return "", err
 	}
-	out, err := py.run(append([]string{filepath.Join(dir, script)}, args...), timeout)
+	entry := filepath.Join(skillDir, filepath.FromSlash(manifest.Entry))
+	out, err := py.run(append([]string{entry}, args...), timeout)
 	if err != nil {
+		// 便携运行时损坏（如被手动删除库文件）时给出可操作的重装配提示
 		if mod, ok := pyMissingFromStderr(out); ok {
-			return "", fmt.Errorf("缺少 Python 模块 %s。%s", mod, pyInstallHint(mod))
+			return "", fmt.Errorf("运行时缺少模块 %s。可删除技能目录下的 _runtime 重装，或按指引手工安装: %s",
+				mod, pyInstallHint(mod))
 		}
 		return "", err
 	}
@@ -60,7 +61,7 @@ func runDocsScript(t *toolContext, script string, module string, install []strin
 func pdfTool() Tool {
 	return Tool{
 		Spec: toolSpec("pdf",
-			"读取 PDF 文件。mode=diagnose 判断文字层是否可信（永远先跑它）；text 抽取文字；table 抽表格；image 把页面渲染成 PNG（自动以图片信封返回，配合 read_image 通路查看，扫描件/乱码件的正确通路）；embed 抽取内嵌图片。需要本机 Python 与依赖库（缺失时返回安装指引）。",
+			"读取 PDF 文件。mode=diagnose 判断文字层是否可信（永远先跑它）；text 抽取文字；table 抽表格；image 把页面渲染成 PNG（自动以图片信封返回，配合 read_image 通路查看，扫描件/乱码件的正确通路）；embed 抽取内嵌图片。首次使用会自动装配技能运行时（需联网一次）。",
 			objSchema(map[string]any{
 				"mode":     map[string]any{"type": "string", "enum": []string{"diagnose", "text", "table", "image", "embed"}, "description": "读取模式"},
 				"path":     strProp("PDF 文件路径（相对或绝对）"),
@@ -128,18 +129,7 @@ func runPdfTool(t *toolContext, args json.RawMessage) (string, error) {
 		scriptArgs = append(scriptArgs, "--max-rows", fmt.Sprintf("%d", p.MaxRows))
 	}
 
-	type depSpec struct {
-		module  string
-		install []string
-	}
-	dep := map[string]depSpec{
-		"diagnose": {"pypdfium2", []string{"pypdfium2"}},
-		"text":     {"pypdfium2", []string{"pypdfium2"}},
-		"image":    {"pypdfium2", []string{"pypdfium2"}},
-		"table":    {"pdfplumber", []string{"pdfplumber"}},
-		"embed":    {"pypdf", []string{"pypdf"}},
-	}[p.Mode]
-	out, err := runDocsScript(t, "pdf_tool.py", dep.module, dep.install, scriptArgs, docsExecTimeout)
+	out, err := runSkillEntry(t, "pdf", scriptArgs, docsExecTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -198,7 +188,7 @@ func (t *toolContext) attachReportImages(dir, mode string) string {
 func ocrTool() Tool {
 	return Tool{
 		Spec: toolSpec("ocr",
-			"识别图片中的文字（离线 OCR，中英文）。mode=text 返回按阅读顺序拼接的全文与逐块明细；lines 逐行输出，可用 outlined=true 把识别框描红画回图（以图片信封返回，便于对照）。只接受图片；PDF 请先跑 pdf 工具的 image 模式（scale 建议 3）。需要本机 Python 与 rapidocr-onnxruntime。",
+			"识别图片中的文字（离线 OCR，中英文）。mode=text 返回按阅读顺序拼接的全文与逐块明细；lines 逐行输出，可用 outlined=true 把识别框描红画回图（以图片信封返回，便于对照）。只接受图片；PDF 请先跑 pdf 工具的 image 模式（scale 建议 3）。首次使用会自动装配技能运行时（需联网一次）。",
 			objSchema(map[string]any{
 				"mode":      map[string]any{"type": "string", "enum": []string{"text", "lines"}, "description": "text=全文；lines=逐行"},
 				"path":      strProp("图片路径（相对或绝对）"),
@@ -212,10 +202,10 @@ func ocrTool() Tool {
 
 func runOcrTool(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Mode      string  `json:"mode"`
-		Path      string  `json:"path"`
-		MinScore  float64 `json:"min_score"`
-		Outlined  bool    `json:"outlined"`
+		Mode     string  `json:"mode"`
+		Path     string  `json:"path"`
+		MinScore float64 `json:"min_score"`
+		Outlined bool    `json:"outlined"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -238,7 +228,7 @@ func runOcrTool(t *toolContext, args json.RawMessage) (string, error) {
 		scriptArgs = append(scriptArgs, "--outlined", outlinedPath)
 	}
 
-	out, err := runDocsScript(t, "ocr_tool.py", "rapidocr_onnxruntime", []string{"rapidocr-onnxruntime"}, scriptArgs, docsExecTimeout)
+	out, err := runSkillEntry(t, "ocr", scriptArgs, docsExecTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -254,50 +244,10 @@ func runOcrTool(t *toolContext, args json.RawMessage) (string, error) {
 
 // ---------- office_skill ----------
 
-type officeGuide struct {
-	Kind      string
-	Library   string // import 名
-	Install   string // pip 包名
-	Guidance  string
-}
-
-func officeGuides() map[string]officeGuide {
-	return map[string]officeGuide{
-		"docx": {
-			Kind: "docx", Library: "docx", Install: "python-docx",
-			Guidance: `## Word（.docx）操作要点
-- 库：python-docx（from docx import Document）。
-- 新建：Document() → add_heading(title, level) → add_paragraph(text, style="Heading 1") → save(path)。
-- 修改既有文件：先遍历段落/表格/节看结构再动手；**直接改 paragraph.text 会丢掉 run 格式**，要改具体的 run。
-- 中文必须同时设置 run.font.name 与东亚字体（rPr.rFonts 的 w:eastAsia），只改字体名不保证字形生效。
-- 表格：按所在节的页面宽度设列宽；注意合并单元格与嵌套表。
-- 生成后用校验脚本核结构（下方命令），通过后再交付。`,
-		},
-		"xlsx": {
-			Kind: "xlsx", Library: "openpyxl", Install: "openpyxl",
-			Guidance: `## Excel（.xlsx）操作要点
-- 库：openpyxl（读写同一工作簿，保留公式与格式；公式不会被执行计算，读取到的公式单元格 value 是公式串，需要计算结果时用 data_only=True 打开——前提是该文件曾被 Excel 打开保存过）。
-- 新建：Workbook() → ws.active / create_sheet → ws["A1"]=值 → save(path)。
-- 读取：遍历 ws.iter_rows(values_only=True)；大文件不要整表读进上下文，先看 ws.dimensions 与 max_row。
-- 样式：字体/填充/边框/数字格式都在单元格对象上设置；合并单元格 ws.merge_cells。
-- 生成后用校验脚本核结构（下方命令），通过后再交付。`,
-		},
-		"pptx": {
-			Kind: "pptx", Library: "pptx", Install: "python-pptx",
-			Guidance: `## PowerPoint（.pptx）操作要点
-- 库：python-pptx（from pptx import Presentation）。
-- 新建：Presentation() → 用 slide_layouts 添加页（0=标题页，1=标题+内容）→ 页内 placeholder 或 add_textbox 填内容 → save(path)。
-- 修改既有文件：先遍历 slides / shapes 弄清版式再动手；文本在 shape.text_frame 的 paragraph/run 层级里。
-- 图片：slide.shapes.add_picture(path, left, top, width, height)；坐标单位是 EMU。
-- 生成后用校验脚本核结构（下方命令），通过后再交付。`,
-		},
-	}
-}
-
 func officeSkillTool() Tool {
 	return Tool{
 		Spec: toolSpec("office_skill",
-			"获取 Word/Excel/PowerPoint 文档的操作指南（docx/xlsx/pptx）：库的选择、关键 API 模式、中文字体陷阱与生成后的结构校验命令。拿到指南后，用 run_command 执行 Python 来实际创建或修改文档。需要本机 Python 与对应库。",
+			"获取 Word/Excel/PowerPoint 文档技能的操作指南（docx/xlsx/pptx 分册）：库的选择、关键 API 模式、中文字体陷阱与生成后的结构校验命令。拿到指南后，用 run_command 执行 Python 实际创建或修改文档。",
 			objSchema(map[string]any{
 				"kind": map[string]any{"type": "string", "enum": []string{"docx", "xlsx", "pptx"}, "description": "文档类型"},
 			}, "kind"),
@@ -313,22 +263,44 @@ func runOfficeSkill(t *toolContext, args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	guide, ok := officeGuides()[p.Kind]
-	if !ok {
-		return "", fmt.Errorf("未知文档类型 %q（可选 docx / xlsx / pptx）", p.Kind)
-	}
-	py, err := findPython()
+	guide, err := t.app.readSkillGuide("office")
 	if err != nil {
-		return guide.Guidance + "\n\n# 解释器\n" + err.Error(), nil
+		return "", fmt.Errorf("读取 office 技能说明失败: %w", err)
 	}
-	dir, err := ensureScripts()
+	// 只带对应分册 + 通用纪律，避免把三种文档的指南一起塞进上下文
+	section := filterOfficeGuide(guide, p.Kind)
+
+	manifest, skillDir, err := t.app.readSkillManifest("office")
 	if err != nil {
 		return "", err
 	}
-	status := "已安装"
-	if !py.hasModule(guide.Library) {
-		status = "未安装。" + pyInstallHint(guide.Install)
+	variant, ok := manifest.Variants[p.Kind]
+	if !ok {
+		return "", fmt.Errorf("office 技能缺少 %s 分册配置", p.Kind)
 	}
-	return fmt.Sprintf("# 运行环境\n- Python：%s（%s）\n- %s 库：%s\n- 结构校验命令：\"%s\" \"%s\" <文档路径>（生成后执行）\n\n%s",
-		py.Exe, py.Version, p.Kind, status, strings.Join(py.Prefix, " ")+" "+py.Exe, filepath.Join(dir, "check_office.py"), guide.Guidance), nil
+	py, err := t.app.ensureSkillRuntime(t, variant.Modules, variant.Wheels)
+	if err != nil {
+		return section + "\n\n# 运行环境\n" + err.Error(), nil
+	}
+	checker := filepath.Join(skillDir, filepath.FromSlash(manifest.Entry))
+	prefix := strings.Join(py.Prefix, " ")
+	return fmt.Sprintf("%s\n\n# 运行环境（%s 分册）\n- Python 解释器：\"%s %s\"\n- %s 库：已就绪\n- 结构校验命令：\"%s %s\" \"%s\" \"<文档路径>\"（生成后必须执行）\n",
+		section, p.Kind, py.Exe, prefix, p.Kind, prefix, py.Exe, checker), nil
+}
+
+// filterOfficeGuide 从 office 技能的 SKILL.md 里抽出通用纪律 + 指定分册。
+func filterOfficeGuide(guide, kind string) string {
+	kindTitle := map[string]string{
+		"docx": "## docx 分册要点",
+		"xlsx": "## xlsx 分册要点",
+		"pptx": "## pptx 分册要点",
+	}[kind]
+	sections := strings.Split(guide, "\n## ")
+	head := strings.TrimSpace(sections[0])
+	for _, s := range sections[1:] {
+		if strings.HasPrefix(s, kindTitle[4:]) {
+			return head + "\n\n## " + strings.TrimSpace(s)
+		}
+	}
+	return guide
 }

@@ -110,6 +110,7 @@ func (a *App) envPermBlock(sess *SessionMeta) string {
 	if hasCapability(sess, capComputer) {
 		b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
 	}
+	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南），需要时直接调用对应工具\n")
 	return b.String()
 }
 
@@ -126,6 +127,13 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	if a.Plugins != nil {
 		if extra := a.Plugins.PromptExtra(a, sess); extra != "" {
 			prompt += "\n" + extra + "\n"
+		}
+	}
+	// 用户技能段追加在系统提示词的最末尾：基础提示词与环境块是稳定前缀，
+	// 开关技能只改动尾部，不影响前缀缓存命中率（瞬态注入原则）。
+	if sess.Mode == "task" {
+		if block := a.userSkillsPromptBlock(); block != "" {
+			prompt += "\n" + block + "\n"
 		}
 	}
 	return prompt

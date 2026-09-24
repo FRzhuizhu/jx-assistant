@@ -20,6 +20,7 @@ type Config struct {
 	MaxSteps   int           `json:"maxSteps"`
 	AllowShell bool          `json:"allowShell"`
 	DataDir    string        `json:"dataDir"`
+	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
 	// 上下文压缩设置
 	CompactMode      string  `json:"compactMode"`      // rule=规则压缩(默认) llm=模型摘要 off=关闭
 	KeepRounds       int     `json:"keepRounds"`       // 保留最近 N 轮不压缩
