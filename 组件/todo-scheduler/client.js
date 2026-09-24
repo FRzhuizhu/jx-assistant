@@ -25,7 +25,7 @@
   /* 运行期状态：清单 + 工作目录候选 + 界面开关。 */
   const st = {
     tasks: [], records: [], missed: [], store: '',
-    workspaces: [], busy: false, armedDelete: '', expanded: {}, editing: null,
+    workspaces: [], busy: false, armedDelete: '', expanded: {}, open: {}, editing: null,
   };
   let btn = null, panel = null, formEl = null, sse = null, disposing = false;
 
@@ -172,6 +172,8 @@
     const list = panel.querySelector('#td-list');
     const missedBox = panel.querySelector('#td-missed');
     const missed = st.missed || [];
+    // 展开/收起只重画列表，滚动位置得自己留住，否则每点一下都回到顶部
+    const keepScroll = list.scrollTop;
 
     missedBox.classList.toggle('hidden', missed.length === 0);
     if (missed.length) {
@@ -192,6 +194,7 @@
     } else {
       list.innerHTML = st.tasks.map(cardHTML).join('');
     }
+    list.scrollTop = keepScroll;
     panel.querySelector('#td-store').textContent = st.store ? '数据位置：' + st.store : '';
 
     // 列表内的事件：统一委托到容器
@@ -199,26 +202,32 @@
     missedBox.onclick = onMissedClick;
   }
 
+  /* 卡片默认折叠：只留「类型/时间徽标 + 标题 + 描述 + 启用开关」，其余折进 .td-more。
+     折叠靠 .td-task.open 这一个类切换，展开态记在 st.open 里（重画不丢）。 */
   function cardHTML(t) {
     const cmd = isCmd(t);
     const recs = recordsOf(t.id);
     const expanded = !!st.expanded[t.id];
+    const open = !!st.open[t.id];
     const badges =
       '<span class="td-badge kind">' + (cmd ? '程序任务' : 'AI 任务') + '</span>' +
       '<span class="td-badge' + (t.enabled ? '' : ' off') + '">' + esc(scheduleText(t.schedule)) + '</span>' +
       (t.enabled ? '' : '<span class="td-badge off">已停用</span>') +
       (cmd && t.permission === 'full' ? '<span class="td-badge warn">不受限</span>' : '');
 
-    let html = '<div class="td-task" data-id="' + esc(t.id) + '">';
+    let html = '<div class="td-task' + (open ? ' open' : '') + '" data-id="' + esc(t.id) + '">';
     html += '<div class="td-task-head"><div class="td-task-main">';
     html += '<div class="td-badges">' + badges + '</div>';
     html += '<div class="td-name">' + esc(t.title) + '</div>';
-    html += '</div><label class="pr-toggle" title="启用 / 停用">' +
+    html += '</div><span class="td-caret" title="' + (open ? '收起' : '展开') + '详细信息">' + (open ? '▴' : '▾') + '</span>' +
+      '<label class="pr-toggle" title="启用 / 停用">' +
       '<input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? ' checked' : '') + '>' +
       '<span></span></label></div>';
 
-    if (cmd && t.command) html += '<p class="td-cmd">$ ' + esc(t.command) + '</p>';
     if (t.description) html += '<p class="td-desc">' + esc(t.description) + '</p>';
+
+    html += '<div class="td-more">';
+    if (cmd && t.command) html += '<p class="td-cmd">$ ' + esc(t.command) + '</p>';
 
     html += '<div class="td-meta">';
     html += '<span><b>' + (cmd ? '工作目录' : '执行者') + '</b>：' +
@@ -238,13 +247,14 @@
       '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
       '<button type="button" class="' + (st.armedDelete === t.id ? 'danger' : 'ghost') + '" data-act="delete" data-id="' + esc(t.id) + '">' +
         (st.armedDelete === t.id ? '删除这条任务？执行记录会保留' : '删除') + '</button>' +
-      (recs.length ? '<button type="button" class="td-link" data-act="records" data-id="' + esc(t.id) + '">执行记录（' +
-        recs.length + '）' + (expanded ? '▴' : '▾') + '</button>' : '') +
+      '<button type="button" class="td-link" data-act="records" data-id="' + esc(t.id) + '">执行记录（' +
+        recs.length + '）' + (expanded ? '▴' : '▾') + '</button>' +
       '</div>';
 
     if (expanded) {
       const recent = recs.slice().sort((a, b) => b.startedAt - a.startedAt).slice(0, 5);
-      html += '<div class="td-records">' + recent.map((r) => {
+      html += '<div class="td-records">' +
+        (recent.length === 0 ? '<div class="td-record">还没有执行记录。</div>' : recent.map((r) => {
         let line = '<div class="td-record"><span class="td-when">' + fmt(r.startedAt) + '</span>' +
           '<i class="td-dot ' + esc(r.status) + '"></i>' +
           '<span>' + esc(TRIGGER_LABEL[r.trigger] || r.trigger) + '</span>' +
@@ -253,14 +263,23 @@
           line += '<button type="button" class="td-link" data-act="session" data-sid="' + esc(r.sessionId) + '">查看会话</button>';
         }
         return line + '</div>';
-      }).join('') + '</div>';
+      }).join('')) + '</div>';
     }
+    html += '</div>';
     return html + '</div>';
   }
 
   function onListClick(e) {
     const el = e.target.closest('button[data-act], input[data-act]');
-    if (!el) return;
+    if (!el) {
+      // 点卡片空白处 = 展开/收起；卡片里的按钮、开关、链接照旧各干各的
+      if (e.target.closest('button, input, label, select, a, textarea')) return;
+      const card = e.target.closest('.td-task');
+      if (!card) return;
+      st.open[card.dataset.id] = !st.open[card.dataset.id];
+      render();
+      return;
+    }
     const id = el.dataset.id;
     const task = st.tasks.find((t) => t.id === id);
     switch (el.dataset.act) {
@@ -591,6 +610,7 @@
       if (panel) { panel.remove(); panel = null; }
       if (formEl) { formEl.remove(); formEl = null; }
       st.tasks = []; st.records = []; st.missed = []; st.editing = null;
+      st.open = {}; st.expanded = {};
     },
   });
 })();

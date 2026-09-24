@@ -53,12 +53,27 @@
 .td-foot { flex: none; border-top: 1px solid var(--border-2); padding: 8px 24px; font-size: 11.5px; color: var(--text-3); }
 
 /* ---------- 任务卡片 ---------- */
+/* 卡片默认折叠：上半部分（类型/时间徽标、标题、启用开关）与描述常显，
+   其余内容装在 .td-more 里由 .td-task.open 控制显隐；点卡片任意空白处切换。 */
 .td-task {
   border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
   display: flex; flex-direction: column; gap: 9px; background: var(--bg);
+  cursor: pointer;
 }
+.td-task:hover { border-color: #cfd4db; }
+.td-task.open { cursor: pointer; }
+.td-task:not(.open) .td-more { display: none; }
+.td-task-main { flex: 1; }
+.td-caret {
+  flex: none; color: var(--text-3); font-size: 11px; line-height: 1.7;
+  user-select: none; margin-top: 1px;
+}
+.td-task:hover .td-caret { color: var(--text-2); }
+/* 卡片里的可点控件不该跟着“整卡可点”变手感 */
+.td-task button, .td-task input, .td-task label, .td-task .td-link { cursor: pointer; }
 .td-task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .td-task-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.td-more { display: flex; flex-direction: column; gap: 9px; }
 .td-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .td-badge {
   font-size: 11px; line-height: 17px; padding: 0 8px; border-radius: 999px;
