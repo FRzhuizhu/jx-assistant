@@ -1584,52 +1584,99 @@ function bindProcToggle(row) {
   if (!row.classList.contains('open')) hideEl(row.querySelector('.proc-body'));
 }
 
-// 提示词快照卡：当轮组装的完整上下文材料——系统提示词 / 运行环境 / 工具定义，
-// 各一行折叠；工具定义即请求体里平级发送的 tools JSON 数组原样展示
-function promptRow(sys, env, tools, seq) {
+// 单行折叠过程行（文本正文）：提示词材料各区与变更行共用
+function procTextRow(label, sub, text, seq) {
+  const row = document.createElement('div');
+  row.className = 'proc-row';
+  if (seq != null) row.dataset.seq = seq;
+  row.innerHTML =
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">' + label + '</span><span class="p-sub">· ' + sub + '</span></div>' +
+    '<div class="proc-body"><div class="tk-text"></div></div>';
+  row.querySelector('.tk-text').textContent = text;
+  bindProcToggle(row);
+  return row;
+}
+
+// 行级 diff（多重集合比较，保序输出）：与后端导出日志同一套口径
+function lineDiffOf(prev, cur) {
+  const oldL = String(prev == null ? '' : prev).split('\n');
+  const curL = String(cur == null ? '' : cur).split('\n');
+  const removed = [], added = [];
+  const cnt = new Map();
+  curL.forEach((l) => cnt.set(l, (cnt.get(l) || 0) + 1));
+  oldL.forEach((l) => { const c = cnt.get(l) || 0; if (c > 0) cnt.set(l, c - 1); else removed.push(l); });
+  const cnt2 = new Map();
+  oldL.forEach((l) => cnt2.set(l, (cnt2.get(l) || 0) + 1));
+  curL.forEach((l) => { const c = cnt2.get(l) || 0; if (c > 0) cnt2.set(l, c - 1); else added.push(l); });
+  return { removed, added };
+}
+const DIFF_CAP = 15;
+function diffBody(prev, cur) {
+  const { removed, added } = lineDiffOf(prev, cur);
+  const out = [];
+  removed.slice(0, DIFF_CAP).forEach((l) => out.push('- ' + l));
+  if (removed.length > DIFF_CAP) out.push(`-（其余 ${removed.length - DIFF_CAP} 行省略）`);
+  added.slice(0, DIFF_CAP).forEach((l) => out.push('+ ' + l));
+  if (added.length > DIFF_CAP) out.push(`+（其余 ${added.length - DIFF_CAP} 行省略）`);
+  return out.join('\n') + (out.length ? '\n————\n' : '') + String(cur ?? '');
+}
+
+// 首轮拼装的「系统提示词」行：渲染在回合用户消息上方（请求里的最前部）
+function sysHeadRow(sys, seq) {
+  return procTextRow('系统提示词已拼装', fmtCount(String(sys).length) + ' 字 · 每次请求的最前部，不变则命中前缀缓存', sys, seq);
+}
+
+// 首轮拼装的尾部材料：运行环境（请求收尾的 user 消息）+ 工具定义（请求体
+// 里与消息平级的 tools 数组），紧随用户消息展示
+function promptTailRows(env, tools, seq) {
   const wrap = document.createElement('div');
-  const one = (label, text) => {
-    const row = document.createElement('div');
-    row.className = 'proc-row';
-    if (seq != null) row.dataset.seq = seq;
-    row.innerHTML =
-      '<div class="proc-head">' + chev('p-chev') +
-      '<span class="p-name">' + label + '</span><span class="p-sub">· ' + fmtCount(String(text).length) + ' 字</span></div>' +
-      '<div class="proc-body"><div class="tk-text"></div></div>';
-    row.querySelector('.tk-text').textContent = text;
-    bindProcToggle(row);
-    return row;
-  };
-  wrap.appendChild(one('系统提示词', sys));
-  wrap.appendChild(one('运行环境', env));
+  wrap.appendChild(procTextRow('运行环境', fmtCount(String(env ?? '').length) + ' 字 · 固定在请求尾部', env ?? '', seq));
   if (tools != null) {
     const row = document.createElement('div');
     row.className = 'proc-row';
     if (seq != null) row.dataset.seq = seq;
-    const toolsJson = JSON.stringify(tools, null, 2);
     row.innerHTML =
       '<div class="proc-head">' + chev('p-chev') +
-      '<span class="p-name">工具定义</span><span class="p-sub">· ' + (Array.isArray(tools) ? tools.length : '?') + ' 个工具 · 原样 JSON</span></div>' +
+      '<span class="p-name">工具定义</span><span class="p-sub">· ' + tools.length + ' 个 · 与消息平级发送</span></div>' +
       '<div class="proc-body"><pre></pre></div>';
-    row.querySelector('pre').textContent = toolsJson;
+    row.querySelector('pre').textContent = JSON.stringify(tools, null, 2);
     bindProcToggle(row);
     wrap.appendChild(row);
   }
   return wrap;
 }
 
-// 环境快照更新行：轮内权限提升/模式切换等导致环境变化时，在发生位置展示新快照
-function envNoteRow(text, seq) {
+// 系统提示词变更行：diff + 新全文；前缀改变意味着此前缓存的前缀将失效
+function sysChangeRow(prev, sys, seq) {
+  return procTextRow('系统提示词变更', '前缀改变 · 此前缓存的前缀将失效 · 现 ' + fmtCount(String(sys).length) + ' 字', diffBody(prev, sys), seq);
+}
+
+// 工具定义变更行：标题列出新增/移除的工具名，正文是新 tools JSON
+function toolsChangeRow(prevTools, tools, seq) {
+  const names = (arr) => (Array.isArray(arr) ? arr.map((t) => t && t.function && t.function.name).filter(Boolean) : []);
+  const { removed, added } = lineDiffOf(names(prevTools).join('\n'), names(tools).join('\n'));
+  const parts = [];
+  if (removed.length) parts.push('移除 ' + removed.join('、'));
+  if (added.length) parts.push('新增 ' + added.join('、'));
+  const sub = parts.length ? parts.join(' · ') : '共 ' + (Array.isArray(tools) ? tools.length : 0) + ' 个';
   const row = document.createElement('div');
   row.className = 'proc-row';
   if (seq != null) row.dataset.seq = seq;
   row.innerHTML =
     '<div class="proc-head">' + chev('p-chev') +
-    '<span class="p-name">环境快照更新</span><span class="p-sub">· ' + fmtCount(String(text).length) + ' 字</span></div>' +
-    '<div class="proc-body"><div class="tk-text"></div></div>';
-  row.querySelector('.tk-text').textContent = text;
+    '<span class="p-name">工具定义变更</span><span class="p-sub">· ' + sub + '</span></div>' +
+    '<div class="proc-body"><pre></pre></div>';
+  row.querySelector('pre').textContent = tools == null ? '（无工具定义）' : JSON.stringify(tools, null, 2);
   bindProcToggle(row);
   return row;
+}
+
+// 运行环境更新行：轮内权限提升/模式切换/时间翻页等导致环境变化时，
+// 在发生位置展示变化内容（diff）与新快照全文
+function envNoteRow(text, prev, seq) {
+  return procTextRow('运行环境更新', '随下次请求尾部发送 · ' + fmtCount(String(text).length) + ' 字',
+    prev == null ? String(text) : diffBody(prev, text), seq);
 }
 
 // 压缩摘要行：摘要注入在发生位置展示（自动/手动、覆盖至第 N 条）
@@ -1800,6 +1847,7 @@ function inheritBlock(items, resultOf, sid) {
   body.className = 'tf-body';
   const turns = groupTurns(items, resultOf);
   turns.forEach((turn, ti) => {
+    if (turn.sysHead) body.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
     if (turn.userMsg) body.appendChild(userBubble(turn.userMsg, viewOf(sid)));
     renderFinishedTurn(body, turn, key + ':' + ti);
   });
@@ -1834,20 +1882,29 @@ document.addEventListener('beforematch', (e) => {
 
 // 按真实用户发言切回合；系统通知（回报/中断/上传）归入当前回合且常显；
 // assistant 消息按序拆成思考/正文/工具条目，tool 消息经 resultOf 配对进条目
+// 提示词材料（kind=prompt/env）按「变化」渲染：首轮完整展示拼装结构
+// （系统提示词在用户消息上方、运行环境+工具定义紧随其后——即请求里的
+// 真实排布：system 最前、历史居中、环境快照收尾、tools 与消息平级）；
+// 之后内容不变就不显示，只有系统提示词/工具定义变更、运行环境补充时
+// 才在发生位置出现折叠行。每次请求其实都会完整重发系统提示词——
+// 「不变」的含义是逐字节相同，前缀缓存才能命中。
 function groupTurns(msgs, resultOf) {
   const turns = [];
   let cur = null;
   const ensure = () => {
     if (!cur) { cur = { userMsg: null, items: [] }; turns.push(cur); }
   };
+  // 跨轮对比状态：上一次见到的系统提示词 / 工具定义 / 运行环境
+  let sawPrompt = false, lastSys = '', lastToolsJson = '', lastTools = null, lastEnv = null;
   for (const m of msgs) {
     if (m.kind === 'env') {
-      // 环境快照：与当轮提示词卡里的 env 相同则跳过（去重）；
-      // 中途变化（权限提升/模式切换等）才在发生位置显示"环境快照更新"行
+      // 运行环境快照：与最近一次已知环境相同则跳过；有变化（时间翻页、
+      // 权限提升、模式切换等）才在发生位置显示「运行环境更新」折叠行
       const txt = String(m.content ?? '');
-      if (cur && cur.promptEnv === txt) continue;
+      if (txt === lastEnv) continue;
       ensure();
-      cur.items.push({ k: 'envnote', seq: m.seq, text: txt });
+      cur.items.push({ k: 'envnote', seq: m.seq, text: txt, prev: lastEnv });
+      lastEnv = txt;
       continue;
     }
     if (m.kind === 'summary') { // 压缩摘要注入：在发生位置展示
@@ -1855,7 +1912,7 @@ function groupTurns(msgs, resultOf) {
       cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
       continue;
     }
-    if (m.kind === 'prompt') {      // 提示词快照：折叠卡展示当轮的系统提示词/环境/工具定义
+    if (m.kind === 'prompt') {      // 提示词快照：只在首轮或内容变更时产生条目
       let sys = '', env = '', tools = null;
       try {
         const j = JSON.parse(String(m.content ?? '{}'));
@@ -1863,8 +1920,20 @@ function groupTurns(msgs, resultOf) {
         if (Array.isArray(j.tools)) tools = j.tools;
       } catch (e) { /* 忽略坏行 */ }
       ensure();
-      cur.promptEnv = env; // 供 env 快照去重比较
-      cur.items.push({ k: 'prompt', seq: m.seq, sys, env, tools });
+      const toolsJson = tools == null ? '' : JSON.stringify(tools);
+      if (!sawPrompt) {
+        // 首轮：完整展示拼装结构。系统提示词挂在回合头上（渲染在用户消息
+        // 上方），运行环境+工具定义作为尾部条目紧随用户消息；
+        // lastEnv 同步为本轮环境，随后的同文快照行会被去重
+        cur.sysHead = sys; cur.sysHeadSeq = m.seq;
+        cur.items.push({ k: 'prompttail', seq: m.seq, env, tools });
+        lastEnv = env;
+      } else {
+        if (sys !== lastSys) cur.items.push({ k: 'syschange', seq: m.seq, sys, prev: lastSys });
+        if (toolsJson !== lastToolsJson) cur.items.push({ k: 'toolschange', seq: m.seq, tools, prevTools: lastTools });
+        // 环境变化不在这里记：随后的 env 快照行（有变化才会入库）负责展示
+      }
+      sawPrompt = true; lastSys = sys; lastToolsJson = toolsJson; lastTools = tools;
       continue;
     }
     if (m.role === 'user') {
@@ -1997,8 +2066,10 @@ async function forkFromAnswer(m, btn) {
 }
 
 function renderItem(it, opts) {
-  if (it.k === 'prompt') return promptRow(it.sys, it.env, it.tools, it.seq);
-  if (it.k === 'envnote') return envNoteRow(it.text, it.seq);
+  if (it.k === 'prompttail') return promptTailRows(it.env, it.tools, it.seq);
+  if (it.k === 'envnote') return envNoteRow(it.text, it.prev, it.seq);
+  if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
+  if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
   if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
   if (it.k === 'think') return thinkRow(it.text, it.seq);
   if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
@@ -2238,6 +2309,7 @@ function followScroll(view, jump) {
 
 // 渲染单个回合（用户气泡 + 过程折叠 + 完成态收尾件）；isLast 决定是否走流式尾部窗口
 function appendTurn(target, turn, key, view, isLast) {
+  if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
   if (turn.userMsg) target.appendChild(userBubble(turn.userMsg, view));
   if (isLast && view.state.streaming) {
     renderStreamingTurn(target, turn, key);
@@ -2333,7 +2405,9 @@ function renderMessages(msgs, view, opts) {
 }
 
 // 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与系统通知也常显；
-// 其余过程按相邻常显块切分成折叠段（每段一条折叠条，显示思考/工具计数）
+// 上下文材料行（首轮尾部材料、运行环境更新、系统提示词/工具定义变更）常显——
+// 它们就是「模型看到了什么、什么时候变的」的路标；其余过程按相邻常显块
+// 切分成折叠段（每段一条折叠条，显示思考/工具计数）
 function renderFinishedTurn(box, turn, key) {
   const items = turn.items;
   let answerIdx = -1;
@@ -2343,6 +2417,7 @@ function renderFinishedTurn(box, turn, key) {
   items.forEach((it, i) => {
     if (i === answerIdx) return;
     if (it.k === 'note' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
+    if (it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange') anchors.add(i);
   });
   let seg = [];
   const flushSeg = () => {
