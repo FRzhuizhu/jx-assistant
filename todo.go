@@ -1094,13 +1094,13 @@ func (s *todoScheduler) handToAssistant(task *TaskItem, record *RunRecord) (stri
 	s.app.broadcast(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, SessionID: sess.ID})
 
 	// 主对话正忙就先只落消息（它会在下一轮自然读到）；空闲则立刻跑一轮。
-	if s.app.StartRun(sess.ID) {
+	if run, ok := s.app.beginRun(sess.ID); ok {
 		go func() {
-			defer s.app.EndRun(sess.ID)
+			defer s.app.finishRun(sess.ID)
 			// 转交即完成：任务记录不因这一轮的成败改写，失败只写日志（用户可在会话里看到原因）。
-			if err := s.app.RunAgent(context.Background(), sess, func(ev Event) {
+			if err := s.app.runGoalRounds(run.ctx, sess, func(ev Event) {
 				ev.SessionID = sess.ID
-				s.app.broadcast(ev)
+				run.publish(ev)
 			}); err != nil {
 				log.Printf("[待办] 任务 %s 转交后数字助理（会话 %s）本轮执行失败: %v", task.ID, sess.ID, err)
 			}

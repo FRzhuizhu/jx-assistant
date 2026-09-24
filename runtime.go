@@ -3,27 +3,58 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // 后台运行时：会话执行注册表 + 全局事件总线。
 // 派发的子任务在独立 goroutine 里跑；主对话的 SSE 断了也不影响执行，
 // 进度通过 /api/events 全局事件流推给所有在线前端。
+//
+// 会话执行（sessionRun）拥有独立于 HTTP 请求的 ctx 与订阅者集合：发送消息的
+// 请求只是「接上这条流」，浏览器刷新/关页只断开订阅，执行继续跑完并落库；
+// 重新打开页面用 GET /api/sessions/{id}/stream 再接上继续看。只有显式停止
+// （POST /stop）或进程退出才会终止执行。
 
-type runner struct {
+type sessionRun struct {
+	ctx       context.Context
 	cancel    context.CancelFunc
 	startedAt time.Time
+	done      chan struct{} // 执行结束即关闭，订阅者据此退出等待
+
+	mu       sync.Mutex
+	subs     map[int]chan Event
+	nextSub  int
+	partial  string // 当前步骤已流出的正文（重连时补发，避免丢半句）
+	thinking string // 当前步骤已流出的思考原文
+	stopped  bool   // 是否由用户显式停止
+}
+
+// PendingMsg 是执行中的一条待生效用户消息：插话（下一步调用模型前注入）
+// 或排队（本轮结束后作为独立一轮发送）。放在服务端，刷新页面不丢。
+type PendingMsg struct {
+	ID        string `json:"id"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// PendingState 是某个会话当前的待生效消息快照（随会话详情与事件下发）。
+type PendingState struct {
+	Steer []*PendingMsg `json:"steer"`
+	Queue []*PendingMsg `json:"queue"`
 }
 
 func (a *App) initRuntime() {
-	a.runners = map[string]*runner{}
+	a.runners = map[string]*sessionRun{}
 	a.subscribers = map[chan Event]bool{}
 	a.grants = map[string]*Grant{}
 	a.approvals = map[string]*Approval{}
 	a.remotes = map[string]*remoteClient{}
-	a.interjects = map[string][]string{}
+	a.pendingSteer = map[string][]*PendingMsg{}
+	a.pendingQueue = map[string][]*PendingMsg{}
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
 	// 工作区就是程序目录，整目录保护会让开箱即用的会话什么都写不了。
@@ -36,39 +67,119 @@ func (a *App) initRuntime() {
 	}
 }
 
-// StartRun 登记一个会话执行；已在跑则返回 false。
-func (a *App) StartRun(id string) bool {
+// beginRun 登记一次会话执行（ctx 独立于发起它的 HTTP 请求）；已在跑则返回 false。
+func (a *App) beginRun(id string) (*sessionRun, bool) {
 	a.runMu.Lock()
 	defer a.runMu.Unlock()
 	if _, ok := a.runners[id]; ok {
-		return false
+		return nil, false
 	}
-	_, cancel := context.WithCancel(context.Background())
-	a.runners[id] = &runner{cancel: cancel, startedAt: time.Now()}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &sessionRun{ctx: ctx, cancel: cancel, startedAt: time.Now(), done: make(chan struct{}),
+		subs: map[int]chan Event{}}
+	a.runners[id] = r
 	_ = a.Store.UpdateStatus(id, "running")
-	return true
+	return r, true
 }
 
-// EndRun 结束会话执行并置为空闲。
-func (a *App) EndRun(id string) {
+// finishRun 注销执行、关闭订阅者并置为空闲。
+func (a *App) finishRun(id string) {
 	a.runMu.Lock()
 	r, ok := a.runners[id]
 	if ok {
 		delete(a.runners, id)
 	}
 	a.runMu.Unlock()
-	if ok && r.cancel != nil {
-		r.cancel()
+	if !ok {
+		return
 	}
+	r.mu.Lock()
+	for i, ch := range r.subs {
+		close(ch)
+		delete(r.subs, i)
+	}
+	r.mu.Unlock()
+	close(r.done)
+	r.cancel()
 	_ = a.Store.UpdateStatus(id, "idle")
 }
 
-// IsRunning 判断会话是否在执行（优先内存注册表，其次数据库状态）。
-func (a *App) IsRunning(id string) bool {
+// runOf 取会话执行中的运行体；未在执行返回 nil。
+func (a *App) runOf(id string) *sessionRun {
 	a.runMu.Lock()
-	_, ok := a.runners[id]
+	r := a.runners[id]
 	a.runMu.Unlock()
-	return ok
+	return r
+}
+
+// stopRun 请求停止会话执行（协作式取消：模型流、工具、等待都会收到 ctx 取消）。
+func (a *App) stopRun(id string) bool {
+	r := a.runOf(id)
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	r.stopped = true
+	r.mu.Unlock()
+	r.cancel()
+	return true
+}
+
+// publish 把一个执行事件发给该会话的全部订阅者（订阅者跟不上就丢帧，绝不阻塞执行）。
+func (r *sessionRun) publish(ev Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, ch := range r.subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
+// observe 记录当前步骤已流出的正文/思考，供重连补发。
+func (r *sessionRun) observe(ev Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch ev.Type {
+	case "delta":
+		r.partial += ev.Delta
+	case "reasoning":
+		r.partial += ""
+		r.thinking += ev.Delta
+	case "message", "done":
+		r.partial, r.thinking = "", ""
+	}
+}
+
+// snapshot 取当前进行中的流式文本（重连时先补上，再接后续增量）。
+func (r *sessionRun) snapshot() (string, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.partial, r.thinking
+}
+
+// subscribe 订阅该执行的后续事件；返回的收尾函数必须调用（断开订阅）。
+func (r *sessionRun) subscribe() (chan Event, func()) {
+	ch := make(chan Event, 128)
+	r.mu.Lock()
+	id := r.nextSub
+	r.nextSub++
+	r.subs[id] = ch
+	r.mu.Unlock()
+	return ch, func() {
+		r.mu.Lock()
+		if _, ok := r.subs[id]; ok {
+			delete(r.subs, id)
+			close(ch)
+		}
+		r.mu.Unlock()
+	}
+}
+
+// IsRunning 判断会话是否在执行（内存注册表为准，数据库状态只作启动恢复用）。
+func (a *App) IsRunning(id string) bool {
+	return a.runOf(id) != nil
 }
 
 // broadcast 向所有在线前端广播事件（无订阅者时丢弃，不阻塞）。
@@ -83,20 +194,114 @@ func (a *App) broadcast(ev Event) {
 	}
 }
 
-// pushInterject 把一条用户插话排进执行中会话的队列（不打断当前步骤）。
-func (a *App) pushInterject(id, content string) {
-	a.intjMu.Lock()
-	a.interjects[id] = append(a.interjects[id], content)
-	a.intjMu.Unlock()
+// pushPending 记下一条待生效消息：mode=steer 插话（下一步调用模型前注入），
+// 其他按排队（本轮结束后作为独立一轮发送）。
+func (a *App) pushPending(sessionID, mode, content string) *PendingMsg {
+	pm := &PendingMsg{ID: newID(), Content: content, CreatedAt: now()}
+	a.pendMu.Lock()
+	if mode == "steer" {
+		a.pendingSteer[sessionID] = append(a.pendingSteer[sessionID], pm)
+	} else {
+		a.pendingQueue[sessionID] = append(a.pendingQueue[sessionID], pm)
+	}
+	a.pendMu.Unlock()
+	a.broadcastPending(sessionID)
+	return pm
 }
 
-// drainInterjects 取走并清空会话的插话队列；不执行则返回 nil。
-func (a *App) drainInterjects(id string) []string {
-	a.intjMu.Lock()
-	q := a.interjects[id]
-	delete(a.interjects, id)
-	a.intjMu.Unlock()
+// drainSteer 取走并清空会话的插话队列（agent 循环步间排水）。
+func (a *App) drainSteer(sessionID string) []*PendingMsg {
+	a.pendMu.Lock()
+	q := a.pendingSteer[sessionID]
+	delete(a.pendingSteer, sessionID)
+	a.pendMu.Unlock()
 	return q
+}
+
+// popQueue 取走排队队列里的第一条（本轮结束后串行发送）。
+func (a *App) popQueue(sessionID string) *PendingMsg {
+	a.pendMu.Lock()
+	defer a.pendMu.Unlock()
+	q := a.pendingQueue[sessionID]
+	if len(q) == 0 {
+		return nil
+	}
+	first := q[0]
+	if len(q) == 1 {
+		delete(a.pendingQueue, sessionID)
+	} else {
+		a.pendingQueue[sessionID] = q[1:]
+	}
+	return first
+}
+
+// requeueSteer 把本轮没来得及注入的插话转为排队（不丢消息，下一轮生效）。
+func (a *App) requeueSteer(sessionID string) {
+	left := a.drainSteer(sessionID)
+	if len(left) == 0 {
+		return
+	}
+	a.pendMu.Lock()
+	a.pendingQueue[sessionID] = append(a.pendingQueue[sessionID], left...)
+	a.pendMu.Unlock()
+	a.broadcastPending(sessionID)
+}
+
+// pendingOf 取会话当前的待生效消息快照（永不返回 nil，前端可直接取用）。
+func (a *App) pendingOf(sessionID string) *PendingState {
+	a.pendMu.Lock()
+	defer a.pendMu.Unlock()
+	st := &PendingState{Steer: []*PendingMsg{}, Queue: []*PendingMsg{}}
+	st.Steer = append(st.Steer, a.pendingSteer[sessionID]...)
+	st.Queue = append(st.Queue, a.pendingQueue[sessionID]...)
+	return st
+}
+
+// updatePending 处理排队坞上的操作：移除，或把排队项提前为插话。
+func (a *App) updatePending(sessionID, msgID, action string) bool {
+	a.pendMu.Lock()
+	moved := (*PendingMsg)(nil)
+	found := false
+	for i, pm := range a.pendingQueue[sessionID] {
+		if pm.ID != msgID {
+			continue
+		}
+		found = true
+		a.pendingQueue[sessionID] = append(a.pendingQueue[sessionID][:i], a.pendingQueue[sessionID][i+1:]...)
+		if len(a.pendingQueue[sessionID]) == 0 {
+			delete(a.pendingQueue, sessionID)
+		}
+		if action == "steer" {
+			moved = pm
+		}
+		break
+	}
+	if !found {
+		for i, pm := range a.pendingSteer[sessionID] {
+			if pm.ID != msgID {
+				continue
+			}
+			found = true
+			a.pendingSteer[sessionID] = append(a.pendingSteer[sessionID][:i], a.pendingSteer[sessionID][i+1:]...)
+			if len(a.pendingSteer[sessionID]) == 0 {
+				delete(a.pendingSteer, sessionID)
+			}
+			break
+		}
+	}
+	if moved != nil {
+		a.pendingSteer[sessionID] = append(a.pendingSteer[sessionID], moved)
+	}
+	a.pendMu.Unlock()
+	if found {
+		a.broadcastPending(sessionID)
+	}
+	return found
+}
+
+// broadcastPending 把待生效消息的最新快照推给所有在线前端（多窗口/刷新后一致）。
+func (a *App) broadcastPending(sessionID string) {
+	a.broadcast(Event{Type: "pending", SessionID: sessionID, Pending: a.pendingOf(sessionID)})
 }
 
 func (a *App) subscribe() (chan Event, func()) {
@@ -110,6 +315,7 @@ func (a *App) subscribe() (chan Event, func()) {
 		a.evtMu.Unlock()
 	}
 }
+
 
 // maxGoalRounds 是目标模式自动续跑的轮数上限（防止无限消耗）。
 const maxGoalRounds = 8
@@ -148,15 +354,85 @@ func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// executeRun 是会话执行体（在独立 goroutine 里跑，与发起它的 HTTP 请求无关）：
+// 先把 opening 事件发出去（用户消息/标题），再跑当前这一轮（含目标模式续跑），
+// 然后把排队消息逐条作为独立一轮发出，最后给出明确的终态交代。
+// 异常结束一律落一条可见记录并写日志——绝不出现「模型没输出、对话就停在
+// 半路」的静默停止。
+func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
+	defer a.finishRun(m.ID)
+	emit := func(ev Event) {
+		ev.SessionID = m.ID
+		run.observe(ev)
+		run.publish(ev)
+		// 只在「消息级」里程碑广播会话更新（前端据此刷侧栏/列表）；
+		// delta/reasoning 这类高频事件不广播，否则会打出一串无效请求
+		switch ev.Type {
+		case "delta", "reasoning", "tool_start", "tool_end", "tool_wait", "resume", "pending":
+		default:
+			a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+		}
+	}
+	defer func() { // 执行体自身出问题时也要留下痕迹，不能静默消失
+		if p := recover(); p != nil {
+			log.Printf("[对话] 会话 %s 执行体异常: %v", m.ID, p)
+			emit(Event{Type: "error", Error: fmt.Sprintf("执行体异常: %v", p)})
+		}
+	}()
+	for _, ev := range opening {
+		emit(ev)
+	}
+
+	err := a.runGoalRounds(run.ctx, m, emit)
+	// 本轮结束仍没被注入的插话转为排队：作为独立一轮接着发，消息不丢
+	a.requeueSteer(m.ID)
+
+	// 排队消息逐条续跑（停止/出错后不再自动续，留给用户决定）
+	for err == nil && run.ctx.Err() == nil {
+		pm := a.popQueue(m.ID)
+		if pm == nil {
+			break
+		}
+		a.broadcastPending(m.ID)
+		sm := a.appendMessage(m, TextMessage("user", pm.Content))
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
+		err = a.runGoalRounds(run.ctx, m, emit)
+		a.requeueSteer(m.ID)
+	}
+	a.broadcastPending(m.ID)
+
+	switch {
+	case err == nil:
+		emit(Event{Type: "done"})
+	case a.isStopped(run):
+		log.Printf("[对话] 会话 %s 已被用户停止", m.ID)
+		emit(Event{Type: "stopped", Error: "已停止本轮执行"})
+	default:
+		log.Printf("[对话] 会话 %s 本轮结束于错误: %v", m.ID, err)
+		emit(Event{Type: "error", Error: err.Error()})
+	}
+	emit(Event{Type: "session_updated"})
+}
+
+// isStopped 判断本次执行是否由用户显式停止。
+func (a *App) isStopped(run *sessionRun) bool {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return run.stopped
+}
+
 // runSubAgent 是派发子任务的后台执行体：执行 → 广播进度 → 回报主对话 →
-// 主对话空闲时自动跑一轮面向用户的汇报。
-func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta) {
-	defer a.EndRun(sub.ID)
+// 主对话空闲时自动跑一轮面向用户的汇报。run 由派发方通过 beginRun 登记后传入。
+func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun) {
+	defer a.finishRun(sub.ID)
 	a.broadcast(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
-	err := a.runGoalRounds(context.Background(), sub, func(ev Event) {
+	err := a.runGoalRounds(run.ctx, sub, func(ev Event) {
 		if ev.Type == "tool_start" || ev.Type == "tool_end" {
 			a.broadcast(Event{Type: "sub_tool", SessionID: sub.ID, Name: ev.Name, Args: ev.Args, Output: ev.Output})
 		}
+		ev.SessionID = sub.ID
+		run.observe(ev)
+		run.publish(ev)
 	})
 	if err != nil {
 		a.broadcast(Event{Type: "sub_end", SessionID: sub.ID, Error: err.Error()})
@@ -180,15 +456,19 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta) {
 	})
 	a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
 	// 主对话空闲则自动跑一轮汇报；正被用户占用就等下轮对话自然带出
-	if parent.Mode == "assistant" && a.StartRun(parent.ID) {
-		go func() {
-			defer a.EndRun(parent.ID)
-			a.RunAgent(context.Background(), parent, func(ev Event) {
-				ev.SessionID = parent.ID
-				a.broadcast(ev)
-			})
-			a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
-		}()
+	if parent.Mode == "assistant" {
+		if prun, ok := a.beginRun(parent.ID); ok {
+			go func() {
+				defer a.finishRun(parent.ID)
+				prun.publish(Event{Type: "run_start"})
+				_ = a.RunAgent(prun.ctx, parent, func(ev Event) {
+					ev.SessionID = parent.ID
+					prun.observe(ev)
+					prun.publish(ev)
+				})
+				a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
+			}()
+		}
 	}
 }
 

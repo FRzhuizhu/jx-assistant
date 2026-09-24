@@ -356,6 +356,9 @@ func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 func (s *Store) SaveMeta(m *SessionMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 注意：下面的 UPDATE 刻意不写 status——它只由 UpdateStatus 维护（执行中/空闲）。
+	// 否则 appendMessage 之类拿着陈旧内存对象回写，会把 running 冲成 idle，
+	// 导致「正在执行」在侧栏与重启恢复里都不生效。
 	tools := ""
 	if len(m.Tools) > 0 {
 		if b, err := json.Marshal(m.Tools); err == nil {
@@ -374,7 +377,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
 		goal_mode=excluded.goal_mode, tools=excluded.tools, remote=excluded.remote,
 		archived=excluded.archived, unread=excluded.unread,
-		status=excluded.status, updated_at=excluded.updated_at, thinking=excluded.thinking,
+		updated_at=excluded.updated_at, thinking=excluded.thinking,
 		goal_text=excluded.goal_text, goal_status=excluded.goal_status, goal_rounds=excluded.goal_rounds,
 		usage_prompt=excluded.usage_prompt, usage_cache_hit=excluded.usage_cache_hit,
 		usage_output=excluded.usage_output, usage_calls=excluded.usage_calls, origin=excluded.origin`,

@@ -36,7 +36,7 @@ type App struct {
 	mu           sync.Mutex
 	sessLocks    map[string]*sync.Mutex
 	runMu        sync.Mutex
-	runners      map[string]*runner // 正在执行的会话（含后台派发）
+	runners      map[string]*sessionRun // 正在执行的会话（含后台派发）
 	permMu       sync.Mutex
 	grants       map[string]*Grant        // 授权凭证（perm.go）
 	approvals    map[string]*Approval     // 等待用户决定的越权审批（perm.go）
@@ -51,8 +51,9 @@ type App struct {
 	remotes      map[string]*remoteClient // SSH 远程连接池（remote.go）
 	evtMu        sync.Mutex
 	subscribers  map[chan Event]bool // /api/events 的订阅者
-	intjMu       sync.Mutex
-	interjects   map[string][]string // 执行中会话的插话队列（agent 循环步间排水）
+	pendMu       sync.Mutex
+	pendingSteer map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
+	pendingQueue map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
 	osOnce       sync.Once
 	osDesc       string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
 }
@@ -133,7 +134,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/sessions/{id}", a.handlePatchSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", a.handleDeleteSession)
 	mux.HandleFunc("POST /api/sessions/{id}/chat", a.handleChat)
+	mux.HandleFunc("GET /api/sessions/{id}/stream", a.handleSessionStream)
+	mux.HandleFunc("POST /api/sessions/{id}/stop", a.handleStop)
 	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
+	mux.HandleFunc("POST /api/sessions/{id}/pending", a.handlePending)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
 	mux.HandleFunc("GET /api/sessions/{id}/todos", a.handleGetTodos)
 	mux.HandleFunc("GET /api/sessions/{id}/context", a.handleContextStats)
@@ -836,6 +840,12 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// 执行状态以内存注册表为准：数据库那列只用于服务重启后的中断恢复
+	for _, m := range list {
+		if m.Status != "running" && a.IsRunning(m.ID) {
+			m.Status = "running"
+		}
+	}
 	writeJSON(w, 200, map[string]any{"sessions": list})
 }
 
@@ -969,7 +979,12 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"meta": m, "messages": msgs})
+	// running 与 pending 以内存运行时为准：刷新页面后据此自动接上执行流、
+	// 恢复「已插话/已排队」的显示，不依赖刷新前的页面状态
+	writeJSON(w, 200, map[string]any{
+		"meta": m, "messages": msgs,
+		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
+	})
 }
 
 func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
@@ -1223,8 +1238,10 @@ func (a *App) handlePickFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"path": path})
 }
 
-// handleInterject 对话中途插话：不打断执行，排进队列，agent 循环在
-// 下一次调用模型前落库注入（若本轮恰好结束则直接续跑一轮）。
+// handleInterject 对话中途发消息：不打断当前执行。
+// mode=steer（插话）：排进插话队列，主循环在下一次调用模型前注入生效；
+// mode=queue（排队）：排进排队队列，本轮结束后作为独立一轮自动发送。
+// 会话没在执行时一律按排队处理并顺手把执行拉起来，消息不会卡在队列里。
 func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
@@ -1232,26 +1249,74 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Content string `json:"content"`
+		Mode    string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
-	if !a.IsRunning(m.ID) {
-		writeJSON(w, 200, map[string]any{"accepted": false})
-		return
+	mode := "queue"
+	if body.Mode == "steer" && a.IsRunning(m.ID) {
+		mode = "steer"
 	}
-	a.pushInterject(m.ID, strings.TrimSpace(body.Content))
-	writeJSON(w, 200, map[string]any{"accepted": true})
+	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content))
+	if !a.IsRunning(m.ID) {
+		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次
+	}
+	writeJSON(w, 200, map[string]any{"accepted": true, "id": pm.ID, "mode": mode})
 }
 
-// handleFork 分支对话：复制出一个新会话。若目标正在执行，只复制到
-// 最近一轮完成的位置（最后一条带正文且无工具调用的助手消息）。
+// handlePending 处理排队坞上的操作：删除（remove）或把排队项提前为插话（steer）。
+func (a *App) handlePending(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	var body struct {
+		ID     string `json:"id"`
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeErr(w, 400, "id 不能为空")
+		return
+	}
+	action := "remove"
+	if body.Action == "steer" {
+		action = "steer"
+	}
+	if !a.updatePending(m.ID, body.ID, action) {
+		writeErr(w, 404, "这条消息已经不在队列里了")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "pending": a.pendingOf(m.ID)})
+}
+
+// kickQueue 会话空闲且有排队消息时，起一轮把它发出去（排队消息不依赖前端定时器）。
+func (a *App) kickQueue(m *SessionMeta) {
+	run, ok := a.beginRun(m.ID)
+	if !ok {
+		return
+	}
+	a.serveQueue(m, run)
+}
+
+// serveQueue 在后台把排队消息逐条发完（无请求订阅者时也要跑）。
+func (a *App) serveQueue(m *SessionMeta, run *sessionRun) {
+	go a.executeRun(m, run, nil)
+}
+
+// handleFork 分支对话：复制出一个新会话。body.upTo 指定分支点时只复制到
+// 该 seq（含）为止——消息级分支按钮用；未指定时复制全部，目标正在执行则只
+// 复制到最近一轮完成的位置（最后一条带正文且无工具调用的助手消息）。
 func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
 		return
 	}
+	var body struct {
+		UpTo int64 `json:"upTo"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体（整会话分支）
 	all, err := a.Store.RawMessagesAll(m.ID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -1259,11 +1324,16 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	msgs := []*StoredMessage{}
 	for _, x := range all {
-		if x.Kind != "summary" {
+		if x.Kind != "summary" && (body.UpTo <= 0 || x.Seq <= body.UpTo) {
 			msgs = append(msgs, x)
 		}
 	}
-	if a.IsRunning(m.ID) {
+	if len(msgs) == 0 {
+		writeErr(w, 400, "分支点之前没有可复制的历史")
+		return
+	}
+	// 指定分支点时前缀在执行中也稳定（seq 只增不改），无需再截断
+	if body.UpTo <= 0 && a.IsRunning(m.ID) {
 		last := -1
 		for i, x := range msgs {
 			if x.Role == "assistant" && len(x.ToolCalls) == 0 && strings.TrimSpace(x.Text()) != "" {
@@ -1511,14 +1581,12 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleChat 接收用户消息并运行主循环，以 SSE 流式推送事件。
+// handleChat 接收用户消息：落库 → 启动会话执行 → 以 SSE 跟随输出。
+// 执行体独立于本请求（见 runtime.go 的 executeRun）：浏览器刷新/关页只断开
+// 这条流，执行照旧跑完并落库；重新打开页面用 GET /api/sessions/{id}/stream 再接上。
 func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
-		return
-	}
-	if a.IsRunning(m.ID) {
-		writeErr(w, 409, "该会话正在执行中，请稍候再发")
 		return
 	}
 	var body struct {
@@ -1528,41 +1596,115 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeErr(w, 500, "当前连接不支持流式响应")
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	emit := func(ev Event) {
-		data, err := json.Marshal(ev)
-		if err != nil {
-			return
-		}
-		_, _ = w.Write(append([]byte("data: "), append(data, '\n', '\n')...))
-		flusher.Flush()
-	}
-
+	// 落库用户消息与登记执行放在同一临界区：并发重复发送只会有一条成功
 	lock := a.sessLock(m.ID)
 	lock.Lock()
-	defer lock.Unlock()
-	if !a.StartRun(m.ID) {
+	if a.IsRunning(m.ID) {
+		lock.Unlock()
 		writeErr(w, 409, "该会话正在执行中，请稍候再发")
 		return
 	}
-	defer a.EndRun(m.ID)
-
+	run, ok := a.beginRun(m.ID)
+	if !ok {
+		lock.Unlock()
+		writeErr(w, 409, "该会话正在执行中，请稍候再发")
+		return
+	}
 	um := TextMessage("user", body.Content)
 	sm := a.appendMessage(m, um)
-	emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
-
+	opening := []Event{{Type: "message", Message: &sm.Message, Seq: sm.Seq}}
 	if m.Title == "" {
 		m.Title = truncateRunes(body.Content, 24)
 		_ = a.Store.SaveMeta(m)
-		emit(Event{Type: "title", SessionID: m.ID, Title: m.Title})
+		opening = append(opening, Event{Type: "title", SessionID: m.ID, Title: m.Title})
 	}
-	_ = a.runGoalRounds(r.Context(), m, emit)
-	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+	lock.Unlock()
+	a.serveRun(w, r, m, run, opening)
+}
+
+// handleSessionStream 接上正在执行的会话流（刷新页面/换窗口后继续看实时输出）。
+// 未在执行时立刻回一帧 done：前端据此收尾，不会一直挂着。
+func (a *App) handleSessionStream(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	if _, ok := w.(http.Flusher); !ok {
+		writeErr(w, 500, "当前连接不支持流式响应")
+		return
+	}
+	run := a.runOf(m.ID)
+	if run == nil {
+		sseHeaders(w)
+		_, _ = w.Write([]byte("data: {\"type\":\"done\"}\n\n"))
+		w.(http.Flusher).Flush()
+		return
+	}
+	a.serveRun(w, r, m, run, nil)
+}
+
+// handleStop 显式停止会话执行（SSE 断开不再等于停止）。
+func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	if !a.stopRun(m.ID) {
+		writeJSON(w, 200, map[string]any{"stopped": false, "reason": "该会话当前没有在执行"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"stopped": true})
+}
+
+// sseHeaders 切换响应为 SSE。
+func sseHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+}
+
+// serveRun 把执行事件以 SSE 写给客户端：先补当前进行中的流式文本（重连不丢半句），
+// 再持续转发。函数因客户端断开返回时执行不受影响；opening 为空表示纯重连。
+// opening 事件由执行体统一发布（这里只订阅），否则同一条用户消息会发两遍。
+func (a *App) serveRun(w http.ResponseWriter, r *http.Request, m *SessionMeta, run *sessionRun, opening []Event) {
+	sseHeaders(w)
+	flusher := w.(http.Flusher)
+	ch, unsub := run.subscribe()
+	defer unsub()
+	if len(opening) > 0 {
+		go a.executeRun(m, run, opening) // 启动执行；事件走订阅通道下发
+	} else if text, thinking := run.snapshot(); text != "" || thinking != "" {
+		// 纯重连：补上正在进行中的那半句，避免接上时丢内容
+		if b, err := json.Marshal(Event{Type: "resume", SessionID: m.ID, Delta: text, Thinking: thinking}); err == nil {
+			_, _ = w.Write(append([]byte("data: "), append(b, '\n', '\n')...))
+		}
+	}
+	flusher.Flush()
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return // 客户端断开（刷新/关页/主动取消）：执行继续，可随时再接上
+		case <-ping.C:
+			_, _ = w.Write([]byte(": ping\n\n"))
+			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				return // 执行结束，订阅通道关闭
+			}
+			b, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			if _, err := w.Write(append([]byte("data: "), append(b, '\n', '\n')...)); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }

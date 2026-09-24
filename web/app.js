@@ -36,7 +36,8 @@ const state = {
   streamThinking: '', // 正在流式输出的思考过程
   streaming: false,
   abort: null,
-  queue: [],        // 对话中途发送行为=等待 时的待发队列（本会话）
+  pendingSteer: [], // 执行中已插话、等下一次调用模型生效的消息（服务端为准）
+  pendingQueue: [], // 执行中排队的消息：本轮结束后自动作为独立一轮发送
   defaultWs: '',    // 默认工作区（文件夹），来自 /api/status
   models: [],       // 可选模型清单，来自 /api/models
   defaultProvider: '',
@@ -804,7 +805,7 @@ function renderBin(box) {
   }
 }
 
-async function loadSessions() {
+async function loadSessionsNow() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
   (state.sessions || []).forEach((x) => { prevStatus[x.id] = x.status; });
@@ -1183,7 +1184,7 @@ const mainView = {  key: 'main',
 };
 const subState = {
   cur: null, msgs: [], streaming: false, abort: null,
-  streamText: '', streamThinking: '', queue: [],
+  streamText: '', streamThinking: '', pendingSteer: [], pendingQueue: [],
 };
 const subView = {
   key: 'sub',
@@ -1207,6 +1208,22 @@ function drawerFamilyId() {
    处理时就作用于那个视图的会话。 */
 let popView = mainView; // 弹层归属视图（打开弹层时设置）
 function viewEl(view, id) { return $((view || mainView).key === 'main' ? id : 'sub-' + id); }
+
+// loadSessions 合并短时间内的多次触发：执行中会有成串的会话更新事件，
+// 不合并就会打出一串同样的列表请求（也拖慢页面）
+let loadSessionsTimer = null, loadSessionsPending = false;
+function loadSessions() {
+  if (loadSessionsPending) return Promise.resolve();
+  loadSessionsPending = true;
+  return new Promise((resolve) => {
+    if (loadSessionsTimer) clearTimeout(loadSessionsTimer);
+    loadSessionsTimer = setTimeout(() => {
+      loadSessionsPending = false;
+      loadSessionsTimer = null;
+      loadSessionsNow().then(resolve, resolve);
+    }, 120);
+  });
+}
 
 let subKids = []; // 当前主对话的子对话清单（下拉面板数据）
 
@@ -1268,16 +1285,21 @@ async function openSubSession(id) {
     const data = await api('/api/sessions/' + id);
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
+    subState.pendingSteer = (data.pending && data.pending.steer) || [];
+    subState.pendingQueue = (data.pending && data.pending.queue) || [];
     subState.streamText = '';
     subState.streamThinking = '';
     subRenderHeader();
     renderMessages(subState.msgs, subView);
+    renderQueueDock(subView);
     syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
     // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有就是空，不残留上一个子对话的字）
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
     autoGrow($('sub-input'));
+    // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
+    if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
   } catch (e) { /* 打不开就保持原状 */ }
 }
 
@@ -1357,12 +1379,11 @@ function clearSubDraftLS(id) {
   try { localStorage.removeItem(subDraftKey(id)); } catch (e) {}
 }
 
-// 会话彻底删除时连带清掉它的本地痕迹（主草稿/子草稿/排队消息）
+// 会话彻底删除时连带清掉它的本地痕迹（主草稿/子草稿）
 function removeSessionLocalData(id) {
   try {
     localStorage.removeItem(sessionDraftKey(id));
     localStorage.removeItem(subDraftKey(id));
-    localStorage.removeItem('jx.queue.' + id);
   } catch (e) {}
 }
 
@@ -1414,12 +1435,13 @@ async function openSession(id) {
   const data = await api('/api/sessions/' + id);
   state.cur = data.meta;
   state.msgs = data.messages || [];
+  state.pendingSteer = (data.pending && data.pending.steer) || [];
+  state.pendingQueue = (data.pending && data.pending.queue) || [];
   // 计划/目标二选一：旧数据可能两个都开着，收敛为只留计划并落库
   if (state.cur.planMode && state.cur.goalMode) {
     state.cur.goalMode = false;
     api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ goalMode: false }) }).catch(() => {});
   }
-  state.queue = loadQueueLS(id);
   $('sess-title').textContent = state.cur.title || '(未命名)';
   const badge = $('mode-badge');
   // 模式徽标；挂在主对话下的子对话再标出来历（它可能是 task/office/aux 任一模式）
@@ -1440,6 +1462,7 @@ async function openSession(id) {
   syncComposer();
   loadTodos();
   renderMessages(state.msgs);
+  renderQueueDock(mainView);
   // 打开即视为已读：清红点与绿点
   delete dotDone[id];
   if (state.cur && state.cur.unread) {
@@ -1451,8 +1474,8 @@ async function openSession(id) {
     $('input').value = localStorage.getItem(sessionDraftKey(id)) || '';
   } catch (e) { $('input').value = ''; }
   autoGrow();
-  // 上次中断遗留的排队消息：会话空闲时从第一条继续
-  if (state.queue.length && !state.streaming) setTimeout(flushQueue, 300);
+  // 会话正在执行（含刷新页面后重新打开）：接上它的流，继续实时显示
+  if (!state.streaming && (data.running || state.cur.status === 'running')) attachRun(mainView);
   loadSessions();
   JX.emit('session:open', state.cur);
 }
@@ -1993,23 +2016,19 @@ function renderMessages(msgs, view) {
     if (ti === turns.length - 1 && view.state.streaming) renderStreamingTurn(box, turn, key);
     else renderFinishedTurn(box, turn, key);
   });
-  // 等待队列：本轮执行中排入的消息，徽标 + 可移出
-  view.state.queue.forEach((q, qi) => {
+  // 已插话、等下一次调用模型生效的消息：直接落在对话最底下（与已发送的用户消息
+  // 同一套气泡外观，只多一个「插话中」角标），落库后由 message 事件替换成正常气泡
+  (view.state.pendingSteer || []).forEach((pm) => {
     const wrap = document.createElement('div');
-    wrap.className = 'msg user queued';
+    wrap.className = 'msg user pending-steer';
+    wrap.dataset.pendingSteer = pm.id;
     const b = document.createElement('div');
     b.className = 'bubble';
     const badge = document.createElement('span');
-    badge.className = 'q-badge';
-    badge.textContent = '排队中';
+    badge.className = 'q-badge q-badge-steer';
+    badge.textContent = '插话中';
     b.appendChild(badge);
-    b.appendChild(document.createTextNode(q));
-    const x = document.createElement('button');
-    x.className = 'q-x';
-    x.title = '移出队列';
-    x.textContent = '✕';
-    x.onclick = () => { view.state.queue.splice(qi, 1); if (view === mainView) saveQueueLS(); renderMessages(view.state.msgs, view); };
-    b.appendChild(x);
+    b.appendChild(document.createTextNode(pm.content));
     wrap.appendChild(b);
     box.appendChild(wrap);
   });
@@ -2162,6 +2181,15 @@ function handleGlobalEvent(ev) {
       break;
     case 'message':
       if (viewing && !state.streaming && ev.message && ev.message.role === 'user') refreshCurrent();
+      break;
+    case 'pending':
+      // 插话/排队队列变化：只更新对应的那个视图（自己窗口的操作也会推回来，天然多端一致）
+      if (state.cur && ev.sessionId === state.cur.id) applyPending(mainView, ev.pending);
+      if (subState.cur && ev.sessionId === subState.cur.id) applyPending(subView, ev.pending);
+      break;
+    case 'stopped':
+      if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
+      if (subViewing && !subState.streaming) { subState.streamText = ''; subState.streamThinking = ''; removeLive(subView); openSubSession(ev.sessionId); }
       break;
     case 'done':
       if (viewing && !state.streaming) { state.streamText = ''; state.streamThinking = ''; removeLive(); refreshCurrent(); }
@@ -2570,6 +2598,11 @@ function handleEvent(ev, view) {
       view.state.streamText = '';
       view.state.streamThinking = '';
       removeLive(view);
+      if (view.state.attached) {
+        // 跟随别的连接发起的执行：以服务端为准整体重取，避免与已落库内容重复
+        reloadMessages(view);
+        break;
+      }
       // 后端 message 事件带该步思考原文与消息 seq：
       // 思考块实时渲染不消失（工具调用落地后仍在），seq 用作回合标识与搜索定位
       if (ev.thinking) ev.message.thinking = ev.thinking;
@@ -2579,6 +2612,18 @@ function handleEvent(ev, view) {
       renderMessages(view.state.msgs, view);
       break;
     }
+    case 'resume': // 接回执行流时补发的、进行中的那半句
+      if (ev.delta) view.state.streamText = ev.delta;
+      if (ev.thinking) view.state.streamThinking = ev.thinking;
+      liveRender(view);
+      break;
+    case 'pending': // 插话/排队队列变化（自己发的、别的窗口发的、服务端排水的都在这里）
+      applyPending(view, ev.pending);
+      break;
+    case 'stopped':
+      view.hint.textContent = ev.error || '已停止';
+      if (view.state.attached) reloadMessages(view);
+      break;
     case 'delta':
       view.state.streamText += ev.delta;
       liveRender(view);
@@ -2629,63 +2674,117 @@ function handleEvent(ev, view) {
   }
 }
 
-function queueKey(sid) { return 'jx.queue.' + sid; }
+/* ---------- 执行中的发消息：插话（贴到对话末尾，下一次调用模型生效）
+   与排队（进输入框上方排队坞，本轮结束后自动作为独立一轮发送）。
+   两边的队列都在服务端（runtime.go 的 PendingMsg）：刷新页面/换窗口不丢，
+   前端只负责呈现与增删。 ---------- */
 
-function loadQueueLS(sid) {
-  try { return JSON.parse(localStorage.getItem(queueKey(sid)) || '[]'); } catch (e) { return []; }
+function pendingHint(view, text) {
+  view.hint.textContent = text;
+  setTimeout(() => { if (view.hint.textContent === text) view.hint.textContent = ''; }, 6000);
 }
 
-function saveQueueLS() {
-  if (!state.cur) return;
-  try { localStorage.setItem(queueKey(state.cur.id), JSON.stringify(state.queue)); } catch (e) { /* 忽略 */ }
-}
-
-// 等待模式：本轮结束后从队列取下一条串行发送
-async function flushQueue(view) {
+// 排队坞：输入框上方的紧凑面板，列出排队的消息（可删除、可提前为插话）
+function renderQueueDock(view) {
   view = view || mainView;
-  if (!view.state.cur || view.state.streaming || !view.state.queue.length) return;
-  const next = view.state.queue.shift();
-  if (view === mainView) saveQueueLS();
-  renderMessages(view.state.msgs, view);
-  await send(next, view);
+  const box = viewEl(view, 'queue-dock');
+  if (!box) return;
+  const list = view.state.pendingQueue || [];
+  if (!view.state.cur || !list.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  const expanded = box.dataset.open === '1' || list.length === 1;
+  box.innerHTML = '';
+  const panel = document.createElement('div');
+  panel.className = 'qd-panel';
+  if (list.length > 1) {
+    const head = document.createElement('button');
+    head.className = 'qd-head';
+    head.type = 'button';
+    head.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h13M3 6h18M3 18h18"/><path d="M17 9l3 3-3 3"/></svg>' +
+      '<span class="qd-count">' + list.length + ' 条排队消息</span>' +
+      '<span class="qd-sub">本轮结束后依次发送</span>' +
+      '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>';
+    head.onclick = () => { box.dataset.open = expanded ? '0' : '1'; renderQueueDock(view); };
+    panel.appendChild(head);
+  }
+  if (!expanded) { box.appendChild(panel); return; }
+  const ul = document.createElement('ul');
+  ul.className = 'qd-list';
+  list.forEach((pm) => {
+    const li = document.createElement('li');
+    li.className = 'qd-row';
+    const txt = document.createElement('span');
+    txt.className = 'qd-text';
+    txt.textContent = pm.content.length > 200 ? pm.content.slice(0, 200) + '…' : pm.content;
+    txt.title = pm.content;
+    li.appendChild(txt);
+    li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '<path d="M12 19V5M5 12l7-7 7 7"/>'));
+    li.appendChild(qdAction('remove', view, pm, '移出队列', '<path d="M6 6l12 12M18 6L6 18"/>'));
+    ul.appendChild(li);
+  });
+  panel.appendChild(ul);
+  box.appendChild(panel);
 }
 
-// 执行中发出的消息：按「对话中途发送行为」插话或排队
+function qdAction(action, view, pm, title, path) {
+  const b = document.createElement('button');
+  b.className = 'qd-act' + (action === 'steer' ? ' qd-steer' : '');
+  b.type = 'button';
+  b.title = title;
+  b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
+  b.onclick = () => pendingAction(view, pm.id, action);
+  return b;
+}
+
+async function pendingAction(view, id, action) {
+  try {
+    const d = await api('/api/sessions/' + view.state.cur.id + '/pending', {
+      method: 'POST', body: JSON.stringify({ id, action }),
+    });
+    applyPending(view, d.pending);
+    pendingHint(view, action === 'steer' ? '已提前为插话：下一次调用模型前生效' : '已移出队列');
+  } catch (e) {
+    pendingHint(view, '操作失败：' + e.message);
+  }
+}
+
+// 待生效消息快照入视图（服务端下发或接口返回）：只对当前会话生效
+function applyPending(view, pending) {
+  if (!pending) return;
+  view.state.pendingSteer = pending.steer || [];
+  view.state.pendingQueue = pending.queue || [];
+  renderQueueDock(view);
+  if (view.state.cur) renderMessages(view.state.msgs, view);
+}
+
+// 执行中发出的消息：按「对话中途发送行为」插话或排队（两种模式都在服务端排队）
 async function sendMidrun(content, viaInput, view) {
   view = view || mainView;
-  if (lsGet('jx.midrun', 'interject') === 'queue') {
-    view.state.queue.push(content);
-    if (view === mainView) saveQueueLS();
-    if (viaInput) {
-      view.input.value = ''; autoGrow(view.input);
-      if (view === mainView) clearSessionDraftLS(view.state.cur.id); else clearSubDraftLS(view.state.cur.id);
-    }
-    renderMessages(view.state.msgs, view);
-    return;
-  }
+  const mode = lsGet('jx.midrun', 'interject') === 'queue' ? 'queue' : 'steer';
   try {
     const d = await api('/api/sessions/' + view.state.cur.id + '/interject', {
-      method: 'POST', body: JSON.stringify({ content }),
+      method: 'POST', body: JSON.stringify({ content, mode }),
     });
-    if (d.accepted) {
-      // 消息本身不在这里入列：后端在注入时会通过聊天流回推 message 事件，
-      // 本地再 push 会显示两条。
-    } else {
-      // 刚好执行结束的竞态：转入排队，稍后自动续发
-      view.state.queue.push(content);
-      if (view === mainView) saveQueueLS();
-      renderMessages(view.state.msgs, view);
-      setTimeout(() => flushQueue(view), 200);
+    if (!d.accepted) { pendingHint(view, '发送失败：该会话当前不接受消息'); return; }
+    // 本地立即出效果（插话贴到对话末尾，排队进坞）；服务端的 pending 广播可能
+    // 先于本次响应到达，按 id 去重，避免同一条显示两次
+    const known = view.state.pendingSteer.concat(view.state.pendingQueue).some((p) => p.id === d.id);
+    if (!known) {
+      const pm = { id: d.id, content: content, createdAt: '' };
+      if (d.mode === 'steer') view.state.pendingSteer.push(pm);
+      else view.state.pendingQueue.push(pm);
     }
+    renderQueueDock(view);
+    renderMessages(view.state.msgs, view);
+    pendingHint(view, d.mode === 'steer' ? '已插话：下一次调用模型前注入生效' : '已排队：本轮结束后自动发送');
   } catch (e) {
-    alert('插话失败：' + e.message);
+    pendingHint(view, '发送失败：' + e.message);
     return;
   }
   if (viaInput) {
     view.input.value = ''; autoGrow(view.input);
     if (view === mainView) clearSessionDraftLS(view.state.cur.id); else clearSubDraftLS(view.state.cur.id);
   }
-  renderMessages(view.state.msgs, view);
 }
 
 async function send(forceContent, view) {
@@ -2762,37 +2861,28 @@ async function send(forceContent, view) {
       const d = await res.json().catch(() => ({}));
       throw new Error(d.error || res.statusText);
     }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 2);
-        if (!frame.startsWith('data:')) continue;
-        try { handleEvent(JSON.parse(frame.slice(5)), view); } catch (e) { /* 跳过坏帧 */ }
-      }
-    }
+    await consumeStream(res, view);
   } catch (e) {
     if (e.name === 'AbortError') {
-      aborted = true; // 用户主动停止：排队消息保留，不自动续发
+      aborted = true; // 用户主动停止（已另行请求后端停止）：排队消息保留
     } else {
+      // 流断了不等于执行结束：后端执行体独立于这条连接，先对一次状态再决定提示
       view.state.streamText = '';
       view.state.streamThinking = '';
       renderMessages(view.state.msgs, view);
-      const err = document.createElement('div');
-      err.className = 'msg assistant';
-      err.innerHTML = `<div class="md"><p style="color:#c22f2f">请求失败：${esc(e.message)}</p></div>`;
-      view.col.appendChild(err);
+      if (!(await backendRunning(view.state.cur.id, view))) {
+        const err = document.createElement('div');
+        err.className = 'msg assistant';
+        err.innerHTML = `<div class="md"><p style="color:#c22f2f">请求失败：${esc(e.message)}</p></div>`;
+        view.col.appendChild(err);
+      }
     }
   }
   removeLive(view);
   // 先收流式标记再重渲：最后一帧要按"已完成回合"折叠呈现，而不是停留在流式尾部窗口
   view.state.streaming = false;
+  if (aborted) await reloadMessages(view); // 本地被动断流（用户停止的兜底路径）：整体对一次
+  else await refreshIfDangling(view); // 流断但后端仍在跑：接回去继续看
   renderMessages(view.state.msgs, view);
   setStreamUI(false, view);
   if (view === mainView) {
@@ -2804,7 +2894,116 @@ async function send(forceContent, view) {
     refreshDrawer();
     refreshCtxChip(subView); // 右栏的上下文圆环同样要跟着本轮刷新
   }
-  if (!aborted) flushQueue(view); // 等待模式：本轮彻底结束，取下一条排队消息
+}
+
+async function consumeStream(res, view) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const frame = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 2);
+      if (!frame.startsWith('data:')) continue;
+      try { handleEvent(JSON.parse(frame.slice(5)), view); } catch (e) { /* 跳过坏帧 */ }
+    }
+  }
+}
+
+async function backendRunning(sid, view) {
+  try {
+    const d = await api('/api/sessions/' + sid);
+    if (d.pending) applyPending(view || mainView, d.pending);
+    return !!(d.running || (d.meta && d.meta.status === 'running'));
+  } catch (e) { return false; }
+}
+
+// refreshIfDangling 流断开但后端仍在执行：重新接上那条流继续看（刷新/网络抖动都不再打断对话）
+async function refreshIfDangling(view) {
+  if (!view.state.cur) return;
+  if (!(await backendRunning(view.state.cur.id, view))) return;
+  attachRun(view);
+}
+
+// reloadMessages 只重取当前会话的消息与待生效队列（不触发接流，避免与 attachRun 互相递归）
+async function reloadMessages(view) {
+  view = view || mainView;
+  if (!view.state.cur) return;
+  try {
+    const d = await api('/api/sessions/' + view.state.cur.id);
+    view.state.cur = d.meta;
+    view.state.msgs = d.messages || [];
+    view.state.pendingSteer = (d.pending && d.pending.steer) || [];
+    view.state.pendingQueue = (d.pending && d.pending.queue) || [];
+  } catch (e) { return; /* 取不到就保持现状 */ }
+  renderQueueDock(view);
+  renderMessages(view.state.msgs, view);
+}
+
+// attachRun 接上一个正在执行的会话的事件流（页面刷新/流断开后继续跟随输出）
+async function attachRun(view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (!cur || view.state.streaming) return;
+  view.state.streaming = true;
+  view.state.attached = true;
+  view.state.abort = new AbortController();
+  view.state.streamText = '';
+  view.state.streamThinking = '';
+  setStreamUI(true, view);
+  await reloadMessages(view); // 先对齐到服务端现状，再接流
+  try {
+    const res = await fetch(`/api/sessions/${cur.id}/stream`, { signal: view.state.abort.signal });
+    if (!res.ok || !res.body) throw new Error(res.statusText || '无法接上执行流');
+    await consumeStream(res, view);
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('[JX] 接回执行流失败', e);
+  }
+  removeLive(view);
+  view.state.streaming = false;
+  view.state.attached = false;
+  setStreamUI(false, view);
+  // 执行可能在这一段里结束了：重取一次，落库内容与待生效队列都归位
+  if (view.state.cur && view.state.cur.id === cur.id) await reloadMessages(view);
+  if (view === mainView) {
+    loadSessions();
+    refreshCtxChip();
+  } else {
+    refreshDrawer();
+    refreshCtxChip(subView);
+  }
+  // 本轮可能是排队消息驱动的：它发完还有下一条，继续跟着看
+  if (view.state.cur && view.state.cur.id === cur.id) {
+    if (await backendRunning(cur.id, view)) attachRun(view);
+  }
+}
+
+// stopRun 显式停止：后端执行体独立于页面，必须让服务端停——本地只是等着这条流自己收尾
+// （取消会立刻作用到模型流/工具/等待，服务端写入的收尾记录也就随流到达）。
+async function stopRun(view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (!cur) return;
+  view.hint.textContent = '正在停止…';
+  try {
+    const r = await api('/api/sessions/' + cur.id + '/stop', { method: 'POST' });
+    if (r && r.stopped === false) { view.hint.textContent = ''; return; }
+  } catch (e) {
+    view.hint.textContent = '';
+    return;
+  }
+  // 兜底：5 秒还没收尾（网络异常/执行体卡住）就断掉本地流并重新对齐一次
+  const token = view.state.abort;
+  setTimeout(async () => {
+    if (view.state.streaming && view.state.abort === token) {
+      if (view.state.abort) view.state.abort.abort();
+      await reloadMessages(view);
+    }
+  }, 5000);
 }
 
 /* ---------- 上下文用量：圆环指示器（模型选择左侧）+ 悬停明细 ---------- */
@@ -4007,7 +4206,7 @@ $('btn-new-assistant').onclick = () => {
   if (!state.streaming) openAssistant();
 };
 $('btn-send').onclick = send;
-$('btn-stop').onclick = () => { if (state.abort) state.abort.abort(); };
+$('btn-stop').onclick = () => stopRun(mainView);
 $('btn-settings').onclick = openSettings;
 $('btn-recycle').onclick = () => setBinView(!binView);
 $('set-cancel').onclick = () => $('settings').classList.add('hidden');
@@ -4389,7 +4588,7 @@ $('rp-close').onclick = rpClose;
 // 子对话视图：下拉选/新建 + 独立输入区（与主对话同一套 send/render 代码，见 subView）
 $('sub-dd').onclick = () => { renderSubDDPop(); openPopover('sub-dd-pop', $('sub-dd')); };
 $('sub-send').onclick = () => send(null, subView);
-$('sub-stop').onclick = () => { if (subState.abort) subState.abort.abort(); };
+$('sub-stop').onclick = () => stopRun(subView);
 $('sub-input').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   if (lsGet('jx.sendkey', 'enter') === 'ctrl') {

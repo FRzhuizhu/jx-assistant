@@ -155,8 +155,7 @@ func TestCopyInheritedContextSkipsUnfinishedTail(t *testing.T) {
 		Kind:    "chat",
 	})
 	_ = a.Store.Create(&SessionMeta{ID: "c1", Mode: "task", Workspace: "ws", ParentID: "p1", CreatedAt: now(), UpdatedAt: now()})
-	a.runners = map[string]*runner{} // 测试直接调用 StartRun，需先备好运行登记表
-	if !a.StartRun("p1") {
+	if _, ok := a.beginRun("p1"); !ok { // 登记父会话执行
 		t.Fatal("登记父会话执行失败")
 	}
 	n, err := a.copyInheritedContext("p1", "c1")
@@ -286,7 +285,6 @@ func TestCreateSessionInheritContext(t *testing.T) {
 func TestDispatchTaskInheritAndNestingGuard(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	a.Cfg.BaseURL = "mock" // 后台子会话走内置演示模型，离线可跑
-	a.runners = map[string]*runner{}
 	assistant := &SessionMeta{ID: "a1", Mode: "assistant", Workspace: "ws", CreatedAt: now(), UpdatedAt: now()}
 	if err := a.Store.Create(assistant); err != nil {
 		t.Fatalf("建总控会话失败: %v", err)

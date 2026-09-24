@@ -174,6 +174,30 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 挂在某会话下的 `parent_id` 子对话（AI 派发的 task / 人工新建的分支克隆）不进左
 侧栏，只在右栏子对话视图里，来源标记 `origin=human`（人工）或空（AI 派发）。
 
+## 执行的生死与对话中途发消息
+
+**执行体独立于发起它的 HTTP 请求。** `POST /chat` 只是「发起执行 + 接上这条流」，
+后端 `executeRun` 在独立 goroutine 里持有自己的 `ctx`（`runtime.go`）：
+
+- 浏览器刷新、关页、网络抖动只断开那条订阅流，**执行照旧跑完并落库**；
+  重新打开这个会话时前端会自动 `GET /stream` 接回去，接着看实时输出。
+- 只有 `POST /stop`（停止按钮）或进程退出才会终止执行；`sessions.status` 只由
+  内存注册表与 `UpdateStatus` 维护（`SaveMeta` 刻意不写这一列，否则会被陈旧对象冲掉）。
+
+**执行中发消息（两种行为，设置页「对话中途发送行为」切换）：**
+
+| 模式 | 生效时机 | 前端呈现 |
+|---|---|---|
+| 插话 `steer` | 主循环下一次调用模型前注入，作为一条真实用户消息进入上下文 | 立刻贴在对话最底下（虚线气泡 +「插话中」角标），落库后换成正常气泡 |
+| 排队 `queue` | 本轮结束后作为**独立一轮**自动发送 | 进输入框上方的排队坞；可逐条删除，或点 ↑ 提前为插话 |
+
+两边的队列都在服务端（`PendingMsg`），刷新页面/换窗口不丢、多窗口一致；本轮结束时
+还没注入的插话自动转为排队，消息不会卡在队列里。会话空闲时发来排队消息会自动拉起一轮。
+
+**不会静默停止**：任何异常收尾（模型报错、模型一条都没输出、只有思考没有正文、达到
+最大步数、用户停止）都会发终态事件**并往对话里落一条可见的交代**，同时写日志——
+不会出现「用户发言之后对话就停在半路、什么提示都没有」。
+
 ## 后台派发与自动回报
 
 `dispatch_task` / `send_to_session` 立即返回，子会话在后台 goroutine 并行执行；
@@ -318,7 +342,11 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
 | `GET /api/models` / `POST /api/providers/fetch` | 模型清单 / 从提供方拉取模型 |
 | `GET/POST /api/sessions` | 会话列表（`?parent=` 查子会话）/ 创建（mode/parent/provider/model） |
 | `GET/PATCH/DELETE /api/sessions/{id}` | 详情 / 改标题、工作区、模型 / 删除 |
-| `POST /api/sessions/{id}/chat` | 发送消息，SSE 流式返回 |
+| `POST /api/sessions/{id}/chat` | 发送消息；SSE 流式返回。**执行体独立于本请求**：浏览器刷新/关页只断开这条流，执行照旧跑完并落库 |
+| `GET /api/sessions/{id}/stream` | 接上正在执行的会话流（刷新页面/换窗口后继续看实时输出）；未在执行时立刻回一帧 `done` |
+| `POST /api/sessions/{id}/stop` | 显式停止本会话执行（流断开不再等于停止） |
+| `POST /api/sessions/{id}/interject` | 执行中发消息：`{content, mode}`，`steer`=插话（下一次调用模型前注入）、`queue`=排队（本轮结束后作为独立一轮发送）；未在执行时按排队处理并顺手拉起执行 |
+| `POST /api/sessions/{id}/pending` | 排队坞操作：`{id, action:'remove'\|'steer'}`（移出队列 / 提前为插话） |
 | `POST /api/sessions/{id}/compact` | 手动压缩为一条摘要 |
 | `POST /api/sessions/{id}/remote` | 设置/解除会话的 SSH 远程工作区（`{remote:{…}}` 或 `{clear:true}`） |
 | `GET /api/approvals` | 待决定的越权审批清单（轮询兜底） |

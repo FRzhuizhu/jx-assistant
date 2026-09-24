@@ -110,6 +110,8 @@
 
     <div id="composer-wrap" class="composer-wrap">
       <div id="hint" class="composer-hint"></div>
+      <!-- 排队坞：执行中排队的消息（本轮结束后自动作为独立一轮发送），内容由 app.js 渲染 -->
+      <div id="queue-dock" class="queue-dock hidden" data-queue-dock></div>
       <div id="composer-area">
         <div id="draft-chips">
           <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
@@ -194,6 +196,7 @@
           <div id="sub-messages"><div class="msg-col" id="sub-msg-col"></div></div>
           <div class="sub-composer-wrap composer-wrap">
             <div id="sub-hint" class="composer-hint"></div>
+            <div id="sub-queue-dock" class="queue-dock hidden" data-queue-dock></div>
             <div class="sub-composer-card composer-card">
               <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->

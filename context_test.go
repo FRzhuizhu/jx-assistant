@@ -13,7 +13,9 @@ func newTestApp(t *testing.T, mode string, keep, interval int) *App {
 	}
 	t.Cleanup(func() { store.Close() })
 	cfg := &Config{CompactMode: mode, KeepRounds: keep, RuleInterval: interval, Workspace: "ws"}
-	return &App{Store: store, Cfg: cfg}
+	a := &App{Store: store, Cfg: cfg}
+	a.initRuntime() // 运行登记表/待生效消息表等，测试里也要能用执行相关接口
+	return a
 }
 
 // 插入一轮：用户消息 + 带工具调用的助手消息 + 工具结果

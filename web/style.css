@@ -1408,6 +1408,46 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 .msg.user.queued .q-x:hover { color: #c22f2f; }
 
+/* ---------- 执行中发消息：已插话气泡 + 输入框上方的排队坞 ---------- */
+
+/* 已插话、等下一次调用模型生效：与已发送的用户气泡同款，只加一个「插话中」角标 */
+.msg.user.pending-steer .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; }
+.msg.user.pending-steer .q-badge {
+  flex: none; font-size: .79em; color: var(--accent); border: 1px solid currentColor;
+  border-radius: 999px; padding: 0 7px; line-height: 17px; white-space: nowrap;
+}
+
+.queue-dock { max-width: var(--content-w); margin: 0 auto 6px; }
+.queue-dock.hidden { display: none; }
+.qd-panel {
+  border: 1px solid var(--border); border-radius: 12px; background: var(--code-bg);
+  overflow: hidden;
+}
+.qd-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: none;
+  padding: 7px 12px; font: inherit; font-size: 12px; color: var(--text-2); cursor: pointer; text-align: left;
+}
+.qd-head svg { width: 14px; height: 14px; flex: none; }
+.qd-head .caret { margin-left: auto; width: 12px; height: 12px; transition: transform .15s; }
+.qd-count { font-weight: 600; color: var(--text); }
+.qd-sub { color: var(--text-3); }
+.qd-list { list-style: none; margin: 0; padding: 0 0 2px; max-height: 176px; overflow-y: auto; }
+.qd-row {
+  display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 12px;
+  border-top: 1px solid var(--border-2);
+}
+.qd-row .qd-text {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qd-act {
+  flex: none; width: 26px; height: 26px; border: none; border-radius: 999px; background: none;
+  color: var(--text-3); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.qd-act svg { width: 14px; height: 14px; }
+.qd-act:hover { background: var(--hover); color: var(--text); }
+.qd-act.qd-steer:hover { color: var(--accent); }
+
 /* 技能面板 */
 .skill-constant { font-size: 12px; color: var(--text-3); flex: none; }
 .skill-del {

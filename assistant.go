@@ -124,12 +124,13 @@ func dispatchTaskTool() Tool {
 // launchSub 把子会话登记为后台执行并立刻返回；执行体见 runtime.go 的 runSubAgent。
 // note 是附在返回文案里的补充说明（如「已继承主对话上下文 N 条」）。
 func (t *toolContext) launchSub(sub *SessionMeta, note string) (string, error) {
-	if !t.app.StartRun(sub.ID) {
+	run, ok := t.app.beginRun(sub.ID)
+	if !ok {
 		return "", fmt.Errorf("目标会话 %s 正在执行其它任务，请稍后再试", sub.ID)
 	}
 	// 当前主对话的 SSE 若还连着，先给它推一条派发确认
 	t.emit(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
-	go t.app.runSubAgent(t.sess, sub)
+	go t.app.runSubAgent(t.sess, sub, run)
 	return fmt.Sprintf("已派发后台执行：会话 %s「%s」。%s本工具立即返回，不要等待；"+
 		"子会话完成后系统会自动收到压缩摘要并触发你向用户汇报。现在可以先回用户一句「已经安排」。", sub.ID, sub.Title, note), nil
 }
