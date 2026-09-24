@@ -145,7 +145,7 @@ func guessModelMeta(id string) (ctx int, images bool) {
 	case has("moonshot-v1-8k"):
 		return 8192, images
 	case has("deepseek"):
-		return 131072, images
+		return 1048576, images // V4 起上下文 1M；老端点拉不到元数据时的兜底猜测
 	case has("kimi"), has("moonshot"), has("k2"):
 		return 262144, images
 	case has("gemini"):
@@ -285,6 +285,10 @@ func pingModel(p *ProviderCfg, model string) error {
 
 // FetchModels 从提供方拉取可用模型清单（GET {baseURL}/models），
 // 新条目按 ID 猜测上下文窗口与图片能力自动填好。
+// FetchModels 从提供方拉取可用模型清单（GET {baseURL}/models）。
+// DeepSeek 等较新的兼容端会在清单里直接给出 context_window /
+// max_output_tokens / input_modalities / effort.supported_levels——
+// 这些真实字段优先；只返回 id 的老式端点回退到按 ID 猜测。
 func (a *App) FetchModels(p *ProviderCfg) ([]ModelCfg, error) {
 	url := strings.TrimRight(p.BaseURL, "/") + "/models"
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -306,7 +310,16 @@ func (a *App) FetchModels(p *ProviderCfg) ([]ModelCfg, error) {
 	}
 	var out struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID              string   `json:"id"`
+			Name            string   `json:"name"`
+			ContextWindow   int      `json:"context_window"`
+			ContextLength   int      `json:"context_length"` // 部分端点的同义字段
+			MaxOutputTokens int      `json:"max_output_tokens"`
+			InputModalities []string `json:"input_modalities"`
+			Modalities      []string `json:"modalities"`
+			Effort          struct {
+				SupportedLevels []string `json:"supported_levels"`
+			} `json:"effort"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -318,9 +331,33 @@ func (a *App) FetchModels(p *ProviderCfg) ([]ModelCfg, error) {
 			continue
 		}
 		ctx, img := guessModelMeta(m.ID)
+		// 真实字段优先：上下文长度绝不取自输出上限
+		if m.ContextWindow > 0 {
+			ctx = m.ContextWindow
+		} else if m.ContextLength > 0 {
+			ctx = m.ContextLength
+		}
+		modalities := m.InputModalities
+		if len(modalities) == 0 {
+			modalities = m.Modalities
+		}
+		if len(modalities) > 0 {
+			img = false
+			for _, mod := range modalities {
+				if strings.EqualFold(strings.TrimSpace(mod), "image") {
+					img = true
+					break
+				}
+			}
+		}
+		levels := m.Effort.SupportedLevels
+		if len(levels) == 0 {
+			levels = guessReasoningLevels(m.ID)
+		}
 		models = append(models, ModelCfg{
-			ID: m.ID, ContextWindow: ctx, SupportsImages: img,
-			ReasoningLevels: guessReasoningLevels(m.ID),
+			ID: m.ID, Name: m.Name, ContextWindow: ctx,
+			MaxOutput: m.MaxOutputTokens, SupportsImages: img,
+			ReasoningLevels: levels,
 		})
 	}
 	if len(models) == 0 {

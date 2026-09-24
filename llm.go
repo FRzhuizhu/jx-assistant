@@ -92,13 +92,16 @@ type ThinkingCfg struct {
 }
 
 // ApplyThinking 按档位设置请求的思考参数；空串=不干预（用服务端默认）。
-// enabled/disabled → thinking{type}；low/medium/high → reasoning_effort。
+// enabled/disabled → thinking{type}；其余非空档位（low/medium/high/max 等，
+// 以服务端 supported_levels 为准）→ reasoning_effort 原样透传。
 func (r *ChatRequest) ApplyThinking(level string) {
 	switch level {
 	case "enabled", "disabled":
 		r.Thinking = &ThinkingCfg{Type: level}
 		r.ReasoningEffort = ""
-	case "low", "medium", "high":
+	case "":
+		// 不干预
+	default:
 		r.Thinking = nil
 		r.ReasoningEffort = level
 	}
