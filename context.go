@@ -126,6 +126,11 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 			out = append(out, Message{Role: m.Role, Content: m.Compact})
 			continue
 		}
+		// 空正文且无工具调用（例如只留下思考过程的行）：对模型没有信息，
+		// 直接跳过，避免发出空 content 被网关拒绝
+		if m.Role == "assistant" && strings.TrimSpace(m.Text()) == "" && len(m.ToolCalls) == 0 {
+			continue
+		}
 		out = append(out, m.Message)
 	}
 	// 修剪尾部悬空的工具调用（客户端中断可能留下未配对的调用）

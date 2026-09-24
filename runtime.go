@@ -55,6 +55,7 @@ func (a *App) initRuntime() {
 	a.remotes = map[string]*remoteClient{}
 	a.pendingSteer = map[string][]*PendingMsg{}
 	a.pendingQueue = map[string][]*PendingMsg{}
+	a.runErrors = map[string]string{}
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
 	// 工作区就是程序目录，整目录保护会让开箱即用的会话什么都写不了。
@@ -78,6 +79,7 @@ func (a *App) beginRun(id string) (*sessionRun, bool) {
 	r := &sessionRun{ctx: ctx, cancel: cancel, startedAt: time.Now(), done: make(chan struct{}),
 		subs: map[int]chan Event{}}
 	a.runners[id] = r
+	a.clearRunError(id) // 新一轮开始：上一次的报错条自动消失
 	_ = a.Store.UpdateStatus(id, "running")
 	return r, true
 }
@@ -147,7 +149,7 @@ func (r *sessionRun) observe(ev Event) {
 	case "reasoning":
 		r.partial += ""
 		r.thinking += ev.Delta
-	case "message", "done":
+	case "message", "done", "retry":
 		r.partial, r.thinking = "", ""
 	}
 }
@@ -401,17 +403,42 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 	}
 	a.broadcastPending(m.ID)
 
+	// 终态：正常完成与用户停止都不往界面塞话（对话里只有真实对话）；
+	// 只有真实的失败（模型/网络/费用等）才进前端的报错区，并带重试按钮
 	switch {
 	case err == nil:
 		emit(Event{Type: "done"})
-	case a.isStopped(run):
+	case a.isStopped(run) || run.ctx.Err() != nil:
 		log.Printf("[对话] 会话 %s 已被用户停止", m.ID)
-		emit(Event{Type: "stopped", Error: "已停止本轮执行"})
+		a.clearRunError(m.ID)
+		emit(Event{Type: "stopped"})
 	default:
 		log.Printf("[对话] 会话 %s 本轮结束于错误: %v", m.ID, err)
+		a.setRunError(m.ID, err.Error())
 		emit(Event{Type: "error", Error: err.Error()})
 	}
 	emit(Event{Type: "session_updated"})
+}
+
+// setRunError 记下最近一次失败原因（前端在输入框上方显示报错条 + 重试按钮）。
+func (a *App) setRunError(id, msg string) {
+	a.errMu.Lock()
+	a.runErrors[id] = msg
+	a.errMu.Unlock()
+}
+
+// clearRunError 清掉报错（新一轮开始/重试成功即消失）。
+func (a *App) clearRunError(id string) {
+	a.errMu.Lock()
+	delete(a.runErrors, id)
+	a.errMu.Unlock()
+}
+
+// runError 取会话最近一次失败原因；没有则返回空串。
+func (a *App) runError(id string) string {
+	a.errMu.Lock()
+	defer a.errMu.Unlock()
+	return a.runErrors[id]
 }
 
 // isStopped 判断本次执行是否由用户显式停止。

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -321,9 +322,6 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	sys := a.systemPrompt(sess) // 会话内固定：基础提示词 + 版本行
 	target := a.resolveTarget(sess)
 	overflowRetried := false
-	// 本轮是否已产生「最终输出」：模型给出的无工具调用的正文。异常收尾时
-	// 靠它决定要不要补一条可见交代——绝不让对话停在半路又什么都没有。
-	turnFinal := false
 
 	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
@@ -389,19 +387,12 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					continue
 				}
 			}
-			// 半截正文落盘，历史不留空洞；没有任何输出的错误更要留痕，
-			// 否则前端只看到用户发言、对话就停在半路（静默停止）
+			// 半截正文落盘，历史不留空洞（这是助手自己说过的话，标一下被中断）
+			// 说明：异常收尾不往对话里塞“系统交代”，用户可见的报错统一走前端的报错区，
+			// 见 executeRun 的终态事件与前端 runErrorBar
 			if strings.TrimSpace(text.String()) != "" {
 				a.appendMessageThinking(sess, TextMessage("assistant", text.String()+"\n\n（本轮输出中断）"), reasoning.String())
-			} else {
-				note := "（本轮因错误中断，没有产生输出：" + truncateRunes(err.Error(), 300) + "）"
-				if ctx.Err() != nil {
-					note = "（本轮已被停止，没有产生输出。可继续发消息接续。）"
-				}
-				sm := a.appendMessage(sess, TextMessage("assistant", note))
-				emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
 			}
-			emit(Event{Type: "error", Error: err.Error()}) // 一律上报：终态必须可见
 			return err
 		}
 		if len(calls) == 0 {
@@ -409,17 +400,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				msg := TextMessage("assistant", text.String())
 				sm := a.appendMessageThinking(sess, msg, reasoning.String())
 				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq})
-				turnFinal = true
 			} else if strings.TrimSpace(reasoning.String()) != "" {
-				// 只有思考没有正文：把思考落盘，别让这一步凭空消失
-				sm := a.appendMessageThinking(sess, TextMessage("assistant", "（本轮只输出了思考过程，没有正文输出。可继续追问或让它给出结论。）"), reasoning.String())
+				// 只出了思考没出正文：思考原文落盘（前端折叠展示），本轮按失败收尾
+				sm := a.appendMessageThinking(sess, TextMessage("assistant", ""), reasoning.String())
 				emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq})
-				emit(Event{Type: "error", Error: "模型本轮只输出了思考，没有给出正文"})
+				return errors.New("模型本轮只返回了思考内容，没有给出正文，可点重试")
 			} else {
-				// 模型既没正文也没工具调用：明确落一条可见记录并提示
-				sm := a.appendMessage(sess, TextMessage("assistant", "（模型本轮没有输出任何内容，已结束本轮。可重发消息或补充要求后继续。）"))
-				emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
-				emit(Event{Type: "error", Error: "模型本轮没有输出内容，已结束本轮"})
+				return errors.New("模型本轮没有返回任何内容，可点重试")
 			}
 			// 本轮将结束时来了插话：不收尾，带着插话继续下一轮
 			if interjectsBefore(emit) {
@@ -473,23 +460,12 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			emit(Event{Type: "tool_end", Name: tc.Function.Name, Output: truncateRunes(out, 2000)})
 		}
 		if interrupted {
-			// 中断时若这一步没留下任何可读产出，补一条交代，避免历史停成半截
-			if !turnFinal {
-				sm := a.appendMessage(sess, TextMessage("assistant", "（本轮已被停止，没有产生最终输出。可继续发消息接续。）"))
-				emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq})
-			}
-			emit(Event{Type: "stopped", Error: "已停止本轮执行"})
-			emit(Event{Type: "done"})
+			// 用户停止：不往对话里塞交代，也不进报错区（前端只是收掉流式）
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			return context.Canceled
 		}
 	}
-	last := fmt.Errorf("达到最大步数 %d", a.Cfg.MaxSteps)
-	if !turnFinal {
-		a.appendMessage(sess, TextMessage("assistant", "（连续 "+itoa(a.Cfg.MaxSteps)+" 步仍未完成，已自动停止，没有产生最终输出。可在设置中调大最大步数，或补充要求后继续。）"))
-	}
-	emit(Event{Type: "error", Error: fmt.Sprintf("连续 %d 步仍未完成，已停止（可在设置中调大最大步数）", a.Cfg.MaxSteps)})
-	return last
+	return fmt.Errorf("连续 %d 步仍未完成，已自动停止（可在设置中调大最大步数），可点重试", a.Cfg.MaxSteps)
 }

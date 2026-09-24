@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -150,14 +151,73 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 	}
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("连接 LLM 服务失败: %w", err)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return fmt.Errorf("无法连接模型服务：%s", connErrText(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("LLM 服务返回 %d: %s", resp.StatusCode, string(snippet))
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return errors.New(upstreamErrText(resp.StatusCode, snippet))
 	}
 	return parseSSE(resp.Body, cb)
+}
+
+// upstreamErrText 把网关返回的错误整理成用户看得懂的一行：优先取 JSON 里的
+// error.message / message（余额不足、限流、鉴权失败这类都在这），否则回退原文摘要。
+func upstreamErrText(status int, body []byte) string {
+	type apiErr struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    any    `json:"code"`
+	}
+	var wrap struct {
+		Error  *apiErr `json:"error"`
+		Msg    string  `json:"msg"`
+		Message string `json:"message"`
+		Detail string  `json:"detail"`
+	}
+	var text string
+	if json.Unmarshal(body, &wrap) == nil {
+		switch {
+		case wrap.Error != nil && strings.TrimSpace(wrap.Error.Message) != "":
+			text = wrap.Error.Message
+		case strings.TrimSpace(wrap.Message) != "":
+			text = wrap.Message
+		case strings.TrimSpace(wrap.Msg) != "":
+			text = wrap.Msg
+		case strings.TrimSpace(wrap.Detail) != "":
+			text = wrap.Detail
+		}
+	}
+	if text == "" {
+		text = strings.TrimSpace(string(body))
+	}
+	// 折叠成单行并限长：报错条是一行提示，不是日志
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		text = http.StatusText(status)
+	}
+	return fmt.Sprintf("模型服务返回 %d：%s", status, truncateRunes(text, 300))
+}
+
+// connErrText 把底层连接错误整理成一句人话（超时/拒连/证书各说各的）。
+func connErrText(err error) string {
+	msg := err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "请求超时，模型服务没有在预期时间内响应"
+	case strings.Contains(msg, "context canceled"):
+		return "请求已取消"
+	case strings.Contains(msg, "no such host"):
+		return "域名解析失败，请检查 API 地址（baseURL）是否正确"
+	case strings.Contains(msg, "certificate"), strings.Contains(msg, "x509"):
+		return "TLS 证书校验失败，请检查代理或证书配置"
+	case strings.Contains(msg, "connection refused"), strings.Contains(msg, "actively refused"):
+		return "连接被拒绝，请确认 API 地址与端口可达"
+	}
+	return truncateRunes(strings.Join(strings.Fields(msg), " "), 300)
 }
 
 type streamChunk struct {
