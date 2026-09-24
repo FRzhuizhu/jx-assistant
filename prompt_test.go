@@ -80,8 +80,8 @@ func TestEnvSnapshotDiff(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	sess := &SessionMeta{ID: "sp3", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
 	_ = a.Store.Create(sess)
-	a.maybeAppendEnvSnapshot(sess, "ENV-A")
-	a.maybeAppendEnvSnapshot(sess, "ENV-A") // 相同：不追加
+	a.maybeAppendEnvSnapshot(sess, "ENV-A", nil)
+	a.maybeAppendEnvSnapshot(sess, "ENV-A", nil) // 相同：不追加
 	count := func() int {
 		raw, _ := a.Store.RawMessagesAll(sess.ID)
 		n := 0
@@ -95,7 +95,7 @@ func TestEnvSnapshotDiff(t *testing.T) {
 	if n := count(); n != 1 {
 		t.Fatalf("相同快照不应追加，现有 %d 条", n)
 	}
-	a.maybeAppendEnvSnapshot(sess, "ENV-B")
+	a.maybeAppendEnvSnapshot(sess, "ENV-B", nil)
 	if n := count(); n != 2 {
 		t.Fatalf("变化后应追加，现有 %d 条", n)
 	}

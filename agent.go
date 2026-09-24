@@ -220,8 +220,8 @@ func detectOSDesc() string {
 }
 
 // maybeAppendEnvSnapshot 环境快照 diff：与最近一条 kind=env 快照比较，
-// 内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条）。
-func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string) {
+// 内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条），并实时推给前端。
+func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Event)) {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err == nil {
 		for i := len(raw) - 1; i >= 0; i-- {
@@ -233,7 +233,12 @@ func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string) {
 			}
 		}
 	}
-	a.appendRow(sess, StoredMessage{Message: TextMessage("user", env), Kind: "env", CreatedAt: now()})
+	// 上下文材料行（env/摘要/快照）一律存 role=system：它们不是用户发言，
+	// 只是入库归档；真实发送时由 buildContext 现场构造（env 走 user 尾消息）
+	sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", env), Kind: "env", CreatedAt: now()})
+	if emit != nil {
+		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "env"})
+	}
 }
 
 // planSuspendedTask 是计划模式下暂停的 task 会话工具（目录不变，调用时拦截）。
@@ -271,54 +276,6 @@ func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
 	return &sm
 }
 
-// requestSnapshotsKeep 每会话保留的模型输入快照条数（老快照自动裁剪，防库膨胀）
-const requestSnapshotsKeep = 30
-
-// sanitizeCaptureMessages 脱敏捕获用的消息：视觉模型内联的 base64 图片
-// 换成大小标注，其余原样保留（展示的是"真实输入"的完整结构）。
-func sanitizeCaptureMessages(msgs []Message) []Message {
-	out := make([]Message, len(msgs))
-	for i, m := range msgs {
-		if parts, ok := m.Content.([]ContentPart); ok {
-			stripped := make([]ContentPart, len(parts))
-			for j, p := range parts {
-				if p.ImageURL != nil && strings.HasPrefix(p.ImageURL.URL, "data:") {
-					p.ImageURL = &ImageURL{URL: fmt.Sprintf("[内联图片 data URI，约 %d KB，快照中已省略]", len(p.ImageURL.URL)/1024)}
-				}
-				stripped[j] = p
-			}
-			m.Content = stripped
-		}
-		out[i] = m
-	}
-	return out
-}
-
-// appendRequestSnapshot 落库并推送一条「模型输入」快照（kind=request）：
-// 该步真实发给模型的完整原始输入——消息列表（含系统提示词、环境快照、摘要、
-// 压缩视图、上下文注入）、工具定义、模型与思考档位。前端在对话流里折叠展示。
-func (a *App) appendRequestSnapshot(sess *SessionMeta, emit func(Event), step int, req ChatRequest) {
-	payload := map[string]any{
-		"step":     step,
-		"model":    req.Model,
-		"messages": sanitizeCaptureMessages(req.Messages),
-		"tools":    req.Tools,
-	}
-	if req.Thinking != nil {
-		payload["thinking"] = req.Thinking.Type
-	}
-	if req.ReasoningEffort != "" {
-		payload["reasoningEffort"] = req.ReasoningEffort
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	sm := a.appendRow(sess, StoredMessage{Message: TextMessage("user", string(b)), Kind: "request", CreatedAt: now()})
-	emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "request"})
-	a.Store.PruneKindRows(sess.ID, "request", requestSnapshotsKeep)
-}
-
 // appendMessageThinking 同 appendMessage，但带上该步的思考过程原文。
 func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) *StoredMessage {
 	sm := &StoredMessage{Message: m, Kind: "chat", Thinking: thinking, CreatedAt: now()}
@@ -349,10 +306,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		}
 	}()
 
-	// 提示词快照行：每轮记录当轮初始组装的系统/环境提示词原文，供前端折叠展示。
+	// 提示词快照行：每轮记录当轮初始组装的完整上下文材料原文，供前端折叠展示——
+	// 系统提示词 + 环境快照 + 工具定义（tools 即请求体里平级发送的独立 JSON 数组）。
 	// 环境快照在循环里每步重算（模式中途切换立即反映），以尾部最新快照为准。
-	if pj, err := json.Marshal(map[string]string{"sys": sys, "env": a.envPrompt(sess)}); err == nil {
-		sm := a.appendRow(sess, StoredMessage{Message: TextMessage("user", string(pj)), Kind: "prompt", CreatedAt: now()})
+	if pj, err := json.Marshal(map[string]any{"sys": sys, "env": a.envPrompt(sess), "tools": defs}); err == nil {
+		sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", string(pj)), Kind: "prompt", CreatedAt: now()})
 		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: "prompt"})
 	}
 
@@ -373,7 +331,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		interjectsBefore(emit)
 		// 环境快照每步重算 + diff：内容（含模式中途变化）有变才落新快照
 		env := a.envPrompt(sess)
-		a.maybeAppendEnvSnapshot(sess, env)
+		a.maybeAppendEnvSnapshot(sess, env, emit)
 		msgs := a.buildContext(sess, sys, env)
 		// 视觉模型：把工具结果引用的图片内联为内容块；纯文本模型原样透传
 		msgs = inlineImagesForRequest(a, msgs, target)
@@ -382,7 +340,6 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: defs}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
-		a.appendRequestSnapshot(sess, emit, step+1, req) // 该步真实输入原样落档，供前端查看
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall

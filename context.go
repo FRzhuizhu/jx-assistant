@@ -115,7 +115,7 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 		out = append(out, TextMessage("user", s.Text()))
 	}
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == "inherit" {
+		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" {
 			continue
 		}
 		if ruleMode && m.Compact != "" {
@@ -320,7 +320,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			add("摘要", TextMessage("user", s.Text()))
 		}
 		for _, m := range raw {
-			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == "inherit" {
+			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" {
 				continue
 			}
 			if ruleMode && m.Compact != "" {
@@ -500,7 +500,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	b.WriteString("【待压缩的对话历史】\n")
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == inheritKind {
+		if m.Seq <= boundary || m.Seq > segEnd || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" {
 			continue
 		}
 		role := map[string]string{"user": "用户", "assistant": "助手", "tool": "工具结果"}[m.Role]
@@ -527,7 +527,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	content := fmt.Sprintf("【%s历史摘要（覆盖至第 %d 条，原文可用历史查询工具读取）】\n%s", label, segEnd, summary)
 	_ = a.Store.AppendRow(sess.ID, &StoredMessage{
-		Message: TextMessage("user", content), Kind: "summary",
+		Message: TextMessage("system", content), Kind: "summary", // 上下文材料，非用户发言；发送时现场构造 user 视图
 		Origin: origin, CoversUpTo: segEnd, CreatedAt: now(),
 	})
 	return summary, nil

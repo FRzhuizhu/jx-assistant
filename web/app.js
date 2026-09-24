@@ -1312,8 +1312,9 @@ function bindProcToggle(row) {
   if (!row.classList.contains('open')) hideEl(row.querySelector('.proc-body'));
 }
 
-// 提示词快照卡：当轮组装的系统提示词与环境快照原文，各一行折叠
-function promptRow(sys, env, seq) {
+// 提示词快照卡：当轮组装的完整上下文材料——系统提示词 / 运行环境 / 工具定义，
+// 各一行折叠；工具定义即请求体里平级发送的 tools JSON 数组原样展示
+function promptRow(sys, env, tools, seq) {
   const wrap = document.createElement('div');
   const one = (label, text) => {
     const row = document.createElement('div');
@@ -1329,86 +1330,51 @@ function promptRow(sys, env, seq) {
   };
   wrap.appendChild(one('系统提示词', sys));
   wrap.appendChild(one('运行环境', env));
+  if (tools != null) {
+    const row = document.createElement('div');
+    row.className = 'proc-row';
+    if (seq != null) row.dataset.seq = seq;
+    const toolsJson = JSON.stringify(tools, null, 2);
+    row.innerHTML =
+      '<div class="proc-head">' + chev('p-chev') +
+      '<span class="p-name">工具定义</span><span class="p-sub">· ' + (Array.isArray(tools) ? tools.length : '?') + ' 个工具 · 原样 JSON</span></div>' +
+      '<div class="proc-body"><pre></pre></div>';
+    row.querySelector('pre').textContent = toolsJson;
+    bindProcToggle(row);
+    wrap.appendChild(row);
+  }
   return wrap;
 }
 
-// 模型输入行：该步真实发给模型的完整原始输入——消息列表逐条（含系统提示词、
-// 环境快照、摘要、压缩视图、上下文注入）+ 工具定义 JSON + 完整原始 JSON 切换
-function requestRow(r, raw, seq) {
+// 环境快照更新行：轮内权限提升/模式切换等导致环境变化时，在发生位置展示新快照
+function envNoteRow(text, seq) {
   const row = document.createElement('div');
   row.className = 'proc-row';
   if (seq != null) row.dataset.seq = seq;
-  const msgs = Array.isArray(r.messages) ? r.messages : [];
-  const tools = Array.isArray(r.tools) ? r.tools : [];
-  const sub = [msgs.length + ' 条消息'];
-  if (tools.length) sub.push(tools.length + ' 个工具');
-  if (r.model) sub.push(String(r.model));
   row.innerHTML =
     '<div class="proc-head">' + chev('p-chev') +
-    '<span class="p-name">模型输入 #' + (r.step || '?') + '</span><span class="p-sub">· ' + esc(sub.join(' · ')) + '</span></div>' +
-    '<div class="proc-body"></div>';
-  const body = row.querySelector('.proc-body');
-
-  const cap1 = document.createElement('div');
-  cap1.className = 'pb-cap';
-  cap1.textContent = '消息列表（原样，' + msgs.length + ' 条）';
-  body.appendChild(cap1);
-  const list = document.createElement('div');
-  list.className = 'req-msgs';
-  for (const mm of msgs) {
-    const one = document.createElement('div');
-    one.className = 'req-msg';
-    const role = String((mm && mm.role) || '?');
-    const tag = document.createElement('span');
-    tag.className = 'req-role r-' + role;
-    tag.textContent = role + (mm && mm.tool_call_id ? ' · 结果' : '') +
-      (mm && Array.isArray(mm.tool_calls) && mm.tool_calls.length ? ' · 带' + mm.tool_calls.length + '个工具调用' : '');
-    one.appendChild(tag);
-    const pre = document.createElement('pre');
-    let text = '';
-    const c = mm && mm.content;
-    if (typeof c === 'string') text = c;
-    else if (Array.isArray(c)) {
-      // 视觉模型的内容块数组：文本拼出来，图片保留脱敏标注
-      text = c.map((p) => {
-        if (p && p.type === 'text') return p.text || '';
-        if (p && p.type === 'image_url' && p.image_url) return String(p.image_url.url || '');
-        return JSON.stringify(p);
-      }).join('\n');
-    } else if (c != null) text = JSON.stringify(c, null, 2);
-    if (mm && Array.isArray(mm.tool_calls) && mm.tool_calls.length) {
-      text += (text ? '\n' : '') + mm.tool_calls.map((tc) =>
-        '→ 调用 ' + ((tc.function && tc.function.name) || '?') + ' 参数：' + ((tc.function && tc.function.arguments) || '')).join('\n');
-    }
-    pre.textContent = text || '（无文本内容）';
-    one.appendChild(pre);
-    list.appendChild(one);
-  }
-  body.appendChild(list);
-
-  if (tools.length) {
-    const cap2 = document.createElement('div');
-    cap2.className = 'pb-cap';
-    cap2.textContent = '工具定义（' + tools.length + ' 个，原样 JSON）';
-    body.appendChild(cap2);
-    const pre = document.createElement('pre');
-    pre.textContent = JSON.stringify(tools, null, 2);
-    body.appendChild(pre);
-  }
-
-  const rawDet = document.createElement('details');
-  rawDet.className = 'req-raw';
-  const sum = document.createElement('summary');
-  sum.textContent = '查看完整原始 JSON（' + fmtCount(raw.length) + ' 字）';
-  rawDet.appendChild(sum);
-  const preRaw = document.createElement('pre');
-  preRaw.textContent = raw;
-  rawDet.appendChild(preRaw);
-  body.appendChild(rawDet);
-
+    '<span class="p-name">环境快照更新</span><span class="p-sub">· ' + fmtCount(String(text).length) + ' 字</span></div>' +
+    '<div class="proc-body"><div class="tk-text"></div></div>';
+  row.querySelector('.tk-text').textContent = text;
   bindProcToggle(row);
   return row;
 }
+
+// 压缩摘要行：摘要注入在发生位置展示（自动/手动、覆盖至第 N 条）
+function summaryRow(text, origin, covers, seq) {
+  const row = document.createElement('div');
+  row.className = 'proc-row';
+  if (seq != null) row.dataset.seq = seq;
+  const sub = (origin === 'auto' ? '自动' : '手动') + (covers ? ' · 覆盖至第 ' + covers + ' 条' : '');
+  row.innerHTML =
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">压缩摘要</span><span class="p-sub">· ' + sub + '</span></div>' +
+    '<div class="proc-body"><div class="tk-text"></div></div>';
+  row.querySelector('.tk-text').textContent = text;
+  bindProcToggle(row);
+  return row;
+}
+
 
 // 思考行：标题带字数，点开看原文
 function thinkRow(text, seq, opts = {}) {
@@ -1603,21 +1569,30 @@ function groupTurns(msgs, resultOf) {
     if (!cur) { cur = { userMsg: null, items: [] }; turns.push(cur); }
   };
   for (const m of msgs) {
-    if (m.kind === 'env') continue; // 环境快照不显示（内容在提示词卡里）
-    if (m.kind === 'prompt') {      // 提示词快照：折叠卡展示当轮组装的系统/环境提示词
-      let sys = '', env = '';
-      try { const j = JSON.parse(String(m.content ?? '{}')); sys = j.sys || ''; env = j.env || ''; } catch (e) { /* 忽略坏行 */ }
+    if (m.kind === 'env') {
+      // 环境快照：与当轮提示词卡里的 env 相同则跳过（去重）；
+      // 中途变化（权限提升/模式切换等）才在发生位置显示"环境快照更新"行
+      const txt = String(m.content ?? '');
+      if (cur && cur.promptEnv === txt) continue;
       ensure();
-      cur.items.push({ k: 'prompt', seq: m.seq, sys, env });
+      cur.items.push({ k: 'envnote', seq: m.seq, text: txt });
       continue;
     }
-    if (m.kind === 'request') {     // 模型输入快照：该步真实发给模型的完整原始输入
-      let r = null, raw = String(m.content ?? '');
-      try { r = JSON.parse(raw); } catch (e) { /* 忽略坏行 */ }
-      if (r && Array.isArray(r.messages)) {
-        ensure();
-        cur.items.push({ k: 'request', seq: m.seq, r, raw });
-      }
+    if (m.kind === 'summary') { // 压缩摘要注入：在发生位置展示
+      ensure();
+      cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
+      continue;
+    }
+    if (m.kind === 'prompt') {      // 提示词快照：折叠卡展示当轮的系统提示词/环境/工具定义
+      let sys = '', env = '', tools = null;
+      try {
+        const j = JSON.parse(String(m.content ?? '{}'));
+        sys = j.sys || ''; env = j.env || '';
+        if (Array.isArray(j.tools)) tools = j.tools;
+      } catch (e) { /* 忽略坏行 */ }
+      ensure();
+      cur.promptEnv = env; // 供 env 快照去重比较
+      cur.items.push({ k: 'prompt', seq: m.seq, sys, env, tools });
       continue;
     }
     if (m.role === 'user') {
@@ -1694,8 +1669,9 @@ function msgActions(m) {
 }
 
 function renderItem(it) {
-  if (it.k === 'prompt') return promptRow(it.sys, it.env, it.seq);
-  if (it.k === 'request') return requestRow(it.r, it.raw, it.seq);
+  if (it.k === 'prompt') return promptRow(it.sys, it.env, it.tools, it.seq);
+  if (it.k === 'envnote') return envNoteRow(it.text, it.seq);
+  if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
   if (it.k === 'think') return thinkRow(it.text, it.seq);
   if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
   if (it.k === 'subtask') {

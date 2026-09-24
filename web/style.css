@@ -270,22 +270,6 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 .proc-body .tc-imgs { margin: 4px 0 2px; }
 
-/* 模型输入详情：逐条消息（角色徽标 + 原文）与原始 JSON 切换 */
-.req-msgs { display: flex; flex-direction: column; gap: 6px; }
-.req-msg { border: 1px solid var(--border-2); border-radius: 8px; overflow: hidden; }
-.req-role {
-  display: inline-block; font-size: .8em; padding: 2px 8px; margin: 5px 5px 0;
-  border-radius: 999px; background: var(--chip); color: var(--text-2);
-}
-.req-role.r-system { background: rgba(154, 103, 0, .12); color: var(--amber); }
-.req-role.r-user { background: rgba(77, 107, 254, .1); color: var(--accent); }
-.req-role.r-assistant { background: rgba(31, 157, 85, .12); color: var(--green); }
-.req-role.r-tool { background: rgba(139, 92, 246, .12); color: #8b5cf6; }
-.req-msg pre { margin: 4px 5px 5px; max-height: 420px; }
-.req-raw summary { cursor: pointer; color: var(--text-3); font-size: .86em; padding: 5px 2px 3px; user-select: none; }
-.req-raw summary:hover { color: var(--text-2); }
-.req-raw pre { max-height: 480px; }
-
 /* 模式选择下拉（新建对话，同目录胶囊交互） */
 .mode-pop { min-width: 300px; }
 .mode-pop .mp2-text { display: flex; flex-direction: column; min-width: 0; }
