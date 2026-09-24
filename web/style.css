@@ -200,7 +200,12 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   margin: 10px 0; font-size: .89em; line-height: 1.55;
 }
 .md pre code { background: none; padding: 0; font-size: .89em; }
-.md table { border-collapse: collapse; margin: 10px 0; width: 100%; font-size: .93em; }
+/* 列多的表格在窄栏里改为横向滚动：display:block 让表格自身撑出滚动条，
+   宽度够时仍是原来的 100% 满宽外观（主对话区与子对话区行为一致） */
+.md table {
+  border-collapse: collapse; margin: 10px 0; width: 100%; font-size: .93em;
+  display: block; max-width: 100%; overflow-x: auto;
+}
 .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
 .md th { background: var(--code-bg); font-weight: 600; }
 .md b, .md strong { font-weight: 600; }
@@ -420,23 +425,10 @@ body.rp-open .w-handle { display: none; }
 .sub-dd-status { font-size: 11.5px; color: var(--amber); white-space: nowrap; }
 .sub-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #sub-messages { flex: 1; overflow-y: auto; }
-#sub-messages .msg-col { padding: 14px 14px 8px; } /* 窄栏收窄边距，字号与主对话一致（var(--chat-fs)） */
-.sub-composer-wrap { padding: 6px 10px 10px; flex-shrink: 0; }
-#sub-hint { min-height: 16px; margin-bottom: 6px; font-size: 12px; color: var(--amber); }
-.sub-composer-card {
-  border: 1px solid var(--border); border-radius: 14px;
-  background: var(--bg); padding: 8px 10px 6px;
-  box-shadow: 0 1px 3px rgba(16, 20, 26, .04);
-}
-.sub-composer-card:focus-within { border-color: #c9cfda; }
-:root[data-theme='dark'] .sub-composer-card:focus-within { border-color: #4a5158; }
-#sub-input {
-  width: 100%; border: none; outline: none; resize: none;
-  font-size: 13.5px; font-family: inherit; color: var(--text);
-  line-height: 1.6; padding: 2px 4px; min-height: 54px; max-height: 160px;
-  background: transparent;
-}
-#sub-input::placeholder { color: var(--text-3); }
+/* 消息列与输入区（.msg-col / .composer-*）不在这里另写样式：子对话就是对话，
+   直接沿用主对话区那套共用规则，两边逐像素一致。
+   （因此右栏窄到底部控件放不下时也会像主对话区在同宽度下那样自动折行——
+   这是同一套 flex-wrap 规则的正常表现，把右栏拖宽即可回到一行。） */
 
 /* 子对话下拉面板（选择 / 新建）：列表项直接复用 drawer-item 系列样式 */
 .sub-dd-pop { width: 280px; padding: 6px; }
@@ -444,23 +436,24 @@ body.rp-open .w-handle { display: none; }
 .sub-dd-new:hover { background: var(--hover); }
 .sub-dd-empty { padding: 10px 10px 8px; font-size: 12px; color: var(--text-3); }
 
-/* ---------- 上下文用量圆环（模型选择左侧）：弧长=占窗口比例，悬停显示明细 ---------- */
-#ctx-ring { position: relative; width: 30px; height: 30px; flex: none; cursor: default; }
-#ctx-ring svg { width: 100%; height: 100%; display: block; transform: rotate(-90deg); }
-#ctx-ring .cr-bg { fill: none; stroke: var(--border); stroke-width: 3; }
-#ctx-ring .cr-fg {
+/* ---------- 上下文用量圆环（模型选择左侧）：弧长=占窗口比例，悬停显示明细 ----------
+   class 选择器：主对话区与右栏子对话区各一枚，样式共用 */
+.ctx-ring { position: relative; width: 30px; height: 30px; flex: none; cursor: default; }
+.ctx-ring svg { width: 100%; height: 100%; display: block; transform: rotate(-90deg); }
+.ctx-ring .cr-bg { fill: none; stroke: var(--border); stroke-width: 3; }
+.ctx-ring .cr-fg {
   fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round;
   stroke-dasharray: 97.39; stroke-dashoffset: 97.39;
   transition: stroke-dashoffset .6s ease, stroke .3s;
 }
-#ctx-ring .cr-num {
+.ctx-ring .cr-num {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 8.5px; font-weight: 600; color: var(--text-2);
   font-variant-numeric: tabular-nums; user-select: none;
 }
-#ctx-ring.warn .cr-fg { stroke: var(--amber); }
-#ctx-ring.full .cr-fg { stroke: #d93a3a; }
-#ctx-ring.full .cr-num { color: #d93a3a; }
+.ctx-ring.warn .cr-fg { stroke: var(--amber); }
+.ctx-ring.full .cr-fg { stroke: #d93a3a; }
+.ctx-ring.full .cr-num { color: #d93a3a; }
 .ctx-tip {
   position: absolute; bottom: calc(100% + 10px); right: -8px; width: 250px;
   background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
@@ -468,7 +461,7 @@ body.rp-open .w-handle { display: none; }
   opacity: 0; transform: translateY(3px); pointer-events: none;
   transition: opacity .12s ease, transform .12s ease; z-index: 40;
 }
-#ctx-ring:hover .ctx-tip { opacity: 1; transform: translateY(0); }
+.ctx-ring:hover .ctx-tip { opacity: 1; transform: translateY(0); }
 .ctx-tip .ctx-bar { margin: 7px 0 9px; height: 6px; }
 .ctx-tip .ctx-cat { font-size: 11.5px; padding: 2px 0; }
 .ctx-title { font-size: 12.5px; color: var(--text-2); }
@@ -556,22 +549,25 @@ body.rp-open .w-handle { display: none; }
 #ws-row b, #mode-row b { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .caret { width: 12px; height: 12px; color: var(--text-3); flex-shrink: 0; }
 .composer-left, .composer-right { display: flex; align-items: center; gap: 8px; }
-#btn-plus {
+/* 输入区底部控件（加号/权限芯片/模型芯片）：class 选择器，两个输入区共用同一套 */
+.cbtn {
   width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border);
   background: var(--bg); color: var(--text-2); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
-#btn-plus svg { width: 15px; height: 15px; }
-#btn-plus:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); background: var(--hover); }
-#perm-chip, #model-chip {
+.cbtn svg { width: 15px; height: 15px; }
+.cbtn:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); background: var(--hover); }
+.cbtn.on { color: #fff; background: var(--accent); border-color: var(--accent); animation: voice-pulse 1.4s ease-in-out infinite; }
+.chip-btn {
   display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2);
   border: 1px solid var(--border); background: var(--bg); border-radius: 999px;
   padding: 5px 12px; cursor: pointer; max-width: 260px;
 }
-#perm-chip svg { width: 13px; height: 13px; color: var(--accent); flex-shrink: 0; }
-#perm-chip span, #model-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#perm-chip:hover, #model-chip:hover { border-color: rgba(77, 107, 254, .4); color: var(--accent); }
-#mode-flags { display: flex; gap: 4px; }
+.chip-btn svg { width: 13px; height: 13px; color: var(--accent); flex-shrink: 0; }
+.chip-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-btn:hover { border-color: rgba(77, 107, 254, .4); color: var(--accent); }
+.mode-flags { display: flex; gap: 4px; }
+.mode-flags.hidden { display: none; }
 .mflag {
   font-size: 11px; padding: 2px 7px 2px 9px; border-radius: 999px;
   background: rgba(214, 158, 46, .12); color: var(--amber); border: 1px solid rgba(214, 158, 46, .35);
@@ -581,7 +577,7 @@ body.rp-open .w-handle { display: none; }
 .mflag.on:hover { background: rgba(214, 158, 46, .22); }
 .mf-x { font-size: 10px; font-weight: 700; opacity: .65; flex: none; }
 .mf-x:hover { opacity: 1; }
-#mode-flags.hidden { display: none; }
+.mode-flags.hidden { display: none; }
 
 /* ---------- 弹出面板 ---------- */
 .popover {
@@ -687,22 +683,24 @@ body.rp-open .w-handle { display: none; }
 }
 
 /* ---------- 输入区 ---------- */
-#composer-wrap { padding: 6px 24px 14px; }
-#hint { max-width: var(--content-w); margin: 0 auto 6px; min-height: 18px; font-size: 12px; color: var(--amber); }
-#composer {
+/* 输入区三件套（外壳 / 提示行 / 输入卡 / 输入框）用 class 定义：主对话区与右栏
+   子对话区共用同一套规则——子对话就是对话，两边长得一模一样，只是挂点不同 */
+.composer-wrap { padding: 6px 24px 14px; flex-shrink: 0; }
+.composer-hint { max-width: var(--content-w); margin: 0 auto 6px; min-height: 18px; font-size: 12px; color: var(--amber); }
+.composer-card {
   max-width: var(--content-w); margin: 0 auto;
   border: 1px solid var(--border); border-radius: 16px;
   background: var(--bg); padding: 10px 12px 8px;
   box-shadow: 0 1px 3px rgba(16, 20, 26, .04);
 }
-#composer:focus-within { border-color: #c9cfda; }
-#input {
+.composer-card:focus-within { border-color: #c9cfda; }
+.composer-input {
   width: 100%; border: none; outline: none; resize: none;
   font-size: 14px; font-family: inherit; color: var(--text);
   line-height: 1.6; padding: 2px 4px; min-height: 72px; max-height: 200px;
   background: transparent;
 }
-#input::placeholder { color: var(--text-3); }
+.composer-input::placeholder { color: var(--text-3); }
 .composer-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
 .composer-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .composer-right { display: flex; align-items: center; gap: 10px; }
@@ -767,6 +765,11 @@ body.rp-open .w-handle { display: none; }
 .modal-actions button:hover { background: var(--hover); }
 .modal-actions button.accent { background: var(--accent); border-color: var(--accent); color: #fff; }
 .modal-actions button.accent:hover { background: var(--accent-hover); }
+/* 居中确认弹窗（破坏性操作统一用它） */
+.confirm-card { width: 380px; }
+.confirm-msg { white-space: pre-line; font-size: 13.5px; color: var(--text-2); line-height: 1.7; }
+.modal-actions button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+.modal-actions button.danger:hover { background: #a93226; border-color: #a93226; }
 .tip { color: var(--text-3); font-size: 11.5px; margin-top: 12px; }
 
 .hidden { display: none !important; }
@@ -863,6 +866,46 @@ body.rp-open .w-handle { display: none; }
 }
 .ws-tools button svg { width: 16px; height: 16px; }
 .ws-tools button:hover { background: var(--hover); color: var(--text); }
+/* 清空回收站：只在回收站视图出现，悬停泛红提示破坏性 */
+#wst-empty { display: none; }
+body.bin-mode #wst-empty { display: flex; }
+#wst-empty:hover { background: rgba(192, 57, 43, .08); color: #c0392b; }
+/* 回收站视图氛围：整栏红色泛光边框 + 标题红字 + 底部按钮同步变红，
+   核心目的是让人一眼知道自己在回收站里。
+   边框动画：静态红边兜底永远可见；进入回收站后 JS 短暂挂 .bin-anim 播放
+   「从下往上长出来」（内圈描边 scaleY 展开 + 外发光淡入），播完摘除动画类、
+   无缝回落到静态红边——即使动画时钟不走，最多 0.35s 后红边也一定出现。 */
+body.bin-mode #sidebar {
+  position: relative;
+  box-shadow: 0 0 16px rgba(210, 60, 60, .35);
+}
+body.bin-mode #sidebar::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px rgba(210, 60, 60, .5);
+}
+body.bin-mode.bin-anim #sidebar { animation: bin-glow-in .22s cubic-bezier(.4, 0, .2, 1); }
+body.bin-mode.bin-anim #sidebar::after {
+  transform: scaleY(0);
+  transform-origin: bottom;
+  animation: bin-border-rise .22s cubic-bezier(.4, 0, .2, 1) forwards;
+}
+@keyframes bin-glow-in {
+  from { box-shadow: 0 0 16px rgba(210, 60, 60, 0); }
+  to   { box-shadow: 0 0 16px rgba(210, 60, 60, .35); }
+}
+@keyframes bin-border-rise {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.bin-mode.bin-anim #sidebar { animation: none; }
+  body.bin-mode.bin-anim #sidebar::after { animation: none; transform: none; }
+}
+body.bin-mode #ws-section-title { color: #d23c3c; font-weight: 700; letter-spacing: .5px; }
+body.bin-mode #btn-recycle.active { color: #d23c3c; background: rgba(210, 60, 60, .1); }
+body.bin-mode #btn-recycle.active svg { color: #d23c3c; }
 #side-search { padding: 0 10px 6px; display: flex; gap: 6px; align-items: center; }
 #side-search input {
   flex: 1; min-width: 0; font-size: 12.5px; padding: 6px 10px; border: 1px solid var(--border);
@@ -1053,15 +1096,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .rm-entry.file svg { color: var(--text-3); opacity: .7; }
 .rm-empty { padding: 12px; font-size: 12px; color: var(--text-3); text-align: center; }
 
-/* ---------- 语音输入按钮 ---------- */
-#btn-voice {
-  width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border);
-  background: var(--bg); color: var(--text-2); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
-#btn-voice svg { width: 15px; height: 15px; }
-#btn-voice:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
-#btn-voice.on { color: #fff; background: var(--accent); border-color: var(--accent); animation: voice-pulse 1.4s ease-in-out infinite; }
+/* ---------- 语音输入按钮（.cbtn 已给通用外观，这里只保留 hover 差异） ---------- */
+.cbtn.voice:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
 @keyframes voice-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(77,107,254,.35); } 50% { box-shadow: 0 0 0 6px rgba(77,107,254,0); } }
 
 /* ---------- 会话圆点：平时隐藏；橙=待审批 绿=完成未看 红=未读 ---------- */
@@ -1343,7 +1379,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .modal-card { background: #1d2026; }
-:root[data-theme='dark'] #composer:focus-within { border-color: #4a5158; }
+:root[data-theme='dark'] .composer-card:focus-within { border-color: #4a5158; }
 :root[data-theme='dark'] ::-webkit-scrollbar-thumb { background: #3d434d; }
 :root[data-theme='dark'] ::-webkit-scrollbar-thumb:hover { background: #4a5158; }
 :root[data-theme='dark'] .pr-toggle span { background: #3d434d; }

@@ -54,7 +54,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
         </button>
         <button id="wst-add" title="添加工作目录">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v4M10 12h4"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v4M10 12h4"/></svg>
+        </button>
+        <button id="wst-empty" title="清空回收站">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         </button>
       </div>
     </div>
@@ -104,8 +107,8 @@
     <div id="todo-panel" class="hidden"></div>
     <div id="messages"><div class="msg-col" id="msg-col"></div></div>
 
-    <div id="composer-wrap">
-      <div id="hint"></div>
+    <div id="composer-wrap" class="composer-wrap">
+      <div id="hint" class="composer-hint"></div>
       <div id="composer-area">
         <div id="draft-chips">
           <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
@@ -119,30 +122,30 @@
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
           </div>
         </div>
-        <div id="composer">
-        <textarea id="input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
+        <div id="composer" class="composer-card">
+        <textarea id="input" class="composer-input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
         <div class="composer-bar">
           <div class="composer-left">
             <span id="plugin-composer-controls"></span>
-            <button id="btn-plus" title="上传与更多">
+            <button id="btn-plus" class="cbtn" title="上传与更多">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
             </button>
-            <button id="perm-chip" title="权限与能力设置">
+            <button id="perm-chip" class="chip-btn" title="权限与能力设置">
               <svg id="perm-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
               <span id="perm-chip-label">工作区内读写</span>
               <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
             </button>
-            <span id="mode-flags" class="hidden">
+            <span id="mode-flags" class="mode-flags hidden">
               <span class="mflag" id="flag-plan" title="计划模式：先出方案再执行（点击关闭）">计划<b class="mf-x">✕</b></span>
               <span class="mflag" id="flag-goal" title="目标模式（点击关闭）">目标<b class="mf-x">✕</b></span>
             </span>
           </div>
           <div class="composer-right">
-            <button id="btn-voice" title="语音输入">
+            <button id="btn-voice" class="cbtn voice" title="语音输入">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
             </button>
             <!-- 上下文用量圆环：弧长=占窗口比例，中心百分比；悬停显示分类明细与缓存命中率（纯展示无点击） -->
-            <div id="ctx-ring" aria-label="上下文用量">
+            <div id="ctx-ring" class="ctx-ring" aria-label="上下文用量">
               <svg viewBox="0 0 36 36" aria-hidden="true">
                 <circle class="cr-bg" cx="18" cy="18" r="15.5"/>
                 <circle class="cr-fg" cx="18" cy="18" r="15.5"/>
@@ -188,13 +191,43 @@
         </div>
         <div class="sub-chat">
           <div id="sub-messages"><div class="msg-col" id="sub-msg-col"></div></div>
-          <div class="sub-composer-wrap">
-            <div id="sub-hint"></div>
-            <div class="sub-composer-card">
-              <textarea id="sub-input" rows="3" placeholder="向子对话发消息…"></textarea>
+          <div class="sub-composer-wrap composer-wrap">
+            <div id="sub-hint" class="composer-hint"></div>
+            <div class="sub-composer-card composer-card">
+              <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
+              <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
               <div class="composer-bar">
-                <div class="composer-left"></div>
+                <div class="composer-left">
+                  <span id="sub-plugin-composer-controls"></span>
+                  <button id="sub-btn-plus" class="cbtn" title="上传与更多">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+                  </button>
+                  <button id="sub-perm-chip" class="chip-btn" title="权限与能力设置">
+                    <svg id="sub-perm-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
+                    <span id="sub-perm-chip-label">工作区内读写</span>
+                    <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                  <span id="sub-mode-flags" class="mode-flags hidden">
+                    <span class="mflag" id="sub-flag-plan" title="计划模式：先出方案再执行（点击关闭）">计划<b class="mf-x">✕</b></span>
+                    <span class="mflag" id="sub-flag-goal" title="目标模式（点击关闭）">目标<b class="mf-x">✕</b></span>
+                  </span>
+                </div>
                 <div class="composer-right">
+                  <button id="sub-btn-voice" class="cbtn voice" title="语音输入">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
+                  </button>
+                  <div id="sub-ctx-ring" class="ctx-ring" aria-label="上下文用量">
+                    <svg viewBox="0 0 36 36" aria-hidden="true">
+                      <circle class="cr-bg" cx="18" cy="18" r="15.5"/>
+                      <circle class="cr-fg" cx="18" cy="18" r="15.5"/>
+                    </svg>
+                    <span class="cr-num" id="sub-ctx-num">–</span>
+                    <div class="ctx-tip" id="sub-ctx-tip"></div>
+                  </div>
+                  <button id="sub-model-chip" title="选择模型">
+                    <span id="sub-model-chip-label">默认模型</span>
+                    <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
                   <button id="sub-stop" class="send-btn stop hidden" title="停止">
                     <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
                   </button>
@@ -209,6 +242,17 @@
       </div>
     </div>
   </aside>
+</div>
+
+<!-- 居中确认弹窗：破坏性操作（清空回收站/彻底删除）统一走这里，替代原生 confirm -->
+<div id="confirm-modal" class="modal hidden">
+  <div class="modal-card confirm-card">
+    <div class="confirm-msg" id="confirm-msg"></div>
+    <div class="modal-actions">
+      <button id="confirm-cancel">取消</button>
+      <button id="confirm-ok" class="danger">确定</button>
+    </div>
+  </div>
 </div>
 
 <div id="settings" class="modal hidden">

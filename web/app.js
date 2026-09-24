@@ -11,8 +11,20 @@ const JX = {
   emit(ev, payload) { (this._bus[ev] || []).forEach((f) => { try { f(payload); } catch (e) { console.warn('[JX]', ev, e); } }); },
   registerMessageAction(fn) { this._msgActions.push(fn); },
   registerSettingsSection(sec) { this._settingsSections.push(sec); },
-  // 插件向输入框右侧挂控件（按钮等），注册即生效
-  addComposerControl(el) { const c = document.getElementById('plugin-composer-controls'); if (c) c.appendChild(el); },
+  // 插件向输入区左侧挂控件（按钮等），注册即生效；右栏子对话输入区镜像一份
+  // （点击转发给原件执行，原件的 class 变化同步过来，两边外观/行为一致）
+  addComposerControl(el) {
+    const c = document.getElementById('plugin-composer-controls');
+    if (c) c.appendChild(el);
+    const sub = document.getElementById('sub-plugin-composer-controls');
+    if (sub && el && el.nodeType === 1) {
+      const copy = el.cloneNode(true);
+      copy.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); el.click(); });
+      new MutationObserver(() => { copy.className = el.className; copy.title = el.title; })
+        .observe(el, { attributes: true, attributeFilter: ['class', 'title'] });
+      sub.appendChild(copy);
+    }
+  },
 };
 window.JX = JX;
 
@@ -250,11 +262,15 @@ function hi(text, q) {
 }
 
 // 搜索范围跟随侧栏视图：正常工作区只搜正常内容，回收站只搜回收站内容。
-// ws = 回收目录列表；会话 workspace 可能存空串（默认工作区），默认目录被回收时把空串一并带上。
+// ws = 回收目录列表（默认工作区存空串，被回收时把 "" 一并带上）；
+// keep = 已单独恢复的会话（目录还回收着，但对话已回到正常区）。
 function searchScopeQS() {
   const recycled = lsGet('jx.wsrecycled', []);
   const wss = (state.defaultWs && recycled.includes(state.defaultWs)) ? [...recycled, ''] : recycled;
-  return '&bin=' + (binView ? 1 : 0) + '&ws=' + encodeURIComponent(JSON.stringify(wss));
+  const keep = lsGet('jx.wskeep', []);
+  return '&bin=' + (binView ? 1 : 0)
+    + '&ws=' + encodeURIComponent(JSON.stringify(wss))
+    + '&keep=' + encodeURIComponent(JSON.stringify(keep));
 }
 
 // 触发搜索（输入防抖 250ms）：标题路先行渲染，聊天记录路返回后逐条渐现
@@ -481,9 +497,40 @@ function openCtxMenu(items, x, y) {
   m.style.top = Math.max(8, Math.min(y, window.innerHeight - mh - 8)) + 'px';
 }
 
+/* ---------- 居中确认弹窗：破坏性操作（清空回收站/彻底删除）统一用它 ----------
+   Promise 化的 confirm，卡片出现在屏幕正中；Esc/点遮罩=取消，Enter=确定。
+   okOnly=true 时只留一个「确定」按钮，当提示框用。 */
+let confirmResolve = null;
+let confirmOkOnly = false;
+function confirmCenter(msg, okOnly) {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+    confirmOkOnly = !!okOnly;
+    $('confirm-msg').textContent = msg;
+    $('confirm-cancel').style.display = confirmOkOnly ? 'none' : '';
+    $('confirm-modal').classList.remove('hidden');
+    $('confirm-ok').focus();
+  });
+}
+function closeConfirm(v) {
+  if ($('confirm-modal').classList.contains('hidden')) return;
+  $('confirm-modal').classList.add('hidden');
+  const r = confirmResolve; confirmResolve = null;
+  if (r) r(v);
+}
+$('confirm-cancel').onclick = () => closeConfirm(false);
+$('confirm-ok').onclick = () => closeConfirm(true);
+$('confirm-modal').onclick = (e) => { if (e.target === $('confirm-modal')) closeConfirm(false); };
+document.addEventListener('keydown', (e) => {
+  if ($('confirm-modal').classList.contains('hidden')) return;
+  if (e.key === 'Escape') { e.stopPropagation(); closeConfirm(false); }
+  else if (e.key === 'Enter') { e.stopPropagation(); closeConfirm(true); }
+});
+
 async function deleteSession(s) {
-  if (!confirm('删除该会话？此操作不可恢复。')) return;
+  if (!(await confirmCenter('删除该会话？此操作不可恢复。'))) return;
   await api('/api/sessions/' + s.id, { method: 'DELETE' });
+  removeSessionLocalData(s.id); // 彻底删除连带清掉它的本地草稿/排队缓存
   if (state.cur && state.cur.id === s.id) {
     state.cur = null;
     state.msgs = [];
@@ -496,10 +543,7 @@ function openSessionMenu(s, rect) {
   // 回收站视图里的会话菜单：恢复 / 重命名 / 彻底删除
   if (binView) {
     openCtxMenu([
-      ...(s.archived ? [{ label: '恢复', fn: async () => {
-        await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: false }) });
-        loadSessions();
-      } }] : []),
+      { label: '恢复', fn: () => restoreSession(s) },
       { label: '重命名', fn: async () => {
         const t = prompt('重命名会话', s.title || '');
         if (t === null || !t.trim()) return;
@@ -530,6 +574,7 @@ function openSessionMenu(s, rect) {
     } },
     { label: '移入回收站', danger: true, fn: async () => {
       await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
+      lsSet('jx.wskeep', lsGet('jx.wskeep', []).filter((x) => x !== s.id)); // 归档即离开"单独保留"，保证恢复往返一致
       if (state.cur && state.cur.id === s.id) { state.cur = null; state.msgs = []; resetEmpty(); }
       loadSessions();
     } },
@@ -549,6 +594,7 @@ function sessionItem(s) {
     `<span class="s-title">${esc(s.title || '(未命名)')}</span>` +
     `<span class="s-time">${esc(relTime(s.updatedAt))}</span>` +
     `<span class="row-acts">` +
+      (binView ? `<button class="ra-restore" title="恢复"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>` : '') +
       `<button class="ra-copy" title="复制标题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>` +
       `<button class="ra-more" title="更多"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>` +
     `</span>`;
@@ -562,6 +608,8 @@ function sessionItem(s) {
     const b = e.currentTarget;
     b.classList.add('ok'); setTimeout(() => b.classList.remove('ok'), 900);
   };
+  const raRestore = item.querySelector('.ra-restore');
+  if (raRestore) raRestore.onclick = (e) => { e.stopPropagation(); restoreSession(s); };
   item.querySelector('.ra-more').onclick = (e) => {
     e.stopPropagation();
     openSessionMenu(s, item.getBoundingClientRect());
@@ -582,12 +630,23 @@ function aRunJustEnded(id) {
    以及挂在回收目录下的对话（它们在正常视图里被整组隐藏）。 */
 
 let binView = false;
+let binAnimTimer = 0; // 入场动画类的摘除定时器（见 setBinView）
 
 function setBinView(on) {
   binView = !!on;
   if (sideSearchOpen()) closeSideSearch(); // 切换视图前先还原搜索占领态（结果范围已随视图变化）
   $('btn-recycle').classList.toggle('active', binView);
   document.body.classList.toggle('bin-mode', binView);
+  // 边框「从下往上」入场动画：0.22s 缓入缓出（与侧边栏收起/展开同曲线同速度），
+  // 进入时挂 0.35s 动画类，随后摘除、回落到静态红边
+  // （动画正常则无缝，时钟冻结也不至于红边一直不可见）
+  clearTimeout(binAnimTimer);
+  if (binView) {
+    document.body.classList.add('bin-anim');
+    binAnimTimer = setTimeout(() => document.body.classList.remove('bin-anim'), 350);
+  } else {
+    document.body.classList.remove('bin-anim');
+  }
   $('ws-section-title').textContent = binView ? '回收站' : '工作区';
   $('side-search-input').placeholder = binView ? '搜索回收站' : '搜索工作任务';
   $('wst-search').title = binView ? '搜索回收站' : '搜索工作任务';
@@ -596,6 +655,73 @@ function setBinView(on) {
 
 function restoreWorkspace(ws) {
   lsSet('jx.wsrecycled', lsGet('jx.wsrecycled', []).filter((x) => x !== ws));
+  // 目录整体恢复时清掉该目录下会话的"单独保留"名单，下次回收从干净状态开始
+  const ids = new Set((state.sessions || []).filter((s) => wsOf(s) === ws).map((s) => s.id));
+  if (ids.size) lsSet('jx.wskeep', lsGet('jx.wskeep', []).filter((x) => !ids.has(x)));
+  loadSessions();
+}
+
+// 回收站里恢复单个对话：已归档的取消归档；随目录回收的加入保留名单（正常视图单独可见）
+async function restoreSession(s) {
+  const wsRecycled = lsGet('jx.wsrecycled', []).includes(wsOf(s));
+  if (s.archived) await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: false }) });
+  if (wsRecycled) lsSet('jx.wskeep', [...new Set([...lsGet('jx.wskeep', []), s.id])]);
+  loadSessions();
+}
+
+// 彻底删除工作目录：删除其名下全部会话记录并移除目录登记（不碰磁盘文件夹）
+async function deleteWorkspace(ws) {
+  const name = lsGet('jx.wsalias', {})[ws] || baseName(ws) || '默认工作区';
+  const targets = (state.sessions || []).filter((s) => s.mode !== 'assistant' && wsOf(s) === ws);
+  const isDefault = !!state.defaultWs && ws === state.defaultWs;
+  const hint = isDefault ? '\n注意：这是默认工作区，目录名由配置决定，删除后仍会保留一个空目录。' : '';
+  if (!(await confirmCenter(`彻底删除工作目录「${name}」及其 ${targets.length} 个对话？\n只从应用中移除记录，不会删除磁盘上的文件夹。${hint}\n此操作不可恢复。`))) return;
+  for (const s of targets) {
+    try { await api('/api/sessions/' + s.id, { method: 'DELETE' }); } catch (e) { /* 已不存在则跳过 */ }
+    removeSessionLocalData(s.id);
+  }
+  unregisterWorkspace(ws);
+  lsSet('jx.wskeep', lsGet('jx.wskeep', []).filter((x) => !targets.some((t) => t.id === x)));
+  if (state.cur && targets.some((t) => t.id === state.cur.id)) { state.cur = null; state.msgs = []; resetEmpty(); }
+  loadSessions();
+}
+
+// 注销一个工作目录的全部本地登记（列表/回收站/别名/折叠状态）
+function unregisterWorkspace(ws) {
+  lsSet('jx.wslist', lsGet('jx.wslist', []).filter((x) => x !== ws));
+  lsSet('jx.wsrecycled', lsGet('jx.wsrecycled', []).filter((x) => x !== ws));
+  const am = lsGet('jx.wsalias', {}); delete am[ws]; lsSet('jx.wsalias', am);
+  const cm = lsGet('jx.wscol', {}); delete cm[ws]; lsSet('jx.wscol', cm);
+}
+
+// 清空回收站的目标集合：回收站内的全部顶层对话 + 它们的子会话
+// （keep 保留的、正常区的都不算；目录由回收列表单独注销）
+function collectEmptyTargets() {
+  const keep = new Set(lsGet('jx.wskeep', []));
+  const recycledWs = lsGet('jx.wsrecycled', []);
+  const tops = (state.sessions || []).filter((s) =>
+    s.mode !== 'assistant' && !s.parentId && !keep.has(s.id) &&
+    (s.archived || recycledWs.includes(wsOf(s))));
+  const topIds = new Set(tops.map((s) => s.id));
+  const targets = (state.sessions || []).filter((s) =>
+    topIds.has(s.id) || (s.parentId && topIds.has(s.parentId)));
+  return { tops, targets, recycledWs };
+}
+
+// 清空回收站：删除全部回收内容并注销全部回收目录。
+// 双级确认——比单条「彻底删除对话」多一道确认。
+async function emptyRecycleBin() {
+  const { tops, targets, recycledWs } = collectEmptyTargets();
+  if (!tops.length && !recycledWs.length) { await confirmCenter('回收站是空的', true); return; }
+  if (!(await confirmCenter(`清空回收站？将永久删除 ${recycledWs.length} 个工作目录登记和 ${tops.length} 条对话。\n只从应用中移除记录，不会删除磁盘上的文件夹。`))) return;
+  if (!(await confirmCenter('再次确认：整个回收站将被清空，所有内容彻底删除、无法恢复。\n确定要继续吗？'))) return;
+  for (const s of targets) {
+    try { await api('/api/sessions/' + s.id, { method: 'DELETE' }); } catch (e) { /* 已不存在则跳过 */ }
+    removeSessionLocalData(s.id);
+  }
+  for (const ws of recycledWs) unregisterWorkspace(ws);
+  lsSet('jx.wskeep', []); // 目录登记都注销了，保留名单随之失效
+  if (state.cur && targets.some((t) => t.id === state.cur.id)) { state.cur = null; state.msgs = []; resetEmpty(); }
   loadSessions();
 }
 
@@ -605,9 +731,10 @@ function renderBin(box) {
   const sortIt = (arr) => viewCfg.sort === 'created'
     ? [...arr].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
     : arr;
-  // 回收站里的对话：已归档的，或挂在回收目录下（正常视图整组隐藏）的
+  // 回收站里的对话：已归档的、或挂在回收目录下且未被单独恢复的
+  const keep = new Set(lsGet('jx.wskeep', []));
   const all = (state.sessions || []).filter((s) => s.mode !== 'assistant' && !s.parentId);
-  const inBin = all.filter((s) => s.archived || recycledWs.includes(wsOf(s)));
+  const inBin = all.filter((s) => !keep.has(s.id) && (s.archived || recycledWs.includes(wsOf(s))));
   if (!recycledWs.length && !inBin.length) {
     box.innerHTML = '<div class="ws-empty">回收站是空的</div>';
     return;
@@ -633,6 +760,7 @@ function renderBin(box) {
       `<span class="ws-count">${items.length}</span>` +
       `<span class="ws-acts">` +
         `<button class="wa-restore" title="恢复到工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>` +
+        `<button class="wa-more" title="工作区操作"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>` +
       `</span>`;
     head.onclick = (e) => {
       if (e.target.closest('.ws-acts')) return;
@@ -643,6 +771,18 @@ function renderBin(box) {
     head.querySelector('.wa-restore').onclick = (e) => {
       e.stopPropagation();
       restoreWorkspace(ws);
+    };
+    head.querySelector('.wa-more').onclick = (e) => {
+      e.stopPropagation();
+      const r = e.currentTarget.getBoundingClientRect();
+      openCtxMenu([
+        { label: '复制路径', fn: () => navigator.clipboard.writeText(ws) },
+        { label: '彻底删除目录', danger: true, fn: () => deleteWorkspace(ws) },
+      ], r.left, r.bottom + 4);
+    };
+    head.oncontextmenu = (e) => {
+      e.preventDefault();
+      head.querySelector('.wa-more').click();
     };
     group.appendChild(head);
     if (!collapsed) {
@@ -679,13 +819,15 @@ async function loadSessions() {
     visible.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   }
   const recycled = new Set(lsGet('jx.wsrecycled', []));
+  const keep = new Set(lsGet('jx.wskeep', [])); // 已单独恢复的对话：目录回收着也照常显示
   const aliasMap = lsGet('jx.wsalias', {});
   if (viewCfg.group === 'flat') {
     box.classList.add('flat');
+    let n = 0;
     for (const s of visible) {
-      if (!recycled.has(wsOf(s))) box.appendChild(sessionItem(s));
+      if (!recycled.has(wsOf(s)) || keep.has(s.id)) { box.appendChild(sessionItem(s)); n++; }
     }
-    if (!visible.length) box.innerHTML = '<div class="ws-empty">没有会话</div>';
+    if (!n) box.innerHTML = '<div class="ws-empty">没有会话</div>';
     return;
   }
   if (viewCfg.group === 'time') {
@@ -705,7 +847,7 @@ async function loadSessions() {
       return 4;
     };
     const bands = ['今天', '昨天', '3天前', '1周前', '更早'].map((label) => ({ label, items: [] }));
-    visible.forEach((s) => { if (!recycled.has(wsOf(s))) bands[bucketOf(s)].items.push(s); });
+    visible.forEach((s) => { if (!recycled.has(wsOf(s)) || keep.has(s.id)) bands[bucketOf(s)].items.push(s); });
     bands.forEach((b) => {
       if (!b.items.length) return;
       const head = document.createElement('div');
@@ -726,8 +868,12 @@ async function loadSessions() {
     if (!groups.has(ws)) groups.set(ws, []);
     groups.get(ws).push(s);
   }
-  for (const [ws, items] of groups) {
-    if (recycled.has(ws)) continue; // 已移入回收站的工作区整组隐藏
+  for (const [ws, raw] of groups) {
+    let items = raw;
+    if (recycled.has(ws)) {
+      items = items.filter((s) => keep.has(s.id)); // 目录回收了：只显示被单独恢复的对话
+      if (!items.length) continue;
+    }
     const group = document.createElement('div');
     group.className = 'ws-group';
     const collapsed = !!wsCollapsed[ws];
@@ -895,12 +1041,9 @@ function resetEmpty() {
   $('btn-drawer').classList.add('hidden');
   rpClose();
   placeComposer();
-  // 恢复上次未发送的首页输入
-  if (homeDraft.savedText) {
-    $('input').value = homeDraft.savedText;
-    homeDraft.savedText = '';
-    autoGrow();
-  }
+  // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
+  $('input').value = homeDraft.text || '';
+  if ($('input').value) autoGrow();
   syncComposer();
 }
 
@@ -1027,8 +1170,7 @@ function setupRpanelResize() {
 
 /* 对话视图描述：主对话与右栏子对话共用同一套渲染/发送函数（renderMessages /
    liveRender / handleEvent / send 全部按 view 参数化），只差 DOM 挂点与状态。 */
-const mainView = {
-  key: 'main',
+const mainView = {  key: 'main',
   get col() { return $('msg-col'); },
   get scroll() { return $('messages'); },
   get input() { return $('input'); },
@@ -1060,6 +1202,12 @@ function drawerFamilyId() {
   if (!state.cur) return null;
   return state.cur.parentId || state.cur.id; // 锚定在主对话（父）上
 }
+
+/* 输入区控件的视图参数化：两个视图各有一套底部控件（id 在右栏加 sub- 前缀），
+   样式与行为完全共用；单例弹层（权限/模型/加号菜单）记住是谁打开的（popView），
+   处理时就作用于那个视图的会话。 */
+let popView = mainView; // 弹层归属视图（打开弹层时设置）
+function viewEl(view, id) { return $((view || mainView).key === 'main' ? id : 'sub-' + id); }
 
 let subKids = []; // 当前主对话的子对话清单（下拉面板数据）
 
@@ -1125,6 +1273,12 @@ async function openSubSession(id) {
     subState.streamThinking = '';
     subRenderHeader();
     renderMessages(subState.msgs, subView);
+    syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
+    // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有就是空，不残留上一个子对话的字）
+    try {
+      $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
+      if ($('sub-input').value) autoGrow($('sub-input'));
+    } catch (e) { $('sub-input').value = ''; }
   } catch (e) { /* 打不开就保持原状 */ }
 }
 
@@ -1146,14 +1300,23 @@ async function newAuxChat() {
   }
 }
 
-/* ---------- 本地草稿持久化：刷新不丢输入与选择 ---------- */
+/* ---------- 本地草稿持久化：刷新不丢输入与选择 ----------
+   缓存模型：输入框内容永远只属于「当前上下文」——
+   首页（新对话）一份 jx.homeDraft（含选择项 + text，跨重启保留），
+   每个主对话一份 jx.st.<id>，每个子对话一份 jx.subst.<id>。
+   三条铁律：
+   1) 输入即时落盘（input 事件与程序化写入都走 persist*）；
+   2) 切换上下文时输入框整体替换为目标上下文的草稿（没有就是空，绝不残留上一个的字）；
+   3) 发送成功即清对应上下文的草稿（首页发送清 homeDraft.text，会话/子对话清各自 key）。 */
 
 function sessionDraftKey(id) { return 'jx.st.' + id; }
+function subDraftKey(id) { return 'jx.subst.' + id; }
 
 function persistHomeDraftLS() {
   if (state.cur) return; // 只在首页上下文保存
   try {
-    localStorage.setItem('jx.homeDraft', JSON.stringify({ ...homeDraft, text: $('input').value }));
+    homeDraft.text = $('input').value;
+    localStorage.setItem('jx.homeDraft', JSON.stringify({ ...homeDraft, text: homeDraft.text }));
   } catch (e) { /* 隐私模式下忽略 */ }
 }
 
@@ -1166,8 +1329,42 @@ function persistSessionDraftLS() {
   } catch (e) {}
 }
 
+function persistSubDraftLS() {
+  if (!subState.cur) return;
+  try {
+    const v = $('sub-input').value;
+    if (v) localStorage.setItem(subDraftKey(subState.cur.id), v);
+    else localStorage.removeItem(subDraftKey(subState.cur.id));
+  } catch (e) {}
+}
+
+// 主输入框的统一落盘入口：首页与会话草稿按当前上下文各写各的
+function persistMainDraftLS() {
+  persistHomeDraftLS();
+  persistSessionDraftLS();
+}
+
 function clearSessionDraftLS(id) {
   try { localStorage.removeItem(sessionDraftKey(id)); } catch (e) {}
+}
+
+// 首页草稿只清 text，保留工作目录/模式等选择项
+function clearHomeDraftLS() {
+  homeDraft.text = '';
+  try { localStorage.setItem('jx.homeDraft', JSON.stringify({ ...homeDraft, text: '' })); } catch (e) {}
+}
+
+function clearSubDraftLS(id) {
+  try { localStorage.removeItem(subDraftKey(id)); } catch (e) {}
+}
+
+// 会话彻底删除时连带清掉它的本地痕迹（主草稿/子草稿/排队消息）
+function removeSessionLocalData(id) {
+  try {
+    localStorage.removeItem(sessionDraftKey(id));
+    localStorage.removeItem(subDraftKey(id));
+    localStorage.removeItem('jx.queue.' + id);
+  } catch (e) {}
 }
 
 function restoreHomeDraftLS() {
@@ -1187,7 +1384,7 @@ function restoreHomeDraftLS() {
     // 计划/目标二选一：旧数据可能两个都存着，收敛为只留计划
     if (homeDraft.planMode && homeDraft.goalMode) homeDraft.goalMode = false;
     homeDraft.remote = (d.remote && d.remote.host) ? d.remote : null;
-    homeDraft.savedText = typeof d.text === 'string' ? d.text : '';
+    homeDraft.text = typeof d.text === 'string' ? d.text : '';
   } catch (e) {}
 }
 
@@ -1250,11 +1447,11 @@ async function openSession(id) {
     state.cur.unread = false;
     api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ unread: false }) }).catch(() => {});
   }
-  // 恢复该会话上次未发送的输入
+  // 输入框整体替换为该会话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个对话的字）
   try {
-    const t = localStorage.getItem(sessionDraftKey(id));
-    if (t) { $('input').value = t; autoGrow(); }
-  } catch (e) {}
+    $('input').value = localStorage.getItem(sessionDraftKey(id)) || '';
+    if ($('input').value) autoGrow();
+  } catch (e) { $('input').value = ''; }
   // 上次中断遗留的排队消息：会话空闲时从第一条继续
   if (state.queue.length && !state.streaming) setTimeout(flushQueue, 300);
   loadSessions();
@@ -2460,7 +2657,10 @@ async function sendMidrun(content, viaInput, view) {
   if (lsGet('jx.midrun', 'interject') === 'queue') {
     view.state.queue.push(content);
     if (view === mainView) saveQueueLS();
-    if (viaInput) { view.input.value = ''; autoGrow(view.input); if (view === mainView && view.state.cur) clearSessionDraftLS(view.state.cur.id); }
+    if (viaInput) {
+      view.input.value = ''; autoGrow(view.input);
+      if (view === mainView) clearSessionDraftLS(view.state.cur.id); else clearSubDraftLS(view.state.cur.id);
+    }
     renderMessages(view.state.msgs, view);
     return;
   }
@@ -2482,7 +2682,10 @@ async function sendMidrun(content, viaInput, view) {
     alert('插话失败：' + e.message);
     return;
   }
-  if (viaInput) { view.input.value = ''; autoGrow(view.input); if (view === mainView && view.state.cur) clearSessionDraftLS(view.state.cur.id); }
+  if (viaInput) {
+    view.input.value = ''; autoGrow(view.input);
+    if (view === mainView) clearSessionDraftLS(view.state.cur.id); else clearSubDraftLS(view.state.cur.id);
+  }
   renderMessages(view.state.msgs, view);
 }
 
@@ -2493,6 +2696,8 @@ async function send(forceContent, view) {
   const content = (fromInput ? input.value : forceContent).trim();
   if (!content) return;
   if (view.state.streaming) { await sendMidrun(content, fromInput, view); return; }
+  // 这条消息是不是从首页（新对话）发出的：决定了发送后清哪份草稿
+  const fromHome = view === mainView && !view.state.cur;
   if (!view.state.cur) {
     if (view === mainView) {
       // 懒创建：发出第一条消息才真正建会话（侧栏不再出现空会话，首页不再一闪而过）
@@ -2530,7 +2735,13 @@ async function send(forceContent, view) {
   if (fromInput) {
     input.value = '';
     autoGrow(input);
-    if (view === mainView && view.state.cur) clearSessionDraftLS(view.state.cur.id);
+    // 发出即清：首页清 homeDraft 的 text，主对话清 jx.st.<id>，子对话清 jx.subst.<id>
+    if (view === mainView) {
+      if (fromHome) clearHomeDraftLS();
+      else clearSessionDraftLS(view.state.cur.id);
+    } else {
+      clearSubDraftLS(view.state.cur.id);
+    }
   }
 
   view.state.streaming = true;
@@ -2592,6 +2803,7 @@ async function send(forceContent, view) {
     JX.emit('message:done', { sessionId: state.cur && state.cur.id });
   } else {
     refreshDrawer();
+    refreshCtxChip(subView); // 右栏的上下文圆环同样要跟着本轮刷新
   }
   if (!aborted) flushQueue(view); // 等待模式：本轮彻底结束，取下一条排队消息
 }
@@ -2600,7 +2812,7 @@ async function send(forceContent, view) {
 
 const CTX_COLORS = { '消息': '#4d6bfe', '系统工具': '#1f9d55', '系统提示词': '#9a6700', '摘要': '#8b5cf6', '环境快照': '#0ea5a5', '其他': '#8b949e' };
 const CTX_CIRC = 97.39; // 2πr，r=15.5
-let lastCtx = null;
+let lastCtx = { main: null, sub: null }; // 每个输入区视图各自的上下文用量（圆环+明细共用）
 
 function fmtTokens(n) {
   if (n >= 10000) return (Math.round(n / 1000) / 10).toFixed(1) + '万';
@@ -2608,12 +2820,14 @@ function fmtTokens(n) {
   return String(n);
 }
 
-async function refreshCtxChip() {
-  const ring = $('ctx-ring');
+async function refreshCtxChip(view) {
+  view = view || mainView;
+  const ring = viewEl(view, 'ctx-ring');
   if (!ring) return;
-  const num = $('ctx-num'), tip = $('ctx-tip');
-  if (!state.cur) {
-    lastCtx = null;
+  const num = viewEl(view, 'ctx-num'), tip = viewEl(view, 'ctx-tip');
+  const cur = view.state.cur;
+  if (!cur) {
+    lastCtx[view.key] = null;
     ring.classList.remove('warn', 'full');
     ring.querySelector('.cr-fg').style.strokeDashoffset = CTX_CIRC;
     num.textContent = '–';
@@ -2621,21 +2835,23 @@ async function refreshCtxChip() {
     return;
   }
   try {
-    lastCtx = await api('/api/sessions/' + state.cur.id + '/context');
-    const pct = lastCtx.window ? Math.min(lastCtx.total / lastCtx.window, 1) : 0;
+    lastCtx[view.key] = await api('/api/sessions/' + cur.id + '/context');
+    const d = lastCtx[view.key];
+    const pct = d.window ? Math.min(d.total / d.window, 1) : 0;
     ring.classList.toggle('warn', pct >= .6 && pct < .85);
     ring.classList.toggle('full', pct >= .85);
     ring.querySelector('.cr-fg').style.strokeDashoffset = CTX_CIRC * (1 - pct);
     num.textContent = Math.max(1, Math.round(pct * 100)) + '%';
-    renderCtxTip();
+    renderCtxTip(view);
   } catch (e) { /* 拿不到就保持原样 */ }
 }
 
 // 悬停明细：总量/窗口 + 占用条（整条=窗口，已用从左往右按窗口占比增长，
 // 灰色轨道=未占用）+ 分类清单（share=占已用量比例）+ 缓存命中率
-function renderCtxTip() {
-  const tip = $('ctx-tip');
-  const d = lastCtx;
+function renderCtxTip(view) {
+  view = view || mainView;
+  const tip = viewEl(view, 'ctx-tip');
+  const d = lastCtx[view.key];
   if (!d) { tip.innerHTML = '<div class="ctx-title">当前没有会话</div>'; return; }
   const pct = d.window ? Math.round(d.total * 100 / d.window) : 0;
   let html =
@@ -2728,6 +2944,7 @@ async function askInAux(text) {
   const inp = $('sub-input');
   inp.value = inp.value ? inp.value + '\n\n' + text : text;
   autoGrow(inp);
+  persistSubDraftLS(); // 程序化填入也要落盘，切走/重启不丢
   inp.focus();
 }
 
@@ -2743,10 +2960,10 @@ async function loadModels() {
   } catch (e) { state.models = []; }
 }
 
-function currentModelKey() {
-  if (state.cur) {
-    return state.cur.provider && state.cur.model
-      ? state.cur.provider + '|' + state.cur.model : '__default__';
+function currentModelKey(view) {
+  const cur = (view || mainView).state.cur;
+  if (cur) {
+    return cur.provider && cur.model ? cur.provider + '|' + cur.model : '__default__';
   }
   return homeDraft.provider && homeDraft.model
     ? homeDraft.provider + '|' + homeDraft.model : '__default__';
@@ -2761,41 +2978,46 @@ function modelNameOf(key) {
 
 const THINK_LABELS = { enabled: '思考·开', disabled: '思考·关', low: '思考·低', medium: '思考·中', high: '思考·高' };
 
-// 当前生效的思考档位（会话级或首页草稿）
-function curThinking() {
-  return state.cur ? (state.cur.thinking || '') : (homeDraft.thinking || '');
+// 当前生效的思考档位（会话级 / 首页草稿 / 指定视图的会话）
+function curThinking(view) {
+  const cur = (view || mainView).state.cur;
+  return cur ? (cur.thinking || '') : (homeDraft.thinking || '');
 }
 
-async function pickModel(key, keepOpen) {
+async function pickModel(key, keepOpen, view) {
+  view = view || mainView;
   if (!keepOpen) closePopovers();
-  if (state.cur) {
-    const body = key === '__default__' ? { provider: '', model: '' } : {
-      provider: key.split('|')[0], model: key.split('|')[1],
-    };
+  const body = key === '__default__' ? { provider: '', model: '' } : {
+    provider: key.split('|')[0], model: key.split('|')[1],
+  };
+  if (view.state.cur) {
     try {
-      state.cur = await api('/api/sessions/' + state.cur.id, { method: 'PATCH', body: JSON.stringify(body) });
+      view.state.cur = await api('/api/sessions/' + view.state.cur.id, { method: 'PATCH', body: JSON.stringify(body) });
     } catch (e) { alert('切换模型失败：' + e.message); }
-  } else if (key === '__default__') {
-    homeDraft.provider = ''; homeDraft.model = '';
-  } else {
-    homeDraft.provider = key.split('|')[0];
-    homeDraft.model = key.split('|')[1];
+  } else if (view === mainView) {
+    if (key === '__default__') {
+      homeDraft.provider = ''; homeDraft.model = '';
+    } else {
+      homeDraft.provider = key.split('|')[0];
+      homeDraft.model = key.split('|')[1];
+    }
   }
-  syncComposer();
+  syncComposer(view);
 }
 
 // 设置思考档位（空串=跟随服务端默认）
-async function pickThinking(level) {
+async function pickThinking(level, view) {
+  view = view || mainView;
   closePopovers();
-  if (state.cur) {
+  if (view.state.cur) {
     try {
-      state.cur = await api('/api/sessions/' + state.cur.id, { method: 'PATCH', body: JSON.stringify({ thinking: level }) });
+      view.state.cur = await api('/api/sessions/' + view.state.cur.id, { method: 'PATCH', body: JSON.stringify({ thinking: level }) });
     } catch (e) { alert('设置思考档位失败：' + e.message); return; }
-  } else {
+  } else if (view === mainView) {
     homeDraft.thinking = level;
     persistHomeDraftLS();
   }
-  syncComposer();
+  syncComposer(view);
 }
 
 // 默认模型的思考档位（模型菜单的「默认」条目用）
@@ -2810,10 +3032,11 @@ function levelsOfDefault() {
 
 let modelPopExpand = ''; // 模型菜单里展开档位的模型 key
 
-function renderModelPop() {
+function renderModelPop(view) {
+  view = view || popView || mainView;
   const pop = $('model-pop');
-  const cur = currentModelKey();
-  const thinking = curThinking();
+  const cur = currentModelKey(view);
+  const thinking = curThinking(view);
   // 档位子列表：仅当前选中的模型行内显示档位选中态
   const lvRows = (key, levels) => {
     if (modelPopExpand !== key || !levels || !levels.length) return '';
@@ -2844,13 +3067,13 @@ function renderModelPop() {
   pop.querySelectorAll('.model-item').forEach((b) => {
     b.onclick = async () => {
       const key = b.dataset.key;
-      await pickModel(key, true);
+      await pickModel(key, true, popView);
       modelPopExpand = modelPopExpand === key ? '' : key;
-      renderModelPop();
+      renderModelPop(popView);
     };
   });
   pop.querySelectorAll('.mp-lv').forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); pickThinking(b.dataset.lv); };
+    b.onclick = (e) => { e.stopPropagation(); pickThinking(b.dataset.lv, popView); };
   });
 }
 
@@ -2910,44 +3133,56 @@ function openPopover(popId, anchor) {
   pop.style.top = y + 'px';
 }
 
-function sessionOrDraft() {
-  if (state.cur) {
+function sessionOrDraftFor(view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (cur) {
     return {
-      permission: state.cur.permission || 'workspace-write',
-      tools: state.cur.tools || [],
-      planMode: !!state.cur.planMode,
-      goalMode: !!state.cur.goalMode,
-      goalText: state.cur.goalText || '',
+      permission: cur.permission || 'workspace-write',
+      tools: cur.tools || [],
+      planMode: !!cur.planMode,
+      goalMode: !!cur.goalMode,
+      goalText: cur.goalText || '',
     };
   }
-  return homeDraft;
+  if (view === mainView) return homeDraft; // 主对话区没会话时 = 首页草稿
+  // 右栏没选中子对话：给一份中性默认，避免串到首页草稿
+  return { permission: 'workspace-write', tools: [], planMode: false, goalMode: false, goalText: '' };
 }
 
-async function patchDraftOrSession(fields) {
-  if (state.cur) {
+function sessionOrDraft() { return sessionOrDraftFor(mainView); }
+
+async function patchDraftOrSession(fields, view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (cur) {
     try {
-      state.cur = await api('/api/sessions/' + state.cur.id, { method: 'PATCH', body: JSON.stringify(fields) });
+      view.state.cur = await api('/api/sessions/' + cur.id, { method: 'PATCH', body: JSON.stringify(fields) });
     } catch (e) { alert('保存失败：' + e.message); }
-  } else {
+  } else if (view === mainView) {
     Object.assign(homeDraft, fields);
   }
-  syncComposer();
+  syncComposer(view);
 }
 
-// 同步 composer 芯片显示（权限/模式徽标/模型）
-function syncComposer() {
-  const s = sessionOrDraft();
-  const remote = state.cur ? !!state.cur.remote : !!homeDraft.remote;
-  $('perm-chip-label').textContent = (PERM_LABELS[s.permission] || s.permission) + (remote ? ' ·远程' : '');
-  const tk = curThinking();
-  $('model-chip-label').textContent = modelNameOf(currentModelKey()) + (tk ? ' · ' + (THINK_LABELS[tk] || tk) : '');
-  $('flag-plan').classList.toggle('on', s.planMode);
-  $('flag-goal').classList.toggle('on', s.goalMode);
-  $('flag-goal').title = s.goalMode ? ('目标模式：' + (s.goalText || '（未填写目标）')) : '目标模式';
-  $('mode-flags').classList.toggle('hidden', !s.planMode && !s.goalMode);
-  $('pm-plan-check').textContent = s.planMode ? '✓' : '';
-  $('pm-goal-check').textContent = s.goalMode ? '✓' : '';
-  $('pm-remote-check').textContent = remote ? '✓' : '';
+// 同步 composer 芯片显示（权限/模式徽标/模型）——按视图更新对应那套控件
+function syncComposer(view) {
+  view = view || mainView;
+  const vcur = view.state.cur;
+  const s = sessionOrDraftFor(view);
+  const remote = vcur ? !!vcur.remote : (view === mainView && !!homeDraft.remote);
+  viewEl(view, 'perm-chip-label').textContent = (PERM_LABELS[s.permission] || s.permission) + (remote ? ' ·远程' : '');
+  const tk = curThinking(view);
+  viewEl(view, 'model-chip-label').textContent = modelNameOf(currentModelKey(view)) + (tk ? ' · ' + (THINK_LABELS[tk] || tk) : '');
+  viewEl(view, 'flag-plan').classList.toggle('on', s.planMode);
+  viewEl(view, 'flag-goal').classList.toggle('on', s.goalMode);
+  viewEl(view, 'flag-goal').title = s.goalMode ? ('目标模式：' + (s.goalText || '（未填写目标）')) : '目标模式';
+  viewEl(view, 'mode-flags').classList.toggle('hidden', !s.planMode && !s.goalMode);
+  if (vcur) viewEl(view, 'input').placeholder = '发消息或创建任务…';
+  refreshCtxChip(view);
+  // 以下只属于主对话区（首页草稿 / 顶栏徽标 / 目录胶囊）
+  if (view !== mainView) return;
+  syncPlusChecks(view);
   // 顶栏远程徽标（挂了远程工作区的会话）
   const rb = $('remote-badge');
   if (state.cur && state.cur.remote) {
@@ -2983,11 +3218,28 @@ function remoteDisplay(r) {
   return user + '@' + r.host + port + ':' + (r.dir || '/');
 }
 
+// 加号菜单是单例：打开前按发起它的视图刷新勾选态，并记住归属（popView）
+function syncPlusChecks(view) {
+  const s = sessionOrDraftFor(view);
+  const cur = view.state.cur;
+  const remote = cur ? !!cur.remote : (view === mainView && !!homeDraft.remote);
+  $('pm-plan-check').textContent = s.planMode ? '✓' : '';
+  $('pm-goal-check').textContent = s.goalMode ? '✓' : '';
+  $('pm-remote-check').textContent = remote ? '✓' : '';
+}
+
+function openPlusMenu(view) {
+  popView = view;
+  syncPlusChecks(view);
+  openPopover('plus-menu', viewEl(view, 'btn-plus'));
+}
+
 // 完全访问预设捆绑的能力：切到完全访问即强制勾选、置灰不可关闭（后端权限引擎同样视为开启）
 const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer'];
 
-function renderPermPop() {
-  const s = sessionOrDraft();
+function renderPermPop(view) {
+  view = view || popView || mainView;
+  const s = sessionOrDraftFor(view);
   const pop = $('perm-pop');
   const full = s.permission === 'full';
   pop.querySelectorAll('input[name=perm]').forEach((r) => { r.checked = r.value === s.permission; });
@@ -3035,44 +3287,59 @@ function renderWsPop() {
   });
 }
 
-/* ---------- 加号菜单动作 ---------- */
+/* ---------- 加号菜单动作（按视图：作用于发起操作的那个输入区） ---------- */
 
-async function doUpload() {
+let uploadTarget = mainView; // 文件选择框是单例：记住这次上传属于哪个视图
+
+async function doUpload(view) {
+  view = view || popView || mainView;
   closePopovers();
-  if (!state.cur) { $('hint').textContent = '先发送第一条消息创建对话，再上传文件'; setTimeout(() => { $('hint').textContent = ''; }, 3000); return; }
-  if (state.streaming) return;
+  if (!view.state.cur) {
+    view.hint.textContent = '先发送第一条消息创建对话，再上传文件';
+    setTimeout(() => { view.hint.textContent = ''; }, 3000);
+    return;
+  }
+  if (view.state.streaming) return;
+  uploadTarget = view;
   $('file-input').value = '';
   $('file-input').click();
 }
 
-async function uploadFiles(files) {
+async function uploadFiles(files, view) {
+  view = view || uploadTarget || mainView;
+  const cur = view.state.cur;
+  if (!cur) return;
   for (const f of files) {
     const fd = new FormData();
     fd.append('file', f);
     try {
-      await fetch('/api/sessions/' + state.cur.id + '/upload', { method: 'POST', body: fd });
+      await fetch('/api/sessions/' + cur.id + '/upload', { method: 'POST', body: fd });
     } catch (e) { alert('上传失败：' + f.name); }
   }
-  await openSession(state.cur.id);
-  $('hint').textContent = '文件已上传到工作区';
-  setTimeout(() => { $('hint').textContent = ''; }, 3000);
+  if (view === mainView) await openSession(cur.id); // 主对话：就地刷新；子对话：刷新右栏
+  else await openSubSession(cur.id);
+  view.hint.textContent = '文件已上传到工作区';
+  setTimeout(() => { view.hint.textContent = ''; }, 3000);
 }
 
-function doExport(format) {
+function doExport(format, view) {
+  view = view || popView || mainView;
   closePopovers();
-  if (!state.cur) { alert('还没有可导出的对话'); return; }
+  const cur = view.state.cur;
+  if (!cur) { alert('还没有可导出的对话'); return; }
   const q = format === 'json' ? '?format=json' : '';
-  window.open('/api/sessions/' + state.cur.id + '/export' + q, '_blank');
+  window.open('/api/sessions/' + cur.id + '/export' + q, '_blank');
 }
 
-async function toggleModeFlag(flag) {
-  const s = sessionOrDraft();
+async function toggleModeFlag(flag, view) {
+  view = view || popView || mainView;
+  const s = sessionOrDraftFor(view);
   const turningOn = !s[flag];
   const fields = {};
   fields[flag] = turningOn;
   if (turningOn && flag === 'planMode') fields.goalMode = false; // 计划/目标二选一
   if (turningOn && flag === 'goalMode') fields.planMode = false;
-  await patchDraftOrSession(fields);
+  await patchDraftOrSession(fields, view);
   closePopovers();
 }
 
@@ -3724,6 +3991,7 @@ $('btn-sidebar').onclick = toggleSidebar;
 $('wst-search').onclick = toggleSideSearch;
 $('wst-view').onclick = (e) => openViewMenu(e.currentTarget);
 $('wst-add').onclick = addWorkFolder;
+$('wst-empty').onclick = emptyRecycleBin;
 // 侧栏搜索输入：防抖后触发双路搜索；✕/Escape 关闭并中止
 document.getElementById('side-search-input').addEventListener('input', (e) => {
   if (sideSearchDebounce) clearTimeout(sideSearchDebounce);
@@ -3745,9 +4013,12 @@ $('btn-settings').onclick = openSettings;
 $('btn-recycle').onclick = () => setBinView(!binView);
 $('set-cancel').onclick = () => $('settings').classList.add('hidden');
 $('set-save').onclick = saveSettings;
-$('btn-plus').onclick = () => openPopover('plus-menu', $('btn-plus'));
-$('perm-chip').onclick = () => { renderPermPop(); openPopover('perm-pop', $('perm-chip')); };
-$('model-chip').onclick = () => { renderModelPop(); openPopover('model-pop', $('model-chip')); };
+$('btn-plus').onclick = () => openPlusMenu(mainView);
+$('sub-btn-plus').onclick = () => openPlusMenu(subView);
+$('perm-chip').onclick = () => { popView = mainView; renderPermPop(popView); openPopover('perm-pop', $('perm-chip')); };
+$('sub-perm-chip').onclick = () => { popView = subView; renderPermPop(popView); openPopover('perm-pop', $('sub-perm-chip')); };
+$('model-chip').onclick = () => { popView = mainView; renderModelPop(popView); openPopover('model-pop', $('model-chip')); };
+$('sub-model-chip').onclick = () => { popView = subView; renderModelPop(popView); openPopover('model-pop', $('sub-model-chip')); };
 // 工作目录面板：每次打开重置搜索；搜索实时过滤目录列表
 $('ws-row').onclick = () => {
   $('ws-search').value = '';
@@ -3771,30 +4042,33 @@ $('ws-search-clear').onclick = () => {
   renderWsPop();
   $('ws-search').focus();
 };
-$('pm-upload').onclick = doUpload;
+$('pm-upload').onclick = () => doUpload();
 $('pm-plan').onclick = () => toggleModeFlag('planMode');
 // 目标模式开启时要求填写目标文本；关闭时清状态（goalText 保留备查）
 async function toggleGoalFlag() {
-  const s = sessionOrDraft();
+  const s = sessionOrDraftFor(popView);
   if (s.goalMode) {
-    await patchDraftOrSession({ goalMode: false });
+    await patchDraftOrSession({ goalMode: false }, popView);
   } else {
     const text = prompt('目标模式：要达成的目标是什么？\n（模型将自主持续推进，直到达成或确认受阻）', s.goalText || '');
     if (text === null || !text.trim()) return;
-    await patchDraftOrSession({ goalMode: true, planMode: false, goalText: text.trim() });
+    await patchDraftOrSession({ goalMode: true, planMode: false, goalText: text.trim() }, popView);
   }
   closePopovers();
 }
 $('pm-goal').onclick = toggleGoalFlag;
-// 黄色模式药丸：点 ✕（或药丸本身）关闭该模式
-$('mode-flags').addEventListener('click', (e) => {
-  const pill = e.target.closest('.mflag');
-  if (!pill || !pill.classList.contains('on')) return;
-  toggleModeFlag(pill.id === 'flag-plan' ? 'planMode' : 'goalMode');
-});
+// 黄色模式药丸：点 ✕（或药丸本身）关闭该模式（两个输入区视图各一套）
+for (const v of [mainView, subView]) {
+  viewEl(v, 'mode-flags').addEventListener('click', (e) => {
+    const pill = e.target.closest('.mflag');
+    if (!pill || !pill.classList.contains('on')) return;
+    // 药丸可能是主对话区那份（id=flag-plan）或右栏那份（id=sub-flag-plan）
+    toggleModeFlag(pill.id.includes('goal') ? 'goalMode' : 'planMode', v);
+  });
+}
 $('pm-export').onclick = () => doExport('md');
 $('pm-export-json').onclick = () => doExport('json');
-$('pm-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', $('btn-plus')); };
+$('pm-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', viewEl(popView, 'btn-plus')); };
 $('remote-badge').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', $('remote-badge')); };
 $('rm-auth').addEventListener('change', syncRemoteFormVis);
 $('rm-test').onclick = testRemote;
@@ -3819,7 +4093,7 @@ $('rm-dir-list').addEventListener('dblclick', (e) => {
   if (!row || row.classList.contains('file')) return;
   browseRemote(row.dataset.path);
 });
-$('file-input').addEventListener('change', (e) => { if (e.target.files.length) uploadFiles([...e.target.files]); });
+$('file-input').addEventListener('change', (e) => { if (e.target.files.length) uploadFiles([...e.target.files], uploadTarget); });
 // 「添加工作目录」：弹系统选择框，选中即设为新对话的工作目录并登记
 $('ws-pop-add').onclick = async () => {
   const p = await pickWorkFolder();
@@ -3835,24 +4109,24 @@ $('ws-pop-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-po
 // 权限面板：单选立即生效，多选即时收集；完全访问 ⇄ 三项捆绑能力联动
 // （切入强制勾上并置灰，切回「工作区内读写」/「只读」自动取消勾选）
 $('perm-pop').addEventListener('change', (e) => {
+  const v = popView; // 面板是单例：改动作用在打开它的那个视图的会话上
   if (e.target.name === 'perm') {
     if (e.target.value === 'full') {
-      const set = new Set(sessionOrDraft().tools || []);
+      const set = new Set(sessionOrDraftFor(v).tools || []);
       FULL_BUNDLED_TOOLS.forEach((t) => set.add(t));
-      patchDraftOrSession({ permission: 'full', tools: [...set] }).then(renderPermPop);
+      patchDraftOrSession({ permission: 'full', tools: [...set] }, v).then(() => renderPermPop(v));
     } else {
       const fields = { permission: e.target.value };
-      if (sessionOrDraft().permission === 'full') {
+      if (sessionOrDraftFor(v).permission === 'full') {
         // 从完全访问切回：捆绑点亮的三项能力随之自动取消
-        fields.tools = (sessionOrDraft().tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t));
+        fields.tools = (sessionOrDraftFor(v).tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t));
       }
-      patchDraftOrSession(fields).then(renderPermPop);
+      patchDraftOrSession(fields, v).then(() => renderPermPop(v));
     }
   } else if (e.target.dataset.tool) {
-    const s = sessionOrDraft();
-    const set = new Set(s.tools || []);
+    const set = new Set(sessionOrDraftFor(v).tools || []);
     if (e.target.checked) set.add(e.target.dataset.tool); else set.delete(e.target.dataset.tool);
-    patchDraftOrSession({ tools: [...set] });
+    patchDraftOrSession({ tools: [...set] }, v);
   }
 });
 // 点面板外收起所有弹出层。注意排除会打开弹出层的锚点按钮本身：
@@ -3862,6 +4136,9 @@ document.addEventListener('click', (e) => {
       !e.target.closest('#perm-chip') && !e.target.closest('#model-chip') && !e.target.closest('#ws-row') &&
       !e.target.closest('#mode-row') &&
       !e.target.closest('#sub-dd') &&
+      // 右栏子对话输入区那套同款控件也是弹层锚点
+      !e.target.closest('#sub-btn-plus') && !e.target.closest('#sub-perm-chip') &&
+      !e.target.closest('#sub-model-chip') &&
       !e.target.closest('.ws-tools') && !e.target.closest('.ws-acts') && !e.target.closest('.row-acts')) {
     closePopovers();
   }
@@ -4068,38 +4345,47 @@ makeSelect('sel-compact-threshold', 'compactThreshold', [
   { v: '0.9', label: '90%' },
 ], null);
 $('btn-drawer').onclick = () => rpToggle('subs');
-// 语音输入：浏览器原生识别，边说边追加到输入框
-let voiceRecog = null;
-let voiceOn = false;
-$('btn-voice').onclick = () => {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { $('hint').textContent = '当前浏览器不支持语音识别'; setTimeout(() => { $('hint').textContent = ''; }, 2500); return; }
-  if (voiceOn) { voiceRecog && voiceRecog.stop(); return; }
-  voiceRecog = new SR();
-  voiceRecog.lang = 'zh-CN';
-  voiceRecog.interimResults = false;
-  voiceRecog.continuous = true;
-  voiceRecog.onresult = (e) => {
-    let text = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) text += e.results[i][0].transcript;
-    if (text) {
-      $('input').value += ($('input').value ? ' ' : '') + text;
-      autoGrow();
-      persistSessionDraftLS();
-    }
+// 语音输入：浏览器原生识别，边说边追加到输入框（两个输入区各一套，互不干扰）
+const voiceOn = { main: false, sub: false };
+const voiceRecog = { main: null, sub: null };
+function bindVoiceButton(view) {
+  const btn = viewEl(view, 'btn-voice');
+  if (!btn) return;
+  btn.onclick = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const hint = view.hint;
+    if (!SR) { hint.textContent = '当前浏览器不支持语音识别'; setTimeout(() => { hint.textContent = ''; }, 2500); return; }
+    if (voiceOn[view.key]) { voiceRecog[view.key] && voiceRecog[view.key].stop(); return; }
+    const rec = new SR();
+    voiceRecog[view.key] = rec;
+    rec.lang = 'zh-CN';
+    rec.interimResults = false;
+    rec.continuous = true;
+    rec.onresult = (e) => {
+      let text = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) text += e.results[i][0].transcript;
+      if (!text) return;
+      const inp = view.input;
+      inp.value += (inp.value ? ' ' : '') + text;
+      autoGrow(inp);
+      // 语音是程序化写入，不触发 input 事件：手动落一次当前上下文的草稿
+      if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    };
+    rec.onend = () => { voiceOn[view.key] = false; btn.classList.remove('on'); };
+    rec.onerror = (e) => {
+      voiceOn[view.key] = false;
+      btn.classList.remove('on');
+      if (e.error !== 'aborted') { hint.textContent = '语音识别失败：' + e.error; setTimeout(() => { hint.textContent = ''; }, 2500); }
+    };
+    try {
+      rec.start();
+      voiceOn[view.key] = true;
+      btn.classList.add('on');
+    } catch (e) { /* 重复启动等 */ }
   };
-  voiceRecog.onend = () => { voiceOn = false; $('btn-voice').classList.remove('on'); };
-  voiceRecog.onerror = (e) => {
-    voiceOn = false;
-    $('btn-voice').classList.remove('on');
-    if (e.error !== 'aborted') { $('hint').textContent = '语音识别失败：' + e.error; setTimeout(() => { $('hint').textContent = ''; }, 2500); }
-  };
-  try {
-    voiceRecog.start();
-    voiceOn = true;
-    $('btn-voice').classList.add('on');
-  } catch (e) { /* 重复启动等 */ }
-};
+}
+bindVoiceButton(mainView);
+bindVoiceButton(subView);
 $('rp-close').onclick = rpClose;
 // 子对话视图：下拉选/新建 + 独立输入区（与主对话同一套 send/render 代码，见 subView）
 $('sub-dd').onclick = () => { renderSubDDPop(); openPopover('sub-dd-pop', $('sub-dd')); };
@@ -4114,7 +4400,7 @@ $('sub-input').addEventListener('keydown', (e) => {
     send(null, subView);
   }
 });
-$('sub-input').addEventListener('input', (e) => autoGrow(e.target));
+$('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
 // 上下文圆环：纯展示，数据在打开会话/发送完成时刷新（refreshCtxChip）；
 // 悬停明细由 CSS :hover 驱动，无点击行为
 // 对话区选中文字浮窗：松开鼠标出、选区消失/滚动/点外部收起；点浮窗不冲掉选区
@@ -4134,6 +4420,7 @@ $('sel-pop').addEventListener('click', (e) => {
     inp.value = inp.value.slice(0, st) + text + inp.value.slice(en);
     inp.selectionStart = inp.selectionEnd = st + text.length;
     autoGrow(inp);
+    persistMainDraftLS(); // 程序化插入也要落盘，切走/重启不丢
     inp.focus();
   } else if (b.dataset.act === 'aux') {
     askInAux(text);
@@ -4161,15 +4448,14 @@ $('input').addEventListener('keydown', (e) => {
 });
 $('input').addEventListener('input', () => {
   autoGrow();
-  persistHomeDraftLS();       // 首页：输入与选择即时落本地
-  persistSessionDraftLS();    // 对话页：未发送输入按会话落本地
+  persistMainDraftLS(); // 首页/会话两份草稿按当前上下文即时落本地
 });
 
 restoreHomeDraftLS(); // 先恢复上次草稿（输入与全部选择），再渲染首页
 restoreChatFont();    // 恢复常规页选的对话区字号（px）
 restoreContentWidth();// 恢复上次拖定的对话区宽度
 setupWidthHandles();  // 对话区两侧拖拽把手
-rpRegister('subs', { title: '子对话', onOpen: refreshDrawer }); // 右侧边栏：注册首个视图
+rpRegister('subs', { title: '子对话', onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
 setupRpanelResize();  // 右栏左缘拖拽（同时调宽对话区与右栏）
 window.addEventListener('resize', rpApply); // 窗口缩放时右栏跟随重占剩余宽
 // 嵌入式浏览器的 resize 事件可能延迟一拍：直接观察 #app 尺寸，变化即重算
