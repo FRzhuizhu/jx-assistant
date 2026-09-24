@@ -28,6 +28,8 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   内嵌 LOGO 资源（`打包/make_icon.py` 由 web/logo.png 生成多尺寸 ico，
   go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1，
   `iconres_windows_test.go` 探针防回归；`-browser` 参数可强制回浏览器形态）。
+  开发期间想要桌面形态：`powershell -File 打包\开发桌面版.ps1` 在仓库根
+  产出 `坚祥数字助理GO.exe`（双击即窗口，数据照旧落仓库目录）。
 - 桌面模式行为：相对路径（config / data / 技能）锚到 exe 目录（开发目录
   有 go.mod 时不搬迁，避免扰动调试）；监听端口被占自动回退；命名互斥体
   单实例，二次启动唤起已有窗口；首启默认工作区指到「文档\坚祥数字助理」
