@@ -182,11 +182,20 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	b.WriteString("- 审批卡上用户点「始终允许」= 常设授权：命令升级点亮对应能力开关（如「允许工作区外执行命令」），工作区外写入把会话权限提升为完全访问（捆绑能力一并点亮），之后该类动作不再逐次审批\n")
 	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")
 	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录（含 API Key）；不可逆的破坏性命令会被危险命令护栏拦截（护栏默认开启，用户可在设置中关闭）\n")
-	if hasCapability(sess, capBrowser) {
-		b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
-	}
-	if hasCapability(sess, capComputer) {
-		b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
+	// 能力开关只对带这些工具的模式（task/office）有意义。工具定义常驻目录
+	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
+	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截
+	if sess.Mode == "task" || sess.Mode == "office" {
+		if hasCapability(sess, capBrowser) {
+			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
+		} else {
+			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
+		}
+		if hasCapability(sess, capComputer) {
+			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
+		} else {
+			b.WriteString("- 能力：未开启「操作电脑」——computer_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
+		}
 	}
 	if sess.PlanMode {
 		if sess.Mode == "assistant" {
@@ -203,7 +212,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		b.WriteString("- 目标模式：目标「" + sess.GoalText + "」（当前状态：" + status + "）。自主持续推进，无需等待用户逐轮催促；达成或确认无法推进（缺权限/缺信息/外部受阻）时必须调用 update_goal（result=complete 或 blocked）并附 summary，然后面向用户做最终总结，不要空转。\n")
 	}
 	if sess.ParentID != "" {
-		b.WriteString("- 本会话是子对话（父会话 " + sess.ParentID + "）：子对话只有一级，不配备任何派发工具；需要并行分块时把安排写进你的答复，由父对话或用户来派。\n")
+		b.WriteString("- 本会话是子对话（父会话 " + sess.ParentID + "）：开头继承的上下文只是背景资料——其中可能正是父对话进行到一半的工作快照，不要去延续、续做或修改那些未完成的工作（父对话可能仍在执行，两边会冲突）；你只做交给自己的这一件事。子对话只有一级，不配备任何派发工具；需要并行分块时把安排写进你的答复，由父对话或用户来派。\n")
 	}
 	// 插件兼容层的动态段（如语音听写提示）也归入环境快照——它们随时间变化
 	if a.Plugins != nil {
