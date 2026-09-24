@@ -23,7 +23,9 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
 ## 桌面版（WebView2 壳）与安装包
 
 - `-desktop` 参数（或安装包里的发行 exe **默认**形态，构建时
-  `-ldflags "-X main.desktopDefault=1"` 注入）用系统自带的 WebView2
+  `-ldflags "-H=windowsgui -X main.desktopDefault=1"` 注入：GUI 子系统
+  双击无 CMD 黑窗，无控制台时日志改落 data\desktop.log）用系统自带的
+  WebView2
   运行时开原生桌面窗口：标题「坚祥数字助理GO」，窗口/任务栏图标取 exe
   内嵌 LOGO 资源（`打包/make_icon.py` 由 web/logo.png 生成多尺寸 ico，
   go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1，

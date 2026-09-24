@@ -10,3 +10,7 @@ func runDesktop(url string) error {
 }
 
 func desktopWorkspaceDefault(cfg *Config) bool { return false }
+
+func guiLogRedirect() {}
+
+func attachParentConsole() {}

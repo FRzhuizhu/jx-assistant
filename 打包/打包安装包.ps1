@@ -33,7 +33,7 @@ if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
   Write-Host "== 编译主程序（注入桌面模式默认值）"
-  go build -trimpath -ldflags "-s -w -X main.desktopDefault=1" -o $exe $root
+  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1" -o $exe $root
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }
 

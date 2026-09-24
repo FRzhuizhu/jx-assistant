@@ -29,6 +29,7 @@ func main() {
 	}
 	// 沙箱常驻授权审计/清理子命令：jx-assistant.exe sandbox acl-audit
 	if len(os.Args) > 1 && os.Args[1] == "sandbox" {
+		attachParentConsole() // GUI 子系统构建时挂回终端，保证 CLI 回显
 		os.Exit(runSandboxCLI(os.Args[2:]))
 	}
 
@@ -57,6 +58,10 @@ func main() {
 		}
 		*noOpen = true
 	}
+
+	// GUI 子系统构建（-H=windowsgui）双击启动时没有控制台，日志改落
+	// data\desktop.log；放在 cwd 锚定之后，日志与数据同目录
+	guiLogRedirect()
 
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {

@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -35,7 +36,60 @@ var (
 	desktopUser32          = windows.NewLazySystemDLL("user32.dll")
 	procDesktopShowWindow  = desktopUser32.NewProc("ShowWindow")
 	procDesktopMessageBoxW = desktopUser32.NewProc("MessageBoxW")
+	desktopKernel32        = windows.NewLazySystemDLL("kernel32.dll")
+	procGetStdHandle       = desktopKernel32.NewProc("GetStdHandle")
 )
+
+const (
+	stdOutputHandle = ^uintptr(10) // -11
+	invalidHandle   = ^uintptr(0)
+)
+
+// stdHandleValid 报告标准输出是否为有效句柄（控制台或管道）。
+// -H=windowsgui 构建从资源管理器双击启动时句柄无效。
+func stdHandleValid(h uintptr) bool {
+	return h != 0 && h != invalidHandle
+}
+
+// guiLogRedirect：GUI 子系统构建没有控制台，双击启动时 log 输出全部
+// 落空。检测到无有效标准输出句柄时把 log 改落到 data\desktop.log
+// （超 5MB 轮转成 .old），诊断信息不丢；带控制台/管道启动（终端调试、
+// 脚本调用）保持原样打屏。
+func guiLogRedirect() {
+	if h, _, _ := procGetStdHandle.Call(stdOutputHandle); stdHandleValid(h) {
+		return
+	}
+	logPath := filepath.Join("data", "desktop.log")
+	_ = os.MkdirAll(filepath.Dir(logPath), 0755)
+	if st, err := os.Stat(logPath); err == nil && st.Size() > 5<<20 {
+		_ = os.Rename(logPath, logPath+".old")
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(f)
+}
+
+// attachParentConsole：GUI 子系统 exe 在终端里跑 CLI 子命令（如
+// sandbox acl-audit）时，挂到父进程的控制台并重绑标准句柄，让
+// fmt/os.Stdout 输出正常回显。已有可用句柄（管道/控制台）则不动。
+func attachParentConsole() {
+	if h, _, _ := procGetStdHandle.Call(stdOutputHandle); stdHandleValid(h) {
+		return
+	}
+	procAttachConsole := desktopKernel32.NewProc("AttachConsole")
+	const attachParentProcess = ^uintptr(0) // -1
+	if r, _, _ := procAttachConsole.Call(attachParentProcess); r == 0 {
+		return // 父进程没有控制台（双击启动），静默
+	}
+	if h, _, _ := procGetStdHandle.Call(stdOutputHandle); stdHandleValid(h) {
+		os.Stdout = os.NewFile(h, "/dev/stdout")
+	}
+	if h, _, _ := procGetStdHandle.Call(^uintptr(11)); stdHandleValid(h) { // -12 stderr
+		os.Stderr = os.NewFile(h, "/dev/stderr")
+	}
+}
 
 // webView2RuntimeAvailable 检测系统是否装了 WebView2 运行时：
 // 固定版本（环境变量指定目录）> Evergreen（HKLM/HKCU EdgeUpdate 的 pv 值）。
