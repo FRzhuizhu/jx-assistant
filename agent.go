@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,13 +151,29 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	case "office":
 		base = officePrompt
 	}
+	// 引用文件覆盖：data/prompts/<mode>.md 存在时替换该模式的基础提示词；
+	// 模式附加段（文件规范/派发准则）是产品硬规则，覆盖后仍追加。
+	// 版本行记录提示词来源：内置路径文案保持原样（存量会话缓存不受影响），
+	// 引用文件则附内容 hash——提示词变更必然改变请求前缀（断缓存），
+	// hash 让这种变更在导出时间线上一眼可见。
+	tag := ""
+	if over := a.promptOverride(sess.Mode); over != "" {
+		base = over
+		tag = "；系统提示词：引用文件 " + promptHash(base)
+	}
 	// 文件修改与交付规范只给有写入能力的模式（task / office）；
 	// assistant 只编排不亲手改文件，aux 只读，都不需要。
 	// 子对话派发准则同样只给 task / office（assistant 的派发准则在其专属提示词里）。
 	if sess.Mode == "task" || sess.Mode == "office" {
 		base += fileToolsPrompt + dispatchSubPrompt
 	}
-	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动）"
+	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动" + tag + "）"
+}
+
+// promptHash 取提示词内容的短指纹（版本行/时间线标识用；非安全用途）。
+func promptHash(s string) string {
+	sum := md5.Sum([]byte(s))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿，作为 user 消息
@@ -460,17 +478,15 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
 		interjectsBefore(emit)
-		// 环境快照每步重算 + diff：内容（含模式中途变化）有变才落新快照
-		env := a.envPrompt(sess)
-		env = a.maybeAppendEnvSnapshot(sess, env, emit)
-		msgs := a.buildContext(sess, sys, env)
-		// 视觉模型：把工具结果引用的图片内联为内容块；纯文本模型原样透传
-		msgs = inlineImagesForRequest(a, msgs, target)
+		// 上下文引擎组装本步全部请求材料（系统提示词/环境快照/工具目录/消息
+		// 视图/视觉内联与 env 快照留痕都归引擎，RunAgent 只做编排）
+		pack := a.ctxEngine().Assemble(sess, emit)
+		msgs := pack.Msgs
 		if err := a.maybeAutoCompact(sess, msgs, target.ContextWindow); err != nil {
 			emit(Event{Type: "error", Error: "自动压缩失败: " + err.Error()})
 			a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + err.Error()})
 		}
-		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: defs}
+		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: pack.Tools}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
 		est := estimateTokens(msgs)      // 发送前的 token 估算（审计行用）
 		var text strings.Builder

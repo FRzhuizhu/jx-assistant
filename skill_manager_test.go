@@ -48,11 +48,18 @@ func TestUserSkillLifecycle(t *testing.T) {
 	if len(list.BuiltIn) != 3 {
 		t.Fatalf("自带技能应为 3 个（pdf/ocr/office），得到 %d", len(list.BuiltIn))
 	}
-	if len(list.User) != 1 || list.User[0].ID != "周报" || !list.User[0].Enabled {
-		t.Fatalf("用户技能清单不符: %+v", list.User)
+	// 内嵌母本可能自带演示用户技能，断言只认本测试创建的那个
+	var mine *userSkillEntry
+	for i := range list.User {
+		if list.User[i].ID == "周报" {
+			mine = &list.User[i]
+		}
 	}
-	if list.User[0].Description != "把目录下的文件整理成中文周报。" {
-		t.Fatalf("frontmatter 描述解析失败: %q", list.User[0].Description)
+	if mine == nil || !mine.Enabled {
+		t.Fatalf("用户技能清单里应有一个启用的「周报」: %+v", list.User)
+	}
+	if mine.Description != "把目录下的文件整理成中文周报。" {
+		t.Fatalf("frontmatter 描述解析失败: %q", mine.Description)
 	}
 
 	// 注入块：task 会话只收到清单（名字+id+描述），正文不注入、frontmatter 不出现
@@ -96,8 +103,8 @@ func TestUserSkillLifecycle(t *testing.T) {
 	if err := a.toggleUserSkill("周报", false); err != nil {
 		t.Fatal(err)
 	}
-	if block := a.userSkillsPromptBlock(); block != "" {
-		t.Fatalf("全部停用后清单应为空: %s", block)
+	if block := a.userSkillsPromptBlock(); strings.Contains(block, "id=周报") {
+		t.Fatalf("全部停用后清单不应再列「周报」: %s", block)
 	}
 
 	// 重开
@@ -121,11 +128,13 @@ func TestUserSkillLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, _ = a.listSkills()
-	if len(list.User) != 0 {
-		t.Fatalf("删除后应无用户技能: %+v", list.User)
+	for _, s := range list.User {
+		if s.ID == "周报" {
+			t.Fatalf("删除后不应再有「周报」: %+v", list.User)
+		}
 	}
-	if block := a.userSkillsPromptBlock(); block != "" {
-		t.Fatal("删除后注入块应为空")
+	if block := a.userSkillsPromptBlock(); strings.Contains(block, "id=周报") {
+		t.Fatal("删除后清单不应再列「周报」")
 	}
 }
 

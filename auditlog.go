@@ -42,8 +42,10 @@ type auditRow struct {
 	Usage *auditUsage `json:"usage"`
 	Error string      `json:"error"` // call/error/overflow：错误原文
 	Rounds int        `json:"rounds"` // compact：折叠的轮数
-	From  int64       `json:"from"`   // compact：折叠区间起始 seq
-	To    int64       `json:"to"`     // compact：折叠区间结束 seq
+	From   int64      `json:"from"`   // compact：折叠区间起始 seq
+	To     int64      `json:"to"`     // compact：折叠区间结束 seq
+	Kind   string     `json:"kind"`   // ctx（上下文事件总线）：事件类别，见 contextengine.go
+	Detail string     `json:"detail"` // ctx：一句人话说明（含前后值）
 }
 
 // auditCall 在一次模型调用返回后（无论成败）落审计行：调用前后的关键事实一次记全。

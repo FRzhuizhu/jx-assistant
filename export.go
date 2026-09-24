@@ -164,13 +164,13 @@ func writeCallTable(b *strings.Builder, msgs []*StoredMessage) {
 // timelineState 是时间线渲染的跨行状态：上一次见到的系统提示词/环境快照/
 // 工具集（供变更对比）、调用序号、工具调用配对表。
 type timelineState struct {
-	lastSys    string
-	lastEnv    string
-	lastTools  []string
-	roundNo    int
-	callNo     int
-	callNames  map[string]string // toolCallID → 工具名（结果行配对用）
-	sawPrompt  bool
+	lastSys   string
+	lastEnv   string
+	lastTools []string
+	roundNo   int
+	callNo    int
+	callNames map[string]string // toolCallID → 工具名（结果行配对用）
+	sawPrompt bool
 }
 
 func (st *timelineState) render(b *strings.Builder, m *StoredMessage) {
@@ -374,6 +374,10 @@ func (st *timelineState) renderAudit(b *strings.Builder, m *StoredMessage) {
 		tlLine(b, m.CreatedAt, fmt.Sprintf("规则压缩生效：折叠第 %d–%d 条（%d 轮）——模型可见前缀改变，下次调用缓存不命中", ar.From, ar.To, ar.Rounds))
 	case "overflow":
 		tlLine(b, m.CreatedAt, "上下文超限，已强制压缩后重发（该轮上下文被大幅改写）："+expText(ar.Error))
+	case "ctx":
+		// 上下文事件总线（contextengine.go 的 Notify）：会话配置类变更在此留痕，
+		// 时间线上位于发生位置——下一次模型调用的缓存命中变化由此可解释
+		tlLine(b, m.CreatedAt, "上下文变更（"+ar.Kind+"）："+expText(ar.Detail))
 	}
 }
 

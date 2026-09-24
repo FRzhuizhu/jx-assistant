@@ -28,6 +28,7 @@ type App struct {
 	Cfg        *Config
 	CfgPath    string
 	Store      *Store
+	Ctx        *ContextEngine // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
 	Plugins    *PluginRegistry
 	Components *ComponentRegistry
 	Todos      *todoScheduler // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
@@ -97,6 +98,7 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 		grants:    map[string]*Grant{}, approvals: map[string]*Approval{},
 		questions: map[string]*UserQuestion{}, jobs: map[string]*jobRun{},
 		remotes: map[string]*remoteClient{}}
+	a.Ctx = &ContextEngine{app: a} // 上下文引擎：所有会话经它组装与记事件
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
 	a.recoverInterrupted()
@@ -796,16 +798,16 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		BaseURL    *string `json:"baseURL"`
-		APIKey     *string `json:"apiKey"` // 空串表示保持不变
-		Model      *string `json:"model"`
-		Workspace  *string `json:"workspace"`
-		BindHost         *string `json:"bindHost"`
-		AllowShell       *bool   `json:"allowShell"`
-		MaxSteps         *int    `json:"maxSteps"`
-		SnapshotEnabled  *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
-		SnapshotDays     *int    `json:"snapshotDays"`    // 快照自动清理天数（-1=永不过期）
-		Compact    *struct {
+		BaseURL         *string `json:"baseURL"`
+		APIKey          *string `json:"apiKey"` // 空串表示保持不变
+		Model           *string `json:"model"`
+		Workspace       *string `json:"workspace"`
+		BindHost        *string `json:"bindHost"`
+		AllowShell      *bool   `json:"allowShell"`
+		MaxSteps        *int    `json:"maxSteps"`
+		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
+		SnapshotDays    *int    `json:"snapshotDays"`    // 快照自动清理天数（-1=永不过期）
+		Compact         *struct {
 			Mode         string  `json:"mode"`
 			KeepRounds   *int    `json:"keepRounds"`
 			RuleInterval *int    `json:"ruleInterval"`
@@ -1104,6 +1106,9 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求体不是合法 JSON")
 		return
 	}
+	// 上下文事件收集：字段有实际变化才记，落库成功后经总线 Notify（导出时间线呈现）
+	type ctxNote struct{ kind, detail string }
+	var notes []ctxNote
 	if body.Title != nil {
 		m.Title = truncateRunes(*body.Title, 40)
 	}
@@ -1111,17 +1116,27 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		oldWS := m.Workspace
 		m.Workspace = strings.TrimSpace(*body.Workspace)
 		if oldWS != m.Workspace {
+			notes = append(notes, ctxNote{ctxWorkspace, "工作目录：" + oldWS + " → " + m.Workspace})
 			defer a.scheduleResidualCleanup(oldWS) // 工作区切换：清旧工作区残留
 		}
 	}
 	if body.Provider != nil {
+		old := m.Provider
 		m.Provider = strings.TrimSpace(*body.Provider)
+		if old != m.Provider {
+			notes = append(notes, ctxNote{ctxModel, "提供方：" + old + " → " + m.Provider})
+		}
 	}
 	if body.Model != nil {
+		old := m.Model
 		m.Model = strings.TrimSpace(*body.Model)
+		if old != m.Model {
+			notes = append(notes, ctxNote{ctxModel, "模型：" + old + " → " + m.Model})
+		}
 	}
 	if body.Permission != nil {
 		was := permModeOf(m)
+		wasTools := m.Tools
 		m.Permission = strings.TrimSpace(*body.Permission)
 		switch {
 		case permModeOf(m) == permFull:
@@ -1129,24 +1144,41 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		case was == permFull && body.Tools == nil:
 			m.Tools = stripFullAccessCaps(m.Tools) // 从完全访问切回：捆绑能力随之取消
 		}
+		if was != permModeOf(m) {
+			notes = append(notes, ctxNote{ctxPerm, "权限模式：" + was + " → " + permModeOf(m)})
+		} else if fmt.Sprint(wasTools) != fmt.Sprint(m.Tools) && body.Tools == nil {
+			notes = append(notes, ctxNote{ctxPerm, "能力开关随权限联动：" + toolIDsOf(wasTools) + " → " + toolIDsOf(m.Tools)})
+		}
 	}
 	if body.Thinking != nil {
 		switch t := strings.TrimSpace(*body.Thinking); t {
 		case "", "enabled", "disabled", "low", "medium", "high":
+			old := m.Thinking
 			m.Thinking = t
+			if old != t {
+				notes = append(notes, ctxNote{ctxThinking, "思考档位：" + old + " → " + t})
+			}
 		default:
 			writeErr(w, 400, "thinking 档位必须是 enabled/disabled/low/medium/high 或空")
 			return
 		}
 	}
 	if body.PlanMode != nil {
+		old := m.PlanMode
 		m.PlanMode = *body.PlanMode
+		if old != m.PlanMode {
+			notes = append(notes, ctxNote{ctxMode, "计划模式：" + boolZh(old) + " → " + boolZh(m.PlanMode)})
+		}
 	}
 	if body.GoalText != nil {
 		m.GoalText = truncateRunes(*body.GoalText, 2000)
 	}
 	if body.GoalMode != nil {
+		old := m.GoalMode
 		m.GoalMode = *body.GoalMode
+		if old != m.GoalMode {
+			notes = append(notes, ctxNote{ctxMode, "目标模式：" + boolZh(old) + " → " + boolZh(m.GoalMode)})
+		}
 		// 开启/重开目标模式：状态归位 active；关闭时清状态（目标文本保留备查）
 		if m.GoalMode {
 			m.GoalStatus = "active"
@@ -1161,13 +1193,34 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		m.Unread = *body.Unread
 	}
 	if body.Tools != nil {
+		old := m.Tools
 		m.Tools = *body.Tools
+		if fmt.Sprint(old) != fmt.Sprint(m.Tools) {
+			notes = append(notes, ctxNote{ctxPerm, "能力开关：" + toolIDsOf(old) + " → " + toolIDsOf(m.Tools)})
+		}
 	}
 	if err := a.Store.SaveMeta(m); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	for _, n := range notes {
+		a.ctxEngine().Notify(m, n.kind, n.detail)
+	}
 	writeJSON(w, 200, m)
+}
+
+// toolIDsOf / boolZh 是上下文事件说明的小格式化辅助（人读一句话进时间线）。
+func toolIDsOf(ids []string) string {
+	if len(ids) == 0 {
+		return "（无）"
+	}
+	return strings.Join(ids, ",")
+}
+func boolZh(b bool) string {
+	if b {
+		return "开"
+	}
+	return "关"
 }
 
 func (a *App) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -1235,11 +1288,13 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleExport 导出两类审计材料：
-//   ?format=md（默认）——运行日志：从会话创建起的完整时间线（上下文组装、
-//     环境快照更新、用户消息、每次模型调用的用量与缓存命中、模型逐步输出、
-//     报错/停止/压缩等未发给模型的事件）；
-//   ?format=json ——原始数据：最近一次真正发给模型的完整请求体（与线上发送
-//     逐字节同源，仅排版缩进），用于核对到底给模型发了什么。
+//
+//	?format=md（默认）——运行日志：从会话创建起的完整时间线（上下文组装、
+//	  环境快照更新、用户消息、每次模型调用的用量与缓存命中、模型逐步输出、
+//	  报错/停止/压缩等未发给模型的事件）；
+//	?format=json ——原始数据：最近一次真正发给模型的完整请求体（与线上发送
+//	  逐字节同源，仅排版缩进），用于核对到底给模型发了什么。
+//
 // 两者都取自 messages 表原始历史，只导出当前会话（子会话各自单独导出）。
 func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
@@ -1898,6 +1953,11 @@ func (a *App) handleSetSessionRemote(w http.ResponseWriter, r *http.Request) {
 	if err := a.Store.SaveMeta(m); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if m.Remote != nil {
+		a.ctxEngine().Notify(m, ctxRemote, "挂载远程工作区："+m.Remote.Display())
+	} else {
+		a.ctxEngine().Notify(m, ctxRemote, "解除远程工作区，回到本地工作区")
 	}
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
 	writeJSON(w, 200, m)
