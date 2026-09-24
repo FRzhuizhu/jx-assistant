@@ -30,6 +30,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -138,6 +139,16 @@ func lowIntegritySid() *windows.SID {
 	return (*windows.SID)(unsafe.Pointer(&b[0]))
 }
 
+// mediumIntegritySid 构造 Medium 完整性 SID：S-1-16-8192（还原共享 SD 用）。
+func mediumIntegritySid() *windows.SID {
+	b := make([]byte, 12)
+	b[0] = 1
+	b[1] = 1
+	b[7] = 16
+	binary.LittleEndian.PutUint32(b[8:], 0x2000) // RID = 8192 = Medium
+	return (*windows.SID)(unsafe.Pointer(&b[0]))
+}
+
 // setTokenLowIntegrity 把令牌完整性级别降为 Low（S-1-16-4096）。
 // 降级无需特权。密级关卡的「门」侧：低密进程对密级更高的对象的写/删
 // 被内核 NO_WRITE_UP 在访问检查末端统一拒绝——不区分走文件 DELETE 还是
@@ -162,34 +173,47 @@ func setTokenLowIntegrity(tok windows.Token) error {
 // 传播到既有/新建子对象，与 grantWriteAce 的 ACE 同一继承机制）。
 // 幂等：已有同 SID 的标签 ACE 即返回。任何失败都返回错误（fail closed）。
 func grantLabelAce(path string, inherit bool) error {
+	return setLabelAce(path, lowIntegritySid(), inherit, true)
+}
+
+// stripLowLabel 把对象强制标签改回 Medium（S-1-16-8192）：还原多链接共享 SD
+// 在标签传播前的默认状态，低密进程从此不能写它（含其外部别名）。
+func stripLowLabel(path string) error {
+	return setLabelAce(path, mediumIntegritySid(), false, false)
+}
+
+// setLabelAce 写对象的强制标签 ACE（labelSid + NO_WRITE_UP）。checkIdem 时
+// 已有同 SID 标签即跳过。失败返回错误。
+func setLabelAce(path string, labelSid *windows.SID, inherit, checkIdem bool) error {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return err
 	}
-	sideb, err := sidBytes(lowIntegritySid())
+	sideb, err := sidBytes(labelSid)
 	if err != nil {
 		return err
 	}
-	// 读现有标签查幂等（LABEL_SECURITY_INFO 读回的是标签 ACE 集）
-	var sd *windows.SECURITY_DESCRIPTOR
-	var sacl *windows.ACL
-	r1, _, _ := procGetNamedSecurityInfoW.Call(
-		uintptr(unsafe.Pointer(p)), seFileObject, labelSecurityInfo,
-		0, 0, 0, uintptr(unsafe.Pointer(&sacl)), uintptr(unsafe.Pointer(&sd)))
-	if r1 == 0 {
-		defer windows.LocalFree(windows.Handle(unsafe.Pointer(sd)))
-		if sb, err := aclBytes(sacl); err == nil {
-			for i := 8; i+8 <= len(sb); {
-				size := int(binary.LittleEndian.Uint16(sb[i+2:]))
-				if size < 8 || i+size > len(sb) {
-					break
+	if checkIdem {
+		var sd *windows.SECURITY_DESCRIPTOR
+		var sacl *windows.ACL
+		r1, _, _ := procGetNamedSecurityInfoW.Call(
+			uintptr(unsafe.Pointer(p)), seFileObject, labelSecurityInfo,
+			0, 0, 0, uintptr(unsafe.Pointer(&sacl)), uintptr(unsafe.Pointer(&sd)))
+		if r1 == 0 {
+			defer windows.LocalFree(windows.Handle(unsafe.Pointer(sd)))
+			if sb, err := aclBytes(sacl); err == nil {
+				for i := 8; i+8 <= len(sb); {
+					size := int(binary.LittleEndian.Uint16(sb[i+2:]))
+					if size < 8 || i+size > len(sb) {
+						break
+					}
+					if sb[i] == systemMandatoryLabelAce &&
+						binary.LittleEndian.Uint32(sb[i+4:]) == mandatoryNoWriteUp &&
+						string(sb[i+8:i+size]) == string(sideb) {
+						return nil
+					}
+					i += size
 				}
-				if sb[i] == systemMandatoryLabelAce &&
-					binary.LittleEndian.Uint32(sb[i+4:]) == mandatoryNoWriteUp &&
-					string(sb[i+8:i+size]) == string(sideb) {
-					return nil
-				}
-				i += size
 			}
 		}
 	}
@@ -220,6 +244,124 @@ func grantLabelAce(path string, inherit bool) error {
 		return fmt.Errorf("SetNamedSecurityInfo(标签 %s) 失败: %v", path, callErr)
 	}
 	return nil
+}
+
+// stripWriteAce 从对象 DACL 摘掉「允许 writeSID 写入」的 ACE（与
+// grantWriteAce 配对，用于多链接共享 SD 还原）。找不到即视为已还原。
+func stripWriteAce(path string, writeSID *windows.SID) error {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	var sd *windows.SECURITY_DESCRIPTOR
+	var dacl *windows.ACL
+	r1, _, _ := procGetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
+		0, 0, uintptr(unsafe.Pointer(&dacl)), 0, uintptr(unsafe.Pointer(&sd)))
+	if r1 != 0 {
+		return fmt.Errorf("GetNamedSecurityInfo(%s) 失败: %d", path, r1)
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(sd)))
+	sb, err := aclBytes(dacl)
+	if err != nil {
+		return err
+	}
+	sideb, err := sidBytes(writeSID)
+	if err != nil {
+		return err
+	}
+	// 定位目标 ACE（type allow + 掩码 + SID 全等）
+	pos, size := -1, 0
+	for i := 8; i+8 <= len(sb); {
+		sz := int(binary.LittleEndian.Uint16(sb[i+2:]))
+		if sz < 8 || i+sz > len(sb) {
+			break
+		}
+		if sb[i] == accessAllowedACE && binary.LittleEndian.Uint32(sb[i+4:]) == fileGenericWrite &&
+			string(sb[i+8:i+sz]) == string(sideb) {
+			pos, size = i, sz
+			break
+		}
+		i += sz
+	}
+	if pos < 0 {
+		return nil // 已还原
+	}
+	count := int(binary.LittleEndian.Uint16(sb[4:]))
+	nacl := make([]byte, 0, len(sb)-size)
+	nacl = append(nacl, sb[:pos]...)
+	nacl = append(nacl, sb[pos+size:]...)
+	if pad := (4 - len(nacl)%4) % 4; pad > 0 {
+		nacl = append(nacl, make([]byte, pad)...)
+	}
+	binary.LittleEndian.PutUint16(nacl[2:], uint16(len(nacl)))
+	binary.LittleEndian.PutUint16(nacl[4:], uint16(count-1))
+	nptr := (*windows.ACL)(unsafe.Pointer(&nacl[0]))
+	r1, _, callErr := procSetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
+		0, 0, uintptr(unsafe.Pointer(nptr)), 0)
+	if r1 != 0 {
+		return fmt.Errorf("SetNamedSecurityInfo(摘ACE %s) 失败: %v", path, callErr)
+	}
+	return nil
+}
+
+// linkCount 读文件的硬链接数（GetFileInformationByHandle）。
+func linkCount(path string) (uint32, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseHandle(h)
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		return 0, err
+	}
+	return info.NumberOfLinks, nil
+}
+
+// fixupMultiLinked 授权+标签传播后收尾：工作区内多链接（硬链接）文件的
+// 共享 SD 被自动传播打上 Low 标签与 wsSid ACE 后，其外部别名也跟着变成
+// 「低密可写」（判定实验探针D 实测穿透）。对链接数>1 的文件摘掉这两项、
+// 把共享 SD 标签还原 Medium——外部别名恢复原防护，沙箱内该文件变为只读
+// （多链接文件本就是跨边界文件对象，宁严勿松；pnpm 等场景写入的是普通
+// 单链接文件，不受影响）。目录跳过重解析点（junction/symlink），不越界
+// 收尾。失败返回错误（fail closed）。
+func fixupMultiLinked(root string, wsSid *windows.SID) error {
+	return filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // 单个条目读不到不阻断整体（根目录失败会在调用方暴露）
+		}
+		if p == root {
+			return nil
+		}
+		if info.IsDir() {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return filepath.SkipDir // 不跟 junction/symlink 越界
+			}
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		n, err := linkCount(p)
+		if err != nil || n <= 1 {
+			return nil
+		}
+		if err := stripLowLabel(p); err != nil {
+			return fmt.Errorf("多链接还原标签 %s: %w", p, err)
+		}
+		if err := stripWriteAce(p, wsSid); err != nil {
+			return fmt.Errorf("多链接还原ACE %s: %w", p, err)
+		}
+		return nil
+	})
 }
 
 // ---------- Job Object（官方 createKillOnCloseJob 同款） ----------
@@ -440,6 +582,16 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 			os.RemoveAll(tempDir)
 			return nil, fmt.Errorf("sandbox unavailable: 临时目录打密级标签失败: %w", err)
 		}
+		// 多链接收尾（判定实验探针D）：授权+标签的自动传播会打中硬链接
+		// 的共享 SD，外部别名跟着降成「低密可写」。摘掉这两项还原共享 SD。
+		// 每工作区每个主进程生命周期做一次（幂等，缓存见 labeledTrees）。
+		if _, seen := labeledTrees.Load(strings.ToLower(r.Workspace)); !seen {
+			if err := fixupMultiLinked(r.Workspace, wsSid); err != nil {
+				os.RemoveAll(tempDir)
+				return nil, fmt.Errorf("sandbox unavailable: 多链接共享 SD 还原失败: %w", err)
+			}
+			labeledTrees.Store(strings.ToLower(r.Workspace), true)
+		}
 	}
 
 	// 3) 受限令牌（官方 token.ts 配方）：
@@ -494,7 +646,9 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	// 对象创建改由父容器的 DACL 把关（工作区外的文件依旧创建不出来）。
 	grantSid := worldSid
 	if r.Policy == permWorkspace {
-		grantSid = wsSid
+		// 官方 index.ts:294 同款优先级：私有临时 SID 优先——新建对象的
+		// 默认 DACL 只带本次运行的临时能力，不携带共享的工作区能力。
+		grantSid = tempSid
 	}
 	if err := grantTokenDefaultDacl(restricted, grantSid); err != nil {
 		os.RemoveAll(tempDir)

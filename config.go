@@ -104,6 +104,12 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.SandboxIntegrityLevel != "off" {
 		cfg.SandboxIntegrityLevel = "low"
 	}
+	// 敏感字段透明解密（dpapi:v1: 密文 → 明文；旧版明文原样）。
+	// 首启迁移：明文照常读入，下一次 Save 自动转密文。
+	cfg.APIKey = unprotectSecret(cfg.APIKey)
+	for i := range cfg.Providers {
+		cfg.Providers[i].APIKey = unprotectSecret(cfg.Providers[i].APIKey)
+	}
 	// 老配置兼容：没有 Providers 时把旧的三元组折算成第一个 provider
 	if len(cfg.Providers) == 0 {
 		providers := DefaultProviders()
@@ -135,7 +141,20 @@ func (c *Config) syncLegacyFields() {
 }
 
 func (c *Config) Save(path string) error {
-	data, err := json.MarshalIndent(c, "", "  ")
+	// 敏感字段落盘前 DPAPI 加密（副本上做，内存对象保持明文供运行时使用）：
+	// 沙箱读不受限（官方同款语义），config.json 被命令直接读到的只是密文。
+	out := *c
+	out.Providers = make([]ProviderCfg, len(c.Providers))
+	copy(out.Providers, c.Providers)
+	if enc, err := protectSecret(out.APIKey); err == nil {
+		out.APIKey = enc
+	}
+	for i := range out.Providers {
+		if enc, err := protectSecret(out.Providers[i].APIKey); err == nil {
+			out.Providers[i].APIKey = enc
+		}
+	}
+	data, err := json.MarshalIndent(&out, "", "  ")
 	if err != nil {
 		return err
 	}

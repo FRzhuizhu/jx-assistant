@@ -367,7 +367,14 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 	}
 	remote := ""
 	if m.Remote != nil {
-		if b, err := json.Marshal(m.Remote); err == nil {
+		// SSH 密码落盘前 DPAPI 加密（副本上做，内存对象保持明文供连接使用）
+		rr := *m.Remote
+		if rr.Password != "" {
+			if enc, err := protectSecret(rr.Password); err == nil {
+				rr.Password = enc
+			}
+		}
+		if b, err := json.Marshal(&rr); err == nil {
 			remote = string(b)
 		}
 	}
@@ -419,6 +426,7 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 	if remote != "" {
 		r := &RemoteWorkspace{}
 		if json.Unmarshal([]byte(remote), r) == nil && r.Host != "" {
+			r.Password = unprotectSecret(r.Password) // 透明解密 DPAPI 密文
 			m.Remote = r
 		}
 	}
@@ -658,7 +666,7 @@ func (s *Store) LastSeq(id string) (int64, error) {
 
 // RawMessagesAll 读取会话全部消息（含摘要行），供上下文组装与压缩使用。
 func (s *Store) RawMessagesAll(id string) ([]*StoredMessage, error) {
-	rows, err := s.db.Query(`SELECT ` + messageCols + ` FROM messages WHERE session_id=? ORDER BY seq`, id)
+	rows, err := s.db.Query(`SELECT `+messageCols+` FROM messages WHERE session_id=? ORDER BY seq`, id)
 	if err != nil {
 		return nil, err
 	}

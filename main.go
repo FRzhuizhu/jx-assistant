@@ -22,6 +22,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__jx-sandbox-restrict" {
 		os.Exit(sandboxhelper.Main(os.Args[2:]))
 	}
+	// 沙箱常驻授权审计/清理子命令：jx-assistant.exe sandbox acl-audit
+	if len(os.Args) > 1 && os.Args[1] == "sandbox" {
+		os.Exit(runSandboxCLI(os.Args[2:]))
+	}
 
 	cfgPath := flag.String("config", "config.json", "配置文件路径")
 	port := flag.Int("port", 0, "覆盖配置中的监听端口")

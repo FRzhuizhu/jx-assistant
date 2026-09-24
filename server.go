@@ -33,29 +33,29 @@ type App struct {
 	Todos      *todoScheduler // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
 	static     fs.FS          // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
-	mu           sync.Mutex
-	sessLocks    map[string]*sync.Mutex
-	runMu        sync.Mutex
-	runners      map[string]*sessionRun // 正在执行的会话（含后台派发）
-	permMu       sync.Mutex
-	grants       map[string]*Grant        // 授权凭证（perm.go）
-	approvals    map[string]*Approval     // 等待用户决定的越权审批（perm.go）
-	questions    map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
-	jobsMu       sync.Mutex
-	jobs         map[string]*jobRun // 会话内后台作业（jobs.go）
-	protectPaths []string           // 助手自身配置/数据目录，任何模式禁访问
-	skillsMu     sync.Mutex
-	skillsReady  bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
+	mu            sync.Mutex
+	sessLocks     map[string]*sync.Mutex
+	runMu         sync.Mutex
+	runners       map[string]*sessionRun // 正在执行的会话（含后台派发）
+	permMu        sync.Mutex
+	grants        map[string]*Grant        // 授权凭证（perm.go）
+	approvals     map[string]*Approval     // 等待用户决定的越权审批（perm.go）
+	questions     map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
+	jobsMu        sync.Mutex
+	jobs          map[string]*jobRun // 会话内后台作业（jobs.go）
+	protectPaths  []string           // 助手自身配置/数据目录，任何模式禁访问
+	skillsMu      sync.Mutex
+	skillsReady   bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
 	skillsDirOurs string // 已解析的技能目录（App 级缓存，避免跨实例污染）
-	remoteMu     sync.Mutex
-	remotes      map[string]*remoteClient // SSH 远程连接池（remote.go）
-	evtMu        sync.Mutex
-	subscribers  map[chan Event]bool // /api/events 的订阅者
-	pendMu       sync.Mutex
-	pendingSteer map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
-	pendingQueue map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
-	osOnce       sync.Once
-	osDesc       string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
+	remoteMu      sync.Mutex
+	remotes       map[string]*remoteClient // SSH 远程连接池（remote.go）
+	evtMu         sync.Mutex
+	subscribers   map[chan Event]bool // /api/events 的订阅者
+	pendMu        sync.Mutex
+	pendingSteer  map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
+	pendingQueue  map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
+	osOnce        sync.Once
+	osDesc        string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
 }
 
 func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
@@ -273,19 +273,75 @@ func (a *App) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 	_ = m
 }
 
-// withCORS 允许前端独立部署时跨域调用后端接口，同时输出简要访问日志。
+// withCORS 同源校验 + 简要访问日志（P1-9）：去掉 Access-Control-Allow-Origin: *，
+// Origin 与 Host 不符一律 403——堵死本机恶意网页跨域调用 /api/approvals（替用户
+// 点「允许」）与 PATCH 会话权限（切 full 绕过整个沙箱体系）的 CSRF 面。
+// 浏览器同源请求（本地 GUI）与无 Origin 的非浏览器客户端（curl/测试）不受影响。
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("%s %s from %s (%s)", r.Method, r.URL.Path, r.RemoteAddr, r.Header.Get("User-Agent"))
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" && !sameOrigin(origin, r.Host) {
+			writeErr(w, 403, "跨域请求被拒绝（同源策略）")
+			return
+		}
+		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sameOrigin 判断 Origin 头（scheme://host[:port]）与请求 Host 是否同源。
+// Origin 缺省端口（http 80 / https 443）与显式端口等价。
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	o := strings.ToLower(u.Host)
+	h := strings.ToLower(host)
+	if o == h {
+		return true
+	}
+	// 端口缺省等价：http://x ≡ http://x:80，https://x ≡ https://x:443
+	oh, hp := splitHostPort(o)
+	hh, hpc := splitHostPort(h)
+	if oh != hh {
+		return false
+	}
+	if hp == "" {
+		if u.Scheme == "https" {
+			hp = "443"
+		} else {
+			hp = "80"
+		}
+	}
+	if hpc == "" {
+		hpc = hp
+	}
+	return hp == hpc
+}
+
+// splitHostPort 拆 host[:port]；IPv6 字面量 [::1]:8788 也覆盖。
+func splitHostPort(hp string) (string, string) {
+	if strings.HasPrefix(hp, "[") {
+		if i := strings.LastIndex(hp, "]:"); i >= 0 {
+			return hp[:i+1], hp[i+2:]
+		}
+		return hp, ""
+	}
+	if i := strings.LastIndex(hp, ":"); i >= 0 {
+		return hp[:i], hp[i+1:]
+	}
+	return hp, ""
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -320,8 +376,9 @@ func likePattern(q string) string {
 const searchableSessionsBaseSQL = `mode != 'assistant' AND parent_id = ''`
 
 // searchScopeWhere 按请求参数组装会话范围条件（pfx 为列名前缀，如 "s."）：
-//   bin=1 → 回收站：已归档，或其工作目录在回收列表 ws 里；
-//   否则  → 正常工作区：未归档，且工作目录不在回收列表 ws 里。
+//
+//	bin=1 → 回收站：已归档，或其工作目录在回收列表 ws 里；
+//	否则  → 正常工作区：未归档，且工作目录不在回收列表 ws 里。
 //
 // ws 为回收目录列表（JSON 数组，空串代表默认工作区）；keep 为已单独恢复的
 // 会话 id 列表：正常侧豁免目录回收（照常可搜），回收站侧则排除（已不属于
@@ -1015,7 +1072,11 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		m.Title = truncateRunes(*body.Title, 40)
 	}
 	if body.Workspace != nil {
+		oldWS := m.Workspace
 		m.Workspace = strings.TrimSpace(*body.Workspace)
+		if oldWS != m.Workspace {
+			defer a.scheduleResidualCleanup(oldWS) // 工作区切换：清旧工作区残留
+		}
 	}
 	if body.Provider != nil {
 		m.Provider = strings.TrimSpace(*body.Provider)
@@ -1075,12 +1136,42 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	oldWS := ""
+	if m, err := a.Store.Get(id); err == nil {
+		oldWS = m.Workspace
+	}
 	a.closeRemoteSession(id) // 断开该会话的 SSH 连接
 	if err := a.Store.Delete(id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	a.scheduleResidualCleanup(oldWS) // 会话结束：清本产品的常驻授权残留
 	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// scheduleResidualCleanup 异步清理旧工作区上本产品的沙箱常驻授权残留
+// （S-1-80-* 合成 ACE 与 Low 标签）。仅当没有任何会话仍引用该工作区时执行
+// （常驻授权是跨会话复用缓存，有人用就留着）；DSH 官方 S-1-4-* 旧残留属
+// 用户确认范畴（sandbox acl-audit --revoke）。失败不影响主流程。
+func (a *App) scheduleResidualCleanup(workspace string) {
+	ws := strings.TrimSpace(workspace)
+	if ws == "" {
+		return
+	}
+	go func() {
+		sessions, err := a.Store.List()
+		if err != nil {
+			return
+		}
+		for _, s := range sessions {
+			if s.Workspace == ws {
+				return // 仍有会话引用，保留常驻授权
+			}
+		}
+		if n, err := cleanupResidualGrants([]string{ws}); err == nil && n > 0 {
+			log.Printf("已清理工作区 %s 的 %d 项沙箱残留授权", ws, n)
+		}
+	}()
 }
 
 // handleCompact 手动压缩：把 [最后摘要边界, 保留轮数之前] 的区间压成一条
@@ -1487,7 +1578,7 @@ func (a *App) handleGetTodos(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleContextStats 返回会话下一次请求的上下文占用分解与缓存命中率
-//（前端输入区「上下文」按钮面板的数据源）。
+// （前端输入区「上下文」按钮面板的数据源）。
 func (a *App) handleContextStats(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {

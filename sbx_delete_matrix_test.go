@@ -2,23 +2,23 @@ package main
 
 // P0-0 判定实验（固化为常驻测试）：删除路线 × 父目录 ACL 矩阵。
 //
-// 背景：沙箱外文件的「创建/修改」被双检稳定拦截（多轮实测一致）；但
-// sbx_adversarial_test.go 曾观测到一次删除逃逸（%TEMP% 测试树、非 -Force
-// Remove-Item）。「经父目录 FILE_DELETE_CHILD 路线、不被 pass-2 覆盖」是假设，
-// 本矩阵按 位置×路线 实测判定（对照 DSH 官方沙箱同矩阵三分支）：
+// 判定实验结论（2026-09，两套沙箱真机对照）：**分支1——路线级盲区**。
+// 密级关卡（Low IL + mandatory label）落地前，两套沙箱（本产品 Go 版与
+// DSH 官方 sandbox-windows-acl 的 TypeScript 版，后者经 dsh runner 同矩阵
+// 25 格实测）在「父目录给用户清柜权 FILE_DELETE_CHILD(0x40)」的位置上
+// （%TEMP%/Documents/Desktop）均被非 -Force Remove-Item 与 cmd del 删穿，
+// 而「父目录无 0x40」的位置（D:\智能体工作区）四路全拒——删除走父目录
+// 清柜权路线时不触发 WRITE_RESTRICTED 第二道检查，官方同款。密级关卡
+// 落地后本矩阵 16 格全拒（NO_WRITE_UP 在访问检查末端不分路线统一拦）。
 //
-//	位置：temp    —— %TEMP% 新建目录树（用户 FullControl，含清柜权 FILE_DELETE_CHILD 0x40）
+//	位置：temp    —— %TEMP% 新建目录树（用户 FullControl，含清柜权 0x40）
 //	      docs    —— 用户 Documents（同类 ACL）
 //	      desktop —— 用户 Desktop（同类 ACL）
 //	      dshroot —— JX_SBX_NO40_DIR（缺省 D:\智能体工作区）：用户 Modify 不含 0x40 的对照组
 //	路线：Remove-Item 无 -Force / Remove-Item -Force / [IO.File]::Delete() / cmd /c del
 //
-// 判读：
-//   - 仅无 -Force 在带 0x40 的位置逃逸 → 父目录 DELETE_CHILD 路线的双检盲区（路线级）；
-//   - 四条路线全逃逸                 → Go 移植实现偏差（DELETE 未被 pass-2 管辖）；
-//   - 全部被拒                       → 旧观察不可复现。
-//
-// JX_SBX_STRICT=1 时删除矩阵按「全拒」硬断言（密级封堵落地后转为缺省）。
+// 断言：删除矩阵 16 格必须全拒；创建/修改对照组必须全拒；
+// 工作区内创建/改名/删除必须成功（回归钉子）。
 
 import (
 	"context"
@@ -197,17 +197,10 @@ func TestSandboxDeleteMatrix(t *testing.T) {
 	for _, c := range results {
 		if c.escaped {
 			escapes++
+			t.Errorf("删除逃逸 %s @ %s（密级关卡应拦住一切路线）", c.route, c.loc)
 		}
 	}
-	if os.Getenv("JX_SBX_STRICT") == "1" {
-		for _, c := range results {
-			if c.escaped {
-				t.Errorf("严格模式：删除逃逸 %s @ %s", c.route, c.loc)
-			}
-		}
-	} else if escapes > 0 {
-		t.Logf("⚠ 判定实验：%d/%d 格删除逃逸（判读见文件头注释）", escapes, len(results))
-	} else {
+	if escapes == 0 {
 		t.Logf("✓ 删除矩阵全拒（%d 格）", len(results))
 	}
 }
