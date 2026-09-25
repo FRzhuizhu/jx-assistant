@@ -53,10 +53,11 @@ func TestRunAgentCapturesRequestAndAudit(t *testing.T) {
 	}
 
 	// 1. 最近请求体：与服务端收到的逐字节一致
-	row, err := store.LastRequestRow("e2e")
-	if err != nil || row == nil {
-		t.Fatalf("应落库 request 行: row=%v err=%v", row, err)
+	rows, err := store.RecentRequestRows("e2e", keepRequests)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("应落库 request 行: rows=%d err=%v", len(rows), err)
 	}
+	row := rows[0]
 	var rec lastRequestRec
 	if err := json.Unmarshal([]byte(row.Text()), &rec); err != nil {
 		t.Fatalf("request 行解析失败: %v", err)
@@ -67,7 +68,7 @@ func TestRunAgentCapturesRequestAndAudit(t *testing.T) {
 	if !strings.HasPrefix(rec.URL, srv.URL) || !strings.HasSuffix(rec.URL, "/chat/completions") {
 		t.Errorf("请求行 URL 不符: %s", rec.URL)
 	}
-	out, err := a.ExportLatestRequest(sess)
+	out, err := a.ctxEngine().ExportRawRequests(sess)
 	if err != nil {
 		t.Fatalf("导出最近请求失败: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestRunAgentCapturesRequestAndAudit(t *testing.T) {
 	if auditCalls != 1 {
 		t.Fatalf("应落 1 条调用审计行，实际 %d", auditCalls)
 	}
-	md := a.ExportTimeline(sess)
+	md := a.ctxEngine().ExportTimeline(sess)
 	for _, want := range []string{
 		"模型调用 #1（本轮第 1 步）",
 		"缓存命中 50（50.0%）",

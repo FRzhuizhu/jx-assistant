@@ -585,27 +585,49 @@ func (s *Store) AppendRow(id string, sm *StoredMessage) error {
 	return s.appendRowLocked(id, sm)
 }
 
-// ReplaceRequestRow 替换式写入模型输入快照行（kind=request）：每会话只保留
-// 最近一条，写入前删掉旧行——全量上下文体积大，逐条留档会让库无界增长。
-func (s *Store) ReplaceRequestRow(id string, sm *StoredMessage) error {
+// keepRequests 是每会话保留的模型请求快照行（kind=request）条数：最近
+// 三轮足够观察相邻请求间的变化与缓存影响；全量上下文体积大，逐条留档会
+// 让库无界增长。
+const keepRequests = 3
+
+// AppendRequestRow 追加一条模型输入快照行（kind=request），写入后裁掉
+// 更早的行，每会话只保留最近 keepRequests 条（环形）。
+func (s *Store) AppendRequestRow(id string, sm *StoredMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.db.Exec(`DELETE FROM messages WHERE session_id=? AND kind='request'`, id); err != nil {
+	if err := s.appendRowLocked(id, sm); err != nil {
 		return err
 	}
-	return s.appendRowLocked(id, sm)
+	_, err := s.db.Exec(`DELETE FROM messages WHERE session_id=? AND kind='request' AND seq NOT IN
+		(SELECT seq FROM messages WHERE session_id=? AND kind='request' ORDER BY seq DESC LIMIT ?)`,
+		id, id, keepRequests)
+	return err
 }
 
-// LastRequestRow 取该会话最近一条模型输入快照行；从未发送过则返回 nil。
-func (s *Store) LastRequestRow(id string) (*StoredMessage, error) {
+// RecentRequestRows 取最近 n 条模型输入快照行（旧→新返回）；不足 n 条给实际数量。
+func (s *Store) RecentRequestRows(id string, n int) ([]*StoredMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sm, err := scanMessage(s.db.QueryRow(
-		`SELECT `+messageCols+` FROM messages WHERE session_id=? AND kind='request' ORDER BY seq DESC LIMIT 1`, id))
-	if err == sql.ErrNoRows {
-		return nil, nil
+	rows, err := s.db.Query(`SELECT ` + messageCols + ` FROM messages WHERE session_id=? AND kind='request' ORDER BY seq DESC LIMIT ?`, id, n)
+	if err != nil {
+		return nil, err
 	}
-	return sm, err
+	defer rows.Close()
+	var out []*StoredMessage
+	for rows.Next() {
+		sm, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 func (s *Store) appendRowLocked(id string, sm *StoredMessage) error {

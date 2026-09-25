@@ -1287,13 +1287,14 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": 1, "summary": truncateRunes(summary, 300)})
 }
 
-// handleExport 导出两类审计材料：
+// handleExport 导出两类审计材料，统一向上下文引擎申请（引擎是记录者）：
 //
 //	?format=md（默认）——运行日志：从会话创建起的完整时间线（上下文组装、
-//	  环境快照更新、用户消息、每次模型调用的用量与缓存命中、模型逐步输出、
-//	  报错/停止/压缩等未发给模型的事件）；
-//	?format=json ——原始数据：最近一次真正发给模型的完整请求体（与线上发送
-//	  逐字节同源，仅排版缩进），用于核对到底给模型发了什么。
+//	  环境快照更新、用户消息、每次模型调用的前缀指纹/用量/缓存命中、模型逐步
+//	  输出、报错/停止/压缩/上下文事件等未发给模型的事件）；
+//	?format=json ——原始数据：引擎缓存的最近三轮真正发给模型的完整请求体
+//	  （与线上发送逐字节同源）+ 相邻两两对比（消息条数/token 估算/工具目录
+//	  指纹/首条变化消息位置），用于核对到底给模型发了什么、缓存为何变化。
 //
 // 两者都取自 messages 表原始历史，只导出当前会话（子会话各自单独导出）。
 func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
@@ -1304,7 +1305,7 @@ func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
 	stamp := time.Now().Format("20060102-150405")
 	base := strings.ReplaceAll(truncateRunes(m.Title, 30), " ", "_") + "_" + stamp
 	if r.URL.Query().Get("format") == "json" {
-		data, err := a.ExportLatestRequest(m)
+		data, err := a.ctxEngine().ExportRawRequests(m)
 		if err != nil {
 			writeErr(w, 404, err.Error())
 			return
@@ -1316,7 +1317,7 @@ func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(base+"_运行日志.md"))
-	_, _ = w.Write([]byte(a.ExportTimeline(m)))
+	_, _ = w.Write([]byte(a.ctxEngine().ExportTimeline(m)))
 }
 
 func wsOr(a *App, m *SessionMeta) string {

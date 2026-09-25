@@ -489,15 +489,18 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: pack.Tools}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
 		est := estimateTokens(msgs)      // 发送前的 token 估算（审计行用）
+		// 本次组装的前缀指纹（系统提示词/环境快照）：进引擎的调用日志与请求
+		// 缓存——指纹变化即可解释该次缓存命中变化
+		sysHash, envHash := promptHash(pack.Sys), promptHash(pack.Env)
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall
 		var usage *Usage // 本步流尾用量（审计行用；网关不带 usage 则为 nil）
 		callStart := time.Now()
 		err := StreamChat(ctx, target, req, StreamCallbacks{
-			// 请求发出前捕获全量请求体（「导出原始数据」的数据源，每会话只留最近一条）
+			// 请求发出前捕获全量请求体，经引擎缓存（环形保留最近三轮，「导出原始数据」数据源）
 			OnRequest: func(u string, body []byte) {
-				a.recordLastRequest(sess, u, target.Model, step+1, len(msgs), est, body)
+				a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), est, sysHash, envHash, body)
 			},
 			OnText: func(s string) {
 				text.WriteString(s)
@@ -518,8 +521,8 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			_ = a.Store.SaveMeta(sess)
 		},
 	})
-		// 调用审计行：成败都落（导出日志时间线的核心数据——发送规模、返回、缓存命中、耗时）
-		a.auditCall(sess, step+1, len(msgs), est, time.Since(callStart).Milliseconds(),
+		// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时
+		a.ctxEngine().RecordCall(sess, step+1, len(msgs), est, sysHash, envHash, time.Since(callStart).Milliseconds(),
 			usage, len([]rune(text.String())), toolNamesOf(calls), err)
 		if err != nil {
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次

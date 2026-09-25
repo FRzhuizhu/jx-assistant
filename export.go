@@ -7,15 +7,19 @@ import (
 	"strings"
 )
 
-// 导出：一个会话产出两种审计材料——
-//   运行日志（ExportTimeline，format=md）：从会话创建起的完整时间线。
+// 导出：一个会话产出两种审计材料，HTTP 层统一经上下文引擎申请
+// （a.ctxEngine().ExportTimeline / ExportRawRequests）——引擎是记录者，
+// 也是导出门面；本文件只剩时间线的排版实现。
+//   运行日志（format=md）：从会话创建起的完整时间线。
 //     既包含发给模型的内容（系统提示词组装、环境快照更新、用户消息、模型
 //     逐步输出、工具调用与结果），也包含不发给模型但影响判断的事件（运行中
-//     报错、用户停止、上下文超限重试、压缩生效、系统提示词变化）。
+//     报错、用户停止、上下文超限重试、压缩生效、系统提示词变化、上下文事件）。
 //     缓存命中率突降通常就发生在两次调用之间的这类事件上——文首的调用表
 //     给出每次调用的命中量，对着时间线即可定位是哪次变更打破了前缀。
-//   原始数据（ExportLatestRequest，format=json）：最近一次真正发给模型的
-//     完整请求体，与线上发送逐字节同源（发送前捕获），仅排版缩进。
+//   原始数据（format=json，contextengine.go 组装）：引擎缓存的最近三轮真正
+//     发给模型的完整请求体（与线上发送逐字节同源）+ 相邻两两对比
+//     （消息条数/token 估算/工具目录指纹/首条变化消息的位置），直接服务于
+//     观察上下文变化与缓存命中。
 // 两者都取自 messages 表原始历史（append-only），与展示层无关。
 
 func modeLabelOf(mode string) string {
@@ -76,8 +80,8 @@ func remoteSuffix(m *SessionMeta) string {
 
 // ---------- 运行日志（时间线） ----------
 
-// ExportTimeline 生成会话的运行日志 Markdown。
-func (a *App) ExportTimeline(m *SessionMeta) string {
+// exportTimeline 生成会话的运行日志 Markdown（引擎 ExportTimeline 门面的实现）。
+func (a *App) exportTimeline(m *SessionMeta) string {
 	msgs, err := a.Store.RawMessagesAll(m.ID)
 	if err != nil {
 		msgs = nil
@@ -366,6 +370,9 @@ func (st *timelineState) renderAudit(b *strings.Builder, m *StoredMessage) {
 		default:
 			b.WriteString(fmt.Sprintf("  返回：正文 %d 字（网关未返回 usage）· 耗时 %d ms\n\n", ar.Text, ar.Ms))
 		}
+		if ar.SysHash != "" || ar.EnvHash != "" {
+			b.WriteString(fmt.Sprintf("  前缀指纹：sys %s · env %s（与上一次不同 = 前缀缓存必不命中）\n\n", ar.SysHash, ar.EnvHash))
+		}
 	case "error":
 		tlLine(b, m.CreatedAt, "报错（未发给模型）："+expText(ar.Error))
 	case "stop":
@@ -379,30 +386,6 @@ func (st *timelineState) renderAudit(b *strings.Builder, m *StoredMessage) {
 		// 时间线上位于发生位置——下一次模型调用的缓存命中变化由此可解释
 		tlLine(b, m.CreatedAt, "上下文变更（"+ar.Kind+"）："+expText(ar.Detail))
 	}
-}
-
-// ---------- 最近请求导出 ----------
-
-// ExportLatestRequest 取最近一次发给模型的请求体。内容与线上发送逐字节
-// 同源（发送前捕获的原始 JSON），这里只做缩进排版便于阅读；旧版格式的
-// 快照行（正文即请求体）原样返回。
-func (a *App) ExportLatestRequest(m *SessionMeta) ([]byte, error) {
-	row, err := a.Store.LastRequestRow(m.ID)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return nil, fmt.Errorf("该会话还没有发给模型的请求记录（发送过一条消息后可用；离线演示模式不产生请求）")
-	}
-	var rec lastRequestRec
-	if err := json.Unmarshal([]byte(row.Text()), &rec); err == nil && len(rec.Body) > 0 {
-		var out bytes.Buffer
-		if json.Indent(&out, rec.Body, "", "  ") == nil {
-			return out.Bytes(), nil
-		}
-		return rec.Body, nil
-	}
-	return []byte(row.Text()), nil
 }
 
 // ---------- 渲染小件 ----------

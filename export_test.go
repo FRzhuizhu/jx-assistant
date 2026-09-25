@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
@@ -59,7 +60,7 @@ func TestExportTimeline(t *testing.T) {
 	appendTestRow(t, a, "s1", &StoredMessage{Message: TextMessage("system", `{"type":"error","error":"模型服务返回 429：限流"}`), Kind: "audit"})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: TextMessage("system", `{"type":"compact","rounds":2,"from":3,"to":6}`), Kind: "audit"})
 
-	md := a.ExportTimeline(sess)
+	md := a.ctxEngine().ExportTimeline(sess)
 	for _, want := range []string{
 		"# 运行日志：导出测试",
 		"模型调用与缓存命中",
@@ -91,44 +92,59 @@ func TestExportTimeline(t *testing.T) {
 	}
 }
 
-// 原始数据导出：无请求时报错；替换式写入只留最新一条；内容与发送逐字节同源。
-func TestExportLatestRequest(t *testing.T) {
+// 原始数据导出（引擎）：无请求时报错；环形保留最近三轮；导出含全部缓存请求
+// 与两两对比（消息条数变化、工具目录未变、首条变化消息定位、指纹变化）。
+func TestEngineExportRawRequests(t *testing.T) {
 	a := newExportApp(t, "data-export-req-test")
 	sess := &SessionMeta{ID: "s2", Title: "请求导出", Mode: "task", CreatedAt: now()}
 	if err := a.Store.Create(sess); err != nil {
 		t.Fatalf("建会话失败: %v", err)
 	}
-	if _, err := a.ExportLatestRequest(sess); err == nil || !strings.Contains(err.Error(), "还没有") {
+	if _, err := a.ctxEngine().ExportRawRequests(sess); err == nil || !strings.Contains(err.Error(), "还没有") {
 		t.Fatalf("无请求时应报「还没有」错误，实际: %v", err)
 	}
-	body1 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"}],"stream":true}`)
-	a.recordLastRequest(sess, "http://x/v1/chat/completions", "m1", 1, 2, 10, body1)
-	body2 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"},{"role":"user","content":"你好"}],"stream":true}`)
-	a.recordLastRequest(sess, "http://x/v1/chat/completions", "m1", 2, 3, 20, body2)
+	e := a.ctxEngine()
+	tools := `"tools":[{"type":"function","function":{"name":"read_file"}}]`
+	body1 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"}],` + tools + `}`)
+	body2 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"},{"role":"user","content":"你好"}],` + tools + `}`)
+	body3 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"},{"role":"user","content":"你好"},{"role":"assistant","content":"好的"}],` + tools + `}`)
+	body4 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"},{"role":"user","content":"你好"},{"role":"assistant","content":"好的"},{"role":"user","content":"再来"}],` + tools + `}`)
+	e.RecordRequest(sess, "http://x/v1", "m1", 1, 2, 10, "aa", "bb", body1)
+	e.RecordRequest(sess, "http://x/v1", "m1", 2, 3, 20, "aa", "cc", body2)
+	e.RecordRequest(sess, "http://x/v1", "m1", 3, 4, 30, "aa", "dd", body3)
+	e.RecordRequest(sess, "http://x/v1", "m1", 4, 5, 40, "aa", "dd", body4)
 
-	all, _ := a.Store.RawMessagesAll("s2")
-	reqRows := 0
-	for _, r := range all {
-		if r.Kind == "request" {
-			reqRows++
-		}
+	if recs, _ := e.RecentRequests(sess, keepRequests); len(recs) != keepRequests {
+		t.Fatalf("环形保留应只剩最近 %d 条，实际 %d", keepRequests, len(recs))
 	}
-	if reqRows != 1 {
-		t.Fatalf("替换式写入应只留 1 条 request 行，实际 %d", reqRows)
-	}
-	out, err := a.ExportLatestRequest(sess)
+	out, err := e.ExportRawRequests(sess)
 	if err != nil {
 		t.Fatalf("导出失败: %v", err)
 	}
-	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
+	var doc rawRequestExport
+	if err := json.Unmarshal(out, &doc); err != nil {
 		t.Fatalf("导出的不是合法 JSON: %v\n%s", err, out)
 	}
-	if msgs, _ := got["messages"].([]any); len(msgs) != 2 {
-		t.Fatalf("应导出最新一次请求（2 条消息），实际 %d 条: %s", len(msgs), out)
+	if doc.Count != keepRequests || len(doc.Requests) != keepRequests || len(doc.Diffs) != keepRequests-1 {
+		t.Fatalf("应导出 %d 条请求与 %d 条对比，实际 %d/%d/%d", keepRequests, keepRequests-1,
+			doc.Count, len(doc.Requests), len(doc.Diffs))
 	}
-	if !strings.Contains(string(out), "你好") {
-		t.Errorf("导出内容不是最新请求:\n%s", out)
+	// 环形：最早一条（body1）已被裁掉，留存的旧→新为 body2/3/4
+	if !bytes.Contains(doc.Requests[0].Body, []byte("你好")) || bytes.Contains(doc.Requests[0].Body, []byte(`{"role":"assistant","content":"好的"}`)) {
+		t.Fatalf("环形裁剪后最旧一条应是 body2: %s", doc.Requests[0].Body)
+	}
+	// 对比 #1→#2（body2→body3）：工具未变、sys 未变、env 指纹变、追加式增长（第 2 条起变化）
+	d1 := doc.Diffs[0]
+	if d1.ToolsChanged || !d1.EnvHashChanged || d1.SysHashChanged || d1.FirstDiffMessage != 2 || d1.MsgsDelta != 1 {
+		t.Fatalf("对比 #1→#2 不符: %+v", d1)
+	}
+	// 对比 #2→#3（body3→body4）：指纹全未变，前缀从第 3 条起变化
+	d2 := doc.Diffs[1]
+	if d2.ToolsChanged || d2.SysHashChanged || d2.EnvHashChanged || d2.FirstDiffMessage != 3 {
+		t.Fatalf("对比 #2→#3 不符: %+v", d2)
+	}
+	if !bytes.Contains(out, []byte("再来")) {
+		t.Fatal("导出应内嵌最新请求的原始消息内容")
 	}
 }
 
