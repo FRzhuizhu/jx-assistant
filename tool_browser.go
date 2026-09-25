@@ -1,6 +1,6 @@
 package main
 
-// 浏览器操作组件：经 CDP（chromedp，纯 Go）驱动本机 Chrome / Edge。
+// 浏览器操作组件：经 CDP（chromedp，纯 Go）驱动系统自带的 Edge（兜底 Chrome）。
 // 设计要点：
 //   * 进程级单例浏览器：首次调用懒启动，后续工具复用同一窗口，
 //     browser_close 显式关闭；助手进程退出由 chromedp 兜底清理。
@@ -27,14 +27,17 @@ var (
 	browserCancel context.CancelFunc
 )
 
-// findBrowserExe 按常见安装位置找 Chrome / Edge；都找不到交给 chromedp 自行探测。
+// findBrowserExe 优先找系统自带的 Edge（Win10/11 必装，符合自包含
+// 原则——不依赖用户另装浏览器）；Edge 异常缺失时兜底找 Chrome；
+// 都找不到交给 chromedp 自行探测。
 func findBrowserExe() string {
 	candidates := []string{
+		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+		os.Getenv("LOCALAPPDATA") + `\Microsoft\Edge\Application\msedge.exe`,
 		os.Getenv("LOCALAPPDATA") + `\Google\Chrome\Application\chrome.exe`,
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
-		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
-		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
 	}
 	for _, p := range candidates {
 		if p == "" {
@@ -68,7 +71,7 @@ func acquireBrowser() (context.Context, error) {
 		cancel()
 		allocCancel()
 		browserCtx = nil
-		return nil, fmt.Errorf("启动浏览器失败（需要已安装 Chrome 或 Edge）: %w", err)
+		return nil, fmt.Errorf("启动浏览器失败（需要系统自带的 Edge，或已安装的 Chrome）: %w", err)
 	}
 	browserCtx = ctx
 	browserCancel = func() {
