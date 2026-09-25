@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 计划模式守卫：目录不变、调用时拦截；白名单外的只读工具不受影响。
@@ -144,5 +146,62 @@ func TestUpdateGoalTool(t *testing.T) {
 	got, _ := a.Store.Get(sess.ID)
 	if got.GoalStatus != "complete" {
 		t.Fatalf("GoalStatus 应落库为 complete，得到 %s", got.GoalStatus)
+	}
+}
+
+// answerAsync 模拟用户在确认卡上作答（等提问登记进来后回传答案）。
+func answerAsync(a *App, ans string) {
+	go func() {
+		for i := 0; i < 500; i++ {
+			if qs := a.pendingQuestions(); len(qs) > 0 {
+				_ = a.resolveQuestion(qs[0].ID, ans)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+}
+
+// enter_plan_mode 状态机：reason 空 / 已在计划模式 / 目标模式互斥均报错；
+// 用户同意才落库开启，拒绝维持原模式。
+func TestEnterPlanModeTool(t *testing.T) {
+	a := newTestApp(t, "rule", 5, 5)
+	sess := &SessionMeta{ID: "ep1", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
+	_ = a.Store.Create(sess)
+	tc := &toolContext{ctx: context.Background(), app: a, sess: sess}
+	if _, err := runEnterPlanMode(tc, []byte(`{"reason":"  "}`)); err == nil {
+		t.Fatal("reason 为空应报错")
+	}
+	sess.PlanMode = true
+	if _, err := runEnterPlanMode(tc, []byte(`{"reason":"再计划一次"}`)); err == nil {
+		t.Fatal("已在计划模式应报错")
+	}
+	sess.PlanMode = false
+	sess.GoalMode = true
+	sess.GoalText = "持续推进整理"
+	if _, err := runEnterPlanMode(tc, []byte(`{"reason":"想先计划"}`)); err == nil {
+		t.Fatal("目标模式运行中应报互斥错误")
+	}
+	sess.GoalMode = false
+
+	answerAsync(a, "__approve__")
+	out, err := runEnterPlanMode(tc, []byte(`{"reason":"跨三个模块的重构，想先调研再动手"}`))
+	if err != nil || !strings.Contains(out, "同意进入计划模式") {
+		t.Fatalf("用户同意应成功切换：%v %s", err, out)
+	}
+	got, _ := a.Store.Get(sess.ID)
+	if !got.PlanMode {
+		t.Fatal("PlanMode 应落库为 true")
+	}
+
+	sess.PlanMode = false
+	_ = a.Store.SaveMeta(sess)
+	answerAsync(a, "不用，直接做")
+	out, err = runEnterPlanMode(tc, []byte(`{"reason":"又想计划"}`))
+	if err != nil || !strings.Contains(out, "未同意") || !strings.Contains(out, "直接做") {
+		t.Fatalf("用户拒绝应带回反馈且维持原模式：%v %s", err, out)
+	}
+	if sess.PlanMode {
+		t.Fatal("拒绝后不应开启计划模式")
 	}
 }

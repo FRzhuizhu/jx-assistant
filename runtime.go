@@ -52,6 +52,7 @@ func (a *App) initRuntime() {
 	a.subscribers = map[chan Event]bool{}
 	a.grants = map[string]*Grant{}
 	a.approvals = map[string]*Approval{}
+	a.questions = map[string]*UserQuestion{}
 	a.remotes = map[string]*remoteClient{}
 	a.pendingSteer = map[string][]*PendingMsg{}
 	a.pendingQueue = map[string][]*PendingMsg{}

@@ -28,8 +28,8 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   WebView2
   运行时开原生桌面窗口：标题「坚祥数字助理GO」，窗口/任务栏图标取 exe
   内嵌 LOGO 资源（`打包/make_icon.py` 由 web/logo.png 生成多尺寸 ico，
-  go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1，
-  `iconres_windows_test.go` 探针防回归；`-browser` 参数可强制回浏览器形态）。
+  go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1；
+  `-browser` 参数可强制回浏览器形态）。
   开发期间想要桌面形态：`powershell -File 打包\开发桌面版.ps1` 在仓库根
   产出 `坚祥数字助理GO.exe`（双击即窗口，数据照旧落仓库目录）。
 - 桌面模式行为：相对路径（config / data / 技能）锚到 exe 目录（开发目录
@@ -363,10 +363,12 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
 不改变工具定义；清单变化经环境快照补在对话**最底部**，并附一行
 「技能变更：新增 X／移除 Y」明说增删了哪个技能，上文历史快照一律不动。
 
-**运行环境自举**：优先使用系统 Python（快路径）；解释器缺失或依赖
-不全时，自动下载便携 Python（python.org embeddable，约 11MB）+
-从清华镜像安装依赖 wheel，装配到 `技能/_runtime/python`——首次
-需联网，装好后离线可用，新机器即装即用。`skillsDir` 配置可指定
+**运行环境自包含**：技能一律使用随软件分发的便携运行时
+`技能/_runtime/python`，**不探测、不依赖用户机器上的系统 Python**——
+面向非编程用户，安装包内置全部运行时与依赖，装完离线全功能。
+开发目录缺 `_runtime` 时首次使用自动装配一次（python.org
+embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包脚本
+会校验运行时依赖齐全，缺一不出包。`skillsDir` 配置可指定
 技能目录位置（默认取可执行文件旁，不可写时落数据目录）。
 
 **能力组件（与权限绑定的操作类能力）**：
@@ -377,7 +379,8 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
   降级为信封占位不报错。
 - **浏览器操作**（能力开关 `browser`）：`browser_open / content / click /
   type / evaluate / screenshot / close` 七件工具，chromedp（纯 Go CDP）
-  驱动本机 Chrome / Edge，有头模式运行。
+  优先驱动系统自带的 Edge（Win10/11 必装；Edge 异常缺失时兜底
+  Chrome），有头模式运行。
 - **电脑操作**（能力开关 `computer`）：`computer_screenshot / click /
   type / key / scroll / windows` 六件工具，win32 SendInput + GDI
   DIB Section 直调，无 cgo；点击坐标以截屏图片像素为准。
@@ -401,7 +404,7 @@ Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键�
   `Components.IsEnabled(<id>)` 自查开关——组件关掉时那部分功能一并停。
 - 示例组件：`input-counter`（输入字数实时统计，最小组件模板——新建组件
   直接复制该目录改 manifest 与 client.js 即可）。界面强调色（点缀色）原为
-  示例组件，现已并入主程序 `web/app.js`（常规 → 外观 → 点缀色）。
+  示例组件，现已并入主程序 `web/app-settings.js`（常规 → 外观 → 点缀色）。
 - 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
   宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
   `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）。

@@ -237,11 +237,196 @@ func setLabelAce(path string, labelSid *windows.SID, inherit, checkIdem bool) er
 		binary.LittleEndian.PutUint16(nacl[2:], uint16(len(nacl)))
 	}
 	nptr := (*windows.ACL)(unsafe.Pointer(&nacl[0]))
-	r1, _, callErr := procSetNamedSecurityInfoW.Call(
-		uintptr(unsafe.Pointer(p)), seFileObject, labelSecurityInfo,
-		0, 0, 0, uintptr(unsafe.Pointer(nptr)))
+	// SetNamedSecurityInfo 直接返回 Win32 错误码（非 BOOL），errno 无意义。
+	setLabel := func() uint32 {
+		r1, _, _ := procSetNamedSecurityInfoW.Call(
+			uintptr(unsafe.Pointer(p)), seFileObject, labelSecurityInfo,
+			0, 0, 0, uintptr(unsafe.Pointer(nptr)))
+		return uint32(r1)
+	}
+	r1 := setLabel()
 	if r1 != 0 {
-		return fmt.Errorf("SetNamedSecurityInfo(标签 %s) 失败: %v", path, callErr)
+		// 真实工作区兼容：写强制标签（LABEL_SECURITY_INFORMATION）要求
+		// WRITE_OWNER，而 Modify 档 ACL 与所有者隐式权限（READ_CONTROL|
+		// WRITE_DAC）都不含它——曾导致真实环境每次沙箱启动都失败在
+		// 「工作区打密级标签」（%TEMP% 的 FullControl 档测试目录测不出）。
+		// 用 WRITE_DAC 临时并入一条当前用户的 WRITE_OWNER ACE 后重试，
+		// 贴完还原。
+		if added, derr := grantWriteOwnerAce(path); derr == nil && added {
+			r1 = setLabel()
+			_ = stripWriteOwnerAce(path)
+		}
+	}
+	if r1 != 0 {
+		return fmt.Errorf("SetNamedSecurityInfo(标签 %s) 失败: Win32 %d", path, r1)
+	}
+	return nil
+}
+
+// writeOwnerRight = WRITE_OWNER：写强制密级标签所需的访问权。
+const writeOwnerRight = 0x00080000
+
+// currentUserSid 取当前进程令牌的用户 SID。
+func currentUserSid() (*windows.SID, error) {
+	var tok windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &tok); err != nil {
+		return nil, err
+	}
+	defer tok.Close()
+	tu, err := tok.GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	n := windows.GetLengthSid(tu.User.Sid)
+	b := make([]byte, n)
+	if err := windows.CopySid(n, (*windows.SID)(unsafe.Pointer(&b[0])), tu.User.Sid); err != nil {
+		return nil, err
+	}
+	return (*windows.SID)(unsafe.Pointer(&b[0])), nil
+}
+
+// grantWriteOwnerAce 给当前用户并入一条仅含 WRITE_OWNER 的 allow ACE（不
+// 继承，只授权本对象）。用户已有覆盖 WRITE_OWNER 位的 allow ACE 则不动
+// （如 %TEMP% 的 FullControl 档）。返回是否新增。不带 PROTECTED 位——
+// 保持目录继承结构不变（临时授权，随后摘除）。
+func grantWriteOwnerAce(path string) (bool, error) {
+	us, err := currentUserSid()
+	if err != nil {
+		return false, err
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return false, err
+	}
+	var sd *windows.SECURITY_DESCRIPTOR
+	var dacl *windows.ACL
+	r1, _, _ := procGetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
+		0, 0, uintptr(unsafe.Pointer(&dacl)), 0, uintptr(unsafe.Pointer(&sd)))
+	if r1 != 0 {
+		return false, fmt.Errorf("GetNamedSecurityInfo(%s) 失败: Win32 %d", path, r1)
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(sd)))
+	sb, err := aclBytes(dacl)
+	if err != nil {
+		return false, err
+	}
+	sideb, err := sidBytes(us)
+	if err != nil {
+		return false, err
+	}
+	for i := 8; i+8 <= len(sb); {
+		size := int(binary.LittleEndian.Uint16(sb[i+2:]))
+		if size < 8 || i+size > len(sb) {
+			break
+		}
+		if sb[i] == accessAllowedACE &&
+			binary.LittleEndian.Uint32(sb[i+4:])&writeOwnerRight == writeOwnerRight &&
+			string(sb[i+8:i+size]) == string(sideb) {
+			return false, nil // 已持有
+		}
+		i += size
+	}
+	ace := make([]byte, 8+len(sideb))
+	ace[0] = accessAllowedACE
+	// flags 留 0：只授权本对象
+	binary.LittleEndian.PutUint16(ace[2:], uint16(len(ace)))
+	binary.LittleEndian.PutUint32(ace[4:], writeOwnerRight)
+	copy(ace[8:], sideb)
+	// 插到第一个继承 ACE 之前（显式在前），否则末尾——与 grantWriteAce 同款
+	pos := len(sb)
+	for i := 8; i+8 <= len(sb); {
+		size := int(binary.LittleEndian.Uint16(sb[i+2:]))
+		if size < 8 || i+size > len(sb) {
+			pos = len(sb)
+			break
+		}
+		if sb[i+1]&inheritedACE != 0 {
+			pos = i
+			break
+		}
+		i += size
+	}
+	count := int(binary.LittleEndian.Uint16(sb[4:]))
+	nacl := make([]byte, 0, len(sb)+len(ace))
+	nacl = append(nacl, sb[:8]...)
+	nacl = append(nacl, sb[8:pos]...)
+	nacl = append(nacl, ace...)
+	nacl = append(nacl, sb[pos:]...)
+	if pad := (4 - len(nacl)%4) % 4; pad > 0 {
+		nacl = append(nacl, make([]byte, pad)...)
+	}
+	binary.LittleEndian.PutUint16(nacl[2:], uint16(len(nacl)))
+	binary.LittleEndian.PutUint16(nacl[4:], uint16(count+1))
+	nptr := (*windows.ACL)(unsafe.Pointer(&nacl[0]))
+	r1, _, _ = procSetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
+		0, 0, uintptr(unsafe.Pointer(nptr)), 0)
+	if r1 != 0 {
+		return false, fmt.Errorf("并入 WRITE_OWNER(%s) 失败: Win32 %d", path, r1)
+	}
+	return true, nil
+}
+
+// stripWriteOwnerAce 摘掉 grantWriteOwnerAce 并入的临时 ACE（掩码恰为
+// WRITE_OWNER 的当前用户 allow ACE；用户原有更大权限的 ACE 不动）。
+// 找不到即视为已还原。
+func stripWriteOwnerAce(path string) error {
+	us, err := currentUserSid()
+	if err != nil {
+		return err
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	var sd *windows.SECURITY_DESCRIPTOR
+	var dacl *windows.ACL
+	r1, _, _ := procGetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
+		0, 0, uintptr(unsafe.Pointer(&dacl)), 0, uintptr(unsafe.Pointer(&sd)))
+	if r1 != 0 {
+		return fmt.Errorf("GetNamedSecurityInfo(%s) 失败: Win32 %d", path, r1)
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(sd)))
+	sb, err := aclBytes(dacl)
+	if err != nil {
+		return err
+	}
+	sideb, err := sidBytes(us)
+	if err != nil {
+		return err
+	}
+	out := append([]byte(nil), sb[:8]...)
+	removed := 0
+	for i := 8; i+8 <= len(sb); {
+		size := int(binary.LittleEndian.Uint16(sb[i+2:]))
+		if size < 8 || i+size > len(sb) {
+			break
+		}
+		if sb[i] == accessAllowedACE &&
+			binary.LittleEndian.Uint32(sb[i+4:]) == writeOwnerRight &&
+			string(sb[i+8:i+size]) == string(sideb) {
+			removed++
+		} else {
+			out = append(out, sb[i:i+size]...)
+		}
+		i += size
+	}
+	if removed == 0 {
+		return nil
+	}
+	if pad := (4 - len(out)%4) % 4; pad > 0 {
+		out = append(out, make([]byte, pad)...)
+	}
+	binary.LittleEndian.PutUint16(out[2:], uint16(len(out)))
+	binary.LittleEndian.PutUint16(out[4:], uint16(int(binary.LittleEndian.Uint16(sb[4:]))-removed))
+	nptr := (*windows.ACL)(unsafe.Pointer(&out[0]))
+	r1, _, _ = procSetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
+		0, 0, uintptr(unsafe.Pointer(nptr)), 0)
+	if r1 != 0 {
+		return fmt.Errorf("摘除 WRITE_OWNER(%s) 失败: Win32 %d", path, r1)
 	}
 	return nil
 }
@@ -297,11 +482,11 @@ func stripWriteAce(path string, writeSID *windows.SID) error {
 	binary.LittleEndian.PutUint16(nacl[2:], uint16(len(nacl)))
 	binary.LittleEndian.PutUint16(nacl[4:], uint16(count-1))
 	nptr := (*windows.ACL)(unsafe.Pointer(&nacl[0]))
-	r1, _, callErr := procSetNamedSecurityInfoW.Call(
+	r1, _, _ = procSetNamedSecurityInfoW.Call(
 		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
 		0, 0, uintptr(unsafe.Pointer(nptr)), 0)
 	if r1 != 0 {
-		return fmt.Errorf("SetNamedSecurityInfo(摘ACE %s) 失败: %v", path, callErr)
+		return fmt.Errorf("SetNamedSecurityInfo(摘ACE %s) 失败: Win32 %d", path, r1)
 	}
 	return nil
 }

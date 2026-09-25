@@ -175,22 +175,44 @@ func (a *App) listSkills() (*SkillLists, error) {
 	return out, nil
 }
 
-// addUserSkill 把本机的一个技能目录复制进 技能/user/<名>/。
+// addUserSkill 安装一个用户技能到 技能/user/<id>/：srcPath 是本机技能目录
+// （整目录复制）或 ZIP 压缩包（解压后安装）。安装器本质只是帮用户把文件
+// 挪到位——手动把目录拖进/拖出 技能/user/，清单扫描同样能发现。
 func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 	src := strings.TrimSpace(srcPath)
 	if src == "" {
 		return nil, fmt.Errorf("路径不能为空")
 	}
 	info, err := os.Stat(src)
-	if err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("路径不存在或不是目录: %s", src)
+	if err != nil {
+		return nil, fmt.Errorf("路径不存在: %s", src)
 	}
-	if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
-		return nil, fmt.Errorf("目录里缺少 SKILL.md（技能必须自带说明文件）")
+	var root, idSrc string // root=待复制的技能根；idSrc=推导技能 id 的名字
+	if info.IsDir() {
+		if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
+			return nil, fmt.Errorf("目录里缺少 SKILL.md（技能必须自带说明文件）")
+		}
+		root, idSrc = src, filepath.Base(src)
+	} else {
+		if !strings.EqualFold(filepath.Ext(src), ".zip") {
+			return nil, fmt.Errorf("只支持技能文件夹或 .zip 压缩包: %s", src)
+		}
+		var tmp string
+		root, tmp, err = extractSkillZip(src)
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(tmp)
+		if root == tmp {
+			// SKILL.md 在压缩包根部：id 用压缩包文件名（临时目录名不能当 id）
+			idSrc = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+		} else {
+			idSrc = filepath.Base(root) // 只包了一层目录：id 用内层目录名
+		}
 	}
-	id := sanitizeSkillID(filepath.Base(src))
+	id := sanitizeSkillID(idSrc)
 	if id == "" {
-		return nil, fmt.Errorf("无法从路径推导技能名，请改用纯字母数字或中文命名目录")
+		return nil, fmt.Errorf("无法从名字推导技能 id，请用纯字母数字或中文命名文件夹/压缩包")
 	}
 	if builtinSkillIDs[id] {
 		return nil, fmt.Errorf("%s 是自带技能，不能重名", id)
@@ -203,11 +225,47 @@ func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 	if dirExists(dest) {
 		return nil, fmt.Errorf("技能 %s 已存在", id)
 	}
-	if err := copyDir(src, dest); err != nil {
-		return nil, fmt.Errorf("复制技能失败: %w", err)
+	if err := copyDir(root, dest); err != nil {
+		return nil, fmt.Errorf("安装技能失败: %w", err)
 	}
 	name, desc, _ := skillMeta(dest)
 	return &userSkillEntry{ID: id, Name: name, Description: desc, Enabled: true}, nil
+}
+
+// extractSkillZip 把技能 ZIP 解压到专用临时目录，返回 (技能根, 临时目录, 错误)。
+// 技能根 = SKILL.md 所在目录：支持 SKILL.md 直接在压缩包根部，或只多包一层
+// 目录（右键压缩文件夹的常见产物）两种打包方式。临时目录用完由调用方清理。
+func extractSkillZip(zipPath string) (root, tmp string, err error) {
+	tmp, err = os.MkdirTemp("", "jxskill-")
+	if err != nil {
+		return "", "", fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	if err := unzip(zipPath, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return "", "", fmt.Errorf("解压失败: %w", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmp, "SKILL.md")); statErr == nil {
+		return tmp, tmp, nil
+	}
+	entries, readErr := os.ReadDir(tmp)
+	if readErr != nil {
+		os.RemoveAll(tmp)
+		return "", "", readErr
+	}
+	var subs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			subs = append(subs, e.Name())
+		}
+	}
+	if len(subs) == 1 {
+		sub := filepath.Join(tmp, subs[0])
+		if _, statErr := os.Stat(filepath.Join(sub, "SKILL.md")); statErr == nil {
+			return sub, tmp, nil
+		}
+	}
+	os.RemoveAll(tmp)
+	return "", "", fmt.Errorf("压缩包里找不到 SKILL.md（技能必须自带说明文件；SKILL.md 需在压缩包根部或其唯一子目录里）")
 }
 
 // toggleUserSkill 开关用户技能；自带技能不允许关闭。

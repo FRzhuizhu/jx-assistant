@@ -19,6 +19,7 @@
   --amber: #9a6700;
   --amber-bg: #fff3d6;
   --gray-bg: #eef0f2;
+  --danger: #c0392b;
   /* 对话内容列宽度（拖拽把手实时改写，localStorage 记忆偏好）与对话区基础字号（设置页按 px 调整） */
   --content-w: 860px;
   --chat-fs: 14px;
@@ -117,7 +118,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .pill.gray { color: var(--text-2); background: var(--gray-bg); }
 
 /* ---------- 主区 ---------- */
-#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 #topbar {
   height: 48px; display: flex; align-items: center; gap: 10px;
   padding: 0 20px; border-bottom: 1px solid var(--border-2);
@@ -492,7 +493,7 @@ body.rp-open .w-handle { display: none; }
 }
 #sub-dd .caret { width: 12px; height: 12px; color: var(--text-3); flex-shrink: 0; }
 .sub-dd-status { font-size: 11.5px; color: var(--amber); white-space: nowrap; }
-.sub-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sub-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 #sub-messages { flex: 1; overflow-y: auto; }
 /* 消息列与输入区（.msg-col / .composer-*）不在这里另写样式：子对话就是对话，
    直接沿用主对话区那套共用规则，两边逐像素一致。
@@ -757,14 +758,36 @@ body.rp-open .w-handle { display: none; }
 
 /* ---------- 输入区 ---------- */
 /* 输入区三件套（外壳 / 提示行 / 输入卡 / 输入框）用 class 定义：主对话区与右栏
-   子对话区共用同一套规则——子对话就是对话，两边长得一模一样，只是挂点不同 */
-.composer-wrap { padding: 6px 24px 14px; flex-shrink: 0; }
-.composer-hint { max-width: var(--content-w); margin: 0 auto 6px; min-height: 18px; font-size: 12px; color: var(--amber); }
+   子对话区共用同一套规则——子对话就是对话，两边长得一模一样，只是挂点不同。
+   悬浮布局：外壳脱离文档流铺在消息区底部（消息滚动到卡后面，内容列由 JS 垫等高
+   内边距兜底，见 app-chat.js 的 syncComposerPad），容器自身不接收指针（透明区域
+   手势可划过）、子元素各自恢复；顶部一道到背景色的渐变让滚过卡后的内容淡出。 */
+.composer-wrap {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+  padding: 0 24px 14px;
+  pointer-events: none;
+}
+.composer-wrap::before {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 100%;
+  height: 30px; background: linear-gradient(180deg, transparent, var(--bg));
+  pointer-events: none;
+}
+.composer-wrap > * { pointer-events: auto; }
+.composer-wrap.tucked > * { pointer-events: none; } /* 手机端滚动收起时整块不可点 */
+/* 提示条：空则零占位；有内容时是一枚居中悬浮小药丸（浮在输入卡上方） */
+.composer-hint { max-width: var(--content-w); margin: 0 auto; font-size: 12px; color: var(--amber); }
+.composer-hint:not(:empty) {
+  width: fit-content; max-width: 100%; min-height: 0;
+  padding: 3px 12px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(16, 20, 26, .06);
+  text-align: center;
+}
 .composer-card {
   max-width: var(--content-w); margin: 0 auto;
   border: 1px solid var(--border); border-radius: 16px;
   background: var(--bg); padding: 10px 12px 8px;
-  box-shadow: 0 1px 3px rgba(16, 20, 26, .04);
+  box-shadow: 0 6px 20px rgba(16, 20, 26, .10); /* 悬浮卡：投影托起 */
 }
 .composer-card:focus-within { border-color: #c9cfda; }
 .composer-input {
@@ -839,7 +862,14 @@ body.rp-open .w-handle { display: none; }
 .modal-actions button.accent { background: var(--accent); border-color: var(--accent); color: #fff; }
 .modal-actions button.accent:hover { background: var(--accent-hover); }
 /* 居中确认弹窗（破坏性操作统一用它） */
+/* 比设置等业务弹窗更高一层：确认框可能叠在这些弹窗之上出现（如设置内删技能） */
+#confirm-modal { z-index: 60; }
 .confirm-card { width: 380px; }
+/* 第二级确认整体上移，与第一级的按钮位置彻底错开，防手滑连点误删 */
+.confirm-card.confirm-up { transform: translateY(-140px); }
+@media (max-height: 560px) {
+  .confirm-card.confirm-up { transform: translateY(-70px); }
+}
 .confirm-msg { white-space: pre-line; font-size: 13.5px; color: var(--text-2); line-height: 1.7; }
 .modal-actions button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
 .modal-actions button.danger:hover { background: #a93226; border-color: #a93226; }
@@ -961,11 +991,11 @@ body.bin-mode #sidebar::after {
   pointer-events: none;
   box-shadow: inset 0 0 0 2px rgba(210, 60, 60, .5);
 }
-body.bin-mode.bin-anim #sidebar { animation: bin-glow-in .22s cubic-bezier(.6, 0, .2, 1); }
+body.bin-mode.bin-anim #sidebar { animation: bin-glow-in .22s cubic-bezier(.6, 0, 1, 1); }
 body.bin-mode.bin-anim #sidebar::after {
   transform: scaleY(0);
   transform-origin: bottom;
-  animation: bin-border-rise .22s cubic-bezier(.6, 0, .2, 1) forwards;
+  animation: bin-border-rise .22s cubic-bezier(.6, 0, 1, 1) forwards;
 }
 @keyframes bin-glow-in {
   from { box-shadow: 0 0 16px rgba(210, 60, 60, 0); }
@@ -1452,6 +1482,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   --green-bg: #12281a;
   --amber-bg: #2d2410;
   --gray-bg: #22252c;
+  --danger: #ff9d8f;
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .modal-card { background: #1d2026; }
@@ -1545,13 +1576,125 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 /* 执行中的会话：侧栏时间位显示运行标记，切走也能一眼看出还在跑 */
 .session-item .s-time.running { color: var(--accent); font-weight: 600; }
 
-/* 技能面板 */
-.skill-constant { font-size: 12px; color: var(--text-3); flex: none; }
-.skill-del {
-  background: none; border: 1px solid var(--border); color: var(--danger);
-  border-radius: 7px; padding: 3px 10px; font-size: 12px; cursor: pointer; flex: none;
+/* 技能面板：行样式复用「内置组件/插件」的 plugin-row + pr-toggle，仅补本页专属组件 */
+/* 分组标题的弱化后缀（自带技能 · 常开 等） */
+.sec-sub { font-size: 11px; font-weight: 400; color: var(--text-3); margin-left: 6px; }
+/* 自带技能的「常开」徽章：与插件页 pr-badge 同款胶囊，中性灰 */
+.skill-constant {
+  flex: none; font-size: 11px; color: var(--text-3);
+  border: 1px solid var(--border-2); border-radius: 999px;
+  padding: 0 8px; line-height: 17px;
 }
-.skill-del:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+/* 删除：图标按钮（垃圾桶），悬停转危险色，与 qd-act 等圆形图标按钮同一手感 */
+.skill-del {
+  flex: none; width: 28px; height: 28px; border: none; border-radius: 8px;
+  background: none; color: var(--text-3); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.skill-del svg { width: 15px; height: 15px; }
+.skill-del:hover { background: rgba(192, 57, 43, .1); color: var(--danger); }
+:root[data-theme='dark'] .skill-del:hover { background: rgba(255, 157, 143, .14); }
+/* 用户技能为空时的占位（虚线框，与 pf-add 的虚线语言一致） */
+.skill-empty {
+  padding: 14px 12px; border: 1px dashed var(--border-2); border-radius: 10px;
+  font-size: 12px; color: var(--text-3); text-align: center;
+}
 
 /* 常规页「文件备份」行内布局：开关/输入与说明同行 */
 .sf-inline { display: flex; align-items: center; gap: 10px; min-height: 28px; }
+
+/* ---------- 回到底部按钮（主/子对话通用；滚离底部时浮现于输入区上方正中） ----------
+   定位容器：主对话是 #msg-zone（setupWidthHandles 建的包层），子对话现场把
+   #sub-messages 包进同款 .sub-msg-zone——按钮不随内容滚动，始终贴消息区底部。 */
+.sub-msg-zone { position: relative; flex: 1; min-height: 0; display: flex; }
+.jump-latest {
+  position: absolute; left: 50%;
+  bottom: calc(var(--cw-h, 200px) + 14px); /* 锚在悬浮输入卡上方；收起时 --cw-h=0 落到屏底 */
+  transform: translateX(-50%) translateY(8px);
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--border); background: #fff;
+  box-shadow: 0 4px 14px rgba(16, 20, 26, .18);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; z-index: 8; opacity: 0; pointer-events: none;
+  transition: opacity .18s, transform .18s;
+}
+.jump-latest.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+.jump-latest:hover { background: #f6f7f9; }
+.jump-latest svg { width: 17px; height: 17px; color: #262b36; }
+
+/* 手机端输入区滚动收起：往回翻历史时整体滑出屏幕底让位给内容（transform 位移 +
+   等量负 margin 收回占位，消息区随之长高）；向底部翻/聚焦输入框时滑回 */
+.composer-wrap {
+  transition: margin-bottom .25s cubic-bezier(.4, 0, .2, 1),
+              transform .25s cubic-bezier(.4, 0, .2, 1);
+}
+.composer-wrap.tucked { pointer-events: none; }
+
+/* ---------- 窄屏（CSS 宽 <500px）浮层布局：顶栏常驻，左/右栏整屏覆盖 ----------
+   断点取 500：手机按 CSS 像素宽渲染普遍 <500；≥500 一律回到桌面三栏与拖拽
+   宽度记忆，两条路径互不落盘污染（窄屏不写 jx.sb / jx.contentWidth，
+   见 app-left.js 的 toggleSidebar 与 app-core.js 的 setContentWidth）。
+   布局模型：对话区 #main 独占全宽为基座（左右栏改 fixed 后自动让位）；
+   #sidebar / #rpanel 变整屏浮层从左/右滑入；顶栏抬到浮层之上（z-index 220），
+   开合始终由顶栏按钮控制，故不设遮罩层。 */
+@media (max-width: 499.98px) {
+  #app { height: 100dvh; --tb-h: 66px; } /* 手机地址栏收展时 100vh 会溢出，dvh 跟随可视高 */
+
+  /* 顶栏两行：第一行控件（侧栏开关/模式徽章/子对话入口），第二行会话标题。
+     顺序用 order 后移标题 + flex-basis:100% 把它独占推到第二行；定高 --tb-h
+     供下方浮层的 top 对齐 */
+  #topbar {
+    position: relative; z-index: 220; /* 压在浮层之上，开合按钮始终可点 */
+    height: var(--tb-h); flex-wrap: wrap; align-content: space-evenly;
+    row-gap: 2px; padding: 6px 12px;
+  }
+  #sess-title { order: 9; flex-basis: 100%; line-height: 21px; }
+
+  /* 左栏：整屏浮层，默认藏于屏左，body.sb-show 滑入（桌面 sb-collapsed 记忆在窄屏不生效） */
+  #sidebar {
+    position: fixed; top: var(--tb-h); bottom: 0; left: 0;
+    width: 100%; min-width: 100%;
+    border-right: none;
+    transform: translateX(-100%);
+    transition: transform .22s cubic-bezier(.4, 0, .2, 1);
+    z-index: 210;
+    box-shadow: 8px 0 24px rgba(16, 20, 26, .16);
+  }
+  body.sb-show #sidebar { transform: none; }
+  /* 中和桌面收起规则（同特异性靠后取胜）：否则 jx.sb=1 时浮层宽被压成 0 */
+  body.sb-collapsed #sidebar { width: 100%; min-width: 100%; }
+  .sb-inner { width: 100%; }
+
+  /* 右栏：整屏浮层，从右侧滑入；宽度推导冻结（rpApply 窄屏直接返回），拖拽条退场 */
+  #rpanel {
+    position: fixed; top: var(--tb-h); bottom: 0; right: 0;
+    width: 100%; min-width: 100%;
+    transform: translateX(100%);
+    transition: transform .22s cubic-bezier(.4, 0, .2, 1);
+    z-index: 210;
+    box-shadow: -8px 0 24px rgba(16, 20, 26, .16);
+  }
+  body.rp-open #rpanel { transform: none; }
+  .rp-resize { pointer-events: none; }
+  .rp-resize::after { display: none; }
+  .w-handle { display: none; } /* 对话区已占满全宽 */
+  /* 悬浮输入卡贴边留缝（含 iPhone 底部手势条安全区） */
+  .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  /* 回收站红边（桌面规则 body.bin-mode #sidebar{position:relative}）特异性更高，
+     会把浮层定位压回流式布局——窄屏显式压回 fixed，红边与动画照常复用 */
+  body.bin-mode #sidebar { position: fixed; }
+
+  /* 弹层与设置在整屏上的兜底：设置卡全屏 + 导航变顶部横滚条 */
+  .settings-card { width: 100vw; height: 100dvh; border-radius: 0; border: none; }
+  .settings-body { flex-direction: column; }
+  .set-nav {
+    width: auto; flex-direction: row; overflow-x: auto; overflow-y: hidden;
+    border-right: none; border-bottom: 1px solid var(--border-2);
+  }
+  .set-nav-item { width: auto; white-space: nowrap; padding: 8px 12px; }
+  .set-pane { padding: 18px 16px; }
+  .perm-pop { min-width: min(92vw, 520px); }
+}
+@media (max-width: 499.98px) and (prefers-reduced-motion: reduce) {
+  #sidebar, #rpanel { transition: none; }
+}

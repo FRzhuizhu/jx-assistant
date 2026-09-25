@@ -31,13 +31,13 @@ type Event struct {
 	Summary    string   `json:"summary,omitempty"`
 	Reason     string   `json:"reason,omitempty"`
 	// 提问 / 计划审批（question_required）：等待用户输入
-	QuestionID string   `json:"questionId,omitempty"`
+	QuestionID string `json:"questionId,omitempty"`
 	// Kind 语义按 Type 分域（契约见《消息类型规范.md》）：message 事件=存储行 kind；
 	// question_required 事件=ask | plan
-	Kind       string   `json:"kind,omitempty"`
-	Origin     string   `json:"origin,omitempty"` // message 事件附带 report/summary 的 origin 子类
-	Plan       string   `json:"plan,omitempty"`
-	Options    []string `json:"options,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Origin  string   `json:"origin,omitempty"` // message 事件附带 report/summary 的 origin 子类
+	Plan    string   `json:"plan,omitempty"`
+	Options []string `json:"options,omitempty"`
 	// 待生效用户消息快照（pending 事件：插话/排队的最新列表，多窗口与刷新后一致）
 	Pending *PendingState `json:"pending,omitempty"`
 }
@@ -510,17 +510,17 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				reasoning.WriteString(s)
 				emit(Event{Type: "reasoning", Delta: s})
 			},
-		OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
-		OnUsage: func(u Usage) { // 流尾用量按 token 累计落盘（缓存命中率/Token 用量面板数据源）
-			uu := u
-			usage = &uu
-			sess.UsagePrompt += int64(u.PromptTokens)
-			sess.UsageCacheHit += int64(u.PromptCacheHit)
-			sess.UsageOutput += int64(u.CompletionTokens)
-			sess.UsageCalls++
-			_ = a.Store.SaveMeta(sess)
-		},
-	})
+			OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
+			OnUsage: func(u Usage) { // 流尾用量按 token 累计落盘（缓存命中率/Token 用量面板数据源）
+				uu := u
+				usage = &uu
+				sess.UsagePrompt += int64(u.PromptTokens)
+				sess.UsageCacheHit += int64(u.PromptCacheHit)
+				sess.UsageOutput += int64(u.CompletionTokens)
+				sess.UsageCalls++
+				_ = a.Store.SaveMeta(sess)
+			},
+		})
 		// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时
 		a.ctxEngine().RecordCall(sess, step+1, len(msgs), est, sysHash, envHash, time.Since(callStart).Milliseconds(),
 			usage, len([]rune(text.String())), toolNamesOf(calls), err)

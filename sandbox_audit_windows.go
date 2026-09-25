@@ -239,11 +239,11 @@ func stripAllowAceBySid(path string, sideb []byte) error {
 	binary.LittleEndian.PutUint16(out[2:], uint16(len(out)))
 	binary.LittleEndian.PutUint16(out[4:], uint16(int(binary.LittleEndian.Uint16(sb[4:]))-removed))
 	nptr := (*windows.ACL)(unsafe.Pointer(&out[0]))
-	r1, _, callErr := procSetNamedSecurityInfoW.Call(
+	r1, _, _ = procSetNamedSecurityInfoW.Call(
 		uintptr(unsafe.Pointer(p)), seFileObject, daclSecurityInfo,
 		0, 0, uintptr(unsafe.Pointer(nptr)), 0)
 	if r1 != 0 {
-		return fmt.Errorf("SetNamedSecurityInfo(摘ACE %s) 失败: %v", path, callErr)
+		return fmt.Errorf("SetNamedSecurityInfo(摘ACE %s) 失败: Win32 %d", path, r1)
 	}
 	return nil
 }

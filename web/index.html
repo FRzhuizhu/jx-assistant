@@ -398,19 +398,15 @@
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">技能 = 带完整说明与脚本的能力包（来自 技能/ 目录）。开启的用户技能，其说明会追加到系统提示词末尾（不破坏缓存前缀）。</div>
-            <div class="sf-label" style="margin-top:6px">添加用户技能</div>
-            <div style="display:flex;gap:8px">
-              <input id="skill-add-path" placeholder="本机技能文件夹的完整路径（内含 SKILL.md）" style="flex:1">
-              <button id="skill-add-btn" class="accent">添加</button>
-            </div>
+            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。</div>
+            <button id="skill-add-btn" class="pf-add">＋ 添加技能</button>
           </div>
-          <div class="set-field">
-            <div class="sf-label">自带技能（常开，不可删除）</div>
+          <div class="gen-section">
+            <h4>自带技能 <span class="sec-sub">常开，不可删除</span></h4>
             <div id="skill-builtin-list"></div>
           </div>
-          <div class="set-field">
-            <div class="sf-label">用户技能（可开关、可删除）</div>
+          <div class="gen-section">
+            <h4>用户技能 <span class="sec-sub">可开关、可删除</span></h4>
             <div id="skill-user-list"></div>
           </div>
         </div>
@@ -473,6 +469,18 @@
   <button class="pop-item" id="pm-remote">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><path d="M7 8h.01M11 8h.01"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 18h.01M11 18h.01"/></svg>
     添加远程工作目录<span class="pop-check" id="pm-remote-check"></span>
+  </button>
+</div>
+
+<!-- 技能添加方式：选文件夹 / 选 ZIP 压缩包（都弹操作系统原生选择框，后端代选并拿真实路径） -->
+<div id="skill-add-pop" class="popover hidden">
+  <button class="pop-item" id="sa-folder">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    从文件夹添加…
+  </button>
+  <button class="pop-item" id="sa-zip">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+    从 ZIP 压缩包添加…
   </button>
 </div>
 
@@ -597,6 +605,12 @@
 
 <input type="file" id="file-input" multiple class="hidden">
 
+<!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
+<script src="/app-core.js"></script>
+<script src="/app-left.js"></script>
+<script src="/app-right.js"></script>
+<script src="/app-chat.js"></script>
+<script src="/app-settings.js"></script>
 <script src="/app.js"></script>
 <script src="/cx.js"></script>
 </body>

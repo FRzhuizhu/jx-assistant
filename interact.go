@@ -4,6 +4,9 @@ package main
 //
 //   - ask_user_question：模型向用户提一个结构化问题（可带选项），同步等
 //     用户回答后把答案返回给模型。对应官方 dsh-tool-ask-user。
+//   - enter_plan_mode：模型判断任务值得先计划（改动面大/多文件/有风险），
+//     征得用户同意后把会话切入计划模式。对应官方 EnterPlanMode——
+//     切换会话模式要用户点头（fail-closed），同意即生效，拒绝维持原模式。
 //   - exit_plan_mode：计划模式下，模型完成探索后把计划提交给用户批准；
 //     批准即退出计划模式开始执行，拒绝则带着反馈留在计划模式。
 //     对应官方 dsh-plan-mode 的 exit_plan_mode。
@@ -151,6 +154,51 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 		return "（用户跳过了这个问题。）", nil
 	}
 	return "用户回答：" + ans, nil
+}
+
+func enterPlanModeTool() Tool {
+	return Tool{
+		Spec: toolSpec("enter_plan_mode", "请求把会话切换到计划模式：先只用只读工具调研，拟出完整计划交用户批准后再动手。适合改动面大、跨多文件、有风险、或用户明确要先看方案的任务；简单任务不要用，直接做。调用会弹出确认卡，用户同意才切换，拒绝则维持原模式。已在计划模式或目标模式运行中时调用会报错。",
+			objSchema(map[string]any{
+				"reason": strProp("为何值得先计划：任务概况与复杂点，一两句话，展示在用户的确认卡上"),
+			}, "reason")),
+		Run: runEnterPlanMode,
+	}
+}
+
+func runEnterPlanMode(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	reason := strings.TrimSpace(p.Reason)
+	if reason == "" {
+		return "", fmt.Errorf("reason 不能为空")
+	}
+	if t.sess.PlanMode {
+		return "", fmt.Errorf("当前会话已在计划模式，无需重复进入；完成调研后调用 exit_plan_mode 提交计划")
+	}
+	if t.sess.GoalMode {
+		return "", fmt.Errorf("计划/目标模式二选一；当前目标模式运行中（目标「%s」），如需改为先计划，请让用户关闭目标模式后再试", t.sess.GoalText)
+	}
+	if t.emit != nil {
+		t.emit(Event{Type: "tool_wait", Name: "enter_plan_mode", Output: "等待用户确认进入计划模式…"})
+	}
+	uq := &UserQuestion{Kind: "enter-plan", Question: truncateRunes(reason, 1000), AllowFree: true}
+	ans, ok := t.app.requestUserAnswer(t.ctx, t.sess, uq)
+	if !ok {
+		return "（用户未在时限内确认，会话维持原模式。可直接执行；仍觉得该先计划的话稍后再提。）", nil
+	}
+	ans = strings.TrimSpace(ans)
+	if ans == "__approve__" {
+		t.sess.PlanMode = true
+		_ = t.app.Store.SaveMeta(t.sess)
+		t.app.broadcast(Event{Type: "session_updated", SessionID: t.sess.ID})
+		return "用户同意进入计划模式，会话已切换。此阶段写入/执行/派发类工具暂停，只做只读探索；调研完成后调用 exit_plan_mode 提交完整计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后再动手。", nil
+	}
+	return "用户未同意进入计划模式，会话维持原模式。用户反馈：" + ans, nil
 }
 
 func exitPlanModeTool() Tool {

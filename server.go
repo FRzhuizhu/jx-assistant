@@ -153,6 +153,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
+	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
 	mux.HandleFunc("POST /api/sessions/{id}/edit", a.handleEdit)
 	mux.HandleFunc("POST /api/sessions/{id}/file-rewind", a.handleFileRewind)
@@ -1413,9 +1414,32 @@ func (a *App) handlePickFolder(w http.ResponseWriter, r *http.Request) {
 	if start == "" {
 		start = a.Cfg.Workspace
 	}
-	path, err := pickFolderSerialized(start, "选择工作目录")
+	title := strings.TrimSpace(r.URL.Query().Get("title"))
+	if title == "" {
+		title = "选择工作目录" // 兼容旧调用方；同时也是找对话框窗口用的标题
+	}
+	path, err := pickFolderSerialized(start, title)
 	if err != nil {
 		writeErr(w, 500, "无法打开文件夹选择框: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"path": path})
+}
+
+// handlePickFile 同款系统原生对话框，但选择文件（当前用于技能 ZIP 安装包），
+// 过滤器限定 *.zip；用户取消时 path 为空串。
+func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
+	start := strings.TrimSpace(r.URL.Query().Get("start"))
+	if start == "" {
+		start = a.Cfg.Workspace
+	}
+	title := strings.TrimSpace(r.URL.Query().Get("title"))
+	if title == "" {
+		title = "选择文件"
+	}
+	path, err := pickFileSerialized(start, title)
+	if err != nil {
+		writeErr(w, 500, "无法打开文件选择框: "+err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]string{"path": path})

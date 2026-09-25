@@ -78,6 +78,16 @@ const (
 // pickFolderNative 弹出选择框并阻塞到用户关闭；返回所选目录，
 // 用户取消返回空串。COM 的 STA 约定要求调用固定在一个 OS 线程上。
 func pickFolderNative(startDir, title string) (string, error) {
+	return pickDialogNative(startDir, title, true)
+}
+
+// pickFileNative 同款 IFileOpenDialog，但选择文件而非文件夹；
+// 过滤器限定 ZIP 压缩包（附「所有文件」兜底）。
+func pickFileNative(startDir, title string) (string, error) {
+	return pickDialogNative(startDir, title, false)
+}
+
+func pickDialogNative(startDir, title string, pickFolder bool) (string, error) {
 	type pickResult struct {
 		path string
 		err  error
@@ -85,7 +95,7 @@ func pickFolderNative(startDir, title string) (string, error) {
 	ch := make(chan pickResult, 1)
 	go func() {
 		runtime.LockOSThread()
-		path, err := pickFolderSTA(startDir, title)
+		path, err := pickDialogSTA(startDir, title, pickFolder)
 		runtime.UnlockOSThread()
 		ch <- pickResult{path, err}
 	}()
@@ -93,7 +103,7 @@ func pickFolderNative(startDir, title string) (string, error) {
 	return r.path, r.err
 }
 
-func pickFolderSTA(startDir, title string) (string, error) {
+func pickDialogSTA(startDir, title string, pickFolder bool) (string, error) {
 	hr, _, _ := procCoInitializeEx.Call(0, coinitApartmentThreaded)
 	if hr != 0 && hr != 1 { // S_FALSE=1 表示本线程已初始化，同样可用
 		return "", fmt.Errorf("COM 初始化失败 (0x%x)", hr)
@@ -118,11 +128,31 @@ func pickFolderSTA(startDir, title string) (string, error) {
 	defer syscall.SyscallN(vt[2], uintptr(dlg)) // IUnknown::Release
 
 	var opts uintptr
-	if hr, _, _ = syscall.SyscallN(vt[vtGetOptions], uintptr(dlg), uintptr(unsafe.Pointer(&opts))); hr != 0 {
+	if hr, _, _ := syscall.SyscallN(vt[vtGetOptions], uintptr(dlg), uintptr(unsafe.Pointer(&opts))); hr != 0 {
 		return "", fmt.Errorf("GetOptions 失败 (0x%x)", hr)
 	}
-	if hr, _, _ = syscall.SyscallN(vt[vtSetOptions], uintptr(dlg), opts|fosPickFolders|fosForceFileSystem); hr != 0 {
+	if pickFolder {
+		opts |= fosPickFolders | fosForceFileSystem
+	} else {
+		opts |= fosForceFileSystem
+	}
+	if hr, _, _ := syscall.SyscallN(vt[vtSetOptions], uintptr(dlg), opts); hr != 0 {
 		return "", fmt.Errorf("SetOptions 失败 (0x%x)", hr)
+	}
+	if !pickFolder {
+		// COMDLG_FILTERSPEC{lpwcsName, lpwcsSpec}；默认扩展名兜 .zip
+		nameZip, _ := syscall.UTF16PtrFromString("ZIP 压缩包 (*.zip)")
+		nameAll, _ := syscall.UTF16PtrFromString("所有文件 (*.*)")
+		specZip, _ := syscall.UTF16PtrFromString("*.zip")
+		specAll, _ := syscall.UTF16PtrFromString("*.*")
+		specs := []comdlgFilterSpec{
+			{unsafe.Pointer(nameZip), unsafe.Pointer(specZip)},
+			{unsafe.Pointer(nameAll), unsafe.Pointer(specAll)},
+		}
+		if hr, _, _ := syscall.SyscallN(vt[vtSetFileTypes], uintptr(dlg), 2, uintptr(unsafe.Pointer(&specs[0]))); hr != 0 {
+			return "", fmt.Errorf("SetFileTypes 失败 (0x%x)", hr)
+		}
+		syscall.SyscallN(vt[vtSetDefaultExtension], uintptr(dlg), uintptr(unsafe.Pointer(specZip)))
 	}
 	if t, e := syscall.UTF16PtrFromString(title); e == nil {
 		syscall.SyscallN(vt[vtSetTitle], uintptr(dlg), uintptr(unsafe.Pointer(t)))
@@ -180,7 +210,20 @@ func shellItemFromPath(dir string) unsafe.Pointer {
 	return si
 }
 
-var pickFolderMu sync.Mutex // 同时最多弹一个选择框，避免叠窗
+var pickFolderMu sync.Mutex // 同时最多弹一个选择框（文件夹/文件共用），避免叠窗
+
+// comdlgFilterSpec 即 Win32 COMDLG_FILTERSPEC：过滤器显示名 + 通配模式。
+type comdlgFilterSpec struct {
+	name unsafe.Pointer // LPCWSTR
+	spec unsafe.Pointer // LPCWSTR
+}
+
+// pickFileSerialized 选文件的串行化包装，与文件夹选择框共用一把锁。
+func pickFileSerialized(startDir, title string) (string, error) {
+	pickFolderMu.Lock()
+	defer pickFolderMu.Unlock()
+	return pickFileNative(startDir, title)
+}
 
 // parseGUID 解析 "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" 形式的 GUID。
 func parseGUID(s string) (syscall.GUID, error) {

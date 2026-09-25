@@ -104,7 +104,7 @@ func (t *toolContext) resolve(p string) (string, error) {
 // 只读工具（定位是答疑，不修改任何东西）。
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
-// （见 agent.go 的 suspendedInPlan）；exit_plan_mode / update_goal 因此常驻。
+// （见 agent.go 的 suspendedInPlan）；enter/exit_plan_mode / update_goal 因此常驻。
 func (a *App) toolsFor(mode string) []Tool {
 	history := []Tool{searchSessionsTool(), readSessionMessagesTool()}
 	// 待办与定时任务工具（组件 todo-scheduler）：除辅助对话（定位是只答疑）外
@@ -112,9 +112,11 @@ func (a *App) toolsFor(mode string) []Tool {
 	todos := a.todoTools()
 	if mode == "assistant" {
 		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), dispatchSubTool(), sendToSessionTool(),
-			exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
+			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	}
 	if mode == "aux" {
+		// enter_plan_mode 不配：aux 只读答疑，没有可暂停的执行动作，计划无意义
+		// （exit 保留，用户手动给 aux 会话开计划模式时仍可退出）。
 		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
 			exitPlanModeTool(), updateGoalTool()}, history...)
 	}
@@ -123,7 +125,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
 		snapshotFileTool(), deliverResultTool(), dispatchSubTool(),
-		askUserQuestionTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
+		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)
 }

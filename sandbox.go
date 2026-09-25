@@ -67,6 +67,14 @@ func (t *toolContext) runConfined(r sandboxRun) (string, error) {
 
 // spawnConfinedLocal 本地沙箱分派：Windows 受限令牌 / Linux Landlock。
 func spawnConfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
+	// 工作区/命令目录失效时给出明确指引：目录被改名或移动后路径悬空，
+	// 此前会以裸错误码失败，所有工具调用表现为「沙箱初始化失败」。
+	if fi, err := os.Stat(r.Workspace); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("sandbox unavailable: 工作区目录不存在: %s（可能被改名或移动，请在会话设置里重新选择工作目录）", r.Workspace)
+	}
+	if fi, err := os.Stat(r.Dir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("sandbox unavailable: 命令工作目录不存在: %s（可能被改名或移动）", r.Dir)
+	}
 	switch {
 	case isWindowsRuntime:
 		wsAbs, err := filepath.Abs(r.Workspace)

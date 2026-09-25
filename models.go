@@ -45,6 +45,10 @@ func DefaultProviders() []ProviderCfg {
 			{ID: "deepseek-flash", Name: "DeepSeek-V4.1-Flash", ContextWindow: 1048576, ReasoningLevels: []string{"enabled", "disabled"}},
 			{ID: "deepseek-v4-pro", Name: "DeepSeek-V4-Pro", ContextWindow: 1048576, ReasoningLevels: []string{"enabled", "disabled"}},
 		}},
+		{ID: "token-plan-cn", Name: "小米 MiMo（Token Plan）", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Models: []ModelCfg{
+			{ID: "mimo-v2.6-pro", Name: "MiMo v2.6 Pro", ReasoningLevels: []string{"enabled", "disabled"}},
+			{ID: "mimo-v2.6-flash", Name: "MiMo v2.6 Flash", ReasoningLevels: []string{"enabled", "disabled"}},
+		}},
 		{ID: "zhipu", Name: "智谱 GLM", BaseURL: "https://open.bigmodel.cn/api/paas/v4"},
 		{ID: "moonshot", Name: "Kimi / 月之暗面", BaseURL: "https://api.moonshot.cn/v1"},
 		{ID: "qwen", Name: "通义千问", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
