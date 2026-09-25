@@ -30,6 +30,5 @@ PDF 有多条读取通路，**第一步永远先跑 diagnose，不要凭感觉�
 ## 运行环境
 
 本技能由助手的 `pdf` 工具自动执行（内部调用本目录 `scripts/pdf_tool.py`），
-模型不需要自己拼命令行。运行依赖本技能 `manifest.json` 声明的 Python 模块
-（pypdfium2 / pdfplumber / pypdf）；环境缺失时工具会返回安装指引，
-助手进程可自动装配便携运行时（首次需联网，装好后离线可用）。
+模型不需要自己拼命令行。运行依赖随软件分发的便携运行时
+（pypdfium2 / pdfplumber / pypdf 已内置，用户无需安装任何环境）。

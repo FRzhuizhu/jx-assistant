@@ -4,9 +4,11 @@ package main
 // （SKILL.md 标准说明 + manifest.json 依赖清单 + scripts/ 脚本），统一放在
 // 软件目录的 技能/ 下。浏览器/电脑操作与权限强相关，保持为组件不在此列。
 //
-// 运行环境自举：优先用系统 Python（快路径）；解释器缺失或依赖模块不全时，
-// 自动下载便携 Python 与依赖 wheel 装配到 技能/_runtime/python——
-// 装配一次后离线可用，满足"全新电脑装上就能用"。
+// 运行环境自包含：技能一律使用随包分发的便携运行时（技能/_runtime/python），
+// 不探测、不依赖用户机器上的系统 Python——面向非编程用户，发行包必须
+// 自带全部运行时与依赖，安装即离线全功能。开发目录缺 _runtime 时首次
+// 使用联网装配一次（下载 embeddable Python + 镜像装 wheel），此后离线
+// 可用；打包脚本会校验运行时依赖齐全，缺一不出包。
 // 技能母本内嵌在可执行文件里（_runtime 因下划线前缀被 go:embed 天然排除），
 // 软件目录缺技能目录时首次启动自动释放。
 
@@ -192,23 +194,10 @@ func (a *App) readSkillGuide(skillID string) (string, error) {
 	return string(data), nil
 }
 
-// ensureSkillRuntime 保证「解释器 + 全部依赖模块」可用：
-// 1) 系统 Python 快路径；2) 已装配的便携运行时；3) 现场装配（下载
-// 便携 Python + 从镜像装 wheel，进度经事件流告知用户）。
+// ensureSkillRuntime 保证「便携运行时 + 全部依赖模块」可用：
+// 一律使用随包分发的 技能/_runtime/python（自包含原则，不碰系统
+// Python）。已装配直接复用；缺失时联网装配（结果进程级缓存）。
 func (a *App) ensureSkillRuntime(t *toolContext, modules, wheels []string) (*pythonRuntime, error) {
-	if py, err := findPython(); err == nil {
-		ok := true
-		for _, m := range modules {
-			if !py.hasModule(m) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return py, nil
-		}
-	}
-	// 系统环境不满足 → 装配便携运行时（结果进程级缓存）
 	provisionMu.Lock()
 	defer provisionMu.Unlock()
 	if provisionedPy != nil {

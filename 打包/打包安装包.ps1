@@ -21,9 +21,42 @@ $root = Split-Path -Parent $packDir
 if ($SkillsSource -eq "") { $SkillsSource = Join-Path $root "技能" }
 $stage = Join-Path $packDir "stage"
 
-if (-not (Test-Path (Join-Path $SkillsSource "_runtime\python\python.exe"))) {
-  throw "技能便携运行时缺失：$SkillsSource\_runtime\python\python.exe（先在联网机器上跑一次任意技能触发装配，或手工 pip install）"
+$pyExe = Join-Path $SkillsSource "_runtime\python\python.exe"
+if (-not (Test-Path $pyExe)) {
+  throw "技能便携运行时缺失：$pyExe（先在联网机器上跑一次任意技能触发装配，或手工 pip install）"
 }
+
+# 自包含原则：发行包必须内置全部依赖。逐个校验各技能 manifest 声明的
+# 模块在便携运行时里真实可导入——装配是按需触发的，开发机上没跑过的
+# 技能依赖可能没装，缺着出包会让最终用户在离线机器上踩坑，故缺一不出包。
+$modules = @{}
+Get-ChildItem $SkillsSource -Directory | Where-Object {
+  Test-Path (Join-Path $_.FullName "manifest.json")
+} | ForEach-Object {
+  # manifest 是 UTF-8：PS5.1 的 Get-Content 默认按 GBK 读会把中文读成
+  # 乱码导致 JSON 解析失败、模块清单漏收（校验假通过），必须显式指定
+  $m = Get-Content (Join-Path $_.FullName "manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($m.python.modules) { $m.python.modules | ForEach-Object { $modules[$_] = $true } }
+  if ($m.variants) {
+    $m.variants.PSObject.Properties.Value | ForEach-Object {
+      if ($_.modules) { $_.modules | ForEach-Object { $modules[$_] = $true } }
+    }
+  }
+}
+if ($modules.Count -eq 0) {
+  throw "未从任何 manifest.json 收集到依赖模块——技能目录或解析有问题，拒绝出包"
+}
+$missing = @()
+$ErrorActionPreference = "Continue"   # python 导入失败走 stderr，别被当成脚本错误中断
+foreach ($mod in $modules.Keys) {
+  & $pyExe -c "import $mod" *> $null
+  if ($LASTEXITCODE -ne 0) { $missing += $mod }
+}
+$ErrorActionPreference = "Stop"
+if ($missing.Count -gt 0) {
+  throw "技能便携运行时依赖不完整，缺少: $($missing -join ', ')。请在联网机器上把对应技能各跑一遍（触发装配），或用该运行时的 python -m pip install 补装后再打包"
+}
+Write-Host "== 运行时依赖校验通过（$($modules.Count) 个模块全部可导入）"
 
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null

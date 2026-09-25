@@ -26,6 +26,5 @@ description: 把图片里的文字识别成可复制字符（离线 OCR，中英
 ## 运行环境
 
 由助手的 `ocr` 工具自动执行（内部调用本目录 `scripts/ocr_tool.py`）。
-依赖本技能 `manifest.json` 声明的 `rapidocr-onnxruntime`；环境缺失时
-工具返回安装指引，或由助手自动装配便携运行时。首次调用要加载 ONNX
-模型，有几秒延迟，属正常现象。
+依赖随软件分发的便携运行时（`rapidocr-onnxruntime` 已内置，用户无需
+安装任何环境）。首次调用要加载 ONNX 模型，有几秒延迟，属正常现象。

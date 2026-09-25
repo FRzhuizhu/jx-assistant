@@ -2,8 +2,8 @@ package main
 
 // 技能工具层：pdf / ocr / office_skill 三个模型工具。
 // 技能的定义（SKILL.md / manifest.json / scripts）都在 技能/<技能名>/ 目录，
-// 本文件只做三件事：解析技能清单 → 装配运行环境（系统 Python 快路径，
-// 否则自动装配便携运行时）→ 执行技能脚本并把结果摘要回给模型。
+// 本文件只做三件事：解析技能清单 → 保证便携运行时就绪（随包分发，缺时
+// 自动装配）→ 执行技能脚本并把结果摘要回给模型。
 // 技能自身的用法说明存放在各 SKILL.md，office_skill 工具负责把它带给模型。
 
 import (
@@ -33,7 +33,7 @@ func docsJSONDigest(report string, hint string) string {
 }
 
 // runSkillEntry 运行某技能 manifest 里声明的入口脚本：
-// 先装配运行环境（系统 Python 或便携运行时），再执行脚本，返回合并输出。
+// 先保证便携运行时就绪（随包分发），再执行脚本，返回合并输出。
 func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.Duration) (string, error) {
 	manifest, skillDir, err := t.app.readSkillManifest(skillID)
 	if err != nil {
@@ -46,10 +46,10 @@ func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.D
 	entry := filepath.Join(skillDir, filepath.FromSlash(manifest.Entry))
 	out, err := py.run(append([]string{entry}, args...), timeout)
 	if err != nil {
-		// 便携运行时损坏（如被手动删除库文件）时给出可操作的重装配提示
+		// 随包运行时仍缺模块：依赖清单未覆盖或运行时被损坏——给用户
+		// 可操作的修复指引，而不是让非编程用户去手工装依赖
 		if mod, ok := pyMissingFromStderr(out); ok {
-			return "", fmt.Errorf("运行时缺少模块 %s。可删除技能目录下的 _runtime 重装，或按指引手工安装: %s",
-				mod, pyInstallHint(mod))
+			return "", fmt.Errorf("技能运行时缺少模块 %s。请重新安装软件修复运行时；若重新安装后仍出现，请把该技能名与模块名反馈给开发者补全依赖清单", mod)
 		}
 		return "", err
 	}
@@ -61,7 +61,7 @@ func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.D
 func pdfTool() Tool {
 	return Tool{
 		Spec: toolSpec("pdf",
-			"读取 PDF 文件。mode=diagnose 判断文字层是否可信（永远先跑它）；text 抽取文字；table 抽表格；image 把页面渲染成 PNG（自动以图片信封返回，配合 read_image 通路查看，扫描件/乱码件的正确通路）；embed 抽取内嵌图片。首次使用会自动装配技能运行时（需联网一次）。",
+			"读取 PDF 文件。mode=diagnose 判断文字层是否可信（永远先跑它）；text 抽取文字；table 抽表格；image 把页面渲染成 PNG（自动以图片信封返回，配合 read_image 通路查看，扫描件/乱码件的正确通路）；embed 抽取内嵌图片。技能运行时随软件内置，无需用户安装环境。",
 			objSchema(map[string]any{
 				"mode":     map[string]any{"type": "string", "enum": []string{"diagnose", "text", "table", "image", "embed"}, "description": "读取模式"},
 				"path":     strProp("PDF 文件路径（相对或绝对）"),
@@ -188,7 +188,7 @@ func (t *toolContext) attachReportImages(dir, mode string) string {
 func ocrTool() Tool {
 	return Tool{
 		Spec: toolSpec("ocr",
-			"识别图片中的文字（离线 OCR，中英文）。mode=text 返回按阅读顺序拼接的全文与逐块明细；lines 逐行输出，可用 outlined=true 把识别框描红画回图（以图片信封返回，便于对照）。只接受图片；PDF 请先跑 pdf 工具的 image 模式（scale 建议 3）。首次使用会自动装配技能运行时（需联网一次）。",
+			"识别图片中的文字（离线 OCR，中英文）。mode=text 返回按阅读顺序拼接的全文与逐块明细；lines 逐行输出，可用 outlined=true 把识别框描红画回图（以图片信封返回，便于对照）。只接受图片；PDF 请先跑 pdf 工具的 image 模式（scale 建议 3）。技能运行时随软件内置，无需用户安装环境。",
 			objSchema(map[string]any{
 				"mode":      map[string]any{"type": "string", "enum": []string{"text", "lines"}, "description": "text=全文；lines=逐行"},
 				"path":      strProp("图片路径（相对或绝对）"),
