@@ -497,6 +497,9 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   示例组件，现已并入主程序 `web/app-settings.js`（常规 → 外观 → 点缀色）。
 - 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
   宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
+  `git-panel`（Git 面板——右栏「Git」页签：VSCode 式更改清单（暂存/取消暂存/提交/
+  AI 摘要/逐行 diff）+ 分支泳道图谱（全部分支拓扑、合并分叉、引用徽标、提交详情），
+  宿主半边在 `gitpanel.go`，写边界只有暂存/取消暂存/提交，不做 push/pull/reset/checkout）、
   `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）。
 
 ## 插件与插件兼容层
@@ -547,6 +550,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `adapter_dsh_speech.go` | dsh-speech 的 Go 半边：润色端点（复用已配置模型）+ 听写提示词段 |
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务 |
 | `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行 / 模型工具 |
+| `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页 |
 
@@ -581,6 +585,8 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `progress_write` 的进度清单是两回事**） |
 | `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |
 | `GET /api/todos/workspaces` | 程序任务可选的工作目录（默认工作区 + 历史会话用过的目录） |
+| `GET /api/git/status` `/diff` `/graph` `/commit` `/branches` | Git 面板读接口（组件 `git-panel`；未启用时 404。graph 为 `--all --topo-order` 的父母哈希+装饰引用，泳道由前端计算） |
+| `POST /api/git/stage` `/unstage` `/commit` `/summarize` | Git 面板写接口：暂存 / 取消暂存 / 提交 / AI 生成提交信息（只生成不提交）。仓库只能选服务端扫描出的候选，路径经 pathspec 校验 |
 | `POST /api/plugins/dsh-speech/polish` | 转写润色（dsh-speech 适配器 Go 半边） |
 | `GET /` | 内嵌前端页面（按开关注入插件资产） |
 

@@ -184,6 +184,18 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/todos/run", a.handleTodoRun)
 	mux.HandleFunc("POST /api/todos/missed", a.handleTodoMissed)
 	mux.HandleFunc("GET /api/todos/workspaces", a.handleTodoWorkspaces)
+	// Git 面板（组件 git-panel 的宿主半边）：组件未启用时这些接口一律 404。
+	// 读 status/diff/graph/commit/branches，写只有 stage/unstage/commit/summarize
+	// （summarize 只生成提交信息不提交）；不做 push/pull/reset/checkout/discard。
+	mux.HandleFunc("GET /api/git/status", a.handleGitStatus)
+	mux.HandleFunc("GET /api/git/diff", a.handleGitDiff)
+	mux.HandleFunc("GET /api/git/graph", a.handleGitGraph)
+	mux.HandleFunc("GET /api/git/commit", a.handleGitCommitDetail)
+	mux.HandleFunc("GET /api/git/branches", a.handleGitBranches)
+	mux.HandleFunc("POST /api/git/stage", a.handleGitStage)
+	mux.HandleFunc("POST /api/git/unstage", a.handleGitUnstage)
+	mux.HandleFunc("POST /api/git/commit", a.handleGitCommitMsg)
+	mux.HandleFunc("POST /api/git/summarize", a.handleGitSummarize)
 	a.Plugins.MountRoutes(a, mux)
 	mux.HandleFunc("GET /", a.handleStatic)
 	return mux
