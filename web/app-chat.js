@@ -69,7 +69,7 @@ function goHomeNewTask() {
   navBusy.main = false;
   state._pfxSid = null;   // 消息区的增量渲染缓存随之失效
   state.cur = null;
-  loadTodos();
+  loadProgress();
   state.msgs = [];
   resetEmpty();
   loadSessions();
@@ -126,7 +126,7 @@ async function loadSessionInto(id, tok) {
   refreshCtxChip();
   placeComposer();
   syncComposer();
-  loadTodos();
+  loadProgress();
   renderMessages(state.msgs, mainView, { jump: true });
   renderQueueDock(mainView);
   // 打开即视为已读：清红点与绿点
@@ -1249,8 +1249,8 @@ function handleGlobalEvent(ev) {
     case 'question_resolved':
       removeQuestion(ev.questionId);
       break;
-    case 'todos':
-      loadTodos();
+    case 'progress':
+      loadProgress();
       break;
     // 说明：delta/reasoning 不上全局总线（流式增量只走会话自己的 SSE）；
     // 真实失败也不广播——错误经会话详情的 error 字段到达
@@ -1407,21 +1407,21 @@ function renderQuestionsInto(bar) {
   }
 }
 
-/* ---------- 待办面板（todo_write） ---------- */
+/* ---------- 进度面板（progress_write） ---------- */
 
-async function loadTodos() {
-  const panel = $('todo-panel');
+async function loadProgress() {
+  const panel = $('progress-panel');
   if (!panel) return;
   if (!state.cur) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
   try {
-    const d = await api('/api/sessions/' + state.cur.id + '/todos');
-    const todos = d.todos || [];
-    if (!todos.length) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
-    const done = todos.filter((t) => t.status === 'completed').length;
-    let html = '<div class="todo-head"><b>待办</b><span>' + done + '/' + todos.length + '</span></div><ul>';
-    for (const t of todos) {
+    const d = await api('/api/sessions/' + state.cur.id + '/progress');
+    const items = d.progress || [];
+    if (!items.length) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+    const done = items.filter((t) => t.status === 'completed').length;
+    let html = '<div class="progress-head"><b>进度</b><span>' + done + '/' + items.length + '</span></div><ul>';
+    for (const t of items) {
       const mark = t.status === 'completed' ? '✔' : (t.status === 'in_progress' ? '▶' : '·');
-      html += '<li class="td-' + (t.status || 'pending') + '"><span class="td-mark">' + mark + '</span>' + esc(t.content) + '</li>';
+      html += '<li class="pg-' + (t.status || 'pending') + '"><span class="pg-mark">' + mark + '</span>' + esc(t.content) + '</li>';
     }
     html += '</ul>';
     panel.innerHTML = html;

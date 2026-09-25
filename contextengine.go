@@ -26,7 +26,7 @@ import (
 //  4. 引擎不发模型调用、不执行工具、不做编排——那些仍是 RunAgent 的事；
 //     组装产出的快照留痕（env 行）与请求材料同源，日志天然对得上线上。
 //  5. 引擎也是记录者与导出门面：组装/调用/请求/事件统一经它落日志
-//     （auditlog.go 的 Journal/RecordCall/RecordRequest），发给模型的请求
+//     （本文件后段的 Journal/RecordCall/RecordRequest），发给模型的请求
 //     环形缓存最近 keepRequests 轮；前端两类下载（运行日志 / 原始数据）
 //     统一经 ExportTimeline / ExportRawRequests 向引擎申请。
 type ContextEngine struct{ app *App }
@@ -106,8 +106,8 @@ func (e *ContextEngine) ExportTimeline(m *SessionMeta) string {
 // rawRequestExport 是「导出原始数据」的文档形态：引擎缓存的最近三轮请求
 // （旧→新，Body 与线上发送逐字节同源）+ 相邻两两对比。
 type rawRequestExport struct {
-	Session  rawSessionInfo `json:"session"`
-	Count    int            `json:"count"`
+	Session  rawSessionInfo   `json:"session"`
+	Count    int              `json:"count"`
 	Requests []lastRequestRec `json:"requests"` // 旧→新
 	Diffs    []rawRequestDiff `json:"diffs"`    // 相邻两两（#i → #i+1）
 	Note     string           `json:"note"`
@@ -122,14 +122,14 @@ type rawSessionInfo struct {
 // rawRequestDiff 是相邻两次请求的对比：直接服务于「上下文变了什么、缓存
 // 会不会断」——前缀在 FirstDiffMessage 之前的消息逐字相同，理论上仍命中。
 type rawRequestDiff struct {
-	From            int  `json:"from"` // 第几条请求（1 起）
-	To              int  `json:"to"`
-	MsgsDelta       int  `json:"msgsDelta"`       // 消息条数变化（新-旧）
-	EstDelta        int  `json:"estDelta"`        // 估算 token 变化（新-旧）
-	ToolsChanged    bool `json:"toolsChanged"`    // 工具目录是否变化（变化=前缀必断）
-	SysHashChanged  bool `json:"sysHashChanged"`  // 系统提示词指纹是否变化
-	EnvHashChanged  bool `json:"envHashChanged"`  // 环境快照指纹是否变化
-	FirstDiffMessage int `json:"firstDiffMessage"` // 首条变化消息的下标（0 起；-1=消息数组未变）
+	From             int  `json:"from"` // 第几条请求（1 起）
+	To               int  `json:"to"`
+	MsgsDelta        int  `json:"msgsDelta"`        // 消息条数变化（新-旧）
+	EstDelta         int  `json:"estDelta"`         // 估算 token 变化（新-旧）
+	ToolsChanged     bool `json:"toolsChanged"`     // 工具目录是否变化（变化=前缀必断）
+	SysHashChanged   bool `json:"sysHashChanged"`   // 系统提示词指纹是否变化
+	EnvHashChanged   bool `json:"envHashChanged"`   // 环境快照指纹是否变化
+	FirstDiffMessage int  `json:"firstDiffMessage"` // 首条变化消息的下标（0 起；-1=消息数组未变）
 }
 
 // ExportRawRequests 生成「导出原始数据」文档：最近 keepRequests 轮发给模型的
@@ -146,7 +146,7 @@ func (e *ContextEngine) ExportRawRequests(m *SessionMeta) ([]byte, error) {
 		Session:  rawSessionInfo{ID: m.ID, Title: m.Title, Mode: m.Mode},
 		Count:    len(recs),
 		Requests: recs,
-		Note:     "requests 为引擎缓存的最近各轮请求（旧→新，body 与线上发送逐字节同源）；" +
+		Note: "requests 为引擎缓存的最近各轮请求（旧→新，body 与线上发送逐字节同源）；" +
 			"diffs 为相邻两两对比：firstDiffMessage 之前的前缀逐字相同（理论上仍命中缓存），" +
 			"toolsChanged/sysHashChanged 为真则整段前缀必不命中。",
 	}
@@ -160,10 +160,10 @@ func (e *ContextEngine) ExportRawRequests(m *SessionMeta) ([]byte, error) {
 func diffRequests(idx int, prev, cur lastRequestRec) rawRequestDiff {
 	d := rawRequestDiff{
 		From: idx, To: idx + 1,
-		MsgsDelta: cur.MsgCount - prev.MsgCount,
-		EstDelta:  cur.EstTokens - prev.EstTokens,
-		SysHashChanged: cur.SysHash != prev.SysHash,
-		EnvHashChanged: cur.EnvHash != prev.EnvHash,
+		MsgsDelta:        cur.MsgCount - prev.MsgCount,
+		EstDelta:         cur.EstTokens - prev.EstTokens,
+		SysHashChanged:   cur.SysHash != prev.SysHash,
+		EnvHashChanged:   cur.EnvHash != prev.EnvHash,
 		FirstDiffMessage: -1,
 	}
 	var pb, cb struct {
@@ -215,4 +215,143 @@ func canonicalJSON(raw json.RawMessage) []byte {
 		return raw
 	}
 	return out
+}
+
+// ---------- 引擎日志与请求缓存（上下文引擎的记录半边） ----------
+//
+// 引擎收到什么、发出什么都从这里落库，前端两类导出（运行日志 / 原始数据）
+// 统一经引擎申请。
+//
+// kind=audit 行（role=system，前端对话流、上下文组装、历史工具都跳过）记录
+// 「不发给模型、但复盘对话演进必需」的事件——每次模型调用的请求规模/前缀
+// 指纹/返回/用量（缓存命中）、运行中报错（含网关错误响应摘要）、用户停止、
+// 上下文超限重试、规则压缩生效、上下文事件（Notify）；导出日志按时间线呈现。
+//
+// kind=request 行缓存最近 keepRequests=3 次真正发给模型的完整请求体
+// （环形裁剪，Body 与线上逐字节同源），供「导出原始数据」观察相邻请求间
+// 的变化与缓存影响。
+
+// Journal 落一条引擎日志事件行；payload 至少带 type
+// （call|error|stop|compact|overflow|ctx）。
+func (e *ContextEngine) Journal(sess *SessionMeta, payload map[string]any) {
+	if sess == nil {
+		return
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = e.app.Store.AppendRow(sess.ID, &StoredMessage{
+		Message: TextMessage("system", string(b)), Kind: kindAudit, CreatedAt: now(),
+	})
+}
+
+// auditWrite 兼容入口：存量调用点（主循环报错/压缩/停止等）统一汇入引擎日志。
+func (a *App) auditWrite(sess *SessionMeta, payload map[string]any) {
+	a.ctxEngine().Journal(sess, payload)
+}
+
+// auditUsage 是一次模型调用的流尾用量（审计行里的精简形态）。
+type auditUsage struct {
+	Prompt     int `json:"prompt"`
+	Hit        int `json:"hit"`
+	Miss       int `json:"miss"`
+	Completion int `json:"completion"`
+}
+
+// auditRow 是 kind=audit 行正文的解析形态；各 type 只用自己那几个字段。
+type auditRow struct {
+	Type    string      `json:"type"`
+	Step    int         `json:"step"`  // call：本轮第几步（从 1 起）
+	Msgs    int         `json:"msgs"`  // call：发送的消息条数
+	Est     int         `json:"est"`   // call：发送前的 token 估算
+	Ms      int64       `json:"ms"`    // call：耗时
+	Text    int         `json:"text"`  // call：返回正文字数
+	Tools   []string    `json:"tools"` // call：返回的工具调用名
+	Usage   *auditUsage `json:"usage"`
+	Error   string      `json:"error"`             // call/error/overflow：错误原文（网关错误含响应摘要）
+	SysHash string      `json:"sysHash,omitempty"` // call：本次系统提示词指纹（变化=前缀缓存必断）
+	EnvHash string      `json:"envHash,omitempty"` // call：本次环境快照指纹
+	Rounds  int         `json:"rounds"`            // compact：折叠的轮数
+	From    int64       `json:"from"`              // compact：折叠区间起始 seq
+	To      int64       `json:"to"`                // compact：折叠区间结束 seq
+	Kind    string      `json:"kind"`              // ctx（上下文事件总线）：事件类别，见上文常量
+	Detail  string      `json:"detail"`            // ctx：一句人话说明（含前后值）
+}
+
+// RecordCall 在一次模型调用返回后（无论成败）落引擎日志行：调用前后的关键
+// 事实一次记全（含当次组装的前缀指纹——指纹变化即能解释缓存命中变化）。
+func (e *ContextEngine) RecordCall(sess *SessionMeta, step, msgs, est int, sysHash, envHash string, ms int64, usage *Usage, textRunes int, toolNames []string, callErr error) {
+	p := map[string]any{
+		"type": "call", "step": step, "msgs": msgs, "est": est, "ms": ms, "text": textRunes,
+	}
+	if sysHash != "" {
+		p["sysHash"] = sysHash
+	}
+	if envHash != "" {
+		p["envHash"] = envHash
+	}
+	if len(toolNames) > 0 {
+		p["tools"] = toolNames
+	}
+	if usage != nil {
+		p["usage"] = auditUsage{Prompt: usage.PromptTokens, Hit: usage.PromptCacheHit,
+			Miss: usage.PromptCacheMiss, Completion: usage.CompletionTokens}
+	}
+	if callErr != nil {
+		p["error"] = callErr.Error()
+	}
+	e.Journal(sess, p)
+}
+
+// toolNamesOf 取一组工具调用的名字（审计行的返回摘要用）。
+func toolNamesOf(calls []ToolCall) []string {
+	names := make([]string, 0, len(calls))
+	for _, tc := range calls {
+		names = append(names, tc.Function.Name)
+	}
+	return names
+}
+
+// lastRequestRec 是 kind=request 行的正文：一次发给模型的请求全量记录。
+// Body 与线上逐字节同源（发送前捕获）；URL/Model 只记元信息，绝不含 API Key。
+// Sys/Env 指纹与 audit 行同源，导出对比用。
+type lastRequestRec struct {
+	URL       string          `json:"url"`
+	Model     string          `json:"model"`
+	Step      int             `json:"step"`
+	MsgCount  int             `json:"msgs"`
+	EstTokens int             `json:"estTokens"`
+	SysHash   string          `json:"sysHash,omitempty"`
+	EnvHash   string          `json:"envHash,omitempty"`
+	Body      json.RawMessage `json:"body"`
+}
+
+// RecordRequest 在请求发出前捕获并落库（环形保留最近 keepRequests 条）。
+func (e *ContextEngine) RecordRequest(sess *SessionMeta, url, model string, step, msgs, est int, sysHash, envHash string, body []byte) {
+	rec := lastRequestRec{URL: url, Model: model, Step: step, MsgCount: msgs, EstTokens: est,
+		SysHash: sysHash, EnvHash: envHash, Body: append(json.RawMessage(nil), body...)}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	_ = e.app.Store.AppendRequestRow(sess.ID, &StoredMessage{
+		Message: TextMessage("system", string(b)), Kind: kindRequest, CreatedAt: now(),
+	})
+}
+
+// RecentRequests 取最近 n 次发给模型的请求记录（旧→新）；供原始数据导出。
+func (e *ContextEngine) RecentRequests(m *SessionMeta, n int) ([]lastRequestRec, error) {
+	rows, err := e.app.Store.RecentRequestRows(m.ID, n)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]lastRequestRec, 0, len(rows))
+	for _, r := range rows {
+		var rec lastRequestRec
+		if err := json.Unmarshal([]byte(r.Text()), &rec); err == nil && len(rec.Body) > 0 {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
 }

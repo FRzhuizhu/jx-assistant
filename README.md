@@ -273,7 +273,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 | 模式 | 说明 | 工具 |
 |---|---|---|
-| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / todo_write + **dispatch_sub（派子对话）** + 历史查询 |
+| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + 历史查询 |
 | `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
 
@@ -480,7 +480,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `GET /api/approvals` | 待决定的越权审批清单（轮询兜底） |
 | `GET /api/questions` | 待回答的助手提问 / 计划审批清单（轮询兜底） |
 | `POST /api/questions/{id}` | 回答提问；计划批准传 `__approve__`，驳回传反馈文本 |
-| `GET /api/sessions/{id}/todos` | 会话待办清单（todo_write 的持久化结果） |
+| `GET /api/sessions/{id}/progress` | 会话进度清单（progress_write 的持久化结果） |
 | `POST /api/approvals/{id}` | 审批决定：`{approved, always}`（always=本会话总是允许） |
 | `POST /api/workspace/test` | 测试 SSH 远程工作区配置（拨号/SFTP/目录，回显主机指纹） |
 | `GET /api/events` | 全局事件流（后台派发进度、回报就绪、会话更新、审批请求） |
@@ -488,7 +488,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
 | `GET /_components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供） |
-| `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `todo_write` 的待办是两回事**） |
+| `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `progress_write` 的进度清单是两回事**） |
 | `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |
 | `GET /api/todos/workspaces` | 程序任务可选的工作目录（默认工作区 + 历史会话用过的目录） |
 | `POST /api/plugins/dsh-speech/polish` | 转写润色（dsh-speech 适配器 Go 半边） |

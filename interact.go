@@ -10,6 +10,11 @@ package main
 //   - exit_plan_mode：计划模式下，模型完成探索后把计划提交给用户批准；
 //     批准即退出计划模式开始执行，拒绝则带着反馈留在计划模式。
 //     对应官方 dsh-plan-mode 的 exit_plan_mode。
+//   - update_goal：目标模式下汇报目标的最终状态（complete/blocked）。
+//     常驻注册，目录跨模式不变——与 exit_plan_mode 同策略，保持请求形状/
+//     缓存稳定；未开目标模式时调用直接报错。目标模式的自动续跑由
+//     runtime.go 的 runGoalRounds 驱动：目标仍 active 时每轮结束自动注入
+//     一条 goal_round 消息继续推进，直到 complete/blocked/上限。
 //
 // 两者共用同一条「等待用户输入」的通道：与审批（perm.go）同构——前端经
 // 全局事件流收到 question_required 弹卡，回答经 POST /api/questions/{id}
@@ -241,4 +246,46 @@ func runExitPlanMode(t *toolContext, args json.RawMessage) (string, error) {
 		return "用户批准了计划，会话已退出计划模式。现在按计划开始执行；执行中写文件与执行命令仍受当前权限模式约束。", nil
 	}
 	return "用户未批准计划，会话仍处于计划模式。用户反馈：" + ans, nil
+}
+
+func updateGoalTool() Tool {
+	return Tool{
+		Spec: toolSpec("update_goal", "目标模式下汇报目标的最终状态：确实达成时 result=complete；确认无法推进（缺权限/缺信息/外部受阻、继续没有意义）时 result=blocked。summary 用一两句话说明结果或阻碍。这是结束目标推进的唯一正式方式；未开目标模式时调用会报错。不要在目标未真正完成时谎报 complete。",
+			objSchema(map[string]any{
+				"result":  strProp("complete 或 blocked"),
+				"summary": strProp("一两句话：达成了什么，或卡在哪里"),
+			}, "result", "summary")),
+		Run: runUpdateGoal,
+	}
+}
+
+func runUpdateGoal(t *toolContext, args json.RawMessage) (string, error) {
+	var in struct {
+		Result  string `json:"result"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return "", fmt.Errorf("参数不是合法 JSON")
+	}
+	in.Result = strings.TrimSpace(in.Result)
+	in.Summary = strings.TrimSpace(in.Summary)
+	if in.Result != "complete" && in.Result != "blocked" {
+		return "", fmt.Errorf("result 只能是 complete 或 blocked")
+	}
+	if !t.sess.GoalMode {
+		return "", fmt.Errorf("当前未开启目标模式，无需调用 update_goal；直接正常回复即可")
+	}
+	if in.Summary == "" {
+		return "", fmt.Errorf("summary 不能为空：请说明达成了什么或卡在哪里")
+	}
+	t.sess.GoalStatus = in.Result
+	if err := t.app.Store.SaveMeta(t.sess); err != nil {
+		return "", err
+	}
+	t.app.broadcast(Event{Type: "session_updated", SessionID: t.sess.ID})
+	label := "已达成"
+	if in.Result == "blocked" {
+		label = "无法推进（受阻）"
+	}
+	return fmt.Sprintf("目标已记录为「%s」：%s。请基于以上全部进展，用面向用户的中文写最终总结（结果、产物位置、未尽事项），不要再调用工具。", label, in.Summary), nil
 }

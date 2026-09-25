@@ -25,7 +25,7 @@ func TestSuspendedInPlan(t *testing.T) {
 		{"task", "ask_user_question", false},
 		{"task", "exit_plan_mode", false},
 		{"task", "update_goal", false},
-		{"task", "todo_write", false},
+		{"task", "progress_write", false},
 		{"assistant", "dispatch_task", true},
 		{"assistant", "send_to_session", true},
 		{"assistant", "list_sessions", false},

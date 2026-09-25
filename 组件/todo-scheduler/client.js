@@ -147,7 +147,7 @@
     if (!col) return;
     const s = appState();
     st.prevSession = (s && s.cur && s.cur.id) || null;
-    // 主列换成这一页；对话那套外壳（输入区、会话待办条、模式徽标、子对话按钮）收起
+    // 主列换成这一页；对话那套外壳（输入区、会话进度条、模式徽标、子对话按钮）收起
     clearCol();
     col.innerHTML = pageHTML();
     st.page = true;
@@ -156,7 +156,7 @@
     const title = $('sess-title');
     if (title) title.textContent = PAGE_TITLE;
     hide('composer-wrap', true);
-    hide('todo-panel', true);
+    hide('progress-panel', true);
     hide('mode-badge', true);
     hide('btn-drawer', true);
     $('td-new').onclick = () => openForm(null);

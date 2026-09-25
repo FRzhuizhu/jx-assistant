@@ -125,7 +125,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
 		snapshotFileTool(), deliverResultTool(), dispatchSubTool(),
-		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), todoWriteTool(),
+		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)
 }
@@ -1126,4 +1126,152 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ---------- read_image：图片查看 ----------
+
+// read_image：读取工作区里的图片文件，入库为附件并返回文本信封。
+// 前端在工具卡片里直接渲染原图；支持视觉的模型在请求组装时由
+// inlineImagesForRequest 自动内联看到图片内容（见 attachment.go）。
+// DSH 的 read_image 与 ZCode 的 Read 工具都是这个定位，本实现为本栈新写。
+
+func readImageTool() Tool {
+	return Tool{
+		Spec: toolSpec("read_image",
+			"查看一张图片（png / jpg / gif / webp）。图片会展示给用户；若当前模型支持视觉，你将直接看到图片内容。path 支持相对工作区的路径。",
+			objSchema(map[string]any{
+				"path": strProp("图片文件路径（相对或绝对）"),
+			}, "path")),
+		Run: runReadImage,
+	}
+}
+
+func runReadImage(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	path, err := t.resolve(p.Path)
+	if err != nil {
+		return "", err
+	}
+	// 只读动作：经权限引擎统一做受保护路径检查后放行。
+	if _, err := t.authorize(permAction{Op: "read", Tool: "read_image", Path: path}); err != nil {
+		return "", err
+	}
+	raw, err := t.envReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	mediaType := sniffImageMediaType(raw)
+	if mediaType == "" {
+		return "", fmt.Errorf("%s 不是受支持的图片格式（支持 png / jpg / gif / webp）", path)
+	}
+	att, err := t.app.storeAttachment(raw, mediaType)
+	if err != nil {
+		return "", err
+	}
+	note := "图片已就绪：用户可在界面上直接查看"
+	if t.app.resolveTarget(t.sess).SupportsImages {
+		note = "图片已就绪：你将在下一条消息中直接看到它的内容"
+	} else {
+		note = "图片已就绪：用户可在界面上直接查看（当前模型不支持视觉输入，你只能看到这份元信息；可结合 read_file / grep 读取同目录文本，或请用户描述图片内容）"
+	}
+	return fmt.Sprintf("%s\n%s\n来源文件：%s\n格式：%s，尺寸 %dx%d，%d 字节\n如需查看图片里的文字，可配合 OCR 能力（若已安装）处理。",
+		imageEnvelope(att, path), note, path, att.MediaType, att.Width, att.Height, att.Bytes), nil
+}
+
+// ---------- progress_write：会话进度清单 ----------
+
+// progress_write（对齐官方标准栈的 todo 类工具；曾名 todo_write，为与定时
+// 任务系统 todo.go / todotools.go 的 todo_task_* 工具划清界限而更名）：模型
+// 维护当前任务的会话进度清单，前端在会话顶部渲染进度。清单整体替换写入
+// （每次都提交全量列表），持久化在 meta 表（会话附属数据），经
+// /api/sessions/{id}/progress 读取。
+
+// ProgressItem 是清单中的一项。
+type ProgressItem struct {
+	Content string `json:"content"`
+	Status  string `json:"status"` // pending | in_progress | completed
+}
+
+func progressWriteTool() Tool {
+	return Tool{
+		Spec: toolSpec("progress_write", "维护当前任务的会话进度清单（整体替换：每次提交完整列表）。用于多步骤任务：开始前把工作拆成进度项；开工一项置 in_progress（同时只能有一项）；做完置 completed 再开下一项。简单到一两步的事不必用。",
+			objSchema(map[string]any{
+				"progress": objSchema(map[string]any{
+					"content": strProp("进度项内容，一句话"),
+					"status":  strProp("pending | in_progress | completed"),
+				}),
+			}, "progress")),
+		Run: runProgressWrite,
+	}
+}
+
+func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Progress []ProgressItem `json:"progress"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if len(p.Progress) == 0 {
+		// 空清单 = 清空（任务取消/不再需要时可用）
+		_ = t.app.Store.SetSessionData(t.sess.ID, "progress", "")
+		t.app.broadcast(Event{Type: "progress", SessionID: t.sess.ID})
+		return "进度清单已清空。", nil
+	}
+	inProgress := 0
+	for i := range p.Progress {
+		td := &p.Progress[i]
+		td.Content = strings.TrimSpace(td.Content)
+		if td.Content == "" {
+			return "", fmt.Errorf("第 %d 项 content 为空", i+1)
+		}
+		switch td.Status {
+		case "pending", "":
+			td.Status = "pending"
+		case "in_progress":
+			inProgress++
+		case "completed":
+		default:
+			return "", fmt.Errorf("第 %d 项状态非法：%s（可选 pending / in_progress / completed）", i+1, td.Status)
+		}
+		if len(td.Content) > 500 {
+			td.Content = truncateRunes(td.Content, 500)
+		}
+	}
+	if inProgress > 1 {
+		return "", fmt.Errorf("同时只能有一项 in_progress（当前 %d 项），请把其余改为 pending", inProgress)
+	}
+	data, err := json.Marshal(p.Progress)
+	if err != nil {
+		return "", err
+	}
+	if err := t.app.Store.SetSessionData(t.sess.ID, "progress", string(data)); err != nil {
+		return "", err
+	}
+	t.app.broadcast(Event{Type: "progress", SessionID: t.sess.ID})
+	done := 0
+	for _, td := range p.Progress {
+		if td.Status == "completed" {
+			done++
+		}
+	}
+	return fmt.Sprintf("进度清单已更新（%d 项，完成 %d）。", len(p.Progress), done), nil
+}
+
+// progressListOf 读取会话的进度清单（前端 API 用）；空返回 nil。
+func progressListOf(a *App, sessionID string) []ProgressItem {
+	raw := a.Store.GetSessionData(sessionID, "progress")
+	if raw == "" {
+		return nil
+	}
+	out := []ProgressItem{}
+	if json.Unmarshal([]byte(raw), &out) != nil {
+		return nil
+	}
+	return out
 }

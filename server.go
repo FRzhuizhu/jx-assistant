@@ -146,7 +146,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
 	mux.HandleFunc("POST /api/sessions/{id}/pending", a.handlePending)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
-	mux.HandleFunc("GET /api/sessions/{id}/todos", a.handleGetTodos)
+	mux.HandleFunc("GET /api/sessions/{id}/progress", a.handleGetProgress)
 	mux.HandleFunc("GET /api/sessions/{id}/context", a.handleContextStats)
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.handleExport)
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
@@ -1848,13 +1848,13 @@ func (a *App) handleResolveQuestion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleGetTodos 返回会话的待办清单。
-func (a *App) handleGetTodos(w http.ResponseWriter, r *http.Request) {
+// handleGetProgress 返回会话的进度清单（progress_write 工具的持久化结果）。
+func (a *App) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"todos": todosOf(a, m.ID)})
+	writeJSON(w, 200, map[string]any{"progress": progressListOf(a, m.ID)})
 }
 
 // handleContextStats 返回会话下一次请求的上下文占用分解与缓存命中率

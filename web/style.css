@@ -1419,21 +1419,21 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   white-space: pre-wrap; word-break: break-word; font-family: inherit;
 }
 
-/* 待办面板：会话顶栏下的窄条 */
-#todo-panel {
+/* 进度面板：会话顶栏下的窄条（progress_write 的渲染） */
+#progress-panel {
   margin: 10px auto 0; max-width: 720px; width: calc(100% - 48px);
   border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
   padding: 8px 12px; font-size: 12.5px;
 }
-#todo-panel .todo-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
-#todo-panel .todo-head b { font-size: 12px; }
-#todo-panel .todo-head span { color: var(--text-3); font-size: 11.5px; }
-#todo-panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-#todo-panel li { display: flex; gap: 6px; align-items: baseline; line-height: 1.5; }
-#todo-panel li .td-mark { width: 14px; flex-shrink: 0; text-align: center; color: var(--text-3); }
-#todo-panel li.td-completed { color: var(--text-3); text-decoration: line-through; }
-#todo-panel li.td-completed .td-mark { color: #1e8e4e; }
-#todo-panel li.td-in_progress .td-mark { color: var(--accent); }
+#progress-panel .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+#progress-panel .progress-head b { font-size: 12px; }
+#progress-panel .progress-head span { color: var(--text-3); font-size: 11.5px; }
+#progress-panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+#progress-panel li { display: flex; gap: 6px; align-items: baseline; line-height: 1.5; }
+#progress-panel li .pg-mark { width: 14px; flex-shrink: 0; text-align: center; color: var(--text-3); }
+#progress-panel li.pg-completed { color: var(--text-3); text-decoration: line-through; }
+#progress-panel li.pg-completed .pg-mark { color: #1e8e4e; }
+#progress-panel li.pg-in_progress .pg-mark { color: var(--accent); }
 
 /* ---------- 自定义下拉（设置页统一外观） ---------- */
 .jx-select { position: relative; }
