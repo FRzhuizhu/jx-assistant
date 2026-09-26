@@ -50,6 +50,14 @@ async function openSettings() {
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
   $('set-snapshot-days').value = c.snapshotDays != null ? c.snapshotDays : 7;
+  // 常规页：任务最大步数（服务端配置，改动即时保存）
+  $('set-maxsteps').value = c.maxSteps || 30;
+  // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
+  $('set-lan-on').checked = c.bindHost === '0.0.0.0' || c.bindHost === '::';
+  syncLanState(c);
+  // 常规页：远程接入（服务端配置，写 remoteAccess.enabled，重启程序后生效）
+  $('set-remote-on').checked = !!(c.remoteAccess && c.remoteAccess.enabled);
+  syncRemoteState(c);
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
   selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
@@ -608,6 +616,71 @@ $('set-snapshot-days').onchange = () => {
   const v = parseInt($('set-snapshot-days').value, 10);
   if (isNaN(v) || (v < 1 && v !== -1)) { alert('天数需为 ≥1 的整数，或 -1（永不过期）'); return; }
   saveSnapshotCfg({ snapshotDays: v });
+};
+
+/* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ---------- */
+
+$('set-maxsteps').onchange = async () => {
+  const v = parseInt($('set-maxsteps').value, 10);
+  if (isNaN(v) || v < 1) { alert('步数需为 ≥1 的整数'); return; }
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ maxSteps: v }) });
+    $('set-maxsteps').value = c.maxSteps || v; // 以服务端落库值为准回显
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  }
+};
+
+/* ---------- 常规页：局域网访问（bindHost 127.0.0.1 ⇄ 0.0.0.0，重启生效） ---------- */
+
+function syncLanState(c) {
+  const on = c.bindHost === '0.0.0.0' || c.bindHost === '::';
+  $('set-lan-state').textContent = on ? '已开启（重启程序后对外可访问）' : '已关闭（仅本机可访问）';
+  const urls = c.lanIPs || [];
+  const port = location.port || '80';
+  $('set-lan-urls').innerHTML = on && urls.length
+    ? '手机连同一 Wi-Fi 后用浏览器打开：' + urls.map((ip) => `http://${esc(ip)}:${esc(port)}`).join('　或　')
+    : '';
+}
+
+$('set-lan-on').onchange = async () => {
+  const on = $('set-lan-on').checked;
+  try {
+    const c = await api('/api/config', {
+      method: 'POST',
+      body: JSON.stringify({ bindHost: on ? '0.0.0.0' : '127.0.0.1' }),
+    });
+    syncLanState(c);
+  } catch (e) {
+    alert('保存失败：' + e.message);
+    $('set-lan-on').checked = !on;
+  }
+};
+
+/* ---------- 常规页：远程接入（公网中继，remoteAccess.enabled，重启生效） ---------- */
+
+function syncRemoteState(c) {
+  const ra = c.remoteAccess || {};
+  $('set-remote-state').textContent = ra.connected
+    ? '已连接网关（重启程序后改动生效）'
+    : (ra.enabled ? '已开启（网关未连上：' + (ra.lastError || '等待重连') + '）' : '已关闭');
+  $('set-remote-entry').innerHTML = ra.enabled && ra.entry
+    ? '手机（外网可用）浏览器打开：' + esc(ra.entry)
+    : '';
+}
+
+$('set-remote-on').onchange = async () => {
+  const on = $('set-remote-on').checked;
+  try {
+    const c = await api('/api/config', {
+      method: 'POST',
+      body: JSON.stringify({ remoteEnabled: on }),
+    });
+    syncRemoteState(c);
+  } catch (e) {
+    alert('保存失败：' + e.message);
+    $('set-remote-on').checked = !on;
+  }
 };
 
 $('btn-settings').onclick = openSettings;

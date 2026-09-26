@@ -369,7 +369,41 @@
               <p class="sf-desc">插话不打断执行：消息在模型下一次调用前注入本轮；等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
           </div>
-          <p class="tip">本页偏好保存在本机浏览器。</p>
+          <div class="gen-section">
+            <h4>任务执行</h4>
+            <div class="set-field">
+              <div class="sf-label">最大步数</div>
+              <div class="sf-inline">
+                <input id="set-maxsteps" type="number" min="1" max="1000">
+                <span class="sf-desc">单条消息触发的任务里，模型可连续执行的步数（模型调用＋工具执行）上限；连续跑满这个数仍未完成会自动停止</span>
+              </div>
+            </div>
+          </div>
+          <div class="gen-section">
+            <h4>局域网访问</h4>
+            <div class="set-field">
+              <div class="sf-label">允许手机/平板访问</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-lan-on"><span></span></label>
+                <span class="sf-desc" id="set-lan-state"></span>
+              </div>
+              <p class="sf-desc" id="set-lan-urls"></p>
+              <p class="sf-desc">开启后同一局域网内的设备都能打开并使用本助手（含文件与命令工具），请只在自己可信的网络开启。改动需重启程序后生效；首次开启时 Windows 防火墙弹窗请点「允许访问」。</p>
+            </div>
+          </div>
+          <div class="gen-section">
+            <h4>远程接入（公网中继）</h4>
+            <div class="set-field">
+              <div class="sf-label">允许外网设备访问</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-remote-on"><span></span></label>
+                <span class="sf-desc" id="set-remote-state"></span>
+              </div>
+              <p class="sf-desc" id="set-remote-entry"></p>
+              <p class="sf-desc">经自建 210 网关的加密中继（端到端 AES-256-GCM，网关只见密文）从外网访问本助手；手机入口为网关配对页，设备码与配对密钥在 config.json 的 remoteAccess。改动需重启程序后生效；知道配对密钥的人都能使用本助手，请妥善保管密钥。</p>
+            </div>
+          </div>
+          <p class="tip">本页偏好保存在本机浏览器；最大步数、局域网/远程访问保存在服务端（前者即时生效，后两者需重启程序后生效）。</p>
         </div>
         <div class="set-pane" id="set-pane-models">
           <h3>模型</h3>
