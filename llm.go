@@ -30,10 +30,15 @@ type ToolCall struct {
 // Message 同时用于本地持久化与 LLM 请求体。Content 用 any 是因为
 // 带工具调用的 assistant 消息需要 content 为 null，而其余角色是字符串。
 type Message struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+	// 思考模式历史回传：DeepSeek V4/flash 等要求带 tools 的请求把此前
+	// assistant 回合的思考原文原样传回（否则 400「reasoning_content in
+	// the thinking mode must be passed back」）。仅 DeepSeek/GLM 系端点读取，
+	// 其余 OpenAI 兼容端点忽略消息上的未知字段。
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
 
 func TextMessage(role, text string) Message {

@@ -143,7 +143,13 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		if m.Role == "assistant" && strings.TrimSpace(m.Text()) == "" && len(m.ToolCalls) == 0 {
 			continue
 		}
-		out = append(out, m.Message)
+		msg := m.Message
+		// 思考模式历史回传：DeepSeek V4/flash 带 tools 的请求要求此前回合的
+		// reasoning_content 原样传回（见 Message 结构注释），落库的 thinking 正是它
+		if m.Role == "assistant" && m.Thinking != "" {
+			msg.ReasoningContent = m.Thinking
+		}
+		out = append(out, msg)
 	}
 	// 修剪尾部悬空的工具调用（客户端中断可能留下未配对的调用）
 	for len(out) > 0 {
