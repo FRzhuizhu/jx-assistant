@@ -233,8 +233,14 @@ async function jumpToMessage(sessionId, seq) {
 
 // 排序选项菜单：上半区「分组」（按工作区/时间线/单列表），下半区「排序」。
 // 选中项左侧亮对勾，仿系统设置的分区单选菜单。
+// 再点一次排序按钮 = 收起（.ws-tools 在外点关闭的豁免名单里，按钮点击不会
+// 触发文档级收起，切换在这里自管）；其他弹出卡开着则照常替换成本菜单。
 function openViewMenu(anchor) {
   const m = ensureCtxMenu();
+  if (!m.classList.contains('hidden') && m.querySelector('.vo-item')) {
+    closePopovers();
+    return;
+  }
   const opt = (key, val, label) => ({ key, val, label, on: viewCfg[key] === val });
   const groups = [
     { title: '分组', opts: [
