@@ -58,6 +58,7 @@ type jobRun struct {
 	SessionID string
 	Command   string
 	Cwd       string
+	Policy    string // 本次作业的沙箱档位（job_output 附加拒绝/故障 marker 用）
 	startedAt time.Time
 	buf       *lockedBuffer
 	cancel    context.CancelFunc
@@ -103,7 +104,7 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 		}
 	}
 	j := &jobRun{
-		ID: "job-" + newID(), SessionID: t.sess.ID, Command: command, Cwd: cwd,
+		ID: "job-" + newID(), SessionID: t.sess.ID, Command: command, Cwd: cwd, Policy: policy,
 		startedAt: time.Now(), buf: &lockedBuffer{}, done: make(chan struct{}),
 	}
 	a.jobs[j.ID] = j
@@ -208,7 +209,13 @@ func runJobOutput(t *toolContext, args json.RawMessage) (string, error) {
 		case <-t.ctx.Done():
 		}
 	}
-	return fmt.Sprintf("作业 %s｜状态：%s\n输出：\n%s", j.ID, j.Status(), j.buf.String()), nil
+	// 沙箱作业的输出与前台同规则附加拒绝/执行器故障 marker（对齐官方
+	// renderProcessRead 在每次读取时附加 notice），模型读到才有正确方向。
+	out := j.buf.String()
+	if j.Policy != "" && j.Policy != permFull {
+		out += runDeniedMarker(j.Policy, out, t.isRemote())
+	}
+	return fmt.Sprintf("作业 %s｜状态：%s\n输出：\n%s", j.ID, j.Status(), out), nil
 }
 
 func jobListTool() Tool {

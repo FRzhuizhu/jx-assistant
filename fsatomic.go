@@ -7,6 +7,7 @@ package main
 //     （外部别名保持旧内容，与 DSH 硬链接边界的事实性兜底同款）。
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -37,5 +38,12 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	copySecurityDescriptorBestEffort(path, tmpName)
-	return os.Rename(tmpName, path) // Windows 底层 MoveFileEx(REPLACE_EXISTING)
+	if err := os.Rename(tmpName, path); err != nil {
+		// 失败常见原因：目标正被其他程序占用/锁定（rename 需要删除权，
+		// 多数程序不共享删除），或目标只读。明确告知这不是沙箱拒绝——
+		// 申请 sandbox_permissions 无济于事，免得模型去跟审批打架。
+		return fmt.Errorf("替换写入 %s 失败: %w（常见原因：目标文件正被其他程序占用或为只读——这不是沙箱拒绝，申请权限无济于事；请让用户关闭占用该文件的程序后重试）",
+			filepath.ToSlash(path), err)
+	}
+	return nil
 }

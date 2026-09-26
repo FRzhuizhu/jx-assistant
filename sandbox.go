@@ -135,17 +135,48 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 	}
 }
 
-// runDeniedMarker 检查 confined 输出是否携带「访问被拒」类标志；
-// 命中则返回官方风格的 [sandbox: …] 标记 + 升级提示（同轮重试一次）。
-func runDeniedMarker(policy, out string) string {
+// winDenialSigs Windows 受限令牌/ACL 沙箱的拒绝方言（对齐官方 windows-acl
+// DENIAL_SIGNATURES 三条，附中文本地化等价——本机 shell 输出是中文；「所需的
+// 特权」覆盖受限令牌剥特权导致的失败如 mklink，同属沙箱所致）。刻意不收
+// EPERM/EACCES/EROF 等泛 Unix 字样——非沙箱原因的普通程序错误被标成
+// 「策略拒绝」会把模型引向申请升级、跟审批打架（官方同款收窄理由）。
+var winDenialSigs = []string{
+	"access is denied", "access to the path", "permission denied",
+	"拒绝访问", "对路径", "所需的特权",
+}
+
+// posixDenialSigs Linux Landlock / SSH 远端沙箱的拒绝方言（对齐官方
+// landlock + runnerCommand 列表，附中文等价）。
+var posixDenialSigs = []string{
+	"permission denied", "read-only file system",
+	"权限不够", "只读文件系统",
+}
+
+// runnerFailureSigs 沙箱执行器自身的故障签名：Linux helper 施限失败时输出
+// JX_SANDBOX_UNAVAILABLE（官方 windows-acl runner 的对等物是
+// "windows-acl-run: " 前缀 + 退出码门）。故障必须与「策略拒绝」分开，
+// 否则模型会把沙箱坏了当成命令被拒去申请升级。
+var runnerFailureSigs = []string{"jx_sandbox_unavailable"}
+
+// runDeniedMarker 检查 confined 输出是否携带「访问被拒」类标志，命中返回
+// 官方同款拒绝 marker + 同轮升级提示（带本次够用的最窄更宽档）。执行器
+// 自身故障（runnerFailureSigs）命中时改返回 runnerFailureMarker——那是
+// 另一类信号，绝不附带升级提示。已知局限：不按退出码门控（官方以非零
+// 退出 + 签名双门防「命令只是打印了该字样」的误标），此处输出已合并无
+// 退出码可查，误标风险低（命令成功却原样回显拒绝句式的场景罕见）。
+func runDeniedMarker(policy, out string, remote bool) string {
 	if policy == permFull {
 		return ""
 	}
 	lower := strings.ToLower(out)
-	sigs := []string{
-		"access is denied", "拒绝访问", "required privilege", "unauthorized operation",
-		"permission denied", "operation not permitted", "read-only file system",
-		"eaccess", "eperm", "erofs", "not permitted to write", "jx_sandbox_unavailable",
+	for _, s := range runnerFailureSigs {
+		if strings.Contains(lower, s) {
+			return runnerFailureMarker()
+		}
+	}
+	sigs := posixDenialSigs
+	if isWindowsRuntime && !remote {
+		sigs = winDenialSigs
 	}
 	hit := false
 	for _, s := range sigs {
@@ -161,7 +192,16 @@ func runDeniedMarker(policy, out string) string {
 	if policy == permReadOnly {
 		wider = "workspace-write"
 	}
-	return fmt.Sprintf("\n[sandbox: write denied under %s mode] 若确需更宽权限，可在同一轮内带 sandbox_permissions=%s 与一句 justification 重试同一命令一次（会弹审批由用户决定）；被拒后请停止并说明，不要绕过。", policy, wider)
+	return fmt.Sprintf("\n[sandbox: file access denied under %s mode]\n[sandbox: escalation available — 用 sandbox_permissions=%s（够用的最窄更宽档）+ 一句 justification 在同一轮内重试同一命令一次；审批弹窗由用户决定。被拒后该命令终局：停止并如实说明，不要绕过；其他命令不受影响]", policy, wider)
+}
+
+// runnerFailureMarker 沙箱执行器自身故障的模型面提示（对齐官方
+// "[sandbox: the sandbox runner itself failed under <mode> mode — the
+// command did not run; this is a sandbox problem, not a command failure]"）：
+// 命令没有运行，既不是命令失败也不是策略拒绝——重试与升级都无济于事，
+// 唯一正确动作是如实向用户报告。
+func runnerFailureMarker() string {
+	return "\n[sandbox: 沙箱执行器自身故障——命令没有运行。这是沙箱问题，不是命令失败，也不是策略拒绝：不要重试同一命令，不要申请 sandbox_permissions 升级（升级救不了沙箱故障），请如实向用户说明沙箱不可用]"
 }
 
 // ---------- SSH 远程沙箱（官方 sandbox-ssh 思路：远端用它的本地后端执行策略） ----------

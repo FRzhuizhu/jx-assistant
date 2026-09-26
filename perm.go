@@ -583,9 +583,9 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		}
 		hint := "可在重试时带 sandbox_permissions=full 与一句 justification 申请把会话提升为完全访问（弹审批由用户决定）"
 		if blocked == "read-only" {
-			return nil, fmt.Errorf("[fs sandbox: write denied under read-only mode] 目标 %s（当前会话为只读）。%s；或让用户把权限芯片切到「工作区内读写」", act.Path, hint)
+			return nil, fmt.Errorf("[sandbox: file access denied under read-only mode]\n目标 %s（当前会话为只读）。%s；或让用户把权限芯片切到「工作区内读写」", act.Path, hint)
 		}
-		return nil, fmt.Errorf("[fs sandbox: write denied under workspace-write mode] 目标 %s 不在工作区 %s 与系统临时目录内。%s", act.Path, t.workspace(), hint)
+		return nil, fmt.Errorf("[sandbox: file access denied under workspace-write mode]\n目标 %s 不在工作区 %s 与系统临时目录内。%s", act.Path, t.workspace(), hint)
 
 	case "exec":
 		if !t.app.Cfg.AllowShell {
@@ -604,6 +604,9 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		// 已开启「允许工作区外执行命令」能力 → 视为用户已常设批准，直接放行；
 		// 未开启 → 每次升级弹审批，用户可点「始终允许」把能力勾选点亮。
 		if req := strings.TrimSpace(act.EscalateTo); req != "" {
+			if req == "danger-full-access" {
+				req = permFull // 官方词汇表的 full 档别名（拒绝 marker 按官方用此名）
+			}
 			if sandboxPolicyRank(req) <= sandboxPolicyRank(policy) {
 				return nil, fmt.Errorf("sandbox_permissions=%s 无效：当前策略已是 %s，无需升级或请求了更窄的档位。请直接重跑命令", req, policy)
 			}

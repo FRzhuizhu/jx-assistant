@@ -886,7 +886,7 @@ func runCommand(t *toolContext, args json.RawMessage) (string, error) {
 		}
 		j, jerr := t.app.startJob(t, p.Command, p.Shell, cwd, policy)
 		if jerr != nil {
-			return "", jerr
+			return "", sandboxErrHint(jerr)
 		}
 		return fmt.Sprintf("后台作业已启动：%s（沙箱 %s，不限时）。\n- job_output 查看输出（wait=true 可等它结束）\n- job_list 列出全部作业\n- job_kill 终止\n现在可以继续做别的事。", j.ID, policy), nil
 	}
@@ -920,17 +920,24 @@ func runCommand(t *toolContext, args json.RawMessage) (string, error) {
 	default:
 		out, err = t.runConfined(run)
 		if err == nil {
-			out += runDeniedMarker(policy, out)
+			out += runDeniedMarker(policy, out, t.isRemote())
 		}
 	}
 	if err != nil {
-		// 沙箱不可用也是一次「拒绝」：提示模型可走升级审批路径
-		if strings.Contains(err.Error(), "sandbox unavailable") {
-			return "", fmt.Errorf("%w。可带 sandbox_permissions=danger-full-access 与 justification 申请升级（弹审批由用户决定）", err)
-		}
-		return "", err
+		return "", sandboxErrHint(err)
 	}
 	return out, nil
+}
+
+// sandboxErrHint 沙箱不可用（执行器自身故障）的错误加注：命令没有运行，
+// 这是沙箱问题不是命令失败、也不是策略拒绝——不引导升级（升级救不了
+// 故障，只会让模型跟审批打架），让模型如实向用户报告（对齐官方
+// runnerFailed 提示语义）。非沙箱故障的错误原样返回。
+func sandboxErrHint(err error) error {
+	if strings.Contains(err.Error(), "sandbox unavailable") {
+		return fmt.Errorf("%w。命令没有运行：这是沙箱自身故障，不是命令失败、也不是策略拒绝——不要重试或申请 sandbox_permissions 升级，请如实向用户说明沙箱不可用", err)
+	}
+	return err
 }
 
 // runUnconfinedLocal 不受限本地执行（full 策略）。

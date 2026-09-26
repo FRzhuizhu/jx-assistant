@@ -45,6 +45,35 @@ func TestDestructiveCommandHit(t *testing.T) {
 	}
 }
 
+// TestRunDeniedMarker 拒绝/故障信号分类（对齐官方 classifyDenial vs
+// classifyRunnerFailure 的拆分）：拒绝方言命中 → 拒绝 marker + 升级提示；
+// 执行器故障签名 → 故障 marker 且绝不带升级提示；干净输出 → 无 marker。
+func TestRunDeniedMarker(t *testing.T) {
+	// 拒绝（windows 方言，含中文）
+	m := runDeniedMarker(permWorkspace, "Set-Content : 对路径“C:\\x”的访问被拒绝。", false)
+	if !strings.Contains(m, "file access denied under workspace-write mode") ||
+		!strings.Contains(m, "escalation available") {
+		t.Fatalf("拒绝 marker 应含官方文案与升级提示: %q", m)
+	}
+	// 只读档提示最窄更宽档 workspace-write
+	m = runDeniedMarker(permReadOnly, "Access is denied.", false)
+	if !strings.Contains(m, "sandbox_permissions=workspace-write") {
+		t.Fatalf("只读档应建议 workspace-write: %q", m)
+	}
+	// 执行器故障：故障 marker，无升级提示
+	m = runDeniedMarker(permWorkspace, "JX_SANDBOX_UNAVAILABLE: 内核不支持 Landlock", true)
+	if !strings.Contains(m, "沙箱执行器自身故障") || strings.Contains(m, "escalation available") {
+		t.Fatalf("故障 marker 不应带升级提示: %q", m)
+	}
+	// 干净输出、full 档：无 marker
+	if runDeniedMarker(permWorkspace, "hello world", false) != "" {
+		t.Fatal("干净输出不应有 marker")
+	}
+	if runDeniedMarker(permFull, "Access is denied.", false) != "" {
+		t.Fatal("full 档不应有 marker")
+	}
+}
+
 func localTC(ws string) *toolContext {
 	return &toolContext{app: &App{Cfg: &Config{Workspace: ws}}, sess: &SessionMeta{Workspace: ws}}
 }
@@ -222,8 +251,8 @@ func TestAuthorizeDenialDriven(t *testing.T) {
 		t.Fatalf("工作区内写应放行且策略为 workspace-write: g=%v err=%v", g, err)
 	}
 	if _, err := tc.authorize(permAction{Op: "write", Tool: "write", Path: `D:\out\a.txt`}); err == nil ||
-		!strings.Contains(err.Error(), "fs sandbox") {
-		t.Fatalf("工作区外写应带 fs sandbox 拒绝标记: %v", err)
+		!strings.Contains(err.Error(), "file access denied under workspace-write mode") {
+		t.Fatalf("工作区外写应带官方同款拒绝标记: %v", err)
 	}
 
 	// exec 不再预检：只读模式下也放行（沙箱内执行，写会被 OS 拒绝）
@@ -241,6 +270,12 @@ func TestAuthorizeDenialDriven(t *testing.T) {
 	// 升级方向校验：同级/更窄档无效；缺 justification 无效
 	if _, err := tc.authorize(permAction{Op: "exec", Command: "x", EscalateTo: permWorkspace}); err == nil {
 		t.Fatal("当前已是 workspace-write，再升 workspace-write 应拒绝")
+	}
+	// danger-full-access 是官方词汇表的 full 别名（拒绝 marker 用此名），
+	// 必须与 full 等价——历史上曾因 rank 不识别而报「无效」把模型打回
+	if _, err := tc.authorize(permAction{Op: "exec", Command: "x", EscalateTo: "danger-full-access"}); err == nil ||
+		!strings.Contains(err.Error(), "justification") {
+		t.Fatalf("danger-full-access 应与 full 等价（缺 justification 拒绝），得到: %v", err)
 	}
 	if _, err := tc.authorize(permAction{Op: "exec", Command: "x", EscalateTo: permFull}); err == nil ||
 		!strings.Contains(err.Error(), "justification") {
