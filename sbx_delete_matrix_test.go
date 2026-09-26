@@ -31,6 +31,7 @@ import (
 )
 
 func TestSandboxDeleteMatrix(t *testing.T) {
+	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -109,7 +110,10 @@ func TestSandboxDeleteMatrix(t *testing.T) {
 	}
 
 	// ---------- 删除矩阵：每条路线一次沙箱调用，四个位置各一个受害者 ----------
-	type cell struct{ route, loc string; escaped bool }
+	type cell struct {
+		route, loc string
+		escaped    bool
+	}
 	var results []cell
 	for ri, rt := range routes {
 		type job struct{ locName, path string }

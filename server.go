@@ -164,6 +164,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
 	mux.HandleFunc("POST /api/sessions/{id}/edit", a.handleEdit)
 	mux.HandleFunc("POST /api/sessions/{id}/file-rewind", a.handleFileRewind)
+	mux.HandleFunc("GET /api/sessions/{id}/file-versions", a.handleFileVersions)
+	mux.HandleFunc("GET /api/sessions/{id}/file-version", a.handleFileVersion)
+	mux.HandleFunc("POST /api/sessions/{id}/delivery/open", a.handleDeliveryOpenFile)
+	mux.HandleFunc("POST /api/sessions/{id}/delivery/reveal", a.handleDeliveryReveal)
 	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
@@ -1728,7 +1732,7 @@ func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
 	var restored []*rewindPlan
 	if body.WorkspaceMode == "rewind" {
 		tctx := &toolContext{app: a, sess: m}
-		safe, unsafe, perr := a.planRewind(tctx, m.ID, body.Seq, nil)
+		safe, unsafe, _, perr := a.planRewind(tctx, m.ID, body.Seq, nil, "")
 		if perr != nil {
 			lock.Unlock()
 			writeErr(w, 500, "文件回退预检失败: "+perr.Error())
@@ -1779,19 +1783,27 @@ func (a *App) handleEdit(w http.ResponseWriter, r *http.Request) {
 	a.serveRun(w, r, m, run, opening)
 }
 
-// handleFileRewind 按轮撤销文件改动：不裁剪对话，只把 seqs 范围内记录的文件
-// 改动恢复到该轮之前（对齐 ZCode 文件摘要面板上的「撤销」）。同样 fail-closed：
-// 有不安全文件就整体拒绝；成功后落一条可见交代并清掉这批快照。
+// handleFileRewind 撤销文件改动：不裁剪对话，只把范围内的文件改动恢复到
+// 该范围之前（对齐 ZCode 文件摘要面板上的「撤销」）。三种取数口径：
+//   - seqs：按轮撤销（文件改动面板的「全部撤回」）；
+//   - path：只撤销这一个文件（折叠行内每行文件的「撤回」），仍限定在 seqs 内；
+//   - checkpointId：只恢复到某一条快照之前（历史版本列表里的「恢复到此版本前」）。
+//
+// 同样 fail-closed：有不安全文件就整体拒绝；成功后落一条可见交代，并只清掉
+// 真正用掉的这批快照（其余文件的快照继续留在库里，仍能再次撤回）。
 func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
 		return
 	}
 	var body struct {
-		Seqs []int64 `json:"seqs"`
+		Seqs         []int64 `json:"seqs"`
+		Path         string  `json:"path"`
+		CheckpointID int64   `json:"checkpointId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Seqs) == 0 {
-		writeErr(w, 400, "需要非空 seqs（该回合的消息序号集合）")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil ||
+		(len(body.Seqs) == 0 && body.CheckpointID == 0) {
+		writeErr(w, 400, "需要非空 seqs 或 checkpointId")
 		return
 	}
 	if a.IsRunning(m.ID) {
@@ -1799,11 +1811,36 @@ func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tctx := &toolContext{app: a, sess: m}
-	safe, unsafe, err := a.planRewind(tctx, m.ID, 0, body.Seqs)
+	path := strings.TrimSpace(body.Path)
+	var cps []*Checkpoint
+	var err error
+	if body.CheckpointID != 0 {
+		// 单条快照（历史版本）：只回退该文件到这次改动之前，不看消息序号
+		cps, err = a.Store.CheckpointsByIDs(m.ID, []int64{body.CheckpointID})
+		if err == nil && len(cps) == 0 {
+			writeErr(w, 404, "快照不存在（可能已被清理）")
+			return
+		}
+		if path == "" && len(cps) > 0 {
+			path = cps[0].Path
+		}
+	} else {
+		cps, err = a.Store.CheckpointsIn(m.ID, body.Seqs)
+		if err == nil && path != "" {
+			kept := cps[:0:0]
+			for _, cp := range cps {
+				if cp.Path == path {
+					kept = append(kept, cp)
+				}
+			}
+			cps = kept
+		}
+	}
 	if err != nil {
-		writeErr(w, 500, "文件回退预检失败: "+err.Error())
+		writeErr(w, 500, "取快照失败: "+err.Error())
 		return
 	}
+	safe, unsafe, consumed := a.planRewindFor(tctx, cps)
 	if len(unsafe) > 0 {
 		writeJSON(w, 409, map[string]any{
 			"error":   "有文件在快照之后被外部修改，无法安全回退",
@@ -1812,22 +1849,25 @@ func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(safe) == 0 {
-		writeJSON(w, 200, map[string]any{"restored": 0})
+		// 没有可执行项（如"撤回新建"但文件已不在）：目标状态已达成，照样清快照
+		if len(consumed) > 0 {
+			_ = a.Store.DeleteCheckpoints(m.ID, consumed)
+			tctx.deleteSnapshotFiles(consumed)
+			a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+		}
+		writeJSON(w, 200, map[string]any{"restored": 0, "deleted": 0})
 		return
 	}
 	if err := a.applyRewind(tctx, safe); err != nil {
-		log.Printf("[快照] 会话 %s 按轮撤销失败（已尝试补偿）: %v", m.ID, err)
+		log.Printf("[快照] 会话 %s 撤销文件改动失败（已尝试补偿）: %v", m.ID, err)
 		writeErr(w, 500, "文件回退失败（已自动恢复原状）: "+err.Error())
 		return
 	}
 	// 这批快照已完成使命：状态已还原，留着会让下次回退拿到错误基线
-	cps, _ := a.Store.CheckpointsIn(m.ID, body.Seqs)
-	ids := make([]int64, 0, len(cps))
-	for _, cp := range cps {
-		ids = append(ids, cp.ID)
+	if len(consumed) > 0 {
+		_ = a.Store.DeleteCheckpoints(m.ID, consumed)
+		tctx.deleteSnapshotFiles(consumed)
 	}
-	_ = a.Store.DeleteCheckpoints(m.ID, ids)
-	tctx.deleteSnapshotFiles(ids)
 	names := []string{}
 	restored, deleted := 0, 0
 	for _, p := range safe {
@@ -1838,13 +1878,194 @@ func (a *App) handleFileRewind(w http.ResponseWriter, r *http.Request) {
 		}
 		names = append(names, p.Path)
 	}
-	note := fmt.Sprintf("【文件回退】用户撤销了本轮文件改动：恢复 %d 个文件、撤回 %d 个新建文件（%s）。",
+	note := fmt.Sprintf("【文件回退】用户撤销了文件改动：恢复 %d 个文件、撤回 %d 个新建文件（%s）。",
 		restored, deleted, strings.Join(names, "、"))
 	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "rollback", CreatedAt: now()})
 	m.UpdatedAt = now()
 	_ = a.Store.SaveMeta(m)
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
-	writeJSON(w, 200, map[string]any{"restored": restored, "deleted": deleted})
+	writeJSON(w, 200, map[string]any{"restored": restored, "deleted": deleted, "paths": names})
+}
+
+// handleFileVersions 列出某文件的历史版本（快照）清单——文件改动面板每行
+// 的「历史版本」按钮取数。path 用工作区相对路径（与快照同一口径）。同时回
+// 当前文件是否存在与体积，供前端标注"当前"与"已删除"。
+func (a *App) handleFileVersions(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if path == "" {
+		writeErr(w, 400, "需要 path")
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	vers, err := a.fileVersionList(tctx, path)
+	if err != nil {
+		writeErr(w, 500, "取历史版本失败: "+err.Error())
+		return
+	}
+	payload := map[string]any{"path": path, "versions": vers, "exists": false, "size": 0}
+	if data, exists, _ := tctx.workspaceFileBody(path); exists {
+		payload["exists"] = true
+		payload["size"] = len(data)
+	}
+	writeJSON(w, 200, payload)
+}
+
+// handleFileVersion 取一个历史版本的正文，并附带文件当前内容（供前端就地
+// 对比）。版本正文缺失（.jxai/snapshots 正文文件被清掉）时 hasBody=false，
+// 前端只展示元数据、不给"恢复"入口。
+func (a *App) handleFileVersion(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	id := int64(0)
+	if s := strings.TrimSpace(r.URL.Query().Get("id")); s != "" {
+		if _, err := fmt.Sscanf(s, "%d", &id); err != nil || id == 0 {
+			writeErr(w, 400, "id 不是合法快照 id")
+			return
+		}
+	}
+	if path == "" || id == 0 {
+		writeErr(w, 400, "需要 path 与 id")
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	cps, err := a.Store.CheckpointsByIDs(m.ID, []int64{id})
+	if err != nil {
+		writeErr(w, 500, "取快照失败: "+err.Error())
+		return
+	}
+	if len(cps) == 0 || cps[0].Path != path {
+		writeErr(w, 404, "该文件的这条历史版本不存在（可能已被清理）")
+		return
+	}
+	cp := cps[0]
+	data, truncated, ok := tctx.fileVersionBody(cp)
+	payload := map[string]any{
+		"path": cp.Path, "id": cp.ID, "seq": cp.Seq, "toolName": cp.ToolName,
+		"existedBefore": cp.ExistedBefore, "afterSize": cp.AfterSize,
+		"createdAt": cp.CreatedAt, "manual": cp.ToolName == manualSnapshotTool,
+		"hasBody": ok,
+	}
+	if ok {
+		appendVersionBody(payload, data, truncated)
+	}
+	cur, exists, curTrunc := tctx.workspaceFileBody(path)
+	curPayload := map[string]any{"exists": exists}
+	if exists {
+		appendVersionBody(curPayload, cur, curTrunc)
+	}
+	payload["current"] = curPayload
+	writeJSON(w, 200, payload)
+}
+
+// handleDeliveryOpenFile 用系统默认程序打开一个已登记的交付文件（交付卡片
+// 整行点击/「打开」按钮）。只放行 deliveries 里登记过的路径——用户主动操作，
+// 不经模型权限审批；未登记的任意路径一律 404，防越权打开。
+func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	want := strings.TrimSpace(body.Path)
+	if want == "" {
+		writeErr(w, 400, "需要 path")
+		return
+	}
+	if !a.deliveryListed(m.ID, want) {
+		http.NotFound(w, r)
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	abs, err := tctx.resolve(want)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
+		writeErr(w, 404, "交付文件不存在: "+want)
+		return
+	}
+	if m.Remote != nil {
+		writeErr(w, 400, "这是 SSH 远程工作区里的文件，本机没有对应路径，无法用系统程序打开；请在右侧浏览器中查看内容")
+		return
+	}
+	if err := openPathWithDefaultApp(abs); err != nil {
+		writeErr(w, 500, "打开失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// handleDeliveryReveal 在系统文件资源管理器里定位一个已登记的交付文件
+// （交付卡片的「在文件夹中查看」）。远程会话没有本机路径，明确拒绝。
+func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	want := strings.TrimSpace(body.Path)
+	if want == "" {
+		writeErr(w, 400, "需要 path")
+		return
+	}
+	if !a.deliveryListed(m.ID, want) {
+		http.NotFound(w, r)
+		return
+	}
+	if m.Remote != nil {
+		writeErr(w, 400, "这是 SSH 远程工作区里的文件，本机没有对应路径，无法在资源管理器中定位")
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	abs, err := tctx.resolve(want)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
+		writeErr(w, 404, "交付文件不存在: "+want)
+		return
+	}
+	if err := revealInExplorer(abs); err != nil {
+		writeErr(w, 500, "打开所在文件夹失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// deliveryListed 判定 path 是否在本会话的交付登记清单里（交付卡片的打开/
+// 定位入口共用；未登记路径不动作，防越权）。
+func (a *App) deliveryListed(sessionID, path string) bool {
+	dvs, err := a.Store.DeliveriesFor(sessionID)
+	if err != nil {
+		return false
+	}
+	for _, d := range dvs {
+		if d.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // handleDeliveryDownload 提供交付文件的下载。只放行已登记进 deliveries 的

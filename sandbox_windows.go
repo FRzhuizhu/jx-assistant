@@ -736,6 +736,12 @@ func (c *confinedChild) cleanup() {
 // startConfinedWindows 用受限令牌在沙箱内启动命令（官方 AclSandbox 思路）。
 // 任何准备步骤失败都返回错误且绝不以无沙箱状态放行子进程（fail closed）。
 func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
+	// 嵌套沙箱 fail fast：当前进程若已运行在沙箱内（如在沙箱里跑 go test
+	// 再起沙箱），写受限令牌拿不到对目标目录的 WRITE_DAC（pass-2 拒），
+	// 授权必然失败——与其报莫名的「授权工作区失败」不如直接说清。
+	if v := os.Getenv("JX_SANDBOX"); v != "" {
+		return nil, fmt.Errorf("sandbox unavailable: 不支持嵌套沙箱（本进程已运行在 %s 档沙箱内，属预期限制）", v)
+	}
 	// 1) 私有临时目录（本次运行独占，官方为每会话；此处每运行一次，等价更强）
 	tempDir, err := os.MkdirTemp("", "jx-sbx-")
 	if err != nil {
@@ -870,7 +876,27 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 		return nil, fmt.Errorf("dir UTF16: %w", err)
 	}
 	env := sandboxEnv(false)
-	env = append(env, "TEMP="+tempDir, "TMP="+tempDir)
+	// 白名单会拷来父进程的真实 TEMP/TMP，而环境块去重「先见为准」会静默
+	// 丢弃追加的重定向——曾导致私有临时目录重定向从未生效，go build 等
+	// 工具链全落在真实 %TEMP% 被拒（会话里模型反复与沙箱打架的主因）。
+	// 先摘除再重定向。
+	filtered := env[:0]
+	for _, kv := range env {
+		u := strings.ToUpper(kv)
+		if strings.HasPrefix(u, "TEMP=") || strings.HasPrefix(u, "TMP=") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	env = filtered
+	// 工具链引导：go 的临时目录进私有临时目录，构建缓存放工作区
+	// .jxai/gocache（跨命令复用，首次构建时 go 自建；否则要么每次全量
+	// 重编、要么写用户目录被拒）。JX_SANDBOX 标记供嵌套检测与模型自识。
+	env = append(env,
+		"TEMP="+tempDir, "TMP="+tempDir,
+		"GOTMPDIR="+tempDir,
+		"GOCACHE="+filepath.Join(r.Workspace, ".jxai", "gocache"),
+		"JX_SANDBOX="+r.Policy)
 	envBlock, err := envBlockPtr(env)
 	if err != nil {
 		os.RemoveAll(tempDir)
@@ -1068,7 +1094,7 @@ func buildShellCmdline(shell, command string) (string, string, error) {
 			comspec = `C:\Windows\system32\cmd.exe`
 		}
 		return comspec, `"` + comspec + `" /C ` + command, nil
-	case "pwsh", "powershell":
+	case "", "pwsh", "powershell": // 空 shell 缺省 powershell（曾报「不支持的 shell: 」）
 		exe, err := exec.LookPath(shell)
 		if err != nil {
 			return "", "", fmt.Errorf("找不到 %s", shell)

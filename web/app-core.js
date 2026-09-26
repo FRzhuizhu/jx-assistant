@@ -62,7 +62,17 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    // 错误体里的结构字段挂到 Error 上：文件回退的 409 带 blocked/unsafe
+    // （哪些文件被外部改过、哪些可退），前端要据此给出可操作的提示，
+    // 只保留 message 会把这些信息丢掉
+    const err = new Error(data.error || res.statusText);
+    err.status = res.status;
+    err.blocked = data.blocked;
+    err.unsafe = data.unsafe;
+    err.safe = data.safe;
+    throw err;
+  }
   return data;
 }
 

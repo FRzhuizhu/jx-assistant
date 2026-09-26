@@ -16,6 +16,7 @@ package main
 // 仍能按相对路径重新解析；写到工作区之外的文件没有相对形态，存原样绝对路径。
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // snapshotMaxFileBytes 自动快照的单文件上限：超过则跳过该文件的快照（回退时
@@ -112,6 +114,128 @@ func (t *toolContext) loadBefore(cp *Checkpoint) []byte {
 		return nil
 	}
 	return b
+}
+
+// ---------- 历史版本查看（文件改动面板行内「历史版本」的数据源） ----------
+
+// snapshotVersionMaxText 单个版本正文下发给前端的字节上限（超出截断，
+// 前端提示「内容过长，仅显示前 N KB」）。历史版本是"供对比或回退"的阅读
+// 材料，不做全量下载——要看整份内容用户会去打开当前文件。
+const snapshotVersionMaxText = 256 << 10
+
+// fileVersion 是一条历史版本摘要：某文件的一条快照。existedBefore=false
+// 说明"这次改动前文件不存在"（该版本即新建），前端按新建展示。hasBody 表示
+// 快照正文（.jxai/snapshots 里的文件）还在；current 表示该版本改动后的内容
+// 与文件当前内容一致；manual 表示来自手动 snapshot_file（回退不做哈希预检）。
+type fileVersion struct {
+	ID            int64  `json:"id"`
+	Seq           int64  `json:"seq"`
+	ToolName      string `json:"toolName"`
+	ExistedBefore bool   `json:"existedBefore"`
+	BeforeSize    int64  `json:"beforeSize"`
+	AfterSize     int64  `json:"afterSize"`
+	CreatedAt     string `json:"createdAt"`
+	HasBody       bool   `json:"hasBody"`
+	Current       bool   `json:"current"`
+	Manual        bool   `json:"manual"`
+}
+
+// fileVersionList 列出某文件在本会话的全部历史版本（最旧在前）。当前版本用
+// "该版本改动后的内容哈希 == 文件当前内容哈希" 判定，无需前端再哈希一遍。
+func (a *App) fileVersionList(t *toolContext, path string) ([]fileVersion, error) {
+	cps, err := a.Store.CheckpointsForPath(t.sess.ID, path)
+	if err != nil {
+		return nil, err
+	}
+	curHash := ""
+	if abs, rerr := t.resolve(path); rerr == nil {
+		if b, rerr2 := t.envReadFile(abs); rerr2 == nil {
+			curHash = hashBytes(b)
+		}
+	}
+	out := make([]fileVersion, 0, len(cps))
+	for _, cp := range cps {
+		v := fileVersion{
+			ID: cp.ID, Seq: cp.Seq, ToolName: cp.ToolName,
+			ExistedBefore: cp.ExistedBefore, BeforeSize: cp.BeforeSize,
+			AfterSize: cp.AfterSize, CreatedAt: cp.CreatedAt,
+			Manual: cp.ToolName == manualSnapshotTool,
+		}
+		if cp.ExistedBefore {
+			v.HasBody = t.loadBefore(cp) != nil
+		}
+		if curHash != "" && cp.AfterHash == curHash {
+			v.Current = true
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// fileVersionBody 取某个版本正文（改动前内容），带"是否二进制/是否截断"。
+// existedBefore=false 的版本没有正文：返回空内容 + existedBefore=false，
+// 前端按"这次改动前文件不存在（新建）"展示。
+func (t *toolContext) fileVersionBody(cp *Checkpoint) (data []byte, truncated bool, ok bool) {
+	if !cp.ExistedBefore {
+		return nil, false, true
+	}
+	b := t.loadBefore(cp)
+	if b == nil {
+		return nil, false, false
+	}
+	if len(b) > snapshotVersionMaxText {
+		return b[:snapshotVersionMaxText], true, true
+	}
+	return b, false, true
+}
+
+// workspaceFileBody 读会话工作区内某文件当前内容（与 fileVersionBody 同口径：
+// 二进制判定与截断由调用方按需处理），供历史版本与"当前内容"对比。
+func (t *toolContext) workspaceFileBody(path string) (data []byte, exists bool, truncated bool) {
+	abs, err := t.resolve(path)
+	if err != nil {
+		return nil, false, false
+	}
+	b, err := t.envReadFile(abs)
+	if err != nil {
+		return nil, false, false
+	}
+	if len(b) > snapshotVersionMaxText {
+		return b[:snapshotVersionMaxText], true, true
+	}
+	return b, true, false
+}
+
+// appendVersionBody 把正文按 text/binary 填充进响应体：二进制（含 NUL 或
+// 非 UTF-8）不下发正文，只给标记与字节数，前端显示"二进制内容，不展示文本"。
+func appendVersionBody(m map[string]any, data []byte, truncated bool) {
+	if data == nil {
+		m["text"] = ""
+		m["binary"] = false
+		m["size"] = 0
+		m["truncated"] = false
+		return
+	}
+	m["size"] = len(data)
+	m["truncated"] = truncated
+	if isBinaryBytes(data) {
+		m["binary"] = true
+		m["text"] = ""
+		return
+	}
+	m["binary"] = false
+	m["text"] = string(data)
+}
+
+// isBinaryBytes 判定内容是否二进制：含 NUL 字节或不是合法 UTF-8 都算。
+func isBinaryBytes(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	if bytes.IndexByte(b, 0) >= 0 {
+		return true
+	}
+	return !utf8.Valid(b)
 }
 
 // deleteSnapshotFiles 删除快照正文文件（行已删或将删；文件不存在视为成功）。
@@ -235,13 +359,16 @@ type rewindPlan struct {
 	Manual        bool   `json:"manual"`           // 基线来自手动快照（不做哈希预检）
 	ExistedBefore bool   `json:"existedBefore"`
 	Before        []byte
+	IDs           []int64 `json:"-"` // 这条计划消耗掉的快照行 id（回退成功后精确清理）
 }
 
 // planRewind 为一组快照生成回退计划。seqs 为空表示"seq 之后全部"（编辑重发），
 // 非空表示按轮撤销（只回退这些 seq 内的改动）。同一文件多次改动时：基线取
 // 最早的快照（改动前状态），预检对最晚的快照（最后一次记录的修改之后文件
 // 不应再被外部改过）。返回 safe（可执行）与 unsafe（拒绝执行，带原因）。
-func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int64) (safe, unsafe []*rewindPlan, err error) {
+// pathFilter 非空时只回退该文件（文件改动面板行内「撤回」用），其余文件的
+// 快照原样留在库里，供面板上的「全部撤回」或后续操作使用。
+func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int64, pathFilter string) (safe, unsafe []*rewindPlan, consumed []int64, err error) {
 	var cps []*Checkpoint
 	if len(seqs) > 0 {
 		cps, err = a.Store.CheckpointsIn(sessionID, seqs)
@@ -249,10 +376,29 @@ func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int
 		cps, err = a.Store.CheckpointsAfter(sessionID, seq)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	if pathFilter != "" {
+		kept := cps[:0:0]
+		for _, cp := range cps {
+			if cp.Path == pathFilter {
+				kept = append(kept, cp)
+			}
+		}
+		cps = kept
+	}
+	safe, unsafe, consumed = a.planRewindFor(t, cps)
+	return safe, unsafe, consumed, nil
+}
+
+// planRewindFor 是回退计划的实现主体：按文件归并给定的快照集（顺序 = 落库顺序），
+// 每个文件产出一条计划。consumed 是这批计划消耗掉的快照行 id——"全部撤回"与
+// "单文件撤回"都只清理真正用掉的那些，未被处理的文件快照（如按行撤回后剩下的
+// 其他文件）原样留在库里，仍能再次回退。
+func (a *App) planRewindFor(t *toolContext, cps []*Checkpoint) (safe, unsafe []*rewindPlan, consumed []int64) {
 	type fileState struct {
 		first, last *Checkpoint
+		ids         []int64
 	}
 	order := []string{}
 	byPath := map[string]*fileState{}
@@ -264,11 +410,12 @@ func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int
 			order = append(order, cp.Path)
 		}
 		st.last = cp
+		st.ids = append(st.ids, cp.ID)
 	}
 	for _, p := range order {
 		st := byPath[p]
 		plan := &rewindPlan{
-			Path: p, ExistedBefore: st.first.ExistedBefore,
+			Path: p, ExistedBefore: st.first.ExistedBefore, IDs: st.ids,
 			Manual: st.last.ToolName == manualSnapshotTool,
 		}
 		if plan.ExistedBefore {
@@ -292,7 +439,8 @@ func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int
 		switch {
 		case cerr != nil && os.IsNotExist(cerr):
 			if !plan.ExistedBefore {
-				// 要撤回的新建文件已经不在了：目标状态已达成，跳过
+				// 要撤回的新建文件已经不在了：目标状态已达成，跳过（快照照样清掉）
+				consumed = append(consumed, st.ids...)
 				continue
 			}
 			if plan.Manual {
@@ -314,8 +462,9 @@ func (a *App) planRewind(t *toolContext, sessionID string, seq int64, seqs []int
 			continue
 		}
 		safe = append(safe, plan)
+		consumed = append(consumed, st.ids...)
 	}
-	return safe, unsafe, nil
+	return safe, unsafe, consumed
 }
 
 // applyRewind 执行回退计划，带补偿 journal：每个文件动手前先记下当前状态，

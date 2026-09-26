@@ -1122,6 +1122,52 @@ func (s *Store) EvictCheckpointsOver(sessionID string, maxAuto, maxManual int64)
 	return ids, nil
 }
 
+// CheckpointsByIDs 按行 id 取快照（全字段，含 AfterHash / BeforeSize），
+// 供「单文件撤回」在成功后精确清理这几条快照。找不到的行直接略过。
+func (s *Store) CheckpointsByIDs(sessionID string, ids []int64) ([]*Checkpoint, error) {
+	if len(ids) == 0 {
+		return []*Checkpoint{}, nil
+	}
+	args := []any{sessionID}
+	marks := []string{}
+	for _, id := range ids {
+		marks = append(marks, "?")
+		args = append(args, id)
+	}
+	rows, err := s.db.Query(`SELECT `+checkpointCols+` FROM checkpoints
+		WHERE session_id=? AND id IN (`+strings.Join(marks, ",")+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Checkpoint{}
+	for rows.Next() {
+		if cp, err := scanCheckpoint(rows); err == nil {
+			out = append(out, cp)
+		}
+	}
+	return out, rows.Err()
+}
+
+// CheckpointsForPath 取某文件在本会话的全部快照（按落库顺序 = 改动发生顺序）。
+// 这是文件改动面板行内「历史版本」的数据源：path 用工作区相对路径（与
+// Checkpoint.Path 同一口径）。含手动快照（snapshot_file）与自动快照。
+func (s *Store) CheckpointsForPath(sessionID, path string) ([]*Checkpoint, error) {
+	rows, err := s.db.Query(`SELECT `+checkpointCols+` FROM checkpoints
+		WHERE session_id=? AND path=? ORDER BY id`, sessionID, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Checkpoint{}
+	for rows.Next() {
+		if cp, err := scanCheckpoint(rows); err == nil {
+			out = append(out, cp)
+		}
+	}
+	return out, rows.Err()
+}
+
 // AddDelivery 落一条交付登记。
 func (s *Store) AddDelivery(d *Delivery) error {
 	s.mu.Lock()

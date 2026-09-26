@@ -17,6 +17,7 @@ import (
 )
 
 func TestSandboxRealWorkspaceInit(t *testing.T) {
+	skipIfNestedSandbox(t)
 	// 场景1：真实 Modify 档目录（存在才测，避免依赖特定机器）
 	const realWS = `D:\智能体工作区\工作目录`
 	if fi, err := os.Stat(realWS); err != nil || !fi.IsDir() {

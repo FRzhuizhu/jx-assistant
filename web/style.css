@@ -191,8 +191,12 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .ed-btn:disabled { opacity: .5; cursor: default; }
 .ed-note { margin-top: 6px; font-size: .78em; color: var(--text-3); }
 
-/* 文件改动面板（复用 proc-row 折叠样式）：修改/新增清单 + 撤销按钮 */
+/* 文件改动面板（复用 proc-row 折叠样式）：修改/新增清单 + 「全部撤回」，
+   每行文件另有「撤回」「历史版本」两个独立按钮。
+   字号：面板挂在 .msg-col 内，--chat-fs 是设置里「字体大小」的落点——这里
+   一律用 em 相对值继承它，不写死 px，改设置时整块跟着变。 */
 .file-panel .proc-head { cursor: pointer; }
+/* 折叠行上的总按钮：作用于本批全部文件 */
 .fp-undo {
   margin-left: auto; border: 1px solid var(--border-2); background: none;
   color: var(--text-3); font: inherit; font-size: .84em; border-radius: 6px;
@@ -200,7 +204,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 .fp-undo:hover { background: var(--hover); color: var(--text); border-color: var(--text-3); }
 .fp-undo:disabled { opacity: .5; cursor: default; }
-.fp-file { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: .92em; }
+.fp-file {
+  display: flex; align-items: center; gap: 8px; padding: 3px 5px;
+  border-radius: 6px; cursor: pointer;
+}
+.fp-file:hover { background: var(--hover); }
 .fp-tag {
   flex: none; font-size: .78em; border-radius: 5px; padding: 1px 7px;
   border: 1px solid var(--border-2); color: var(--text-3);
@@ -209,8 +217,54 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .fp-tag.mod { color: #9a6700; border-color: currentColor; }
 .fp-path { font-family: Consolas, "Courier New", monospace; font-size: .92em; word-break: break-all; }
 .fp-size { flex: none; margin-left: auto; font-size: .8em; color: var(--text-3); }
+.fp-acts { flex: none; display: flex; align-items: center; gap: 5px; }
+/* 行内两个按钮：各自独立生效（撤回只动这一个文件；历史版本只展开这个文件的列表） */
+.fp-btn {
+  flex: none; border: 1px solid var(--border-2); background: none;
+  color: var(--text-3); font: inherit; font-size: .8em; border-radius: 6px;
+  padding: 1px 8px; cursor: pointer; white-space: nowrap;
+}
+.fp-btn:hover { background: var(--bg); color: var(--text); border-color: var(--text-3); }
+.fp-btn:disabled { opacity: .5; cursor: default; }
+.fp-vers-btn.on { color: var(--text); border-color: var(--text-3); background: var(--bg); }
 
-/* 交付成果卡片：deliver_result 登记的最终交付文件 */
+/* 历史版本列表（点「历史版本」就地展开）；字号一律 em 继承 --chat-fs */
+.fp-vers { padding: 2px 0 4px 0; }
+.fv-list { border-left: 2px solid var(--border-2); margin-left: 4px; padding-left: 8px; }
+.fv-tip { color: var(--text-3); font-size: .82em; margin: 3px 0; }
+.fv-tip.bad { color: #c0392b; }
+.fv-item { border-radius: 6px; padding: 2px 4px; cursor: pointer; }
+.fv-item:hover { background: var(--hover); }
+.fv-head { display: flex; align-items: center; gap: 7px; min-height: 20px; font-size: .86em; }
+.fv-idx {
+  flex: none; font-size: .82em; color: var(--accent); border: 1px solid currentColor;
+  border-radius: 5px; padding: 0 5px;
+}
+.fv-when { color: var(--text-3); white-space: nowrap; }
+.fv-note { flex: 1; min-width: 0; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-cur {
+  flex: none; font-size: .78em; color: #1f9d55; border: 1px solid currentColor;
+  border-radius: 5px; padding: 0 5px;
+}
+.fv-acts { flex: none; display: flex; gap: 5px; }
+.fv-btn {
+  border: 1px solid var(--border-2); background: none; color: var(--text-3);
+  font: inherit; font-size: .8em; border-radius: 6px; padding: 1px 8px; cursor: pointer;
+  white-space: nowrap;
+}
+.fv-btn:hover { background: var(--bg); color: var(--text); border-color: var(--text-3); }
+.fv-btn:disabled { opacity: .5; cursor: default; }
+.fv-body { padding: 4px 0 2px 3px; }
+.fv-body pre {
+  background: var(--code-bg); border: 1px solid var(--border-2); border-radius: 8px;
+  padding: 7px 9px; margin: 3px 0 2px; overflow-x: auto; max-height: 220px;
+  font-family: Consolas, "Courier New", monospace; font-size: .9em;
+  white-space: pre-wrap; word-break: break-all; line-height: 1.5;
+}
+
+/* 交付成果卡片：deliver_result 登记的最终交付文件。
+   每行两个动作（打开 / 在文件夹中查看），整行可点击并打开文件，悬停高亮；
+   没有「下载」按钮。字号同样 em 继承 --chat-fs。 */
 .delivery-card {
   border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: 10px; background: var(--code-bg); margin: 6px 0 18px; overflow: hidden;
@@ -219,17 +273,23 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .dc-head svg { width: 15px; height: 15px; color: var(--accent); flex: none; }
 .dc-title { font-weight: 600; font-size: .93em; }
 .dc-count { font-size: .8em; color: var(--text-3); }
+/* 行内两个动作按钮（打开 / 在文件夹中查看）：整行也可点，按钮各自独立 */
+.dc-file { cursor: pointer; }
+.dc-file:hover { background: var(--hover); }
+.dc-file:active { background: var(--chip); }
 .dc-file {
   display: flex; align-items: center; gap: 10px; padding: 6px 13px;
   border-top: 1px solid var(--border-2);
 }
 .dc-name { font-family: Consolas, "Courier New", monospace; font-size: .9em; word-break: break-all; }
 .dc-note { flex: 1; min-width: 0; font-size: .82em; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dc-dl {
-  flex: none; font-size: .84em; color: var(--accent); text-decoration: none;
+.dc-acts { flex: none; display: flex; gap: 6px; }
+.dc-btn {
+  flex: none; font: inherit; font-size: .84em; color: var(--accent);
+  background: none; cursor: pointer; white-space: nowrap;
   border: 1px solid currentColor; border-radius: 6px; padding: 2px 10px;
 }
-.dc-dl:hover { background: var(--hover); }
+.dc-btn:hover { background: var(--hover); }
 
 /* 系统注入的回报/中断记录：左侧细边框通知样式 */
 .msg.sysnote { display: flex; margin-bottom: 14px; }

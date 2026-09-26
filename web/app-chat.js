@@ -824,9 +824,172 @@ function subTaskCard(tc, result) {
 
 /* ---------- 文件改动面板与交付成果卡片（文件快照子系统的前端半边） ---------- */
 
+// 文件回退请求（「全部撤回」「撤回」「恢复到此版本前」共用）：成功刷新视图，
+// 失败按服务端口径提示——409 blocked 时列出"快照后被外部改过"的文件清单。
+// payload 走 handleFileRewind 的三种口径之一：{seqs} / {seqs,path} / {checkpointId}。
+async function fileRewind(view, payload, btn, what) {
+  if (view.state.streaming) {
+    view.hint.textContent = '本轮执行中，等结束再撤回';
+    setTimeout(() => { if (view.hint.textContent === '本轮执行中，等结束再撤回') view.hint.textContent = ''; }, 2500);
+    return false;
+  }
+  btn.disabled = true;
+  try {
+    const d = await api('/api/sessions/' + view.state.cur.id + '/file-rewind', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    const msg = '已' + what + '：恢复 ' + (d.restored || 0) + ' 个文件、撤回 ' + (d.deleted || 0) + ' 个新建文件';
+    view.hint.textContent = msg;
+    setTimeout(() => { if (view.hint.textContent === msg) view.hint.textContent = ''; }, 5000);
+    if (view === mainView) openSession(view.state.cur.id); else openSubSession(view.state.cur.id);
+    return true;
+  } catch (err) {
+    btn.disabled = false;
+    const list = (err.unsafe || []).map((u) => u.path + '：' + (u.reason || '被外部修改')).join('\n');
+    if (err.blocked && list) {
+      alert('以下文件在快照后被外部修改，无法安全回退：\n' + list);
+    } else {
+      alert('撤回失败：' + err.message);
+    }
+    return false;
+  }
+}
+
+// 一个文件的历史版本列表容器（点「历史版本」就地展开/收起）。数据来自会话
+// 快照（checkpoint）：每条 = 该文件的一次改动及其"改动前内容"，可查看内容
+// 与当前文件的差异，或「恢复到此版本前」（只影响这一个文件）。
+function fileVersionBox(view, path) {
+  const box = document.createElement('div');
+  box.className = 'fp-vers';
+  const list = document.createElement('div');
+  list.className = 'fv-list';
+  box.appendChild(list);
+  hideEl(box);
+  box._loaded = false;
+  box._load = async () => {
+    list.innerHTML = '<div class="fv-tip">读取历史版本…</div>';
+    try {
+      const d = await api('/api/sessions/' + view.state.cur.id + '/file-versions?path=' + encodeURIComponent(path));
+      renderVersionList(view, path, list, d);
+    } catch (err) {
+      list.innerHTML = '<div class="fv-tip bad">读取失败：' + esc(err.message) + '</div>';
+    }
+  };
+  return box;
+}
+
+// 历史版本清单：最旧在前，末条标「当前」（该版本改动后的内容 == 文件现状）。
+// 每项两个动作：查看（就地展开内容/差异）与恢复到此版本前（checkpointId 口径）。
+function renderVersionList(view, path, list, d) {
+  const vers = d.versions || [];
+  list.innerHTML = '';
+  const cap = document.createElement('div');
+  cap.className = 'fv-tip';
+  cap.textContent = vers.length
+    ? '共 ' + vers.length + ' 个历史版本（最旧在前）' + (d.exists ? ' · 当前文件 ' + fmtBytes(d.size || 0) + '' : ' · 当前文件已不存在')
+    : '没有历史版本（快照可能已按保留策略清理）';
+  list.appendChild(cap);
+  vers.forEach((v, i) => {
+    const item = document.createElement('div');
+    item.className = 'fv-item';
+    const when = (v.createdAt || '').replace('T', ' ').slice(5, 16);
+    const what = v.existedBefore ? '改动前 ' + fmtBytes(v.beforeSize || 0) : '此版本前文件不存在';
+    const head = document.createElement('div');
+    head.className = 'fv-head';
+    head.innerHTML = '<span class="fv-idx">v' + (i + 1) + '</span>' +
+      '<span class="fv-when">' + esc(when) + ' · ' + esc(v.toolName || '') + '</span>' +
+      '<span class="fv-note">' + esc(what) + ' · 改动后 ' + fmtBytes(v.afterSize || 0) + '</span>' +
+      (v.current ? '<span class="fv-cur">当前</span>' : '');
+    const acts = document.createElement('span');
+    acts.className = 'fv-acts';
+    const showBtn = document.createElement('button');
+    showBtn.type = 'button';
+    showBtn.className = 'fv-btn fv-view';
+    showBtn.textContent = '查看内容';
+    const restBtn = document.createElement('button');
+    restBtn.type = 'button';
+    restBtn.className = 'fv-btn fv-restore';
+    restBtn.textContent = '恢复到此版本前';
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'fv-body';
+    hideEl(bodyEl);
+    showBtn.onclick = async (e) => {
+      e.stopPropagation();
+      if (!bodyEl.hasAttribute('hidden')) { hideEl(bodyEl); return; }
+      bodyEl.innerHTML = '<div class="fv-tip">读取中…</div>';
+      showEl(bodyEl);
+      try {
+        const t = await api('/api/sessions/' + view.state.cur.id +
+          '/file-version?path=' + encodeURIComponent(path) + '&id=' + encodeURIComponent(v.id));
+        renderVersionBody(view, path, bodyEl, t);
+      } catch (err) {
+        bodyEl.innerHTML = '<div class="fv-tip bad">读取失败：' + esc(err.message) + '</div>';
+      }
+    };
+    restBtn.onclick = async (e) => {
+      e.stopPropagation();
+      if (!(await confirmCenter('把这个文件恢复到 v' + (i + 1) + '（' + when + '）这次改动之前？\n' +
+        (v.existedBefore ? '将把当前内容换成那次改动前的内容。' : '将删除这个文件（那次改动前它不存在）。') +
+        '\n只影响这一个文件；对话记录不变（已按快照校验，外部改过的文件会被拒绝）。'))) return;
+      await fileRewind(view, { checkpointId: v.id, path }, restBtn, '恢复 ' + path);
+    };
+    acts.appendChild(showBtn);
+    // 「当前」版本没有可回退的目标；正文缺失（且改动前该文件存在）也无从恢复。
+    // 「改动前不存在」的版本（新建）即使没有正文也有意义：恢复它 = 删掉该文件。
+    const canRestore = !v.current && (v.existedBefore ? v.hasBody !== false : true);
+    if (canRestore) acts.appendChild(restBtn);
+    head.appendChild(acts);
+    item.appendChild(head);
+    item.appendChild(bodyEl);
+    if (showBtn) {
+      // 整行可点：点条目空白处等同「查看内容」，按钮各自独立生效
+      item.onclick = () => showBtn.click();
+    }
+    list.appendChild(item);
+  });
+}
+
+// 版本正文面板：文本给"与当前内容的差异 + 该版本全文"，二进制只给说明。
+// 版本正文缺失（.jxai/snapshots 里的文件被清掉）时只展示元数据。
+function renderVersionBody(view, path, box, t) {
+  box.innerHTML = '';
+  const note = document.createElement('div');
+  note.className = 'fv-tip';
+  if (!t.hasBody) {
+    note.classList.add('bad');
+    note.textContent = '这个版本的正文不在快照库里（已按保留策略清理），只能看到元数据。';
+    box.appendChild(note);
+    return;
+  }
+  if (t.existedBefore === false) {
+    note.textContent = '这个版本之前该文件不存在（本次改动是新建）。';
+    box.appendChild(note);
+    return;
+  }
+  if (t.binary) {
+    note.textContent = '这个版本是二进制内容（' + fmtBytes(t.size || 0) + '），不展示文本。';
+    box.appendChild(note);
+    return;
+  }
+  if (t.truncated) note.textContent = '内容过长，仅显示前 ' + fmtBytes(t.size || 0) + '。';
+  else note.textContent = '改动前内容（' + fmtBytes(t.size || 0) + '）：';
+  box.appendChild(note);
+  const pre = document.createElement('pre');
+  const cur = t.current || {};
+  // 当前内容也是文本时给"行级差异 + 版本全文"，一眼看出版本与现状差在哪
+  pre.textContent = (cur.exists && !cur.binary && typeof cur.text === 'string')
+    ? diffBody(t.text, cur.text)
+    : String(t.text ?? '');
+  box.appendChild(pre);
+}
+
 // 文件改动面板：一回合内动过的文件（自动快照 + 手动 snapshot_file 都算），
-// 折叠条显示「修改 N / 新增 M」，点开是文件清单；「撤销」把这轮文件改动
-// 恢复到该轮之前（对话记录不动，服务端 fail-closed 校验）
+// 折叠条显示「修改 N / 新增 M」，整条折叠行可点击展开/收起。折叠行上的
+// 「全部撤回」作用于本批全部文件；清单里每行文件另有两个互相独立的按钮：
+// 「撤回」（只回退这一行文件，仍限定在本批 seqs 内）与「历史版本」（列出
+// 该文件此前的快照版本，可查看内容、恢复到某个版本之前）。
+// 字号一律走 .msg-col 继承来的 --chat-fs（设置里的「字体大小」），本面板
+// 不再写死字号：内部只用 em 相对值，跟随设置一起变化。
 function fileChangesPanel(cps, seqs, view) {
   // 同文件多次改动只显示一行，类型按最早一条（改动前是否存在）
   const byPath = new Map();
@@ -841,34 +1004,18 @@ function fileChangesPanel(cps, seqs, view) {
   head.className = 'proc-head';
   const label = '文件改动 · 修改 ' + modified.length + ' · 新增 ' + added.length;
   head.innerHTML = chev('p-chev') + '<span class="p-name">' + label + '</span>' +
-    '<span class="p-sub">· 可撤销</span>';
+    '<span class="p-sub">· 可撤回</span>';
+  // 整条折叠行上的总按钮：作用于本批全部文件（按轮撤回）
   const undo = document.createElement('button');
   undo.type = 'button';
   undo.className = 'fp-undo';
-  undo.textContent = '撤销';
-  undo.title = '把这轮文件改动恢复到该轮之前（对话记录不变）';
+  undo.textContent = '全部撤回';
+  undo.title = '把这批全部文件改动恢复到改动之前（对话记录不变）';
   undo.onclick = async (e) => {
     e.stopPropagation();
-    if (view.state.streaming) return;
     const detail = modified.map((c) => '恢复 ' + c.path).concat(added.map((c) => '删除 ' + c.path)).join('\n');
-    if (!(await confirmCenter('撤销本轮文件改动？\n' + detail + '\n（已按快照校验，外部改过的文件会被拒绝）'))) return;
-    undo.disabled = true;
-    try {
-      const d = await api('/api/sessions/' + view.state.cur.id + '/file-rewind', {
-        method: 'POST', body: JSON.stringify({ seqs }),
-      });
-      view.hint.textContent = '已恢复 ' + (d.restored || 0) + ' 个文件、撤回 ' + (d.deleted || 0) + ' 个新建文件';
-      setTimeout(() => { view.hint.textContent = ''; }, 4000);
-      if (view === mainView) openSession(view.state.cur.id); else openSubSession(view.state.cur.id);
-    } catch (err) {
-      undo.disabled = false;
-      const list = (err.unsafe || []).map((u) => u.path + '：' + (u.reason || '被外部修改')).join('\n');
-      if (err.blocked && list) {
-        alert('以下文件在快照后被外部修改，无法安全回退：\n' + list);
-      } else {
-        alert('撤销失败：' + err.message);
-      }
-    }
+    if (!(await confirmCenter('撤回本批全部文件改动？\n' + detail + '\n（已按快照校验，外部改过的文件会被拒绝）'))) return;
+    await fileRewind(view, { seqs }, undo, '全部撤回');
   };
   head.appendChild(undo);
   const body = document.createElement('div');
@@ -879,7 +1026,47 @@ function fileChangesPanel(cps, seqs, view) {
     row.innerHTML = '<span class="fp-tag ' + (tag === '新增' ? 'add' : 'mod') + '">' + tag + '</span>' +
       '<span class="fp-path">' + esc(c.path) + '</span>' +
       '<span class="fp-size">' + fmtBytes(c.afterSize || 0) + '</span>';
-    return row;
+    const acts = document.createElement('span');
+    acts.className = 'fp-acts';
+    const rev = document.createElement('button');
+    rev.type = 'button';
+    rev.className = 'fp-btn fp-revert';
+    rev.textContent = '撤回';
+    rev.title = '只把这个文件回退到本次改动之前（本批内的改动，对话记录不变）';
+    const vers = document.createElement('button');
+    vers.type = 'button';
+    vers.className = 'fp-btn fp-vers-btn';
+    vers.textContent = '历史版本';
+    vers.title = '查看这个文件此前保存的快照版本，可对比或回退';
+    acts.appendChild(rev);
+    acts.appendChild(vers);
+    row.appendChild(acts);
+    const vbox = fileVersionBox(view, c.path);
+    rev.onclick = async (e) => {
+      e.stopPropagation();
+      if (!(await confirmCenter('撤回 ' + c.path + ' 的改动？\n' +
+        (c.existedBefore ? '将恢复成这次改动前的内容。' : '将删除这个文件（改动前它不存在）。') +
+        '\n只影响这一个文件；对话记录不变（已按快照校验，外部改过的文件会被拒绝）。'))) return;
+      await fileRewind(view, { seqs, path: c.path }, rev, '撤回 ' + c.path);
+    };
+    const toggleVers = async (e) => {
+      if (e) e.stopPropagation();
+      const open = vbox.hasAttribute('hidden');
+      if (open) {
+        showEl(vbox);
+        vers.classList.add('on');
+        if (!vbox._loaded) { vbox._loaded = true; await vbox._load(); }
+      } else {
+        hideEl(vbox);
+        vers.classList.remove('on');
+      }
+    };
+    vers.onclick = toggleVers;
+    row.onclick = toggleVers; // 整行可点：与「历史版本」同效，展开/收起版本列表
+    const wrap = document.createElement('div');
+    wrap.appendChild(row);
+    wrap.appendChild(vbox);
+    return wrap;
   };
   modified.forEach((c) => body.appendChild(one('修改', c)));
   added.forEach((c) => body.appendChild(one('新增', c)));
@@ -896,8 +1083,32 @@ function fmtBytes(n) {
   return n + ' B';
 }
 
-// 交付成果卡片：deliver_result 登记的最终交付文件，逐个提供下载
-function deliveryCard(dvs, sid) {
+// 交付卡片的两个动作：都用系统外壳处理（用户主动操作，不经模型权限门控）。
+// 「打开」= 用系统默认程序打开该文件（双击它是什么程序就是什么程序）；
+// 「在文件夹中查看」= 资源管理器里定位并选中该文件。
+// SSH 远程会话的文件在本机没有对应路径：打开改为在右栏浏览器里查看内容，
+// 定位则明确提示不可用（服务端也会拒绝，这里先给更直白的说法）。
+function deliveryOpenFile(view, sid, d) {
+  const cur = view === subView ? subState.cur : state.cur;
+  if (cur && cur.remote) { openInPanelBrowser({ session: sid, path: d.path }); return Promise.resolve(); }
+  return api('/api/sessions/' + encodeURIComponent(sid) + '/delivery/open', {
+    method: 'POST', body: JSON.stringify({ path: d.path }),
+  }).catch((e) => alert('打开失败：' + e.message));
+}
+
+function deliveryRevealFile(view, sid, d) {
+  const cur = view === subView ? subState.cur : state.cur;
+  if (cur && cur.remote) { alert('这是远程工作区里的文件，本机没有对应路径，无法在文件夹中定位。'); return Promise.resolve(); }
+  return api('/api/sessions/' + encodeURIComponent(sid) + '/delivery/reveal', {
+    method: 'POST', body: JSON.stringify({ path: d.path }),
+  }).catch((e) => alert('打开所在文件夹失败：' + e.message));
+}
+
+// 交付成果卡片：deliver_result 登记的最终交付文件。每行两个动作（「打开」与
+// 「在文件夹中查看」），整行都是点击热区——点行内任何位置（含空白）都等同
+// 「打开」该文件，悬停有高亮反馈。不再提供「下载」按钮。
+function deliveryCard(dvs, sid, view) {
+  view = view || mainView;
   const card = document.createElement('div');
   card.className = 'delivery-card';
   const head = document.createElement('div');
@@ -908,6 +1119,7 @@ function deliveryCard(dvs, sid) {
   dvs.forEach((d) => {
     const row = document.createElement('div');
     row.className = 'dc-file';
+    row.title = d.path + '\n点击打开这个文件';
     const nm = document.createElement('span');
     nm.className = 'dc-name';
     nm.title = d.path;
@@ -919,23 +1131,25 @@ function deliveryCard(dvs, sid) {
       note.textContent = d.note;
       row.appendChild(note);
     }
-    const dl = document.createElement('a');
-    dl.className = 'dc-dl';
-    dl.href = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
-    dl.textContent = '下载';
-    row.appendChild(dl);
-    // 可浏览器查看的交付文件加「打开」：在内嵌浏览器渲染（本地 file:// 相对资源可用）
-    if (/\.(html?|svg)$/i.test(d.path)) {
-      const ov = document.createElement('a');
-      ov.className = 'dc-dl';
-      ov.href = '#';
-      ov.textContent = '打开';
-      ov.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        openInPanelBrowser({ session: sid, path: d.path });
-      });
-      row.appendChild(ov);
-    }
+    const acts = document.createElement('span');
+    acts.className = 'dc-acts';
+    const ov = document.createElement('button');
+    ov.type = 'button';
+    ov.className = 'dc-btn';
+    ov.textContent = '打开';
+    ov.title = '用系统默认程序打开这个文件';
+    const rv = document.createElement('button');
+    rv.type = 'button';
+    rv.className = 'dc-btn';
+    rv.textContent = '在文件夹中查看';
+    rv.title = '在文件资源管理器中定位这个文件';
+    ov.onclick = (ev) => { ev.stopPropagation(); deliveryOpenFile(view, sid, d); };
+    rv.onclick = (ev) => { ev.stopPropagation(); deliveryRevealFile(view, sid, d); };
+    acts.appendChild(ov);
+    acts.appendChild(rv);
+    row.appendChild(acts);
+    // 整行可点击（含行内空白）：与「打开」等效
+    row.onclick = () => deliveryOpenFile(view, sid, d);
     card.appendChild(row);
   });
   return card;
@@ -1039,7 +1253,7 @@ function appendTurn(target, turn, key, view, isLast) {
   const cps = (view.state.checkpoints || []).filter((c) => seqSet.has(c.seq));
   if (cps.length) target.appendChild(fileChangesPanel(cps, [...seqSet], view));
   const dvs = (view.state.deliveries || []).filter((d) => seqSet.has(d.seq));
-  if (dvs.length) target.appendChild(deliveryCard(dvs, sid));
+  if (dvs.length) target.appendChild(deliveryCard(dvs, sid, view));
 }
 
 function renderMessages(msgs, view, opts) {

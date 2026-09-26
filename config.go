@@ -81,6 +81,7 @@ type Config struct {
 	SnapshotMaxMB       int   `json:"snapshotMaxMB"`       // 每会话自动快照总量上限（MB），默认 32；-1=不限量
 	SnapshotManualMaxMB int   `json:"snapshotManualMaxMB"` // 每会话手动快照总量上限（MB），默认 -1 不限量；需要时设 500/1024
 	// 子对话专家（专家团）预设：dispatch_sub 按名称选用的命名预设（追加提示词/
+	// 默认模型/上下文继承/启用开关）。配置文件没写过这一键时补种演示专家。
 	Experts []ExpertCfg `json:"experts"`
 	// 远程接入（公网中继，RustDesk 式）：出站长连注册到自建 210 网关的 /hub，
 	// 手机等外部设备经网关的加密中继访问本服务；端到端 AES-256-GCM（密钥由
@@ -261,5 +262,18 @@ func (c *Config) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// 原子写：先写同目录临时文件再改名覆盖。非原子写曾因并发保存
+	// （多实例/诊断脚本与正在运行的实例交错写同一文件）把 config.json
+	// 写成交错残片——密文尾部截断后永久无法解密，设置保存表现为随机
+	// 失败。改名覆盖是原子的：读者要么看到旧文件、要么看到新文件。
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }

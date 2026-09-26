@@ -9,7 +9,16 @@ import (
 	"time"
 )
 
+// skipIfNestedSandbox 沙箱内跑 go test 时跳过真机沙箱用例（嵌套沙箱不
+// 支持：写受限令牌拿不到授权所需的 WRITE_DAC，起沙箱必败，属预期限制）。
+func skipIfNestedSandbox(t testing.TB) {
+	if v := os.Getenv("JX_SANDBOX"); v != "" {
+		t.Skipf("嵌套沙箱内跳过（本进程已运行在 %s 档沙箱内）", v)
+	}
+}
+
 func sandboxRunOnce(t *testing.T, ws, policy, command string) string {
+	skipIfNestedSandbox(t)
 	r := sandboxRun{Dir: ws, Command: command, Shell: "powershell",
 		Timeout: 60 * time.Second, Policy: policy, Workspace: ws}
 	out, err := spawnConfinedWindows(context.Background(), r)

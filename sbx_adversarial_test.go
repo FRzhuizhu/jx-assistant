@@ -15,6 +15,7 @@ import (
 // 预期：全部被拒（含官方文档自报的 Everyone/硬链接缺口——密级关卡
 // 落地后一并封堵，断言已从记录翻转为硬失败）。
 func TestSandboxAdversarial(t *testing.T) {
+	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	outside := t.TempDir()
 
@@ -136,6 +137,7 @@ func TestSandboxAdversarial(t *testing.T) {
 // TestSandboxJobTreeKill 验证 Job Object 整树回收（P0-2）：
 // 超时终止时派生的孙进程必须一并死掉；kill-on-close 保证主进程崩溃时清场。
 func TestSandboxJobTreeKill(t *testing.T) {
+	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	marker := filepath.Join(ws, "grandchild_alive.txt")
 	// 派生孙进程：Start-Process 起一个 detached powershell，睡 3 秒后写标记；
@@ -163,6 +165,7 @@ func TestSandboxJobTreeKill(t *testing.T) {
 // TestSandboxEveryoneWriteDenied 验证官方自报缺口1（Everyone 可写位置）
 // 已被密级关卡封堵：显式授 Everyone:(M) 的目录，沙箱内写入仍必须被拒。
 func TestSandboxEveryoneWriteDenied(t *testing.T) {
+	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	everyoneDir := t.TempDir()
 	ev, err := windows.CreateWellKnownSid(windows.WinWorldSid)
@@ -189,6 +192,7 @@ func TestSandboxEveryoneWriteDenied(t *testing.T) {
 // cmd shell 也要能跑（buildShellCmdline 的另一分支）；顺带钉住 NUL 重定向
 // 兼容性（Low IL 写 NUL 设备——密级关卡 PoC 门项）。
 func TestSandboxCmdShell(t *testing.T) {
+	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	r := sandboxRun{Dir: ws, Command: `cmd /c "echo x > NUL 2> NUL & echo cmd-ok"`, Shell: "cmd",
 		Timeout: 60 * time.Second, Policy: permWorkspace, Workspace: ws}
@@ -204,6 +208,7 @@ func TestSandboxCmdShell(t *testing.T) {
 
 // 后台作业走沙箱（startConfinedAsync）。
 func TestSandboxBackgroundJob(t *testing.T) {
+	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := sandboxRun{Dir: ws, Command: `Set-Content .\bg.txt -Value bg-ok; Start-Sleep 30`,

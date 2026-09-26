@@ -16,3 +16,5 @@ data-uitest/
 mock-演示.txt
 打包/stage/
 打包/输出/
+.jxai/
+new-assistant.log
