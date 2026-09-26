@@ -14,10 +14,31 @@
 
 const RP_MIN = 300;          // 右栏最小宽
 const RP_CONTENT_MIN = 640;  // 对话区最小宽（与拖把手一致）
-const rpViews = {};          // 视图注册表：id → { title, onOpen }（计划/浏览器/文件/子对话…以后往这加）
+/* 视图注册表：id → { title, type, src, onOpen }（计划/文件…以后往这加）。
+   type 缺省 native：容器是 index.html 里的静态 DOM（id=rp-view-<id>），行为
+   代码挂在本仓 js；type=iframe：视图是一个独立面板页（web/panel/<name>，
+   经 rpContainerFor 惰性创建 iframe，首开加载、此后常驻不重载）——面板页
+   自成一体（自己的 HTML/JS/CSS + 直连同源 API），与主界面仅共享源。 */
+const rpViews = {};
 let rpActive = null;
 
 function rpRegister(id, def) { rpViews[id] = def; }
+
+// 取（必要时创建）视图容器：native 用静态 DOM，iframe 视图惰性建 iframe 挂进 #rp-body
+function rpContainerFor(view) {
+  const def = rpViews[view] || {};
+  let el = $('rp-view-' + view);
+  if (el || def.type !== 'iframe') return el;
+  el = document.createElement('div');
+  el.id = 'rp-view-' + view;
+  el.className = 'rp-view rp-view-iframe';
+  const f = document.createElement('iframe');
+  f.src = def.src;
+  f.title = def.title || view;
+  el.appendChild(f);
+  $('rp-body').appendChild(el);
+  return el;
+}
 
 function rpAvail() { // 右栏可瓜分的总宽 = #app 宽 − 左侧栏（折叠时 offsetWidth 为 0）
   const app = $('app'), sb = $('sidebar');
@@ -54,19 +75,33 @@ function rpRenderTabs() {
 function rpOpen(view) {
   const panel = $('rpanel');
   if (!panel || !rpViews[view]) return;
+  const wasOpen = !panel.classList.contains('hidden');
   rpActive = view;
   rpRenderTabs();
-  panel.classList.remove('hidden');
-  if (isNarrow()) {
-    // 浮层模式：先提交隐藏起点（transform:translateX(100%)）再加类，过渡才成立；
-    // 不设 --rp-w、不跑 slidePane（内联 width 会顶掉 CSS 的整屏宽）
-    void panel.offsetWidth;
-    document.body.classList.add('rp-open');
-  } else {
-    document.body.classList.add('rp-open');
-    rpApply(); // 先按剩余宽定好 --rp-w，再从 0 滑入
-    slidePane(panel, 0, rpCurrentW());
+  // 多视图显隐切换：目标容器激活，其余全部让位（native/iframe 同一机制）
+  const cont = rpContainerFor(view);
+  if (cont) {
+    for (const el of document.querySelectorAll('#rp-body > .rp-view')) el.classList.remove('active');
+    cont.classList.add('active');
   }
+  panel.classList.remove('hidden');
+  if (!wasOpen) {
+    // 从收起到展开：播滑入动画。浮层模式先提交隐藏起点（translateX(100%)）
+    // 再加类过渡才成立；不设 --rp-w、不跑 slidePane（内联 width 顶掉整屏宽）
+    if (isNarrow()) {
+      void panel.offsetWidth;
+      document.body.classList.add('rp-open');
+    } else {
+      document.body.classList.add('rp-open');
+      rpApply(); // 先按剩余宽定好 --rp-w，再从 0 滑入
+      slidePane(panel, 0, rpCurrentW());
+    }
+  } else {
+    // 面板本来就开着（页签间切换）：不动面板本身，只换视图容器，不重播动画
+    document.body.classList.add('rp-open');
+    if (!isNarrow()) rpApply(); // 幂等重算（宽度契约不变时无视觉变化）
+  }
+  setRpanelBtn(true);
   if (rpViews[view].onOpen) rpViews[view].onOpen();
 }
 
@@ -75,6 +110,7 @@ function rpClose() {
   if (!panel || panel.classList.contains('hidden')) return;
   document.body.classList.remove('rp-open');
   rpActive = null;
+  setRpanelBtn(false);
   if (isNarrow()) {
     // 浮层模式：transform 过渡回藏侧，结束（或 460ms 兜底）再加回 hidden；
     // 代数作废机制与 slidePane 同口径，防快速开关时旧回调抢先定版
@@ -101,6 +137,29 @@ function rpClose() {
 function rpToggle(view) {
   if ($('rpanel').classList.contains('hidden') || rpActive !== view) rpOpen(view);
   else rpClose();
+}
+
+/* 顶栏最右的开合按钮（与左侧栏按钮同款交互）：收起后再展开回到上次看的视图 */
+let rpLastView = null; // 收起前在看的视图 id
+
+function setRpanelBtn(open) {
+  const label = open ? '收起右侧栏' : '展开右侧栏';
+  const btn = $('btn-rpanel');
+  if (btn) btn.title = label;
+  const txt = $('rp-btn-text');
+  if (txt) txt.textContent = label;
+}
+
+function toggleRpanel() {
+  const panel = $('rpanel');
+  if (!panel || panel.classList.contains('hidden')) {
+    // 展开：回到上次看的视图；从没开过就用注册表第一个（子对话）
+    const first = Object.keys(rpViews)[0];
+    rpOpen(rpLastView && rpViews[rpLastView] ? rpLastView : first);
+  } else {
+    rpLastView = rpActive;
+    rpClose();
+  }
 }
 
 /* 右栏左缘拖拽：拖动中右栏与对话区同时变宽窄；松手只把对话区宽度落盘 */
@@ -252,6 +311,7 @@ async function newAuxChat() {
   }
 }
 $('rp-close').onclick = rpClose;
+$('btn-rpanel').onclick = toggleRpanel; // 顶栏最右：右栏整体开合（收起后再展开回到上次看的视图）
 // 子对话视图：下拉选/新建 + 独立输入区（与主对话同一套 send/render 代码，见 subView）
 $('sub-dd').onclick = () => { renderSubDDPop(); openPopover('sub-dd-pop', $('sub-dd')); };
 $('sub-send').onclick = () => send(null, subView);
@@ -267,6 +327,100 @@ $('sub-input').addEventListener('keydown', (e) => {
 });
 $('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
 rpRegister('subs', { title: '子对话', onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
+
+/* ---------- 浏览器视图（桌面=原生 WebView2 面板 / 网页=占位提示） ---------- */
+/* 工具栏与状态条由本界面渲染；网页区域是 #bpw-stage 占位 div，桌面模式下
+ * 原生 WebView2 控件精确覆盖该矩形（宿主 browser_panel_windows.go），网页
+ * 本身不进 HTML。矩形（CSS px × devicePixelRatio = 物理像素）防抖后上报
+ * /api/browser/panel-rect，窗口缩放/拖分割条/侧栏开合都触发重算。 */
+function bpwDesktop() { return document.documentElement.classList.contains('desktop-shell'); }
+
+function bpwActive() {
+  const panel = $('rpanel');
+  return !!panel && !panel.classList.contains('hidden') && rpActive === 'browser';
+}
+
+let bpwRectTimer = null, bpwLastKey = '';
+function bpwReport(immediate) {
+  clearTimeout(bpwRectTimer);
+  const run = () => {
+    const stage = $('bpw-stage');
+    if (!stage) return;
+    if (!bpwDesktop() || !bpwActive()) {
+      if (bpwLastKey !== 'hidden') { // 只在从可见转隐藏时通知一次
+        bpwLastKey = 'hidden';
+        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false }) }).catch(() => {});
+      }
+      return;
+    }
+    const r = stage.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) return; // 布局未就绪（开合动画中），别用脏矩形
+    const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true };
+    const key = JSON.stringify(payload);
+    if (key === bpwLastKey) return; // 尺寸没变不上报
+    bpwLastKey = key;
+    api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify(payload) }).catch(() => {});
+  };
+  if (immediate) run(); else bpwRectTimer = setTimeout(run, 80);
+}
+
+// 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开
+function bpwNav(body) {
+  api('/api/browser/navigate', { method: 'POST', body: JSON.stringify(body) })
+    .then((st) => { bpwOnNav(st); })
+    .catch((e) => { $('bpw-title').textContent = '导航失败：' + e.message; });
+}
+function bpwOnNav(d) {
+  if (d && d.url) $('bpw-url').value = d.url;
+  $('bpw-title').textContent = (d && d.title) || '未打开页面';
+  if (d && d.viewportW) $('bpw-vp').textContent = d.viewportW + '×' + d.viewportH;
+  else $('bpw-vp').textContent = '';
+}
+function bpwSyncState() {
+  api('/api/browser/state').then(bpwOnNav).catch(() => {});
+}
+$('bpw-back').onclick = () => bpwNav({ action: 'back' });
+$('bpw-fwd').onclick = () => bpwNav({ action: 'forward' });
+$('bpw-reload').onclick = () => bpwNav({ action: 'reload' });
+$('bpw-url').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  let u = $('bpw-url').value.trim();
+  if (!u) return;
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
+  bpwNav({ url: u });
+});
+$('bpw-external').onclick = () => {
+  const u = $('bpw-url').value.trim();
+  if (u) window.open(u, '_blank');
+};
+
+// AI 的 browser_viewport 请求（browser_resize 事件，X/Y 复用为宽高）：
+// 面板宽度是推导值（可用宽 − 对话区宽），让对话区让位即等效调宽面板；
+// 不落盘（临时视口，不动用户的布局记忆），高度跟随右栏无法独立设定
+function bpwApplyViewport(w) {
+  if (!w || isNarrow() || !bpwActive()) return;
+  const avail = rpAvail();
+  const cw = Math.max(avail - Math.round(w), RP_CONTENT_MIN);
+  document.documentElement.style.setProperty('--content-w', cw + 'px');
+  rpApply();
+  bpwReport(true);
+}
+
+rpRegister('browser', {
+  title: '浏览器',
+  onOpen: () => {
+    bpwSyncState();
+    bpwReport(true); // 打开即上报矩形：宿主据此显示并定位原生控件
+  },
+});
+// 矩形变化监听：舞台尺寸（开合动画、拖分割条、窗口缩放都会传导到这里）
+if (window.ResizeObserver) {
+  new ResizeObserver(() => bpwReport()).observe($('bpw-stage'));
+  new ResizeObserver(() => bpwReport()).observe($('app'));
+}
+window.addEventListener('resize', () => bpwReport());
+if (window.visualViewport) window.visualViewport.addEventListener('resize', () => bpwReport()); // 主界面缩放（Ctrl+滚轮）时 dpr 变化
 setupRpanelResize();  // 右栏左缘拖拽（同时调宽对话区与右栏）
 window.addEventListener('resize', rpApply); // 窗口缩放时右栏跟随重占剩余宽
 // 嵌入式浏览器的 resize 事件可能延迟一拍：直接观察 #app 尺寸，变化即重算

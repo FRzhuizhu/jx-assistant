@@ -40,6 +40,12 @@ type Event struct {
 	Options []string `json:"options,omitempty"`
 	// 待生效用户消息快照（pending 事件：插话/排队的最新列表，多窗口与刷新后一致）
 	Pending *PendingState `json:"pending,omitempty"`
+	// 内嵌浏览器（browser_panel_windows.go 桌面原生面板 / browser_host.go 网页形态）：
+	// browser_nav=地址与标题（右栏工具栏跟随），browser_resize=AI 的视口宽度请求
+	// （X/Y 复用为宽高，前端让对话区让位调宽面板）
+	URL string  `json:"url,omitempty"`
+	X   float64 `json:"x,omitempty"`
+	Y   float64 `json:"y,omitempty"`
 }
 
 const auxPrompt = `你是「坚祥数字助理」的辅助答疑助手，依附于一个主对话存在。你的主要目的是答疑：解释概念、回答关于当前工作区/项目的问题、帮忙查证细节，让人不打断主对话也能把问题弄清楚。
@@ -85,7 +91,7 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 - read_session_summary：看某个会话做过什么的压缩摘要。
 - search_sessions / read_session_messages：全文搜索并翻阅任何会话的原始历史（含很久以前的）。
 - dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。
-- dispatch_sub：新建一个**子对话**（挂在本对话下，右栏抽屉里可见），把一块独立的小工作交给它后台执行；完成后结果自动回报到这里。
+- dispatch_sub：新建一个**子对话**（挂在本对话下，右栏抽屉里可见），把一块独立的小工作交给它后台执行；完成后结果自动回报到这里。expert 参数可按用户预设的**子对话专家**派发（可用名单先用 list_experts 查询，名字逐字一致），预设自带追加提示词、默认模型与上下文继承。
 - send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。
 
 ## 怎么选目标
@@ -99,7 +105,7 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 
 写进 dispatch_task / dispatch_sub / send_to_session 的 task 默认必须是一段自足的话：目标、验收标准、涉及的目录或文件、你知道的相关背景。别写「照上面说的做」这类指代——被派发的会话默认看不到我们的聊天记录。需要指定工作目录时用 workspace 参数给绝对路径。
 
-上下文的分寸：**工作任务（dispatch_task）永远不带上下文**——你就像用户一样只给它发一段自足的消息，它和我们的聊天记录完全隔离。**子对话（dispatch_sub）可选**：这件事的来龙去脉本来就长在我们现在的对话里（用户前面说的要求、我们讨论定的方案、已经写在聊天里的背景），把整段历史继承过去比重新写一遍更省事也更准确——这时设 inherit_context 为 true，子对话会完整继承我们此前的聊天记录（含系统提示词，因此也命中缓存，成本很低），task 就只用写「接下来要做什么」。一次性的独立活儿保持默认，别为了省几句话把无关的历史都塞过去。
+上下文的分寸：**工作任务（dispatch_task）永远不带上下文**——你就像用户一样只给它发一段自足的消息，它和我们的聊天记录完全隔离。**子对话（dispatch_sub）按专家预设决定**：这件事的来龙去脉本来就长在我们现在的对话里（用户前面说的要求、我们讨论定的方案、已经写在聊天里的背景），把整段历史继承过去比重新写一遍更省事也更准确——这时用 expert=继承上下文子对话 派发，子对话会完整继承我们此前的聊天记录（含系统提示词，因此也命中缓存，成本很低），task 就只用写「接下来要做什么」。一次性的独立活儿按默认（标准子对话）派，别为了省几句话把无关的历史都塞过去。
 
 你派发的是用户任务列表里的**工作任务**（顶层会话，用户在左侧列表能看到、能点开）；右栏抽屉里的「子对话」是用户手工创建的，与派发无关。子对话只有一级：子会话不能再派发子会话，你手上的编排工具只在主对话可用。
 
@@ -132,15 +138,16 @@ const dispatchSubPrompt = `
 ## 子对话派发
 
 - dispatch_sub：新建一个子对话，把一块**自洽的子任务**交给它后台执行（它有全部实操工具，工作目录默认与你相同）。工具立即返回，你可以先继续手头的其他部分；它结束后你会自动收到一条【派发回报】（含压缩摘要），系统随即让你带着结果继续推进当前任务。
-- 两种上下文模式：默认子对话只收到你写的 task（自足，看不到本对话记录）；这件事的来龙去脉就长在本对话里时设 inherit_context=true，它会完整继承本对话的聊天记录，task 只用写「接下来要做什么」。
+- 上下文由专家预设决定：默认（标准子对话）只收到你写的 task（自足，看不到本对话记录）；这件事的来龙去脉就长在本对话里时用 expert=继承上下文子对话 派发，它会完整继承本对话的聊天记录，task 只用写「接下来要做什么」。
 - 适合：相对独立、可以并行的分块（比如「整理 A 目录」交给子对话，你同时处理 B）。不适合：强依赖你当前上下文的小步操作——直接自己做更快。
 - task 必须自足（默认模式下）：目标、验收标准、涉及目录写全，别写「照我上面说的做」。
+- 子对话专家：用户可在设置中预制定义专家（追加提示词 / 默认模型 / 默认上下文继承），当前可用的专家名要先调用 list_experts 查询（名单是易变的，别凭记忆猜）。需要那种专门视角（如对抗性审查）或专门模型时用 expert=名称 派发，其余参数照常；清单里没有合适的专家就按普通子对话派，别编名字。
 - 子对话只有一级：它们不能再派发。同质的批量工作可以一次派多个（并行执行）。`
 
 // systemPrompt 是会话内固定的系统提示词：只有基础提示词 + 软件版本标识。
 // 刻意不含任何易变信息（时间/权限/模式/环境）——它们全部进 envPrompt 的
-// 尾部快照（对齐 DSH 的缓存策略：前缀稳定命中 KV 缓存，易变内容在尾部
-// 以新消息出现）。因此它只随软件版本变化，会话期间永远不变。
+// 环境快照（追加式：快照按落位进历史，变化以短更新消息出现在尾部，前缀
+// 稳定命中 KV 缓存）。因此它只随软件版本变化，会话期间永远不变。
 func (a *App) systemPrompt(sess *SessionMeta) string {
 	base := taskPrompt
 	switch sess.Mode {
@@ -167,6 +174,13 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	if sess.Mode == "task" || sess.Mode == "office" {
 		base += fileToolsPrompt + dispatchSubPrompt
 	}
+	// 子对话专家的追加提示词：预设只记名字，这里按名解析拼接在模式基础提示词
+	// 之后（会话内稳定——专家固定于派发时；删改专家等同改引用文件，前缀随之变化）
+	if sess.Expert != "" {
+		if ex := a.expertByName(sess.Expert); ex != nil && strings.TrimSpace(ex.Prompt) != "" {
+			base += "\n\n## 子对话专家设定：" + ex.Name + "\n\n" + strings.TrimSpace(ex.Prompt)
+		}
+	}
 	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动" + tag + "）"
 }
 
@@ -176,9 +190,9 @@ func promptHash(s string) string {
 	return hex.EncodeToString(sum[:])[:8]
 }
 
-// envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿，作为 user 消息
-// 追加在上下文尾部。内容有变化才落库新快照（见 RunAgent 的 diff 逻辑）；
-// 开头固定声明「取代更早的快照」，历史里的旧快照组装时全部跳过。
+// envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿。内容有变化才落库
+// 新快照（见 maybeAppendEnvSnapshot 的 diff 逻辑）；组装时首条整份进历史、
+// 后续按行差分为短「环境更新」（见 buildContext），已发送的前缀绝不改写。
 func (a *App) envPrompt(sess *SessionMeta) string {
 	b := &strings.Builder{}
 	b.WriteString("# 运行环境快照（最新，取代更早的快照）\n")
@@ -293,8 +307,8 @@ func detectOSDesc() string {
 // 剔除历史快照尾部的技能变更行，避免变更说明自我累积、每步重复落快照），
 // 内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条），并实时推给前端。
 // 用户技能清单有增减时，在新快照尾部追加一行「（技能变更：…）」——上文历史
-// 快照一律不动，变更信息始终补在最底下（缓存友好）。返回最终落库与使用的
-// 快照内容（调用方用它继续构造上下文）。
+// 快照一律不动。快照按**追加式**进上下文（buildContext 首条整份、后续按行差分
+// 为短更新，已发送前缀绝不改写）。返回最终落库的快照内容（Assembly.Env 口径）。
 func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Event)) string {
 	var prev string
 	havePrev := false
@@ -439,20 +453,19 @@ func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking strin
 	return sm
 }
 
-// RunAgent 是核心主循环：组装上下文 → 流式请求模型 → 执行工具 → 回填结果，
+// RunAgent 是核心主循环：向上下文引擎取包 → 流式请求模型 → 执行工具 → 回填结果，
 // 循环直到模型不再发起工具调用、用户中断或达到步数上限。
-// 每步的上下文都从存储重建（buildContext 管线：摘要 + 规则压缩视图 + 近期原文）。
+// 发给模型的内容一律来自引擎的 Assembly（组装、开轮留痕、测量口径全归引擎），
+// 主循环只经手——补 Model/思考档位等调用参数并发送，不碰任何拼装函数。
+// 每步的上下文都从存储重建（引擎的组装管线：摘要 + 规则压缩视图 + 近期原文）。
 func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event)) error {
-	tools := a.toolsFor(sess.Mode)
-	defs := make([]ToolDef, len(tools))
-	runs := map[string]func(*toolContext, json.RawMessage) (string, error){}
-	for i, tl := range tools {
-		defs[i] = tl.Spec
+	runs := map[string]func(*toolContext, json.RawMessage) (string, error){} // 工具执行注册表（编排用；请求侧的工具目录来自引擎 Assembly）
+	for _, tl := range a.toolsFor(sess.Mode) {
 		runs[tl.Spec.Function.Name] = tl.Run
 	}
-	sys := a.systemPrompt(sess) // 会话内固定：基础提示词 + 版本行
 	target := a.resolveTarget(sess)
 	overflowRetried := false
+	modelFallback := false // 专家预设模型不可用 → 切全局默认重试过一次（防循环）
 
 	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
@@ -467,19 +480,15 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		return got
 	}
 
-	// 提示词快照行：每轮记录当轮初始组装的完整上下文材料原文，供前端折叠展示——
-	// 系统提示词 + 环境快照 + 工具定义（tools 即请求体里平级发送的独立 JSON 数组）。
-	// 环境快照在循环里每步重算（模式中途切换立即反映），以尾部最新快照为准。
-	if pj, err := json.Marshal(map[string]any{"sys": sys, "env": a.envPrompt(sess), "tools": defs}); err == nil {
-		sm := a.appendRow(sess, StoredMessage{Message: TextMessage("system", string(pj)), Kind: kindPrompt, CreatedAt: now()})
-		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindPrompt})
-	}
+	// 开轮留痕：本轮拼装快照（系统提示词/环境快照/工具定义）由上下文引擎
+	// 组装并落 kind=prompt 行（OpenRound），主循环不再亲手拼这条行
+	a.ctxEngine().OpenRound(sess, emit)
 	defer a.requeueSteer(sess.ID) // 正常/异常退出后残留插话转为排队，由执行体接着发
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
 		interjectsBefore(emit)
-		// 上下文引擎组装本步全部请求材料（系统提示词/环境快照/工具目录/消息
-		// 视图/视觉内联与 env 快照留痕都归引擎，RunAgent 只做编排）
+		// 上下文引擎组装本步全部请求材料与测量口径（系统提示词/环境快照/工具
+		// 目录/消息视图/视觉内联/env 快照留痕/token 估算/前缀指纹都归引擎）
 		pack := a.ctxEngine().Assemble(sess, emit)
 		msgs := pack.Msgs
 		if err := a.maybeAutoCompact(sess, msgs, target.ContextWindow); err != nil {
@@ -488,10 +497,6 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: pack.Tools}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
-		est := estimateTokens(msgs)      // 发送前的 token 估算（审计行用）
-		// 本次组装的前缀指纹（系统提示词/环境快照）：进引擎的调用日志与请求
-		// 缓存——指纹变化即可解释该次缓存命中变化
-		sysHash, envHash := promptHash(pack.Sys), promptHash(pack.Env)
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall
@@ -500,7 +505,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		err := StreamChat(ctx, target, req, StreamCallbacks{
 			// 请求发出前捕获全量请求体，经引擎缓存（环形保留最近三轮，「导出原始数据」数据源）
 			OnRequest: func(u string, body []byte) {
-				a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), est, sysHash, envHash, body)
+				a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)
 			},
 			OnText: func(s string) {
 				text.WriteString(s)
@@ -522,7 +527,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			},
 		})
 		// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时
-		a.ctxEngine().RecordCall(sess, step+1, len(msgs), est, sysHash, envHash, time.Since(callStart).Milliseconds(),
+		a.ctxEngine().RecordCall(sess, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, time.Since(callStart).Milliseconds(),
 			usage, len([]rune(text.String())), toolNamesOf(calls), err)
 		if err != nil {
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次
@@ -530,6 +535,27 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				if cerr := a.overflowCompact(sess); cerr == nil {
 					a.auditWrite(sess, map[string]any{"type": "overflow", "error": err.Error()})
 					overflowRetried = true
+					continue
+				}
+			}
+			// 专家预设模型不可用兜底：会话带着专家预设的模型（Expert 非空）而
+			// 失败明确是「这个模型/提供方用不了」（余额不足/鉴权失败/模型不存在/
+			// 连不上），且与全局默认目标不同——切回全局默认（= 主对话的默认模型）
+			// 重试本步并落库，后续步不再撞同一个错；调用日志里两次调用都可查。
+			// 只兜专家会话：用户在普通会话手选的模型被拒时应如实报错，不静默降级。
+			if !modelFallback && sess.Expert != "" && isModelUnavailableErr(err) {
+				if def := a.DefaultTarget(); def.Model != target.Model || def.BaseURL != target.BaseURL {
+					from := target.Model + " @ " + target.BaseURL
+					sess.Provider, sess.Model = "", ""
+					_ = a.Store.SaveMeta(sess)
+					target = a.resolveTarget(sess)
+					modelFallback = true
+					a.auditWrite(sess, map[string]any{"type": "model_fallback",
+						"expert": sess.Expert, "from_model": from, "to_model": target.Model,
+						"error": truncateRunes(err.Error(), 300)})
+					emit(Event{Type: "tool_wait", Name: "model-fallback",
+						Output: "专家预设的模型不可用（" + truncateRunes(err.Error(), 160) +
+							"），已切回默认模型 " + target.Model + " 继续执行"})
 					continue
 				}
 			}

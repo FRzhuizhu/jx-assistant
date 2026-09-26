@@ -27,28 +27,8 @@ var (
 	browserCancel context.CancelFunc
 )
 
-// findBrowserExe 优先找系统自带的 Edge（Win10/11 必装，符合自包含
-// 原则——不依赖用户另装浏览器）；Edge 异常缺失时兜底找 Chrome；
-// 都找不到交给 chromedp 自行探测。
-func findBrowserExe() string {
-	candidates := []string{
-		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
-		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
-		os.Getenv("LOCALAPPDATA") + `\Microsoft\Edge\Application\msedge.exe`,
-		os.Getenv("LOCALAPPDATA") + `\Google\Chrome\Application\chrome.exe`,
-		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
-		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
-	}
-	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
+// findBrowserExe 与 browserTimeout 常量由 browser_host.go 统一提供
+// （内嵌浏览器宿主与工具探测同一份 Edge/Chrome 位置清单，两处定义逐字相同）。
 
 // acquireBrowser 返回可复用的浏览器执行上下文；必要时启动浏览器。
 func acquireBrowser() (context.Context, error) {
@@ -98,8 +78,6 @@ func requireCapability(t *toolContext, capID, title string) error {
 	}
 	return nil
 }
-
-const browserTimeout = 60 * time.Second
 
 // browserDo 在浏览器上下文里执行一段操作（统一超时与锁）。
 func browserDo(action func(ctx context.Context) error) error {

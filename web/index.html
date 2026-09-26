@@ -91,17 +91,17 @@
 
   <main id="main">
     <header id="topbar">
-      <button id="btn-sidebar" title="收起侧边栏">
+      <button id="btn-sidebar" title="收起左侧栏">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
-        <span id="sb-btn-text">收起侧边栏</span>
+        <span id="sb-btn-text">收起左侧栏</span>
       </button>
       <span id="sess-title">数字助理</span>
       <span id="mode-badge" class="badge hidden">数字助理</span>
       <button id="remote-badge" class="badge remote hidden" title="本会话挂载了 SSH 远程工作区（点击配置/解除）">远程</button>
       <span class="topbar-spacer"></span>
-      <button id="btn-drawer" class="hidden" title="子对话：AI 派发与人工发起的子对话都在右栏查看">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
-        子对话
+      <button id="btn-rpanel" title="展开右侧栏">
+        <span id="rp-btn-text">展开右侧栏</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
       </button>
     </header>
 
@@ -247,6 +247,24 @@
           </div>
         </div>
       </div>
+      <!-- 浏览器视图：工具栏（地址栏/前进/后退/刷新/外部打开）由本界面渲染；
+           下方 bpw-stage 是网页占位区——桌面模式下原生 WebView2 控件精确覆盖
+           该矩形（app-right.js 上报 /api/browser/panel-rect），网页本身不进
+           HTML，交互全是原生（滚动/输入法/右键菜单）。网页模式没有原生控件，
+           链接一律新标签页打开，此视图仅作占位提示。 -->
+      <div class="rp-view" id="rp-view-browser">
+        <div class="bpw-bar">
+          <button id="bpw-back" title="后退">◀</button>
+          <button id="bpw-fwd" title="前进">▶</button>
+          <button id="bpw-reload" title="刷新">⟳</button>
+          <input id="bpw-url" type="text" placeholder="输入网址回车打开（http/https）" spellcheck="false" autocomplete="off">
+          <button id="bpw-external" title="在系统浏览器打开当前页">↗</button>
+        </div>
+        <div class="bpw-stage" id="bpw-stage">
+          <div class="bpw-hint" id="bpw-hint">浏览器面板仅在桌面版可用</div>
+        </div>
+        <div class="bpw-status"><span id="bpw-title" class="bpw-pagetitle">未打开页面</span><span id="bpw-vp"></span></div>
+      </div>
     </div>
   </aside>
 </div>
@@ -264,6 +282,11 @@
 
 <div id="settings" class="modal hidden">
   <div class="modal-card settings-card">
+    <!-- 手机二级页的返回头（桌面与一级列表隐藏；标题随所选分区更新） -->
+    <div class="set-back">
+      <button type="button" id="set-back" title="返回设置菜单">←</button>
+      <b id="set-back-title"></b>
+    </div>
     <div class="settings-body">
       <nav class="set-nav">
         <button class="set-nav-item active" data-pane="general">
@@ -276,7 +299,11 @@
         </button>
         <button class="set-nav-item" data-pane="context">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
-          上下文
+          对话历史与压缩
+        </button>
+        <button class="set-nav-item" data-pane="experts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          子对话专家
         </button>
         <button class="set-nav-item" data-pane="components">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
@@ -342,25 +369,7 @@
               <p class="sf-desc">插话不打断执行：消息在模型下一次调用前注入本轮；等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
           </div>
-          <div class="gen-section">
-            <h4>文件备份</h4>
-            <div class="set-field">
-              <div class="sf-label">文件历史快照</div>
-              <div class="sf-inline">
-                <label class="pr-toggle"><input type="checkbox" id="set-snapshot-on"><span></span></label>
-                <span class="sf-desc" id="set-snapshot-state"></span>
-              </div>
-              <p class="sf-desc">write_file / edit_file 与 snapshot_file 的改动前内容会存进工作区的 .jxai/snapshots，供编辑历史消息或按轮撤销时回退文件；关闭后不再记录新快照。</p>
-            </div>
-            <div class="set-field">
-              <div class="sf-label">自动清理（天）</div>
-              <div class="sf-inline">
-                <input id="set-snapshot-days" type="number" min="1" max="3650" style="width:88px">
-                <span class="sf-desc">超龄快照每天清一次；填 -1 表示永不过期</span>
-              </div>
-            </div>
-          </div>
-          <p class="tip">本页偏好保存在本机浏览器；「文件备份」保存在服务端，改动即时生效。</p>
+          <p class="tip">本页偏好保存在本机浏览器。</p>
         </div>
         <div class="set-pane" id="set-pane-models">
           <h3>模型</h3>
@@ -369,7 +378,7 @@
           <button id="prov-add-card" class="pf-add">＋ 添加提供方</button>
         </div>
         <div class="set-pane" id="set-pane-context">
-          <h3>上下文</h3>
+          <h3>对话历史与压缩</h3>
           <div class="prov-section">
             <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留，压缩只影响发给模型的内容</div>
             <div class="compact-row">
@@ -386,6 +395,40 @@
                 <div id="sel-compact-threshold"></div>
               </label>
             </div>
+          </div>
+          <div class="gen-section">
+            <h4>文件备份</h4>
+            <div class="set-field">
+              <div class="sf-label">文件历史快照</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-snapshot-on"><span></span></label>
+                <span class="sf-desc" id="set-snapshot-state"></span>
+              </div>
+              <p class="sf-desc">write_file / edit_file 与 snapshot_file 的改动前内容会存进工作区的 .jxai/snapshots，供编辑历史消息或按轮撤销时回退文件；关闭后不再记录新快照。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">自动清理（天）</div>
+              <div class="sf-inline">
+                <input id="set-snapshot-days" type="number" min="1" max="3650">
+                <span class="sf-desc">超龄快照每天清一次；填 -1 表示永不过期</span>
+              </div>
+            </div>
+          </div>
+          <p class="tip">文件备份保存在服务端，改动即时生效。</p>
+        </div>
+        <div class="set-pane" id="set-pane-experts">
+          <h3>子对话专家</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">名称即调用参数：主对话派发子对话时填 expert=名称，追加提示词、默认模型与上下文继承完全按该专家的预设生效（换模型可用 model 参数）。下方每个名称与后端可调用的专家清单同源一致；停用的专家对主对话不可见；名称要保持唯一。</div>
+            <button id="expert-add-btn" class="pf-add">＋ 添加专家</button>
+          </div>
+          <div class="gen-section">
+            <h4>内置专家 <span class="sec-sub">常开，不可修改</span></h4>
+            <div id="expert-builtin-list"></div>
+          </div>
+          <div class="gen-section">
+            <h4>自定义专家 <span class="sec-sub">可开关、可编辑、可删除</span></h4>
+            <div id="expert-user-list"></div>
           </div>
         </div>
         <div class="set-pane" id="set-pane-components">
@@ -432,13 +475,14 @@
             <p class="tip">Go 后端（LLM 主循环 + 工具集 + 编排 + 上下文管理）+ 原生 JS 前端；SQLite 存储；单文件交付。</p>
           </div>
         </div>
-        <div class="set-footer">
-          <p class="tip" style="margin:0">「上下文」改动点「保存」生效；「模型」页在各卡片内单独保存；常规页即时生效</p>
-          <div class="modal-actions">
-            <button id="set-cancel">取消</button>
-            <button id="set-save" class="accent">保存</button>
-          </div>
-        </div>
+      </div>
+    </div>
+    <!-- 通用底栏：横跨整个设置卡（导航与分区之下），一级/二级、手机/桌面都在 -->
+    <div class="set-footer">
+      <p class="tip" style="margin:0">「对话历史与压缩」改动点「保存」生效；「模型」「子对话专家」在各卡片内单独保存；常规页即时生效</p>
+      <div class="modal-actions">
+        <button id="set-cancel">取消</button>
+        <button id="set-save" class="accent">保存</button>
       </div>
     </div>
   </div>
@@ -517,6 +561,9 @@
 
 <!-- 模型选择面板 -->
 <div id="model-pop" class="popover model-pop hidden"></div>
+
+<!-- 子对话专家表单的默认模型选择面板（数据同 /api/models，选中写入专家预设） -->
+<div id="expert-model-pop" class="popover model-pop hidden"></div>
 
 <!-- 子对话选择下拉（右栏顶部）：列出当前主对话的全部子对话 + 新建 -->
 <div id="sub-dd-pop" class="popover sub-dd-pop hidden"></div>

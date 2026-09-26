@@ -83,8 +83,11 @@ func main() {
 		}
 	}
 	sandboxIntegrityLow = cfg.SandboxIntegrityLevel != "off"
+	// -port 只覆盖本次监听，不写进 cfg.Port：否则运行期任何一次保存配置
+	// （如设置页改专家/提供方）都会把临时端口永久落盘，改变下次启动行为
+	listenPort := cfg.Port
 	if *port > 0 {
-		cfg.Port = *port
+		listenPort = *port
 	}
 
 	app, err := NewApp(cfg, *cfgPath, *webDir)
@@ -98,7 +101,7 @@ func main() {
 	}
 	// 先占端口再起服务：桌面模式端口被占（如浏览器模式实例还在跑）时
 	// 自动回退到系统分配的可用端口，而不是直接退出。
-	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, cfg.Port))
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, listenPort))
 	if err != nil && wantDesktop && !*browser {
 		ln, err = net.Listen("tcp", host+":0")
 	}
@@ -117,7 +120,7 @@ func main() {
 			}
 		}()
 		log.Printf("坚祥数字助理GO 桌面版已启动: %s", url)
-		if derr := runDesktop(url); derr != nil {
+		if derr := runDesktop(app, url); derr != nil {
 			log.Fatalf("桌面模式启动失败: %v", derr)
 		}
 		log.Printf("桌面窗口已关闭，进程退出")

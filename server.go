@@ -34,31 +34,36 @@ type App struct {
 	Todos      *todoScheduler // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
 	static     fs.FS          // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
-	mu            sync.Mutex
-	sessLocks     map[string]*sync.Mutex
-	runMu         sync.Mutex
-	runners       map[string]*sessionRun // 正在执行的会话（含后台派发）
-	permMu        sync.Mutex
-	grants        map[string]*Grant        // 授权凭证（perm.go）
-	approvals     map[string]*Approval     // 等待用户决定的越权审批（perm.go）
-	questions     map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
-	jobsMu        sync.Mutex
-	jobs          map[string]*jobRun // 会话内后台作业（jobs.go）
-	protectPaths  []string           // 助手自身配置/数据目录，任何模式禁访问
-	skillsMu      sync.Mutex
-	skillsReady   bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
-	skillsDirOurs string // 已解析的技能目录（App 级缓存，避免跨实例污染）
-	remoteMu      sync.Mutex
-	remotes       map[string]*remoteClient // SSH 远程连接池（remote.go）
-	evtMu         sync.Mutex
-	subscribers   map[chan Event]bool // /api/events 的订阅者
-	pendMu        sync.Mutex
-	pendingSteer  map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
-	pendingQueue  map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
-	errMu         sync.Mutex
-	runErrors     map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
-	osOnce        sync.Once
-	osDesc        string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
+	mu              sync.Mutex
+	sessLocks       map[string]*sync.Mutex
+	runMu           sync.Mutex
+	runners         map[string]*sessionRun // 正在执行的会话（含后台派发）
+	permMu          sync.Mutex
+	grants          map[string]*Grant        // 授权凭证（perm.go）
+	approvals       map[string]*Approval     // 等待用户决定的越权审批（perm.go）
+	questions       map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
+	jobsMu          sync.Mutex
+	jobs            map[string]*jobRun // 会话内后台作业（jobs.go）
+	protectPaths    []string           // 助手自身配置/数据目录，任何模式禁访问
+	skillsMu        sync.Mutex
+	skillsReady     bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
+	skillsDirOurs   string // 已解析的技能目录（App 级缓存，避免跨实例污染）
+	remoteMu        sync.Mutex
+	remotes         map[string]*remoteClient // SSH 远程连接池（remote.go）
+	evtMu           sync.Mutex
+	subscribers     map[chan Event]bool // /api/events 的订阅者
+	pendMu          sync.Mutex
+	pendingSteer    map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
+	pendingQueue    map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
+	errMu           sync.Mutex
+	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
+	osOnce          sync.Once
+	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
+	browserMu       sync.Mutex
+	browserEmbedded *BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
+	browserHeaded   *BrowserHost  // 有头独立窗口宿主（旧版行为，惰性创建）
+	nativePanel     browserTarget // 桌面右栏原生 WebView2 面板（browser_panel_windows.go；网页模式为 nil）
+	browserActive   browserTarget // 工具作用目标：最近一次 browser_open 选定的实例
 }
 
 func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
@@ -169,6 +174,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/skills/add", a.handleAddSkill)
 	mux.HandleFunc("POST /api/skills/toggle", a.handleToggleSkill)
 	mux.HandleFunc("POST /api/skills/delete", a.handleDeleteSkill)
+	mux.HandleFunc("GET /api/experts", a.handleListExperts)
+	mux.HandleFunc("POST /api/experts", a.handleUpsertExpert)
+	mux.HandleFunc("POST /api/experts/delete", a.handleDeleteExpert)
 	mux.HandleFunc("POST /api/sessions/{id}/remote", a.handleSetSessionRemote)
 	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
 	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)
@@ -176,6 +184,16 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/components", a.handleListComponents)
 	mux.HandleFunc("POST /api/components", a.handleSetComponent)
 	mux.Handle("GET /_components/", http.HandlerFunc(a.handleComponentAsset))
+	// 浏览器（browser_host.go / browser_panel_windows.go）：桌面右栏是原生
+	// WebView2 面板（前端经 panel-rect 上报占位区矩形），navigate/viewport/
+	// state 面向内嵌形态目标；open-view/view 是聊天链接点开的入口与远程
+	// 交付文件的流式渲染。旧 MJPEG 帧流与输入镜像端点已随镜像方案移除
+	mux.HandleFunc("POST /api/browser/panel-rect", a.handleBrowserPanelRect)
+	mux.HandleFunc("POST /api/browser/navigate", a.handleBrowserNavigate)
+	mux.HandleFunc("POST /api/browser/viewport", a.handleBrowserViewport)
+	mux.HandleFunc("GET /api/browser/state", a.handleBrowserState)
+	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
+	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)
 	// 待办与定时任务（组件 todo-scheduler 的宿主半边）：组件未启用时这些接口一律 404
 	mux.HandleFunc("GET /api/todos", a.handleTodoList)
 	mux.HandleFunc("POST /api/todos", a.handleTodoCreate)

@@ -302,12 +302,18 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   与右栏，落盘的只有对话区宽度（`jx.contentWidth`，与对话区两侧拖把手共享），
   右栏宽度从不记忆，关闭再打开重新占剩余宽，等效记住拖拽结果；窗口缩放 / 左侧栏
   折叠时右栏跟随重算，窄视口停在最小宽 300px 由对话列让步兜底。面板为通用外壳
-  （`rpRegister` 视图注册 + 标签头），计划 / 浏览器 / 文件等视图以后挂入。
+  （`rpRegister` 视图注册 + 标签头），视图分两型：`native`（容器是 index.html
+  静态 DOM，行为代码挂在本仓 js，如子对话与浏览器）与 `iframe`（独立面板页
+  `web/panel/<name>`，惰性创建 iframe、首开加载此后常驻不重载）——面板页自成
+  一体（自己的 HTML/JS/CSS + 直连同源 API），加新面板只需建目录 + 一行
+  `rpRegister`。「浏览器」视图是 native 型：工具栏/状态条为本界面 DOM，网页
+  区域是占位 div，桌面模式下原生 WebView2 控件按上报矩形精确覆盖（见下）。
 - **两侧开合动画**：左右侧栏共用同一个 `slidePane()`（宽度过渡，起始宽先于
   `.anim` 提交保证起点正确；`transitionend` + 460ms 兜底双保险定版；拖拽调宽
   即时生效不经动画；`prefers-reduced-motion` 下自动禁用）；左侧栏内容装在固定
   272px 的 `.sb-inner` 里，收起时内容不回流、像抽屉一样滑出。
-- **子对话视图**（右栏首个视图）：顶栏右侧「子对话」按钮开关；视图顶部下拉
+- **子对话视图**（右栏首个视图）：顶栏最右「收起/展开右侧栏」按钮开关右栏
+  整体（收起后再展开回到上次看的视图；页签条切换子对话/浏览器等视图）；视图顶部下拉
   菜单选择某个子对话或**新建**（人工发起的分支克隆；助理派发的工作任务是
   顶层会话，不在此列）。子对话
   **只在右栏显示、绝不切换主对话区**：右栏内嵌完整的对话区+输入框，与主对话
@@ -348,11 +354,32 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 - **继承段折叠显示**：复制内容前有一条 `kind='inherit'` 标记行（组装上下文时跳过），
   前端据此把整段历史折成一条「来自主对话 · N 条（含系统提示词）」折叠条，展开即
   完整对话流；父对话的系统提示词快照行也在其中。
-- **AI 派发的两种模式**：`dispatch_sub` 的 `inherit_context`（默认 false）。默认子
-  对话只收到一段自足的 task；子任务依赖此前讨论时才设 true——子会话保留自己的
-  task 系统提示词与工具，继承的是聊天记录；独立的一次性任务写清描述更省 token
-  （工具说明里已写明这条取舍）。`dispatch_task`（工作任务）**永远不带上下文**：
-  像用户发消息一样只给一段自足描述，与派发方的聊天记录完全隔离。
+- **AI 派发按专家预设**：`dispatch_sub` 的模式选择只有一条路径——`expert=名称`。
+  内置两条系统专家（常开、不可修改）：**标准子对话**（不传 expert 时的默认，
+  只收到一段自足的 task）、**继承上下文子对话**（完整继承本会话聊天记录，
+  子会话保留自己的 task 系统提示词与工具，task 只用写「接下来要做什么」）。
+  独立的一次性任务按默认派、写清描述更省 token（工具说明里写明了这条取舍）。
+  `dispatch_task`（工作任务）**永远不带上下文**：像用户发消息一样只给一段
+  自足描述，与派发方的聊天记录完全隔离。
+- **子对话专家（专家团预设）**：用户可在设置页「子对话专家」预制定义专家——
+  名称、描述、**追加提示词**（拼在子对话模式基础系统提示词之后）、默认模型
+  （空 = 继承主对话）、是否继承上下文、启用开关。**名称即调用参数，与内置
+  专家共用同一条 `expert=名称` 路径**：设置页展示的名称直接来自后端清单
+  （`/api/experts` 的 `builtin` / `user`），模型侧的可用名单由常驻的
+  `list_experts` 工具按需查询（**名单不嵌进工具描述**——工具目录恒定，
+  专家增删不断前缀缓存；对齐 read_skill 的技能模式），所见名称 = 可填
+  参数，100% 一致，不存在第二条按参数调用的路径（历史上的
+  `inherit_context` 参数已删除，旧调用里传了也会被忽略、继承与否完全由预设
+  决定）。`model` 参数仍可覆盖预设模型。**预设模型不可用自动回退**：专家会话
+  调用失败且错误属于「该模型/提供方用不了」（余额或额度耗尽、鉴权失败、
+  模型不存在、提供方连不上；纯限流不算）时，自动切回全局默认模型（= 主对话
+  的默认模型）续跑并落库，工具区提示一条「已切回默认模型」；普通会话手选的
+  模型不做这种静默降级——显式选择被拒时应如实报错。会话上只记专家名（`sessions.expert`
+  列），提示词构建时按名解析拼接——停用专家只是不能再派（存量子对话的追加段
+  保留），删除才会让这段消失。自定义专家不得与内置专家重名；存
+  `config.json` 的 `experts` 键（`GET/POST /api/experts`、
+  `POST /api/experts/delete`），老配置首次升级自动补种演示用的
+  「对抗性审查编程助手」（继承上下文、模型随主对话），删掉后不再复活。
 - **一级限制**：`POST /api/sessions` 校验父会话自身无 parent（400 拒绝），
   `dispatch_task` / `dispatch_sub` / `send_to_session` 在带 `ParentID` 的会话里
   调用被硬拦
@@ -370,11 +397,11 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 **派发关系**：数字助理有两个派发工具——`dispatch_task` 派出**顶层工作任务**
 （进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
 像用户发消息一样只给一段自足描述；`dispatch_sub` 派出**子对话**（挂在当前会话
-下、右栏抽屉可见，完成后回报并触发父会话继续），有带/不带上下文两种模式
-（`inherit_context`，默认不带）。工作任务同样只有 `dispatch_sub`。右栏子对话因此
-可能来自 AI 派发或人工新建（人工的挂 `parent_id`、`origin=human`，统一带完整
-上下文；一级限制对所有子对话生效）。此外总控还有 `list_sessions`（找任务）、
-`read_session_summary`（看最终答复等摘要）、`read_session_messages` /
+下、右栏抽屉可见，完成后回报并触发父会话继续），按专家预设选择是否继承上下文
+（`expert=名称`，默认标准子对话不带）。工作任务同样只有 `dispatch_sub`。右栏
+子对话因此可能来自 AI 派发或人工新建（人工的挂 `parent_id`、`origin=human`，
+统一带完整上下文；一级限制对所有子对话生效）。此外总控还有 `list_sessions`
+（找任务）、`read_session_summary`（看最终答复等摘要）、`read_session_messages` /
 `search_sessions`（翻查内容）与 `send_to_session`（给已有任务发消息）。
 
 ## 执行的生死与对话中途发消息
@@ -468,9 +495,35 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   渲染原图；视觉模型按预算内联 base64（单次最多 8 张），纯文本模型
   降级为信封占位不报错。
 - **浏览器操作**（能力开关 `browser`）：`browser_open / content / click /
-  type / evaluate / screenshot / close` 七件工具，chromedp（纯 Go CDP）
-  优先驱动系统自带的 Edge（Win10/11 必装；Edge 异常缺失时兜底
-  Chrome），有头模式运行。
+  type / scroll / viewport / evaluate / screenshot / close` 九件工具，工具层
+  形态无关（`browser_ops.go` 的 browserTarget 接口），内嵌形态按运行形态取
+  目标。三种形态可并存、各自独立进程与配置目录：**桌面版右栏原生面板**
+  （`browser_open` 默认，mode=headless）——第二个 WebView2 控件真浏览器嵌入
+  桌面壳窗口（`browser_panel_windows.go`），原生滚动/输入法/右键菜单/下载，
+  AI 经控件官方 CDP 通道（`CallDevToolsProtocolMethod`）驱动同一控件，人机
+  共操；**网页版后台无头**（chromedp 纯 Go CDP 优先驱动系统 Edge，异常缺失
+  兜底 Chrome，仅供 AI 工具使用）；`mode=headed` 弹**独立可见窗口**（旧版
+  行为）。其余工具作用于最近一次 `browser_open` 选定的实例，`browser_close`
+  关当前实例并自动回退到仍在运行的另一个。点击/输入前在目标页面内注入 AI
+  位置标记（原生面板 HTML 无法浮于原生子窗口之上）；文本输入统一走
+  `Input.insertText`（中文/输入法正确）；桌面面板登录态落
+  `data/webview-browser` 与日常浏览器隔离。注意：新版 WebView2（Chromium 136
+  起）封禁 `--remote-debugging-port`，chromedp 直连嵌入控件不可靠，官方替代
+  即控件级 CDP 调用接口。接口：`POST
+  /api/browser/{panel-rect,navigate,viewport,open-view}`、`GET
+  /api/browser/{state,view}`；全局事件 `browser_nav`（工具栏地址/标题）、
+  `browser_resize`（AI 的视口宽度请求，前端让对话区让位调宽面板）。右栏收起
+  只是隐藏面板（AI 继续操作）；工具条的「在系统浏览器打开」把当前网址跳到
+  用户日常浏览器（跳转后不受 AI 控制）。
+- **聊天链接点开（人机共看）**：对话正文里的 markdown 链接与裸 http(s) 网址
+  渲染为可点链接，交付卡片的 `.html/.htm/.svg` 文件带「打开」——桌面版左键
+  点击一律在右栏浏览器面板打开（Ctrl/中键走浏览器默认新标签）；网页版没有
+  原生面板，一律新标签页打开。这是用户操作，不经模型权限门控；打开时内嵌
+  形态自动成为工具作用目标（active），并注入`【网页查看】`回报（origin=
+  webview，与能力无关——没开「操作浏览器」能力时模型只知道网址看不到画面，
+  开启后 browser_screenshot/browser_content 看到的就是用户眼前这页）。本地
+  交付文件转 `file://`（同目录相对资源可用），SSH 远程会话经
+  `/api/browser/view` 流式渲染（相对资源不加载）。
 - **电脑操作**（能力开关 `computer`）：`computer_screenshot / click /
   type / key / scroll / windows` 六件工具，win32 SendInput + GDI
   DIB Section 直调，无 cgo；点击坐标以截屏图片像素为准。
@@ -535,14 +588,18 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `config.go` | 运行配置（含 providers 与压缩设置）的加载/保存/兼容折算 |
 | `models.go` | 多 provider 模型清单、调用目标解析、模型列表拉取 |
 | `llm.go` | OpenAI 兼容流式客户端（SSE 解析、工具调用增量聚合）+ mock 演示模型 |
-| `contextengine.go` | 上下文引擎：请求材料的唯一组装者 + 上下文事件总线。系统提示词（可被 `data/prompts/<mode>.md` 引用文件覆盖，版本行记来源与内容 hash）、环境快照、工具目录、历史视图、视觉内联经 `Assemble` 成包（确定性：同一状态逐字节一致——前缀缓存命中的根基，有测试看护）；权限/模型/思考档位/计划目标/工作区/远程挂载等配置变更经 `Notify` 落时间线（audit type=ctx，含前后值）；技能增减由环境快照 diff 在尾部留痕，同一事实不重复记账 |
-| `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装） |
+| `contextengine.go` | 上下文引擎：请求材料的唯一组装者 + 上下文事件总线。系统提示词（可被 `data/prompts/<mode>.md` 引用文件覆盖，版本行记来源与内容 hash）、环境快照、工具目录、历史视图、视觉内联经 `Assemble` 成包（确定性：同一状态逐字节一致——前缀缓存命中的根基，有测试看护），token 估算与前缀指纹随包产出；每轮开轮的 prompt 展示快照行经 `OpenRound` 落库；需把上下文发给模型的侧路调用（模型摘要）由 `CallSummarizer` 拼装并发送（留痕 audit scope=summarize，不进请求环形缓存）；权限/模型/思考档位/计划目标/工作区/远程挂载等配置变更经 `Notify` 落时间线（audit type=ctx，含前后值）；技能增减由环境快照 diff 在尾部留痕，同一事实不重复记账 |
+| `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装——发给模型的内容一律来自引擎 Assembly） |
 | `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截 |
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
+| `browser_ops.go` | browserTarget 操作面：browser_* 工具与面板端点的形态无关接口 |
+| `browser_host.go` | chromedp 浏览器宿主：有头独立窗口 + 网页形态的后台无头内嵌目标 |
+| `browser_panel_windows.go` | 桌面右栏原生浏览器面板：第二个 WebView2 控件 + 控件级官方 CDP 通道 + 矩形同步 |
+| `tool_browser.go` | browser_* 九件工具（形态无关，作用于 browserTarget） |
 | `assistant.go` | 数字助理总控：编排工具 + 会话压缩摘要 |
 | `historytools.go` | 跨会话历史查询工具（search / read_session_messages） |
-| `context.go` | 上下文组装管线 + 规则压缩 + 模型摘要 + 溢出兜底 |
+| `context.go` | 上下文组装管线（环境快照**追加式**：首条整份、后续按行差分为短更新，已发送前缀绝不改写）+ 规则压缩 + 模型摘要 + 溢出兜底 |
 | `runtime.go` | 后台运行时：执行注册表、全局事件总线、派发执行体、中断恢复 |
 | `session.go` | 会话元信息与工具函数 |
 | `store.go` | SQLite 存储层与旧数据迁移 |

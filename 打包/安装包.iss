@@ -53,9 +53,10 @@ Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "运行{#My
 Filename: "taskkill"; Parameters: "/IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "KillApp"
 
 [UninstallDelete]
-; WebView2 缓存是可再生的浏览器数据，卸载时清掉；
+; WebView2 缓存是可再生的浏览器数据，卸载时清掉（主界面与右栏浏览器面板两份 profile）；
 ; 会话库与配置（data\ 其余部分、config.json）保留，不做隐性删除
 Type: filesandordirs; Name: "{app}\data\webview"
+Type: filesandordirs; Name: "{app}\data\webview-browser"
 
 [Code]
 function WebView2Installed(): Boolean;

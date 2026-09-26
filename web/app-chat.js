@@ -41,7 +41,6 @@ function resetEmpty() {
     '</div>';
   $('sess-title').textContent = '数字助理';
   $('mode-badge').classList.add('hidden');
-  $('btn-drawer').classList.add('hidden');
   rpClose();
   placeComposer();
   // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
@@ -121,7 +120,6 @@ async function loadSessionInto(id, tok) {
   } else {
     badge.classList.add('hidden');
   }
-  $('btn-drawer').classList.remove('hidden');
   refreshDrawer();
   refreshCtxChip();
   placeComposer();
@@ -383,19 +381,28 @@ function toolRow(tc, result, opts = {}) {
 
 /* ---------- 折叠段：折叠条 + 隐藏容器 ---------- */
 
+// 上下文材料条目：首轮尾部材料、运行环境更新、系统提示词/工具定义变更。
+// 它们与思考/工具过程一起折叠（想核对「模型看到了什么」时再展开），
+// 渲染的两个路径（完成态/流式）都按此归类。
+function isMatItem(it) {
+  return it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange';
+}
+
 function foldLabel(cnt) {
   const parts = [];
   if (cnt.think) parts.push(cnt.think + ' 次思考');
   if (cnt.tool) parts.push(cnt.tool + ' 次工具调用');
+  if (cnt.mat) parts.push(cnt.mat + ' 条上下文材料');
   if (!parts.length) parts.push('已折叠 ' + cnt.rows + ' 行');
   return parts.join(' · ');
 }
 
 function secCount(items) {
-  const cnt = { think: 0, tool: 0, rows: items.length };
+  const cnt = { think: 0, tool: 0, mat: 0, rows: items.length };
   for (const it of items) {
     if (it.k === 'think') cnt.think++;
     else if (it.k === 'tool' || it.k === 'subtask') cnt.tool++;
+    else if (isMatItem(it)) cnt.mat++;
   }
   return cnt;
 }
@@ -630,7 +637,7 @@ function userBubble(m, view) {
   return wrap;
 }
 
-// 悬停操作：复制原文 / 手动压缩 / 分支（仅回合最终回答）/ 插件扩展位
+// 悬停操作（仅回合最终输出）：复制原文 / 手动压缩 / 分支 / 插件扩展位
 function msgActions(m, opts) {
   opts = opts || {};
   const acts = document.createElement('div');
@@ -648,7 +655,8 @@ function msgActions(m, opts) {
   acts.appendChild(cp);
   const cb = document.createElement('button');
   cb.className = 'act-copy act-compact';
-  cb.textContent = '压缩';
+  const cbOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>压缩';
+  cb.innerHTML = cbOrig;
   cb.title = '把此消息之前的旧对话压缩为一条摘要（最近几轮保持原样）';
   cb.onclick = async () => {
     if (!state.cur || state.streaming) return;
@@ -658,10 +666,10 @@ function msgActions(m, opts) {
       await api('/api/sessions/' + state.cur.id + '/compact', { method: 'POST' });
       cb.textContent = '已压缩';
       await openSession(state.cur.id);
-      setTimeout(() => { cb.textContent = '压缩'; cb.disabled = false; }, 1500);
+      setTimeout(() => { cb.innerHTML = cbOrig; cb.disabled = false; }, 1500);
     } catch (e) {
       alert('压缩失败：' + e.message);
-      cb.textContent = '压缩';
+      cb.innerHTML = cbOrig;
       cb.disabled = false;
     }
   };
@@ -723,7 +731,8 @@ function renderItem(it, opts) {
     body.className = 'md';
     body.innerHTML = md(it.text);
     wrap.appendChild(body);
-    wrap.appendChild(msgActions(it.m, opts && opts.final ? { final: true } : undefined));
+    // 操作按钮只挂在回合最终输出下：中间正文不带，过程拼得更紧凑
+    if (opts && opts.final) wrap.appendChild(msgActions(it.m, { final: true }));
     return wrap;
   }
   // 系统通知：常显独立块
@@ -910,17 +919,77 @@ function deliveryCard(dvs, sid) {
     dl.href = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
     dl.textContent = '下载';
     row.appendChild(dl);
+    // 可浏览器查看的交付文件加「打开」：在内嵌浏览器渲染（本地 file:// 相对资源可用）
+    if (/\.(html?|svg)$/i.test(d.path)) {
+      const ov = document.createElement('a');
+      ov.className = 'dc-dl';
+      ov.href = '#';
+      ov.textContent = '打开';
+      ov.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        openInPanelBrowser({ session: sid, path: d.path });
+      });
+      row.appendChild(ov);
+    }
     card.appendChild(row);
   });
   return card;
 }
 
+/* 聊天链接 → 右栏浏览器打开（桌面=原生 WebView2 面板，人机共看）。
+ * 用户主动操作，不经模型权限门控；后端 open-view 会把内嵌形态设为工具作用
+ * 目标（用户开了「操作浏览器」能力后，模型的 browser_screenshot/browser_content
+ * 看到的就是这页）并注入【网页查看】回报，模型由此知道用户在看什么。
+ * 网页模式没有原生面板：url 新标签打开，工作区文件走流式渲染端点新标签打开。 */
+async function openInPanelBrowser(body) {
+  const desktop = document.documentElement.classList.contains('desktop-shell');
+  if (!desktop) {
+    if (body.url) { window.open(body.url, '_blank'); return; }
+    if (body.path && body.session) {
+      window.open('/api/browser/view?sid=' + encodeURIComponent(body.session) +
+        '&path=' + encodeURIComponent(body.path), '_blank');
+      return;
+    }
+  }
+  try {
+    await api('/api/browser/open-view', { method: 'POST', body: JSON.stringify(body) });
+  } catch (e) {
+    if (body.url) window.open(body.url, '_blank'); // 打不开就退回新标签打开
+    else alert(e.message); // 后端错误已带「打开失败: 」前缀，不重复包
+    return;
+  }
+  rpOpen('browser'); // 面板未开自动开；已开只是切页签（不重播动画）
+}
+
+// 委托接管（主对话/子对话通用）：左键点 ext-link 在右栏打开；Ctrl/中键等放行默认
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a.ext-link');
+  if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  e.preventDefault();
+  openInPanelBrowser({ url: a.getAttribute('href') });
+});
+
+// 文件路径链接（file-link，正文/反引号里的路径渲染而来）：按消息所在视图
+// 解析出会话，右栏预览该文件（本地转 file://，同目录相对资源可用；远程走
+// 流式渲染）。后端边界=会话工作区内已存在的文件，越界/不存在给明确报错。
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a.file-link');
+  if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  e.preventDefault();
+  const path = a.getAttribute('data-path');
+  const view = a.closest('#sub-msg-col') ? subView : mainView;
+  const sid = view.state.cur && view.state.cur.id;
+  if (!sid || !path) return;
+  openInPanelBrowser({ session: sid, path });
+});
+
 /* 渲染契约（性能与滚动）：
    - 前缀复用：最后一个真实用户消息之前的所有回合（含继承段、文件改动面板、
      交付卡）只在结构变化时整体重建；流式期间的 message 事件只重建尾部
      （最后一回合 + 待生效插话），前缀的折叠状态与阅读位置不被整列重渲冲掉。
-   - 跟随滚动：默认只在原本就贴近底部时跟随输出（流式中上翻阅读不被拽回）；
-     jump=true（打开会话/首次渲染）强制到底。 */
+   - 跟随滚动：默认贴底跟随输出；用户上翻即「钉住」阅读位置，流式增量与
+     消息事件都不再拽回，滚回底部或点「回到底部」才恢复跟随；jump=true
+     （打开会话/首次渲染）强制到底。 */
 
 // 尾部 = 从最后一个真实用户消息起的回合；没有真实用户消息则返回 -1（全算尾部）
 function lastTurnStart(msgs) {
@@ -931,10 +1000,19 @@ function lastTurnStart(msgs) {
   return -1;
 }
 
-// 跟随滚动：距底部 <120px 视为「正在跟随」；jump 强制到底
+// 跟随滚动（钉住式）：默认贴底跟随输出；用户上翻（滚轮/触摸/拖滚动条，经
+// setupScrollTuck 钉住）后 view._pinned=true，之后的跟随一律让路，直到用户
+// 滚回底部（或点「回到底部」）恢复。jump=true 强制到底并解除钉住。
+// 旧版只按「距底 <120px 才跟随」判断：流式输出长得快，滚轮一格约 100px，
+// 一步逃不出 120px 窗口就被拽回——表现就是「往上滑不动、总被拉到最底下」。
+const FOLLOW_PIN_DIST = 120; // 滚动位置离底超过此距 → 兜底钉住（拖滚动条/键盘翻页）
+const FOLLOW_RESUME = 48;    // 滚回离底小于此距 → 恢复跟随
+const PIN_GUARD_MS = 350;    // 手势钉住后的短窗口：其间的小距滚动不算「滚回底部」
+
 function followScroll(view, jump) {
   const el = view.scroll;
-  if (!jump && el.scrollHeight - el.scrollTop - el.clientHeight >= 120) return;
+  if (jump) { view._pinned = false; el.scrollTop = el.scrollHeight; return; }
+  if (view._pinned) return; // 钉住阅读位置：不跟随
   el.scrollTop = el.scrollHeight;
 }
 
@@ -964,6 +1042,7 @@ function renderMessages(msgs, view, opts) {
   if (!msgs.length) {
     st._pfxSid = null;
     box.innerHTML = view.emptyHTML;
+    view._pinned = false; // 空会话没有可钉住的阅读位置
     view.scroll.scrollTop = view.scroll.scrollHeight;
     return;
   }
@@ -1008,7 +1087,11 @@ function renderMessages(msgs, view, opts) {
     st._pfxSeq = msgs[k - 1] ? msgs[k - 1].seq : 0;
     st._pfxNodes = box.children.length;
   }
-  // 尾部每次全量重建：最后一回合（流式中走尾部窗口）+ 待生效插话
+  // 尾部每次全量重建：最后一回合（流式中走尾部窗口）+ 待生效插话。
+  // 渲染前记时间戳：移除尾部的瞬间内容变矮，浏览器会把 scrollTop 钳到临时
+  // 底部并发出 dist≈0 的 scroll 事件——若当作「用户滚回底部」会误解除钉住、
+  // 随后跟随把阅读位置拽到底（单格上翻场景实测翻车），scroll 监听据此忽略
+  view._renderTs = Date.now();
   while (box.children.length > st._pfxNodes) box.removeChild(box.lastChild);
   const tail = document.createDocumentFragment();
   const last = turns[turns.length - 1];
@@ -1036,9 +1119,9 @@ function renderMessages(msgs, view, opts) {
 }
 
 // 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与系统通知也常显；
-// 上下文材料行（首轮尾部材料、运行环境更新、系统提示词/工具定义变更）常显——
-// 它们就是「模型看到了什么、什么时候变的」的路标；其余过程按相邻常显块
-// 切分成折叠段（每段一条折叠条，显示思考/工具计数）
+// 上下文材料行（首轮尾部材料、运行环境更新、系统提示词/工具定义变更）跟
+// 思考/工具过程一起折叠——要核对「模型看到了什么、什么时候变的」时展开折叠段；
+// 其余过程按相邻常显块切分成折叠段（每段一条折叠条，显示思考/工具计数）
 function renderFinishedTurn(box, turn, key) {
   const items = turn.items;
   let answerIdx = -1;
@@ -1048,7 +1131,6 @@ function renderFinishedTurn(box, turn, key) {
   items.forEach((it, i) => {
     if (i === answerIdx) return;
     if (it.k === 'note' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
-    if (it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange') anchors.add(i);
   });
   let seg = [];
   const flushSeg = () => {
@@ -1064,17 +1146,23 @@ function renderFinishedTurn(box, turn, key) {
 }
 
 // 进行中回合：过程行只露最近 TAIL_ROWS 行（尾部窗口），上方折叠成一条"已折叠 N 行"折叠条；
-// 运行中的子任务卡钉在窗口上方常显（实时进度不中断）；手动展开过则全部显示
+// 运行中的子任务卡钉在窗口上方常显（实时进度不中断）；上下文材料行落在回合
+// 开头、不占窗口——与完成态一致折进折叠段（否则刚发完消息满屏都是变更行）；
+// 手动展开过则全部显示
 function renderStreamingTurn(box, turn, key) {
   const items = turn.items;
-  if (items.length <= TAIL_ROWS) {
-    items.forEach((it) => box.appendChild(renderItem(it)));
+  const mat = items.filter(isMatItem);
+  const flow = items.filter((it) => !isMatItem(it));
+  if (flow.length <= TAIL_ROWS) {
+    // 回合刚开头：材料行单独折成顶部一段，过程行照常显示
+    if (mat.length) box.appendChild(foldSection(mat, key, { open: turnOpen[key] === true }));
+    flow.forEach((it) => box.appendChild(renderItem(it)));
     return;
   }
-  const foldFrom = items.length - TAIL_ROWS;
-  const segItems = [];
+  const foldFrom = flow.length - TAIL_ROWS;
+  const segItems = mat.slice(); // 材料行在回合最前，并入头部折叠段（只有一条折叠条）
   const pinned = [];
-  items.forEach((it, i) => {
+  flow.forEach((it, i) => {
     if (i >= foldFrom) return;
     if (it.k === 'subtask' && !it.result) pinned.push(it);
     else segItems.push(it);
@@ -1082,11 +1170,11 @@ function renderStreamingTurn(box, turn, key) {
   if (segItems.length) {
     box.appendChild(foldSection(segItems, key, {
       open: turnOpen[key] === true,
-      prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.think || c.tool) ? ' · ' + foldLabel(c) : ''),
+      prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.think || c.tool || c.mat) ? ' · ' + foldLabel(c) : ''),
     }));
   }
   pinned.forEach((it) => box.appendChild(renderItem(it)));
-  items.slice(foldFrom).forEach((it) => box.appendChild(renderItem(it)));
+  flow.slice(foldFrom).forEach((it) => box.appendChild(renderItem(it)));
 }
 
 let rafPending = false;
@@ -1115,7 +1203,8 @@ function liveRender(view) {
       tk.style.display = '';
       const tkt = tk.querySelector('.tk-text');
       tkt.textContent = thinking;
-      tkt.scrollTop = tkt.scrollHeight; // 长思考自动滚到最新
+      // 内滚贴底才跟随：展开思考块往回读推理时不被每帧拽到底（外层钉住同款语义）
+      if (tkt.scrollHeight - tkt.scrollTop - tkt.clientHeight < 48) tkt.scrollTop = tkt.scrollHeight;
     } else {
       tk.style.display = 'none';
     }
@@ -1251,6 +1340,15 @@ function handleGlobalEvent(ev) {
       break;
     case 'progress':
       loadProgress();
+      break;
+    // 浏览器面板（桌面原生 WebView2）：browser_nav 同步工具栏地址/标题
+    // （AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
+    // （X/Y 复用为宽高），两个处理函数都在 app-right.js
+    case 'browser_nav':
+      bpwOnNav(ev);
+      break;
+    case 'browser_resize':
+      bpwApplyViewport(ev.x);
       break;
     // 说明：delta/reasoning 不上全局总线（流式增量只走会话自己的 SSE）；
     // 真实失败也不广播——错误经会话详情的 error 字段到达
@@ -1681,6 +1779,9 @@ function handleEvent(ev, view) {
       view.hint.textContent = ev.output || '等待用户批准…';
       break;
     case 'tool_end':
+      // deliver_result 一落库就刷新会话轻量状态：交付卡片当轮实时出现
+      //（deliveries/checkpoints 只在打开会话时拉取过，不刷就永远不显示）
+      if (ev.name === 'deliver_result' && !view.state.attached) reloadMessages(view);
       break;
     case 'sub_start':
       // 主对话 SSE 里的派发确认；后续进度统一走全局事件流
@@ -1779,6 +1880,7 @@ async function retryRun(view) {
   if (!cur || view.state.streaming) return;
   hideRunError(view);
   view.state.streaming = true;
+  view._pinned = false; // 主动重试：恢复跟随
   setStreamUI(true, view);
   view.state.abort = new AbortController();
   view.state.streamText = '';
@@ -1806,8 +1908,14 @@ async function endTurn(view, aborted, stream) {
   removeLive(view);
   view.state.streaming = false;
   view.state.attached = false;
-  if (aborted) await reloadMessages(view); // 本地被动断流：整体对一次
-  else await refreshIfDangling(view);      // 流断但后端仍在跑：接回去继续看
+  if (aborted) {
+    await reloadMessages(view); // 本地被动断流：整体对一次
+  } else {
+    await refreshIfDangling(view); // 流断但后端仍在跑：接回去继续看
+    // 正常收尾也重取一次：文件改动面板与交付卡片当轮即出（此前只有
+    // 重开会话时才会拉到 deliveries/checkpoints，同页跑完的回合永远不显示）
+    if (!view.state.streaming) await reloadMessages(view);
+  }
   renderMessages(view.state.msgs, view);
   setStreamUI(false, view);
   if (view === mainView) {
@@ -1912,6 +2020,7 @@ async function sendMidrun(content, viaInput, view) {
       else view.state.pendingQueue.push(pm);
     }
     renderQueueDock(view);
+    view._pinned = false; // 插话/排队展示在对话末尾：恢复跟随看得到回执
     renderMessages(view.state.msgs, view);
     pendingHint(view, d.mode === 'steer' ? '已插话：下一次调用模型前注入生效' : '已排队：本轮结束后自动发送');
   } catch (e) {
@@ -1953,7 +2062,6 @@ async function send(forceContent, view) {
         }),
       });
       state.cur = s;
-      $('btn-drawer').classList.remove('hidden');
       placeComposer();
       syncComposer();
       refreshDrawer();
@@ -1981,6 +2089,7 @@ async function send(forceContent, view) {
 
   const sid = view.state.cur.id; // 这条流所属的会话：切走后它的帧与收尾都不再动界面
   view.state.streaming = true;
+  view._pinned = false; // 自己发的消息：恢复跟随，输出落地即到底
   setStreamUI(true, view);
   view.state.abort = new AbortController();
   view.state.streamText = '';
@@ -2131,6 +2240,7 @@ async function resendEdit(m, content, view, mode) {
   if (!view.state.cur || view.state.streaming) return false;
   const sid = view.state.cur.id; // 这条流所属的会话：切走后它的帧与收尾都不再动界面
   view.state.streaming = true;
+  view._pinned = false; // 编辑重发也是自己的动作：恢复跟随
   setStreamUI(true, view);
   view.state.abort = new AbortController();
   view.state.streamText = '';
@@ -2881,6 +2991,8 @@ function makeJumpLatest(view) {
   b.title = '回到底部';
   b.innerHTML = chev('p-chev');
   b.onclick = () => {
+    view._pinned = false; // 用户明确要回底部：恢复跟随
+    view._progUntil = Date.now() + 800; // 平滑下降途中的中间位置不当作上翻
     view.scroll.scrollTo({ top: view.scroll.scrollHeight, behavior: 'smooth' });
     tuckComposer(view, false);
   };
@@ -2947,13 +3059,36 @@ function tuckComposer(view, on) {
 function setupScrollTuck() {
   for (const view of [mainView, subView]) {
     let lastY = view.scroll.scrollTop;
+    // 跟随钉住的手势入口：滚轮上翻/触摸上滑立即钉住（无论离底多近——否则
+    // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底
+    view.scroll.addEventListener('wheel', (e) => {
+      if (e.deltaY < 0) { view._pinned = true; view._pinTs = Date.now(); }
+    }, { passive: true });
+    let touchY = null;
+    view.scroll.addEventListener('touchstart', (e) => {
+      touchY = e.touches[0] ? e.touches[0].clientY : null;
+    }, { passive: true });
+    view.scroll.addEventListener('touchmove', (e) => {
+      if (touchY != null && e.touches[0] && e.touches[0].clientY - touchY > 4) {
+        view._pinned = true; view._pinTs = Date.now(); // 手指下移 = 内容上翻
+      }
+    }, { passive: true });
     view.scroll.addEventListener('scroll', () => {
       const el = view.scroll;
       const y = el.scrollTop;
       const dy = y - lastY;
       lastY = y;
-      // 回到底部按钮：滚离底部出现，靠近底部消失（滞回）
+      // 跟随钉住/恢复：内容增长不触发 scroll（scrollTop 不变），离底变远只可能
+      // 是用户在滚 → 钉住；滚回贴近底部 → 恢复跟随（刚钉住的短窗口内不判恢复，
+      // 小距上翻的余量不能立刻抵消钉住）。程序性贴底跟随时 dist≈0，天然维持跟随态。
+      // 两类合成事件不算用户意图：渲染钳位（_renderTs 后 120ms 内，尾部重建把
+      // scrollTop 夹到临时底部）与回到底部按钮的平滑下降（_progUntil 前的中间位置）
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const ts = Date.now();
+      const synthetic = ts - (view._renderTs || 0) < 120 || ts < (view._progUntil || 0);
+      if (!synthetic && dist > FOLLOW_PIN_DIST) { view._pinned = true; view._pinTs = ts; }
+      else if (!synthetic && dist < FOLLOW_RESUME && ts - (view._pinTs || 0) > PIN_GUARD_MS) view._pinned = false;
+      // 回到底部按钮：滚离底部出现，靠近底部消失（滞回）
       const was = !!view._jumpShow;
       const now = was ? dist > JUMP_HIDE : dist > JUMP_SHOW;
       if (now !== was && view._jumpBtn) {
@@ -3101,6 +3236,7 @@ document.addEventListener('click', (e) => {
       !e.target.closest('#mode-row') &&
       !e.target.closest('#sub-dd') &&
       !e.target.closest('#skill-add-btn') && // 设置页「＋ 添加技能」弹层锚点
+      !e.target.closest('.ex-model-chip') && // 设置页「子对话专家」的模型选择芯片锚点
       // 右栏子对话输入区那套同款控件也是弹层锚点
       !e.target.closest('#sub-btn-plus') && !e.target.closest('#sub-perm-chip') &&
       !e.target.closest('#sub-model-chip') &&

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -201,7 +202,11 @@ func stringsEqualFold(a, b string) bool {
 
 // runDesktop 打开 WebView2 窗口并阻塞到窗口关闭。
 // JX_DESKTOP_AUTOCLOSE 秒数>0 时到点自动关窗（自动化冒烟用）。
-func runDesktop(url string) error {
+// 桌面壳就是主 WebView2 控件（承载 Web UI）；右栏原生浏览器面板
+// （browser_panel_windows.go）作为第二个 WebView2 控件惰性创建，挂在
+// 本窗口上。URL 带 shell=desktop 参数：前端据此进入桌面形态（右栏
+// 浏览器视图 + 矩形上报）。
+func runDesktop(app *App, url string) error {
 	if !webView2RuntimeAvailable() {
 		desktopMessageBox(
 			"未检测到 Microsoft WebView2 运行时（Windows 10 / 11 一般自带）。\n\n"+
@@ -229,7 +234,13 @@ func runDesktop(url string) error {
 	if w == nil {
 		return fmt.Errorf("创建桌面窗口失败")
 	}
-	w.Navigate(url)
+	// 右栏原生浏览器面板：COM 调用一律经 Dispatch 投递到本窗口的 UI 线程
+	app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	w.Navigate(url + sep + "shell=desktop")
 	if secs, err := strconv.Atoi(os.Getenv("JX_DESKTOP_AUTOCLOSE")); err == nil && secs > 0 {
 		go func() {
 			time.Sleep(time.Duration(secs) * time.Second)

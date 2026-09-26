@@ -5,6 +5,13 @@
 
 const $ = (id) => document.getElementById(id);
 
+/* 桌面形态标记：桌面壳（runDesktop）导航的 URL 带 shell=desktop——右栏浏览器
+ * 视图启用原生 WebView2 面板（矩形上报 + 工具栏），链接在右栏打开；网页模式
+ * 一切照旧，链接新标签页打开。 */
+if (new URLSearchParams(location.search).get('shell') === 'desktop') {
+  document.documentElement.classList.add('desktop-shell');
+}
+
 /* ---------- JX：插件接口（插件兼容层注入的浏览器半边经此接入原生界面） ---------- */
 const JX = {
   _bus: {},
@@ -104,12 +111,73 @@ if (narrowMq) {
 }
 window.addEventListener('resize', leaveNarrowIfNeeded);
 
-/* ---------- Markdown 渲染（围栏代码块、标题、列表、表格、行内样式） ---------- */
+/* ---------- Markdown 渲染（围栏代码块、标题、列表、表格、行内样式、链接） ---------- */
+
+// 行内格式：代码 span → 粗体 → 链接（[文字](url) 与裸 http(s) URL）→ 文件路径。
+// 链接带 ext-link 类，点击由 app-chat.js 的委托处理器接管——在内嵌浏览器
+// （右栏面板）打开而非整页跳转；Ctrl/中键放行浏览器默认行为。
+// 转义次序：代码 span 先摘出占位（其中 URL 不做链接化），其余文本逐段 esc
+// 后拼链接，保证不破坏现有 XSS 防线。
+
+// 文件路径识别（对话中途输出的文件地址 → file-link，点击右栏预览）：
+// 盘符绝对路径或带分隔符的相对路径，且以字母开头的扩展名结尾（分隔符是
+// 硬条件——不然 "Node.js" 这类词全会被误判）；空白与中西文标点断开。
+// 含空格的路径在正文里无法安全判界（会吞掉后面的文字），只在反引号里认。
+const FILE_PATH_RE = /(?:[A-Za-z]:)?(?:[^\s`'"<>|:,，。；（）【】《》「」]*[\\/])+[^\s`'"<>|:,，。；（）【】《》「」]*[A-Za-z0-9\u4e00-\u9fff_]\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w.])/g;
+
+// 反引号内容整体是否一个文件路径（模型习惯把产物路径用反引号包起来）：
+// 有分隔符 → 允许空格（反引号就是边界），只要以扩展名结尾且无引号/竖线；
+// 无分隔符 → 单文件名（config.json / My File.txt），最多一个空格。
+function codeSpanIsPath(c) {
+  if (/[<>|"']/.test(c)) return false;
+  if (c.includes('\\') || c.includes('/')) {
+    const body = c.replace(/^[A-Za-z]:/, '');
+    if (body.includes(':')) return false;
+    return /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(c);
+  }
+  if ((c.match(/ /g) || []).length > 1) return false;
+  return /^[\w\u4e00-\u9fff][\w\u4e00-\u9fff .+-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(c);
+}
+
+// 纯文本段里的路径 → file-link（前后片段照常转义）
+function pathLinks(seg) {
+  if (!seg) return '';
+  let out = '', last = 0, m;
+  FILE_PATH_RE.lastIndex = 0;
+  while ((m = FILE_PATH_RE.exec(seg))) {
+    out += esc(seg.slice(last, m.index));
+    out += '<a class="file-link" data-path="' + esc(m[0]) + '">' + esc(m[0]) + '</a>';
+    last = m.index + m[0].length;
+  }
+  return out + esc(seg.slice(last));
+}
 
 function inlineFmt(s) {
-  return esc(s)
-    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  const codes = [];
+  let t = s.replace(/`([^`\n]+)`/g, (_, c) => {
+    codes.push(c);
+    return '\x00' + (codes.length - 1) + '\x00';
+  });
+  // 裸 URL 只认 ASCII URL 字符：中文与全角标点（如句号逗号）处截断，避免把后面的正文吞进链接
+  const linkRe = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&'*+,;=%]+)/g;
+  let out = '', last = 0, m;
+  while ((m = linkRe.exec(t))) {
+    out += pathLinks(t.slice(last, m.index));
+    const href = m[1] !== undefined ? m[2] : m[0];
+    const text = m[1] !== undefined ? m[1] : m[0];
+    out += '<a class="ext-link" href="' + esc(href) + '" rel="noopener">' + esc(text) + '</a>';
+    last = m.index + m[0].length;
+  }
+  out += pathLinks(t.slice(last));
+  out = out
+    .replace(/\x00(\d+)\x00/g, (_, i) => {
+      const c = codes[+i];
+      return codeSpanIsPath(c)
+        ? '<code><a class="file-link" data-path="' + esc(c) + '">' + esc(c) + '</a></code>'
+        : '<code>' + esc(c) + '</code>';
+    })
     .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+  return out;
 }
 
 function renderBlocks(seg) {
