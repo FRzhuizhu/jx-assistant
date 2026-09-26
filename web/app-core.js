@@ -693,12 +693,29 @@ function autoGrow(t) {
   t.style.height = Math.min(t.scrollHeight, 200) + 'px';
 }
 
+/* ---------- 输入框回车键发送/换行统一处理（主/子输入区共用） ----------
+   发送快捷键两档（jx.sendkey，设置页可切）：
+   · enter 档（默认）：回车发送；Shift+回车、Ctrl/Cmd+回车都是换行；
+   · ctrl 档：Ctrl/Cmd+回车发送；回车、Shift+回车都是换行。
+   两种组合键都支持换行（Ctrl+回车在浏览器里没有任何保留绑定，不冲突）；
+   换行优先 execCommand 插入（保留原生撤销），引擎不接则回落浏览器默认插入。
+   输入法组字中的回车是「确认候选」，必须放行给 IME，不能当成发送。 */
+function composerEnterKeydown(e, doSend) {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  if (lsGet('jx.sendkey', 'enter') === 'ctrl') {
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); doSend(); }
+    return;
+  }
+  if (!e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); doSend(); return; }
+  try { if (document.execCommand('insertLineBreak')) autoGrow(e.target); } catch (err) { /* 走默认 */ }
+}
+
 /* ---------- 输入框占位文案跟随发送快捷键设置（jx.sendkey） ---------- */
 // sendKeyHint：快捷键提示短语（渲染路径每次刷新占位符时统一取这里，别写死）
 function sendKeyHint() {
   return lsGet('jx.sendkey', 'enter') === 'ctrl'
-    ? 'Ctrl + 回车键发送，回车键换行，可到设置里更改快捷键'
-    : '回车键发送，Shift + 回车键换行，可到设置里更改快捷键';
+    ? 'Ctrl+回车键发送，回车键 或 Shift+回车键换行，可到设置里更改快捷键'
+    : '回车键发送，Shift+回车键 或 Ctrl+回车键换行，可到设置里更改快捷键';
 }
 function updateSendKeyHint() {
   const el = $('input');
