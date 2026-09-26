@@ -543,7 +543,14 @@
                 <button type="button" class="fb-kind cur" data-kind="bug">问题</button>
                 <button type="button" class="fb-kind" data-kind="idea">建议</button>
               </div>
-              <textarea id="fb-text" class="pf-input pf-textarea" rows="4" placeholder="遇到了什么问题、想要什么功能？写清报错信息与复现步骤，越具体越快解决"></textarea>
+              <input id="fb-title" class="pf-input" maxlength="120" placeholder="标题：一句话概括问题（必填）">
+              <textarea id="fb-text" class="pf-input pf-textarea" rows="4" placeholder="正文：报错信息、复现步骤，越具体越快解决（必填，支持中文与代码片段）"></textarea>
+              <div class="fb-img-row">
+                <button id="fb-img-btn" class="fb-img-btn" type="button">＋ 添加截图</button>
+                <span class="sf-desc" id="fb-img-hint"></span>
+              </div>
+              <div id="fb-img-previews" class="fb-img-previews"></div>
+              <input type="file" id="fb-img-input" class="hidden" accept="image/png,image/jpeg,image/gif,image/webp" multiple>
               <button id="fb-send" class="fb-send" type="button">发送反馈</button>
             </div>
           </div>

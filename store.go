@@ -279,6 +279,15 @@ var storeMigrations = []migration{
 			)`,
 		},
 	},
+	{
+		// 反馈补标题列（对齐工单结构：标题+正文+图片；图片存文件系统，
+		// 文件名约定 <反馈id>-<序号>.<ext>，见 feedback.go）。
+		id:       "0013_feedback_title",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE feedback ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，

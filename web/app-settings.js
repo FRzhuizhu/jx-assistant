@@ -113,8 +113,7 @@ async function openFeedbackForm(prefill, sessionId) {
   await openSettings('about');
   const ta = $('fb-text');
   if (ta && prefill && !ta.value.trim()) {
-    $('fb-title').value = prefill.split('
-')[0].slice(0, 100);
+    $('fb-title').value = prefill.split('\n')[0].slice(0, 100);
     ta.value = prefill;
   }
   if (ta) ta.focus();
