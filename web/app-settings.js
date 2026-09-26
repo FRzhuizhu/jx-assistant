@@ -673,15 +673,18 @@ function syncRemoteState(c) {
     : '';
   entryEl.style.cursor = ra.entry ? 'pointer' : '';
   lastRemoteEntry = ra.entry || '';
-  // 二维码：入口变化才重绘（生成不便宜），未开启时收起
+  // 二维码：入口变化才重绘（标准库 toString 是异步的），未开启时收起
   const qrBox = $('remote-qr');
   if (qrBox) {
     if (ra.enabled && ra.entry) {
       if (qrBox.dataset.entry !== ra.entry) {
-        try {
-          qrBox.innerHTML = qrLib.qrSVG(ra.entry, { size: 208 });
-          qrBox.dataset.entry = ra.entry;
-        } catch (e) { qrBox.textContent = '二维码生成失败：' + e.message; }
+        const entry = ra.entry;
+        qrBox.dataset.entry = entry; // 先占位防重入；异步回来时入口又变则丢弃
+        qrLib.qrSVG(entry, { size: 208 }).then((svg) => {
+          if (qrBox.dataset.entry === entry) qrBox.innerHTML = svg;
+        }).catch((e) => {
+          if (qrBox.dataset.entry === entry) qrBox.textContent = '二维码生成失败：' + e.message;
+        });
       }
       qrBox.classList.remove('hidden');
     } else {
