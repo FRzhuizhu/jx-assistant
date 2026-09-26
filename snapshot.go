@@ -2,7 +2,7 @@ package main
 
 // 文件快照子系统（对齐 ZCode 的 workspace checkpoint 机制）：
 //
-//   - 采集：write_file / edit_file 写入时自动记录改动前内容（snapshotWrite）；
+//   - 采集：write / edit 写入时自动记录改动前内容（snapshotWrite）；
 //     run_command、外部程序、Office 文档运行库等无法追踪的修改，由模型按
 //     系统提示词的约定先调 snapshot_file 手动记录（见 tools.go 的工具定义）。
 //   - 回退：编辑历史消息时带 workspaceMode=rewind（server.go 的 handleEdit），
@@ -285,7 +285,7 @@ func (a *App) copySnapshotFiles(from, to *SessionMeta, pairs [][2]int64) {
 }
 
 // ensureJxAI 确保工作区里有 .jxai/tmp（模型临时文件的约定去处，见系统提示词）。
-// 选定工作目录后尽快调用一次；模型用 write_file 写 .jxai/tmp 也会自动建目录，
+// 选定工作目录后尽快调用一次；模型用 write 写 .jxai/tmp 也会自动建目录，
 // 这里只是让目录从一开始就存在、可被发现。
 func (t *toolContext) ensureJxAI() {
 	p, err := t.resolve(jxAIName + "/tmp")
@@ -297,7 +297,7 @@ func (t *toolContext) ensureJxAI() {
 	}
 }
 
-// snapshotWrite 带快照的文件写入（write_file / edit_file 共用）：先读旧内容，
+// snapshotWrite 带快照的文件写入（write / edit 共用）：先读旧内容，
 // 写入成功后回读算哈希，落一条 checkpoint 并把正文写进 .jxai/snapshots/。
 // 旧文件读不了、超过单文件上限、正文属于 .jxai 自身或备份开关关闭时跳过快照
 // （写入照常）。快照失败只记日志，不让正常写入报错。

@@ -120,7 +120,9 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 const fileToolsPrompt = `
 ## 文件修改与交付规范
 
-1. write_file / edit_file 的修改自动记录历史快照，用户编辑历史消息时可以把文件一并回退，无需你做额外操作。
+文件操作一律优先用文件工具：查看文本文件用 read（而不是 cat 等命令行）；创建文件或整体替换内容用 write（既有文件先 read 读过才能覆盖——观察策略强制，本会话刚创建/刚改过的除外）；对既有文件的局部修改优先用 edit，而不是重写整个文件或用命令行脚本改。
+
+1. write / edit 的修改自动记录历史快照，用户编辑历史消息时可以把文件一并回退，无需你做额外操作。
 2. 通过 run_command、外部程序或文档运行库（Office 的 python-docx/openpyxl/python-pptx 等）修改文件无法自动追踪：改动一个已存在的重要文件前，必须先调用 snapshot_file 打快照，否则该文件无法回退；新建文件无需快照。
 3. 产出最终交付文件后（无论什么方式生成），调用 deliver_result 登记交付清单——用户界面会展示交付卡片并提供下载，这是用户拿到成果的正式入口；只在回复里贴路径不算交付。每轮可多次调用，后登记的会并列展示。
 
@@ -128,7 +130,7 @@ const fileToolsPrompt = `
 
 - 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
 - 一切临时产物——中间脚本、下载的素材、截图、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在工作区根目录；只有最终交付文件才放在正式位置。
-- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read_file 访问没有限制。`
+- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制。`
 
 // dispatchSubPrompt 是子对话派发工具的使用准则（task / office 模式附加；
 // assistant 的派发准则在其专属提示词里）：什么时候把工作分给子对话、
@@ -237,7 +239,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		if sess.Mode == "assistant" {
 			b.WriteString("- 计划模式：已开启。dispatch_task / send_to_session 已暂停（任务会话会实际改动文件）；此阶段只用只读工具调研（list_sessions / read_session_summary / search_sessions / read_session_messages），调研完成后调用 exit_plan_mode 提交计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后恢复派发。\n")
 		} else {
-			b.WriteString("- 计划模式：已开启。write_file / edit_file / run_command / browser_* / computer_* / job_* 工具已暂停；此阶段只做只读探索（read_file / grep / glob / list_dir / web_fetch 等），调研完成后调用 exit_plan_mode 提交计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后恢复执行。\n")
+			b.WriteString("- 计划模式：已开启。write / edit / run_command / browser_* / computer_* / job_* 工具已暂停；此阶段只做只读探索（read / grep / glob / list_dir / web_fetch 等），调研完成后调用 exit_plan_mode 提交计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后恢复执行。\n")
 		}
 	}
 	if sess.GoalMode {
@@ -411,7 +413,7 @@ func skillNamesInEnv(env string) map[string]bool {
 
 // planSuspendedTask 是计划模式下暂停的 task 会话工具（目录不变，调用时拦截）。
 var planSuspendedTask = map[string]bool{
-	"write_file": true, "edit_file": true, "run_command": true,
+	"write": true, "edit": true, "run_command": true,
 	"job_output": true, "job_list": true, "job_kill": true,
 }
 

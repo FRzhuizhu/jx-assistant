@@ -69,7 +69,7 @@ type Config struct {
 	RuleInterval     int     `json:"ruleInterval"`     // 规则压缩的间隔轮数
 	CompactThreshold float64 `json:"compactThreshold"` // 模型摘要自动触发阈值（0.8/0.9）
 	// 文件快照保留策略：按天超龄清理是主力（旧配置缺省回落默认值；-1 = 该项关闭）。
-	// 自动池管 write_file/edit_file 的小快照；手动池（snapshot_file，往往是
+	// 自动池管 write/edit 的小快照；手动池（snapshot_file，往往是
 	// Office 文档等大文件）默认不限量——清理靠 7 天过期；确有磁盘压力时再配
 	// 500/1024 这一级别的大预算。SnapshotEnabled 是设置页「文件备份」总开关
 	//（指针类型：配置文件里没写这一项 = 开启）。

@@ -14,13 +14,13 @@ func TestSuspendedInPlan(t *testing.T) {
 		mode, name string
 		want       bool
 	}{
-		{"task", "write_file", true},
-		{"task", "edit_file", true},
+		{"task", "write", true},
+		{"task", "edit", true},
 		{"task", "run_command", true},
 		{"task", "job_output", true},
 		{"task", "browser_click", true},
 		{"task", "computer_screenshot", true},
-		{"task", "read_file", false},
+		{"task", "read", false},
 		{"task", "grep", false},
 		{"task", "web_fetch", false},
 		{"task", "ask_user_question", false},
@@ -30,7 +30,7 @@ func TestSuspendedInPlan(t *testing.T) {
 		{"assistant", "dispatch_task", true},
 		{"assistant", "send_to_session", true},
 		{"assistant", "list_sessions", false},
-		{"aux", "read_file", false},
+		{"aux", "read", false},
 	}
 	for _, c := range cases {
 		if got := suspendedInPlan(c.mode, c.name); got != c.want {

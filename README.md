@@ -159,6 +159,16 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   `read-only`（沙箱内执行、禁止任何写入）/ `workspace-write`（默认；只能写
   工作区与沙箱私有临时目录，联网不限）/ `full`（不受限，官方
   danger-full-access 语义）。
+- **文件工具三道防线**（`perm.go`/`fsatomic.go`，对齐官方 fs-sandbox/
+  fs-observation-policy/fs-local writeFileAtomic；文件工具跑在主进程不经
+  OS 沙箱，须自带边界）：① 进程内路径围栏 `writeFenceAllows`——写前
+  GetFinalPathNameByHandle 原生规范化（junction/符号链接/subst 全解析；
+  Go 的 EvalSymlinks 不解析 junction）+ 词法包含 + dev/ino 身份比对回退，
+  可写根 = 工作区 + 系统临时目录（官方 writableRoots 同款）；② 观察策略
+  ——既有文件本会话 read 过才能被 write 整体覆盖（防盲覆盖；刚创建/刚
+  改过的视为已观察，会话间隔离）；③ 原子替换写——同目录临时文件 +
+  rename 换指新 inode，工作区内指向外部文件的 NTFS 硬链接不被写穿
+  （外部别名保持旧内容），Windows 上替换前尽力保留原文件安全描述符。
 - **Windows 后端**（`sandbox_windows.go`，对齐官方 sandbox-windows-acl）：
   `CreateRestrictedToken` 造受限令牌（剥全部特权 + LUA + 写受限 Flags），
   restricting 列表 = 登录 SID + Everyone + 工作区/临时目录合成 SID（由路径

@@ -118,7 +118,7 @@ func TestPermModeDefaults(t *testing.T) {
 
 func TestGrantOneTimeConsume(t *testing.T) {
 	a := &App{grants: map[string]*Grant{}}
-	g := a.issueGrant("s1", "write_file", "write", "写文件 x", permWorkspace)
+	g := a.issueGrant("s1", "write", "write", "写文件 x", permWorkspace)
 	if err := a.consumeGrant(g); err != nil {
 		t.Fatalf("首次核销应成功: %v", err)
 	}
@@ -218,10 +218,10 @@ func TestAuthorizeDenialDriven(t *testing.T) {
 	a, sess, tc := escalationApp(t)
 
 	// 工作区写模式：写工作区内放行，工作区外拒绝（fs 路径沙箱）
-	if g, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\w\a.txt`}); err != nil || g.Policy != permWorkspace {
+	if g, err := tc.authorize(permAction{Op: "write", Tool: "write", Path: `D:\w\a.txt`}); err != nil || g.Policy != permWorkspace {
 		t.Fatalf("工作区内写应放行且策略为 workspace-write: g=%v err=%v", g, err)
 	}
-	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\a.txt`}); err == nil ||
+	if _, err := tc.authorize(permAction{Op: "write", Tool: "write", Path: `D:\out\a.txt`}); err == nil ||
 		!strings.Contains(err.Error(), "fs sandbox") {
 		t.Fatalf("工作区外写应带 fs sandbox 拒绝标记: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestWriteEscalationToFullAccess(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
-	g, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\a.txt`,
+	g, err := tc.authorize(permAction{Op: "write", Tool: "write", Path: `D:\out\a.txt`,
 		EscalateTo: permFull, Justification: "需要写工作区外的配置文件"})
 	if err != nil || g.Policy != permFull {
 		t.Fatalf("批准后应以完全访问放行本次写入: g=%v err=%v", g, err)
@@ -391,7 +391,7 @@ func TestWriteEscalationToFullAccess(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
-	if _, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\b.txt`,
+	if _, err := tc.authorize(permAction{Op: "write", Tool: "write", Path: `D:\out\b.txt`,
 		EscalateTo: permFull, Justification: "这次用始终允许"}); err != nil {
 		t.Fatalf("始终允许路径应放行: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestWriteEscalationToFullAccess(t *testing.T) {
 		t.Fatalf("完全访问应已落库，重读到 %s", reloaded.Permission)
 	}
 	// 完全访问下：工作区外写直接放行（不再弹审批），策略为 full
-	g3, err := tc.authorize(permAction{Op: "write", Tool: "write_file", Path: `D:\out\c.txt`})
+	g3, err := tc.authorize(permAction{Op: "write", Tool: "write", Path: `D:\out\c.txt`})
 	if err != nil || g3.Policy != permFull {
 		t.Fatalf("完全访问下工作区外写应直接放行: g=%v err=%v", g3, err)
 	}

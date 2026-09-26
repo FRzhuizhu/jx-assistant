@@ -42,6 +42,7 @@ type App struct {
 	permMu          sync.Mutex
 	grants          map[string]*Grant        // 授权凭证（perm.go）
 	approvals       map[string]*Approval     // 等待用户决定的越权审批（perm.go）
+	observedFiles   sync.Map                 // 会话内已观察文件集（观察策略，perm.go）
 	questions       map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
 	jobsMu          sync.Mutex
 	jobs            map[string]*jobRun // 会话内后台作业（jobs.go）

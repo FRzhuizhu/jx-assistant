@@ -38,15 +38,15 @@ func TestExportTimeline(t *testing.T) {
 	if err := a.Store.Create(sess); err != nil {
 		t.Fatalf("建会话失败: %v", err)
 	}
-	tools := []ToolDef{{Type: "function", Function: ToolSpec{Name: "write_file",
+	tools := []ToolDef{{Type: "function", Function: ToolSpec{Name: "write",
 		Description: "写文件", Parameters: map[string]any{"type": "object"}}}}
 	pj, _ := json.Marshal(map[string]any{"sys": "SYS-A", "env": "ENV-1（时间 12:00）", "tools": tools})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: TextMessage("system", string(pj)), Kind: "prompt"})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: TextMessage("user", "帮我创建 demo.txt"), Kind: "chat"})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: TextMessage("system",
-		`{"type":"call","step":1,"msgs":3,"est":100,"ms":800,"tools":["write_file"],"usage":{"prompt":100,"hit":0,"miss":100,"completion":50}}`), Kind: "audit"})
+		`{"type":"call","step":1,"msgs":3,"est":100,"ms":800,"tools":["write"],"usage":{"prompt":100,"hit":0,"miss":100,"completion":50}}`), Kind: "audit"})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: Message{Role: "assistant", ToolCalls: []ToolCall{{
-		ID: "c1", Type: "function", Function: ToolCallFunc{Name: "write_file", Arguments: `{"path":"demo.txt"}`}}}},
+		ID: "c1", Type: "function", Function: ToolCallFunc{Name: "write", Arguments: `{"path":"demo.txt"}`}}}},
 		Thinking: "先想一下路径", Kind: "chat"})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: Message{Role: "tool", Content: "已写入 demo.txt（2 字节）", ToolCallID: "c1"}, Kind: "chat"})
 	appendTestRow(t, a, "s1", &StoredMessage{Message: TextMessage("system",
@@ -74,9 +74,9 @@ func TestExportTimeline(t *testing.T) {
 		"缓存命中 0（0.0%）",
 		"模型调用 #2（本轮第 2 步）：发送 5 条消息 · 约 160 tok",
 		"缓存命中 100（62.5%）",
-		"模型输出：思考 6 字 · 工具调用 write_file",
+		"模型输出：思考 6 字 · 工具调用 write",
 		"模型输出：正文 4 字",
-		"工具结果 write_file（18 字）",
+		"工具结果 write（18 字）",
 		"环境快照更新（固定作为尾部 user 消息随下次请求发送）",
 		"- ENV-1（时间 12:00）",
 		"+ ENV-2（时间 12:01）",
@@ -104,7 +104,7 @@ func TestEngineExportRawRequests(t *testing.T) {
 		t.Fatalf("无请求时应报「还没有」错误，实际: %v", err)
 	}
 	e := a.ctxEngine()
-	tools := `"tools":[{"type":"function","function":{"name":"read_file"}}]`
+	tools := `"tools":[{"type":"function","function":{"name":"read"}}]`
 	body1 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"}],` + tools + `}`)
 	body2 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"},{"role":"user","content":"你好"}],` + tools + `}`)
 	body3 := []byte(`{"model":"m1","messages":[{"role":"system","content":"S1"},{"role":"user","content":"你好"},{"role":"assistant","content":"好的"}],` + tools + `}`)

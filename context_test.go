@@ -50,7 +50,7 @@ func TestRuleCompactKeepsRecentAndCollapsesOldToolDetail(t *testing.T) {
 	_ = a.Store.Create(sess)
 	longResult := strings.Repeat("文件内容 ABCDEFGH", 200) // 3200 字，折叠后只剩开头 200
 	for i := 1; i <= 4; i++ {
-		insertRound(t, a, "s1", strings.Repeat("用户消息", 30), "write_file", longResult)
+		insertRound(t, a, "s1", strings.Repeat("用户消息", 30), "write", longResult)
 	}
 	a.ruleCompactPass(sess)
 
@@ -73,7 +73,7 @@ func TestRuleCompactKeepsRecentAndCollapsesOldToolDetail(t *testing.T) {
 			if m.Compact == "" || m.Compact == compactOmit {
 				t.Fatalf("工具调用行应有折叠表示: seq=%d", m.Seq)
 			}
-			if !strings.Contains(m.Compact, "write_file") || !strings.Contains(m.Compact, "x.txt") {
+			if !strings.Contains(m.Compact, "write") || !strings.Contains(m.Compact, "x.txt") {
 				t.Fatalf("折叠表示应保留工具名与参数: %s", m.Compact)
 			}
 			if !strings.Contains(m.Compact, "文件内容") {
@@ -126,8 +126,8 @@ func TestSummariesAssemblyStacksManualAndLatestAuto(t *testing.T) {
 	a := newTestApp(t, "llm", 1, 5)
 	sess := &SessionMeta{ID: "s2", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
 	_ = a.Store.Create(sess)
-	insertRound(t, a, "s2", "第一轮", "read_file", "r1")
-	insertRound(t, a, "s2", "第二轮", "read_file", "r2")
+	insertRound(t, a, "s2", "第一轮", "read", "r1")
+	insertRound(t, a, "s2", "第二轮", "read", "r2")
 	// 手动摘要覆盖到 seq 3；随后被合并的旧自动摘要；最新自动摘要覆盖到 seq 6
 	_ = a.Store.AppendRow("s2", &StoredMessage{Message: TextMessage("user", "【手动历史摘要】第一批"), Kind: "summary", Origin: "manual", CoversUpTo: 3})
 	_ = a.Store.AppendRow("s2", &StoredMessage{Message: TextMessage("user", "【旧自动摘要】"), Kind: "summary", Origin: "auto", CoversUpTo: 6, Superseded: true})
@@ -161,15 +161,15 @@ func TestSummariesAssemblyStacksManualAndLatestAuto(t *testing.T) {
 func TestSummarizeSessionCountsAndFiles(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	_ = a.Store.Create(&SessionMeta{ID: "s3", Title: "T", Mode: "task"})
-	insertRound(t, a, "s3", "任务", "write_file", "已写入 a.txt（10 字节）")
-	insertRound(t, a, "s3", "继续", "read_file", "内容…")
+	insertRound(t, a, "s3", "任务", "write", "已写入 a.txt（10 字节）")
+	insertRound(t, a, "s3", "继续", "read", "内容…")
 	_ = a.Store.Append("s3", TextMessage("assistant", "完成"))
 	rounds, steps, toolCounts, _, final, files := summarizeSession(mustMessages(t, a, "s3"))
 	tools := strings.Join(toolCounts, "、")
 	if rounds != 2 || steps != 2 {
 		t.Fatalf("轮/步计数错误: %d/%d", rounds, steps)
 	}
-	if !strings.Contains(tools, "write_file×1") || !strings.Contains(tools, "read_file×1") {
+	if !strings.Contains(tools, "write×1") || !strings.Contains(tools, "read×1") {
 		t.Fatalf("工具统计错误: %s", tools)
 	}
 	if !strings.HasPrefix(final, "完成") {

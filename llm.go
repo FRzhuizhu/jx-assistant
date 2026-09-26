@@ -370,7 +370,7 @@ func parseSSE(r io.Reader, cb StreamCallbacks) error {
 
 // mockStream 是内置的离线演示模型：按会话形态演示一轮完整链路。
 // 助理会话（带 dispatch_task 工具）演示「派发 → 汇报」；
-// 任务会话依次发起 write_file、run_command 两个工具调用，
+// 任务会话依次发起 write、run_command 两个工具调用，
 // 收到足够工具结果后输出总结文本，用于无 API Key 时验证主循环与工具链路。
 func mockStream(req ChatRequest, cb StreamCallbacks) error {
 	toolResults := 0
@@ -420,7 +420,7 @@ func mockStream(req ChatRequest, cb StreamCallbacks) error {
 	}
 	switch toolResults {
 	case 0:
-		emitCall("write_file", map[string]string{
+		emitCall("write", map[string]string{
 			"path":    "mock-演示.txt",
 			"content": "这是演示模式创建的测试文件，用于验证主循环与工具链路。\n",
 		})
@@ -441,7 +441,7 @@ func mockStream(req ChatRequest, cb StreamCallbacks) error {
 	default:
 		segs := []string{
 			"演示模式：",
-			"我已调用 write_file 创建了「mock-演示.txt」，又用 run_command 执行了 cmd 命令，",
+			"我已调用 write 创建了「mock-演示.txt」，又用 run_command 执行了 cmd 命令，",
 			"并用 deliver_result 登记了交付成果（见交付卡片）；文件快照、交付与回退链路均正常。",
 			"在设置中填入 API Key 并把 baseURL 改回真实服务地址，即可使用真实模型。",
 		}

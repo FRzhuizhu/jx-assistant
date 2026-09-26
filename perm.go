@@ -29,6 +29,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -293,15 +294,18 @@ func (a *App) pendingApprovals() []*Approval {
 // isProtectedPath 判断路径是否落在助手自身的配置 / 数据目录内。
 // 这些位置存着 API Key 与全部会话记录，任何模式下工具都禁止访问。
 // 这是确定性的路径边界检查（同官方 fs-sandbox 的路径判断），
-// 不是威胁命令猜测。
+// 不是威胁命令猜测。除原始路径外，canonical 化后的目标一并检查
+// （工作区内放指向数据目录的符号链接也不放行）。
 func (a *App) isProtectedPath(p string, remote bool) bool {
 	if remote || p == "" {
 		return false
 	}
-	lower := strings.ToLower(filepath.Clean(p))
-	for _, pp := range a.protectPaths {
-		if lower == pp || strings.HasPrefix(lower, pp+string(filepath.Separator)) {
-			return true
+	for _, q := range []string{p, canonicalFor(p)} {
+		lower := strings.ToLower(filepath.Clean(q))
+		for _, pp := range a.protectPaths {
+			if lower == pp || strings.HasPrefix(lower, pp+string(filepath.Separator)) {
+				return true
+			}
 		}
 	}
 	return false
@@ -378,19 +382,107 @@ func (t *toolContext) inWorkspace(p string) bool {
 		}
 		return rel != ".." && !strings.HasPrefix(rel, "../")
 	}
-	d, err := filepath.Abs(ws)
-	if err != nil {
+	return containsPathLexical(ws, p)
+}
+
+// containsPathLexical 词法包含判断：p 是否落在 root 内（Windows 大小写
+// 不敏感，其余平台区分大小写；两侧都先绝对化再比）。
+func containsPathLexical(root, p string) bool {
+	r, err1 := filepath.Abs(root)
+	q, err2 := filepath.Abs(p)
+	if err1 != nil || err2 != nil {
 		return false
 	}
-	q, err := filepath.Abs(p)
-	if err != nil {
-		return false
+	if isWindowsRuntime {
+		r, q = strings.ToLower(r), strings.ToLower(q)
 	}
-	rel, err := filepath.Rel(strings.ToLower(d), strings.ToLower(q))
+	rel, err := filepath.Rel(r, q)
 	if err != nil {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// canonicalFor 归一化路径用于围栏判断：Windows 优先走原生
+// GetFinalPathNameByHandle（junction/符号链接/subst 全解析——Go 的
+// EvalSymlinks 不解析 junction；对齐 DSH fs-sandbox 的 realpath 规范化）；
+// 其余平台用 EvalSymlinks。末段不存在（新建文件）时归一化父目录再拼回。
+// 失败时回退 Clean（词法判断兜底）。
+func canonicalFor(p string) string {
+	if c, ok := canonicalNative(p); ok {
+		return c
+	}
+	if rp, err := filepath.EvalSymlinks(p); err == nil {
+		return rp
+	}
+	dir := filepath.Dir(p)
+	if rp, err := filepath.EvalSymlinks(dir); err == nil {
+		return filepath.Join(rp, filepath.Base(p))
+	}
+	return filepath.Clean(p)
+}
+
+// sameFileUnder 身份比对回退：词法不匹配时逐级向上找与 root 同一文件
+// （dev/ino，os.SameFile）的祖先——识别 8.3 短名/大小写别名（对齐 DSH
+// fs-sandbox containment 的 identity 回退）。
+func sameFileUnder(p, root string) bool {
+	ri, err := os.Stat(root)
+	if err != nil {
+		return false
+	}
+	cur := p
+	for {
+		if ci, err := os.Stat(cur); err == nil && os.SameFile(ri, ci) {
+			return true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return false
+		}
+		cur = parent
+	}
+}
+
+// writeFenceAllows 判断写目标是否落在允许的可写根内（对齐 DSH fs-sandbox
+// 的 checkedTarget：先 canonicalize 再围栏，词法 + 身份双规则）。本地会话
+// 的可写根 = 工作区 + 系统临时目录（DSH writableRoots 同款——临时目录与
+// 命令沙箱的授权一致，写临时文件不该弹审批）；远程会话仅工作区（SFTP
+// 直写，POSIX 词法边界）。
+func (t *toolContext) writeFenceAllows(p string) bool {
+	if t.isRemote() {
+		return t.inWorkspace(p)
+	}
+	c := canonicalFor(p)
+	for _, root := range []string{t.workspace(), os.TempDir()} {
+		r := canonicalFor(root)
+		if containsPathLexical(r, c) || sameFileUnder(c, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------- 观察策略（对齐 DSH fs-observation-policy 的写意图） ----------
+
+// observedKey 观察集的键：本地 Windows 路径大小写不敏感折叠；远程与
+// 大小写敏感平台保持原样。
+func (t *toolContext) observedKey(p string) string {
+	if isWindowsRuntime && !t.isRemote() {
+		return strings.ToLower(p)
+	}
+	return p
+}
+
+// markObserved 把路径记入会话的已观察集（read 成功 / write 或 edit 落盘 /
+// snapshot_file 打快照后调用）。
+func (t *toolContext) markObserved(p string) {
+	t.app.observedFiles.Store(t.sess.ID+"\x00"+t.observedKey(p), true)
+}
+
+// isObserved 报告路径是否已被本会话观察过。
+func (t *toolContext) isObserved(p string) bool {
+	_, ok := t.app.observedFiles.Load(t.sess.ID + "\x00" + t.observedKey(p))
+	return ok
 }
 
 // ---------- 策略评估入口 ----------
@@ -452,13 +544,14 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		return nil, nil
 
 	case "write":
-		// 文件工具的沙箱：路径边界是确定性的路径判断（fs-sandbox 等价物）。
+		// 文件工具的沙箱：路径边界是确定性的路径判断（fs-sandbox 等价物，
+		// canonicalize + 词法 + 身份比对，见 writeFenceAllows）。
 		blocked := ""
 		switch mode {
 		case permReadOnly:
 			blocked = "read-only"
 		case permWorkspace:
-			if !t.inWorkspace(act.Path) {
+			if !t.writeFenceAllows(act.Path) {
 				blocked = "workspace-write"
 			}
 		}
@@ -492,7 +585,7 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		if blocked == "read-only" {
 			return nil, fmt.Errorf("[fs sandbox: write denied under read-only mode] 目标 %s（当前会话为只读）。%s；或让用户把权限芯片切到「工作区内读写」", act.Path, hint)
 		}
-		return nil, fmt.Errorf("[fs sandbox: write denied under workspace-write mode] 目标 %s 不在工作区 %s 内。%s", act.Path, t.workspace(), hint)
+		return nil, fmt.Errorf("[fs sandbox: write denied under workspace-write mode] 目标 %s 不在工作区 %s 与系统临时目录内。%s", act.Path, t.workspace(), hint)
 
 	case "exec":
 		if !t.app.Cfg.AllowShell {

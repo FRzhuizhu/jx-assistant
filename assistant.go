@@ -360,7 +360,7 @@ type changedFile struct {
 	Op   string // 新建或覆盖 / 修改
 }
 
-var writeTools = map[string]bool{"write_file": true, "edit_file": true}
+var writeTools = map[string]bool{"write": true, "edit": true}
 
 var resultFailedPrefixes = []string{"工具执行失败", "未知工具", "（用户中断"}
 
@@ -411,7 +411,7 @@ func summarizeSession(msgs []Message) (rounds, steps int, toolCounts []string, m
 			}
 			if name != "" && writeTools[name] && !failed && paths[m.ToolCallID] != "" {
 				op := "新建或覆盖"
-				if name == "edit_file" {
+				if name == "edit" {
 					op = "修改"
 				}
 				p := paths[m.ToolCallID]

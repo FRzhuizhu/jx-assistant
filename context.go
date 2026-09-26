@@ -16,7 +16,7 @@ import (
 const compactOmit = "omit" // 规则压缩的特殊标记：组装时整行跳过
 
 const (
-	argKeepLimit    = 500 // 工具调用参数保留上限（防 write_file 带整文件内容）
+	argKeepLimit    = 500 // 工具调用参数保留上限（防 write 带整文件内容）
 	resultKeepLimit = 200 // 工具结果保留的开头长度
 )
 

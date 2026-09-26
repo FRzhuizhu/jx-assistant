@@ -640,6 +640,10 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	//   logon SID 保住 WinSta0/桌面等每登录对象（缺了子进程 0xC0000142 崩）；
 	//   Everyone 保住系统目录的读/执行；写只认我们授了 ACE 的合成 SID，
 	//   Everyone 可写的位置就是官方文档承认的 partial 缺口。
+	//   INTERACTIVE/LOCAL 刻意不进列表（与 DSH 终版配方一致）：C:\Users\Public
+	//   默认授 INTERACTIVE 写权，放行即逃逸——DSH 官方修复的同款盲区
+	//   （其 runner.spec 'ambient-writable escape regression'），回归测试见
+	//   sbx_adversarial_test.go 的 Public 用例。
 	worldSid, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	if err != nil {
 		os.RemoveAll(tempDir)

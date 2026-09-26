@@ -197,8 +197,8 @@ var storeMigrations = []migration{
 	},
 	{
 		// 文件快照（checkpoint）与交付成果（delivery）：对齐 ZCode 的 workspace
-		// checkpoint 机制。checkpoint 记录一次文件改动前的内容（write_file /
-		// edit_file 自动记录，snapshot_file 由模型在不可追踪修改前手动记录），
+		// checkpoint 机制。checkpoint 记录一次文件改动前的内容（write /
+		// edit 自动记录，snapshot_file 由模型在不可追踪修改前手动记录），
 		// 编辑历史消息回退或按轮撤销时据此恢复；delivery 是模型调用
 		// deliver_result 登记的最终交付文件清单，前端展示并提供下载。
 		id: "0008_snapshots",

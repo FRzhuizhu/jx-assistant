@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,24 @@ func TestSandboxAdversarial(t *testing.T) {
 			t.Logf("已知盲区：外部文件被删穿（官方同款，接受）: %s", strings.TrimSpace(out))
 		} else {
 			t.Logf("✓ 外部删除被拒: %s", strings.TrimSpace(out))
+		}
+	})
+
+	t.Run("Public 目录写入（DSH 终版已关闭的 INTERACTIVE 逃逸）", func(t *testing.T) {
+		// C:\Users\Public 默认授 INTERACTIVE 写权——restricting 列表若含
+		// INTERACTIVE，pass-2 会放行。本产品列表与 DSH 终版一致（不含），
+		// 此处必须被拒（对齐其 runner.spec 'ambient-writable escape regression'）。
+		public := os.Getenv("PUBLIC")
+		if public == "" {
+			t.Skip("无 PUBLIC 环境变量（非标准 Windows 桌面）")
+		}
+		probe := filepath.Join(public, fmt.Sprintf("jx_probe_public_%d.txt", os.Getpid()))
+		defer os.Remove(probe)
+		out := try("public", `Set-Content -LiteralPath '`+probe+`' -Value x -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath '`+probe+`') { 'pub-written' } else { 'pub-denied' }`)
+		if _, err := os.Stat(probe); err == nil {
+			t.Errorf("Public 写入成功（INTERACTIVE 逃逸未关死）: %s", strings.TrimSpace(out))
+		} else {
+			t.Logf("✓ Public 目录写入被拒（restricting 列表不含 INTERACTIVE，对齐 DSH 终版）")
 		}
 	})
 

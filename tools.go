@@ -191,7 +191,7 @@ func (t *toolContext) envWriteFile(p string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(p, data, 0644)
+	return writeFileAtomic(p, data)
 }
 
 // envWriteFileWithGrant 先核销授权凭证再写文件（模型写文件的唯一入口）。
@@ -271,7 +271,7 @@ func (t *toolContext) envStat(p string) (isDir bool, size int64, err error) {
 // envWalk 遍历目录树（跳过 .git、.jxai 与 node_modules），fn 收到相对 root 的
 // 斜杠路径；fn 返回 filepath.SkipAll 时整体停止。远程经 SFTP 递归。
 // .jxai 是本助手的系统目录（快照正文 + 模型临时文件），不进目录检索；
-// 按路径直接 read_file 访问不受影响。
+// 按路径直接 read 访问不受影响。
 func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error) error {
 	if t.isRemote() {
 		rc, err := t.app.getRemoteClient(t.sess)
@@ -338,7 +338,7 @@ func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error
 
 func readFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("read_file", "读取文本文件内容。path 支持相对工作区的路径。",
+		Spec: toolSpec("read", "读取文本文件内容并带行号返回。用本工具——而不是 cat 等命令行——查看文本文件；大文件用 offset/limit 分段继续读取。path 支持相对工作区的路径。",
 			objSchema(map[string]any{
 				"path":   strProp("文件路径（相对或绝对）"),
 				"offset": intProp("起始行号，从 1 开始，可选"),
@@ -361,13 +361,14 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := t.authorize(permAction{Op: "read", Tool: "read_file", Path: path}); err != nil {
+	if _, err := t.authorize(permAction{Op: "read", Tool: "read", Path: path}); err != nil {
 		return "", err
 	}
 	data, err := t.envReadFile(path)
 	if err != nil {
 		return "", err
 	}
+	t.markObserved(path) // 观察策略：read 过的文件之后才能被 write 覆盖
 	if bytes.IndexByte(data, 0) >= 0 {
 		return "", fmt.Errorf("%s 是二进制文件，无法按文本读取", path)
 	}
@@ -400,7 +401,7 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write_file", "创建或覆盖文件。按会话权限模式的文件沙箱执行：工作区内读写只允许写工作区内，被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
+		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 文本）。既有文件本会话 read 过才能覆盖（观察策略）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：工作区内读写档只允许写工作区与系统临时目录内，被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("目标文件路径（相对或绝对）"),
 				"content":             strProp("要写入的完整内容"),
@@ -425,7 +426,13 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	grant, err := t.authorize(permAction{Op: "write", Tool: "write_file", Path: path,
+	// 观察策略（对齐 DSH fs-observation-policy 的写意图）：既有文件本会话
+	// read 过才能整体覆盖——防基于臆测/过期记忆的盲覆盖；本会话刚创建或
+	// 刚 write/edit 过的文件视为已观察。新建文件不受限。
+	if _, _, serr := t.envStat(path); serr == nil && !t.isObserved(path) {
+		return "", fmt.Errorf("%s 已存在但本会话尚未读取过（观察策略）：先用 read 读取该文件再重试覆盖，或改用 edit 做局部修改", filepath.ToSlash(path))
+	}
+	grant, err := t.authorize(permAction{Op: "write", Tool: "write", Path: path,
 		EscalateTo: p.SandboxPermissions, Justification: p.Justification})
 	if err != nil {
 		return "", err
@@ -434,17 +441,20 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err := t.snapshotWrite(path, grant, []byte(p.Content)); err != nil {
 		return "", err
 	}
+	t.markObserved(path)
 	return fmt.Sprintf("已写入 %s（%d 字节）", filepath.ToSlash(path), len(p.Content)), nil
 }
 
 func editFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("edit_file", "把文件中的一段文本替换为新文本。old_string 必须在文件中恰好出现一次，除非 replace_all 为 true。",
+		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
 			objSchema(map[string]any{
-				"path":        strProp("文件路径"),
-				"old_string":  strProp("要被替换的原文（需保证唯一）"),
-				"new_string":  strProp("替换后的新文本"),
-				"replace_all": boolProp("为 true 时替换全部出现，可选"),
+				"path":                strProp("文件路径"),
+				"old_string":          strProp("要被替换的原文（需保证唯一）"),
+				"new_string":          strProp("替换后的新文本"),
+				"replace_all":         boolProp("为 true 时替换全部出现，可选"),
+				"sandbox_permissions": strProp("仅在被拒绝后的重试中使用：full，申请把会话提升为完全访问以写入工作区之外（弹审批）"),
+				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户说明理由"),
 			}, "path", "old_string", "new_string")),
 		Run: runEditFile,
 	}
@@ -469,7 +479,7 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := t.authorize(permAction{Op: "read", Tool: "edit_file", Path: path}); err != nil {
+	if _, err := t.authorize(permAction{Op: "read", Tool: "edit", Path: path}); err != nil {
 		return "", err
 	}
 	data, err := t.envReadFile(path)
@@ -484,7 +494,7 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	if count > 1 && !p.ReplaceAll {
 		return "", fmt.Errorf("old_string 出现了 %d 次，请提供更长的片段保证唯一，或设置 replace_all", count)
 	}
-	grant, err := t.authorize(permAction{Op: "write", Tool: "edit_file", Path: path,
+	grant, err := t.authorize(permAction{Op: "write", Tool: "edit", Path: path,
 		EscalateTo: p.SandboxPermissions, Justification: p.Justification})
 	if err != nil {
 		return "", err
@@ -501,6 +511,10 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err := t.snapshotWrite(path, grant, []byte(updated)); err != nil {
 		return "", err
 	}
+	// edit 的唯一匹配本身就是更强的 CAS（old_string 必须与当前内容精确
+	// 匹配，盲改不可能通过），故不设 read 前置；落盘后记为已观察，后续
+	// write 覆盖随之放行（对齐 DSH「刚编辑过视为已观察」）。
+	t.markObserved(path)
 	return fmt.Sprintf("已编辑 %s（替换 %d 处）", filepath.ToSlash(path), replaced), nil
 }
 
@@ -513,7 +527,7 @@ func arrayProp(desc string, items map[string]any) map[string]any {
 func snapshotFileTool() Tool {
 	return Tool{
 		Spec: toolSpec("snapshot_file",
-			"为工作区文件打一条历史快照（记录当前内容），供编辑历史消息时回退文件。write_file/edit_file 的修改会自动记录快照，无需本工具；凡是准备通过 run_command、外部程序、Office 文档运行库等无法自动追踪的方式修改一个已存在的重要文件，必须先调用本工具，否则该文件将无法回退。",
+			"为工作区文件打一条历史快照（记录当前内容），供编辑历史消息时回退文件。write/edit 的修改会自动记录快照，无需本工具；凡是准备通过 run_command、外部程序、Office 文档运行库等无法自动追踪的方式修改一个已存在的重要文件，必须先调用本工具，否则该文件将无法回退。",
 			objSchema(map[string]any{
 				"path": strProp("目标文件路径（相对或绝对）"),
 			}, "path")),
@@ -555,6 +569,7 @@ func runSnapshotFile(t *toolContext, args json.RawMessage) (string, error) {
 			return "", err
 		}
 	}
+	t.markObserved(abs) // 手动快照读过内容，观察策略随之放行后续覆盖
 	cp := &Checkpoint{
 		SessionID: t.sess.ID, Seq: t.seq, ToolCallID: t.callID, ToolName: t.toolName,
 		Path: t.displayPath(abs), ExistedBefore: existed, BeforeSize: int64(len(before)),
@@ -1177,7 +1192,7 @@ func runReadImage(t *toolContext, args json.RawMessage) (string, error) {
 	if t.app.resolveTarget(t.sess).SupportsImages {
 		note = "图片已就绪：你将在下一条消息中直接看到它的内容"
 	} else {
-		note = "图片已就绪：用户可在界面上直接查看（当前模型不支持视觉输入，你只能看到这份元信息；可结合 read_file / grep 读取同目录文本，或请用户描述图片内容）"
+		note = "图片已就绪：用户可在界面上直接查看（当前模型不支持视觉输入，你只能看到这份元信息；可结合 read / grep 读取同目录文本，或请用户描述图片内容）"
 	}
 	return fmt.Sprintf("%s\n%s\n来源文件：%s\n格式：%s，尺寸 %dx%d，%d 字节\n如需查看图片里的文字，可配合 OCR 能力（若已安装）处理。",
 		imageEnvelope(att, path), note, path, att.MediaType, att.Width, att.Height, att.Bytes), nil

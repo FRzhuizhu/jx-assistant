@@ -60,7 +60,7 @@ func TestCopyInheritedContextKeepsModelVisibleSequenceEqual(t *testing.T) {
 	}
 	// 三轮真实对话（含工具调用与结果），外加提示词/环境快照与一条摘要
 	for i := 1; i <= 3; i++ {
-		insertRound(t, a, "p1", fmt.Sprintf("第 %d 轮的用户要求", i), "read_file", fmt.Sprintf("第 %d 轮的文件内容", i))
+		insertRound(t, a, "p1", fmt.Sprintf("第 %d 轮的用户要求", i), "read", fmt.Sprintf("第 %d 轮的文件内容", i))
 		_ = a.Store.Append("p1", Message{Role: "assistant", Content: fmt.Sprintf("第 %d 轮的答复", i)})
 	}
 	_ = a.Store.AppendRow("p1", &StoredMessage{
@@ -144,7 +144,7 @@ func TestCopyInheritedContextKeepsModelVisibleSequenceEqual(t *testing.T) {
 func TestCopyInheritedContextSkipsUnfinishedTail(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	_ = a.Store.Create(&SessionMeta{ID: "p1", Mode: "task", Workspace: "ws", CreatedAt: now(), UpdatedAt: now()})
-	insertRound(t, a, "p1", "做完的一轮", "read_file", "内容")
+	insertRound(t, a, "p1", "做完的一轮", "read", "内容")
 	_ = a.Store.Append("p1", Message{Role: "assistant", Content: "第一轮答复"})
 	// 正在执行：留下悬空的工具调用
 	_ = a.Store.AppendRow("p1", &StoredMessage{
