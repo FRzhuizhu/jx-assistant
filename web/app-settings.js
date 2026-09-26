@@ -1077,8 +1077,8 @@ function buildAccentRow() {
 }
 buildAccentRow();
 makeSelect('sel-sendkey', 'sendkey', [
-  { v: 'enter', label: 'Enter 发送，Shift+Enter 换行' },
-  { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter 换行' },
+  { v: 'enter', label: 'Enter 发送，Shift+Enter / Ctrl+Enter 换行' },
+  { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter / Shift+Enter 换行' },
 ], (v) => { lsSet('jx.sendkey', v); updateSendKeyHint(); }); // 输入框占位文案同步跟随
 makeSelect('sel-midrun', 'midrun', [
   { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },

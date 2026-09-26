@@ -3603,14 +3603,7 @@ document.addEventListener('selectionchange', () => {
   const el = $(id);
   if (el) el.addEventListener('scroll', hideSelPop, { passive: true });
 });
-$('input').addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return;
-  if (lsGet('jx.sendkey', 'enter') === 'ctrl') {
-    if (e.ctrlKey || e.metaKey) { e.preventDefault(); send(); }
-  } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
-    e.preventDefault(); send();
-  }
-});
+$('input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => send()));
 $('input').addEventListener('input', () => {
   autoGrow();
   persistMainDraftLS(); // 首页/会话两份草稿按当前上下文即时落本地

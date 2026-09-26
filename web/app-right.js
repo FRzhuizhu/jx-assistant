@@ -316,15 +316,7 @@ $('btn-rpanel').onclick = toggleRpanel; // 顶栏最右：右栏整体开合（�
 $('sub-dd').onclick = () => { renderSubDDPop(); openPopover('sub-dd-pop', $('sub-dd')); };
 $('sub-send').onclick = () => send(null, subView);
 $('sub-stop').onclick = () => stopRun(subView);
-$('sub-input').addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return;
-  if (lsGet('jx.sendkey', 'enter') === 'ctrl') {
-    if (e.ctrlKey || e.metaKey) { e.preventDefault(); send(null, subView); }
-  } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
-    e.preventDefault();
-    send(null, subView);
-  }
-});
+$('sub-input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => send(null, subView)));
 $('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
 rpRegister('subs', { title: '子对话', onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
 
