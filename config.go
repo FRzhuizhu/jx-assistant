@@ -1,10 +1,52 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
+	"math/big"
 	"os"
 )
+
+// genDeviceID 生成远程接入设备号：jx- + 6 位易抄写的字符（去掉 0/o/1/i
+// 这类易混字符）。手机入口路径 /a/<设备号> 用它，网关上全网唯一。
+func genDeviceID() string {
+	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+	out := make([]byte, 6)
+	for i := range out {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		out[i] = alphabet[n.Int64()]
+	}
+	return "jx-" + string(out)
+}
+
+// genSecret 生成 n 个十六进制字符的随机密钥（配对密钥等）。
+func genSecret(n int) string {
+	b := make([]byte, (n+1)/2)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)[:n]
+}
+
+// ensureRemoteIdentity 远程接入的身份补全：设备号/配对密钥为空时随机生成，
+// 并立即回写配置——不落盘的话每次启动都会换身份，手机存的入口就失效了。
+func ensureRemoteIdentity(cfg *Config, path string) {
+	generated := false
+	if cfg.RemoteAccess.MyID == "" {
+		cfg.RemoteAccess.MyID = genDeviceID()
+		generated = true
+	}
+	if cfg.RemoteAccess.PairKey == "" {
+		cfg.RemoteAccess.PairKey = genSecret(32)
+		generated = true
+	}
+	if generated {
+		if err := cfg.Save(path); err != nil {
+			log.Printf("远程接入设备号/密钥生成后回写失败: %v", err)
+		}
+	}
+}
 
 // Config 为全局运行配置，落盘为 JSON，可在前端设置页在线修改。
 // BaseURL/APIKey/Model 是单模型时代的旧字段：为兼容老配置保留，
@@ -39,8 +81,22 @@ type Config struct {
 	SnapshotMaxMB       int   `json:"snapshotMaxMB"`       // 每会话自动快照总量上限（MB），默认 32；-1=不限量
 	SnapshotManualMaxMB int   `json:"snapshotManualMaxMB"` // 每会话手动快照总量上限（MB），默认 -1 不限量；需要时设 500/1024
 	// 子对话专家（专家团）预设：dispatch_sub 按名称选用的命名预设（追加提示词/
-	// 默认模型/默认上下文继承/启用开关）。配置文件没写过这一键时补种演示专家。
 	Experts []ExpertCfg `json:"experts"`
+	// 远程接入（公网中继，RustDesk 式）：出站长连注册到自建 210 网关的 /hub，
+	// 手机等外部设备经网关的加密中继访问本服务；端到端 AES-256-GCM（密钥由
+	// pairKey 派生），网关只见密文。与聊天服务的 p2p.js 同协议，共用同一网关。
+	RemoteAccess RemoteAccessCfg `json:"remoteAccess"`
+}
+
+// RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的
+// ds-main 错开（网关按设备号路由，各应用互不干扰）；RegKey 是网关信令准入 key。
+type RemoteAccessCfg struct {
+	Enabled bool   `json:"enabled"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	MyID    string `json:"myId"`
+	PairKey string `json:"pairKey"`
+	RegKey  string `json:"regKey"`
 }
 
 func DefaultConfig() *Config {
@@ -65,6 +121,13 @@ func DefaultConfig() *Config {
 		SnapshotManualMaxMB:   -1,
 		SnapshotEnabled:       nil, // 缺省开启；nil 表示"未配置"，按开处理
 		Experts:               defaultExperts(),
+		RemoteAccess: RemoteAccessCfg{
+			Enabled: false,
+			Host:    "nas.example.org",
+			Port:    2227,
+			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
+			RegKey:  "chat_p2p_v1",
+		},
 	}
 }
 
@@ -73,6 +136,7 @@ func LoadConfig(path string) (*Config, error) {
 	cfg := DefaultConfig()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		ensureRemoteIdentity(cfg, path)
 		if err := cfg.Save(path); err != nil {
 			return nil, err
 		}
@@ -130,6 +194,19 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.SandboxIntegrityLevel != "off" {
 		cfg.SandboxIntegrityLevel = "low"
 	}
+	// 远程接入：老配置没有这一键时补默认网关地址；设备号与配对密钥留空则
+	// 为本机随机生成并立即落盘——每台安装天然拿到互不冲突的设备号和独立
+	// 密钥，多台电脑共用一个网关也不会互相顶掉（网关按设备号路由注册）。
+	if cfg.RemoteAccess.Host == "" {
+		cfg.RemoteAccess.Host = def.RemoteAccess.Host
+	}
+	if cfg.RemoteAccess.Port == 0 {
+		cfg.RemoteAccess.Port = def.RemoteAccess.Port
+	}
+	if cfg.RemoteAccess.RegKey == "" {
+		cfg.RemoteAccess.RegKey = def.RemoteAccess.RegKey
+	}
+	ensureRemoteIdentity(cfg, path)
 	// 敏感字段透明解密（dpapi:v1: 密文 → 明文；旧版明文原样）。
 	// 首启迁移：明文照常读入，下一次 Save 自动转密文。
 	cfg.APIKey = unprotectSecret(cfg.APIKey)

@@ -657,7 +657,7 @@ $('set-lan-on').onchange = async () => {
   }
 };
 
-/* ---------- 常规页：远程接入（公网中继，remoteAccess.enabled，重启生效） ---------- */
+/* ---------- 网络访问页：远程接入（开关 + 设备号/密钥/网关编辑，重启生效） ---------- */
 
 function syncRemoteState(c) {
   const ra = c.remoteAccess || {};
@@ -665,8 +665,13 @@ function syncRemoteState(c) {
     ? '已连接网关（重启程序后改动生效）'
     : (ra.enabled ? '已开启（网关未连上：' + (ra.lastError || '等待重连') + '）' : '已关闭');
   $('set-remote-entry').innerHTML = ra.enabled && ra.entry
-    ? '手机（外网可用）浏览器打开：' + esc(ra.entry)
+    ? '手机（外网可用）浏览器打开并收藏：<b>' + esc(ra.entry) + '</b>'
     : '';
+  // 输入框以服务端落库值为准回显（焦点中不清扰，保存回包才刷新）
+  if (document.activeElement !== $('set-remote-id')) $('set-remote-id').value = ra.myId || '';
+  if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
+  if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
+  if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
 }
 
 $('set-remote-on').onchange = async () => {
@@ -682,6 +687,28 @@ $('set-remote-on').onchange = async () => {
     $('set-remote-on').checked = !on;
   }
 };
+
+// 设备号/密钥/网关：改动即存（单字段 PATCH），失败回滚为回包值
+function bindRemoteInput(id, patchKey, parse) {
+  $(id).onchange = async () => {
+    const v = parse ? parse($(id).value) : $(id).value.trim();
+    try {
+      const c = await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({ [patchKey]: v }),
+      });
+      syncRemoteState(c);
+    } catch (e) {
+      alert('保存失败：' + e.message);
+      const cur = (await api('/api/config').catch(() => null));
+      if (cur) syncRemoteState(cur);
+    }
+  };
+}
+bindRemoteInput('set-remote-id', 'remoteMyId');
+bindRemoteInput('set-remote-pk', 'remotePairKey');
+bindRemoteInput('set-remote-host', 'remoteHost');
+bindRemoteInput('set-remote-port', 'remotePort', (v) => parseInt(v, 10) || 0);
 
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;

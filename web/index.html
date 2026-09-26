@@ -297,6 +297,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
           模型
         </button>
+        <button class="set-nav-item" data-pane="network">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5 6.5 17M12 11.5 17.5 17"/></svg>
+          网络访问
+        </button>
         <button class="set-nav-item" data-pane="context">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
           对话历史与压缩
@@ -379,8 +383,12 @@
               </div>
             </div>
           </div>
+          <p class="tip">本页偏好保存在本机浏览器；最大步数保存在服务端（即时生效）。</p>
+        </div>
+        <div class="set-pane" id="set-pane-network">
+          <h3>网络访问</h3>
           <div class="gen-section">
-            <h4>局域网访问</h4>
+            <h4>局域网访问（同一 Wi-Fi）</h4>
             <div class="set-field">
               <div class="sf-label">允许手机/平板访问</div>
               <div class="sf-inline">
@@ -400,10 +408,28 @@
                 <span class="sf-desc" id="set-remote-state"></span>
               </div>
               <p class="sf-desc" id="set-remote-entry"></p>
-              <p class="sf-desc">经自建 210 网关的加密中继（端到端 AES-256-GCM，网关只见密文）从外网访问本助手；手机入口为网关配对页，设备码与配对密钥在 config.json 的 remoteAccess。改动需重启程序后生效；知道配对密钥的人都能使用本助手，请妥善保管密钥。</p>
+              <p class="sf-desc">经自建网关的加密中继（端到端 AES-256-GCM，网关只见密文）从外网访问本助手；手机入口为网关配对页（下方地址含配对密钥，收藏即可自动连接）。改动需重启程序后生效；知道配对密钥的人都能使用本助手，请妥善保管密钥。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">设备号</div>
+              <input id="set-remote-id" class="pf-input" autocomplete="off" spellcheck="false">
+              <p class="sf-desc">手机入口路径 /a/设备号，在同一网关上须唯一；每台安装默认自动生成，可改成自己好记的（2~32 位字母/数字/中划线/下划线）。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">配对密钥</div>
+              <input id="set-remote-pk" class="pf-input" autocomplete="off" spellcheck="false">
+              <p class="sf-desc">端到端加密密钥的种子，同时是接入凭证；每台安装默认自动生成独立的随机密钥（8~64 位）。换新密钥后，旧入口链接立即失效。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">网关地址 / 端口</div>
+              <div class="sf-inline">
+                <input id="set-remote-host" class="pf-input" style="flex:1" autocomplete="off" spellcheck="false">
+                <input id="set-remote-port" class="pf-input" type="number" min="1" max="65535" style="width:90px">
+              </div>
+              <p class="sf-desc">中继网关（210 网关 server.js）的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
             </div>
           </div>
-          <p class="tip">本页偏好保存在本机浏览器；最大步数、局域网/远程访问保存在服务端（前者即时生效，后两者需重启程序后生效）。</p>
+          <p class="tip">网络访问设置保存在服务端，改动重启程序后生效。</p>
         </div>
         <div class="set-pane" id="set-pane-models">
           <h3>模型</h3>

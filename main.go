@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"jxassistant/sandboxhelper"
@@ -108,8 +110,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("监听端口失败: %v", err)
 	}
-	url := "http://" + ln.Addr().String()
+	portNo := ln.Addr().(*net.TCPAddr).Port
+	// 通配绑定（0.0.0.0 / ::，供局域网手机访问）时，本机浏览器与桌面
+	// WebView2 继续用 127.0.0.1 直达；局域网地址另行枚举打印给手机用。
+	dialHost := host
+	wildcard := host == "0.0.0.0" || host == "::" || strings.EqualFold(host, "[::]")
+	if wildcard {
+		dialHost = "127.0.0.1"
+	}
+	url := "http://" + net.JoinHostPort(dialHost, strconv.Itoa(portNo))
 	srv := &http.Server{Handler: withCORS(app.Routes())}
+
+	// 远程接入（公网中继）：注册到 210 网关的 /hub，桥接目标就是本监听端口
+	if cfg.RemoteAccess.Enabled {
+		go runRemoteAccess(app, portNo, cfg.RemoteAccess)
+	}
 
 	if wantDesktop && !*browser {
 		// 服务跑在后台 goroutine；窗口关闭即整体退出
@@ -132,8 +147,15 @@ func main() {
 	if *webDir != "" {
 		log.Printf("开发模式：前端从 %s 读取，修改后刷新浏览器即生效", *webDir)
 	}
+	if wildcard {
+		for _, ip := range lanIPv4s() {
+			log.Printf("局域网访问（手机连同一 Wi-Fi 后用浏览器打开）: http://%s",
+				net.JoinHostPort(ip, strconv.Itoa(portNo)))
+		}
+		log.Printf("手机连不上时：在 Windows 防火墙弹窗点「允许访问」，或为 jx-assistant.exe 添加专用网络入站规则")
+	}
 
-	if !*noOpen && (host == "127.0.0.1" || host == "localhost") {
+	if !*noOpen && (dialHost == "127.0.0.1" || dialHost == "localhost") {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
 			_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
@@ -143,4 +165,25 @@ func main() {
 	if err := srv.Serve(ln); err != nil {
 		log.Fatalf("服务退出: %v", err)
 	}
+}
+
+// lanIPv4s 枚举本机非回环、非链路本地（169.254.*）的 IPv4 地址——局域网内
+// 其他设备（手机等）访问本服务时该填的地址。198.18.0.0/15 是代理工具
+// （Clash fake-IP 等）虚拟网卡的常用段，列出来只会误导，一并滤掉。
+func lanIPv4s() []string {
+	out := []string{}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return out
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			ip4 := ipn.IP.To4()
+			if ip4 != nil && !ip4.IsLoopback() && !ip4.IsLinkLocalUnicast() &&
+				!(ip4[0] == 198 && ip4[1]&0xfe == 18) {
+				out = append(out, ip4.String())
+			}
+		}
+	}
+	return out
 }

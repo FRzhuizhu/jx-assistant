@@ -361,14 +361,19 @@ function toolRow(tc, result, opts = {}) {
       imgs.className = 'tc-imgs';
       for (const f of imgFiles) {
         const a = document.createElement('a');
-        a.href = '/attachments/' + encodeURIComponent(f);
+        const attURL = '/attachments/' + encodeURIComponent(f);
         a.target = '_blank';
         a.title = '点击查看原图';
         const im = document.createElement('img');
         im.className = 'tc-img';
         im.loading = 'lazy';
         im.alt = '图片附件';
-        im.src = '/attachments/' + encodeURIComponent(f);
+        if (window.JX_REMOTE) { // 远程模式：附件经隧道 blob 化后再上屏
+          JX_REMOTE.assetURL(attURL).then((u) => { a.href = u; im.src = u; });
+        } else {
+          a.href = attURL;
+          im.src = attURL;
+        }
         a.appendChild(im);
         imgs.appendChild(a);
       }
@@ -946,8 +951,10 @@ async function openInPanelBrowser(body) {
   if (!desktop) {
     if (body.url) { window.open(body.url, '_blank'); return; }
     if (body.path && body.session) {
-      window.open('/api/browser/view?sid=' + encodeURIComponent(body.session) +
-        '&path=' + encodeURIComponent(body.path), '_blank');
+      const vurl = '/api/browser/view?sid=' + encodeURIComponent(body.session) +
+        '&path=' + encodeURIComponent(body.path);
+      if (window.JX_REMOTE) { JX_REMOTE.openURL(vurl); return; } // 远程模式：隧道取 blob 再开
+      window.open(vurl, '_blank');
       return;
     }
   }
@@ -2920,7 +2927,9 @@ function doExport(format, view) {
   const cur = view.state.cur;
   if (!cur) { alert('还没有可导出的对话'); return; }
   const q = format === 'json' ? '?format=json' : '';
-  window.open('/api/sessions/' + cur.id + '/export' + q, '_blank');
+  const url = '/api/sessions/' + cur.id + '/export' + q;
+  if (window.JX_REMOTE) { JX_REMOTE.openURL(url); return; } // 远程模式：隧道取 blob 再开
+  window.open(url, '_blank');
 }
 
 async function toggleModeFlag(flag, view) {

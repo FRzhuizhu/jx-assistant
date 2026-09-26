@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -156,6 +157,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.handleExport)
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
+	mux.HandleFunc("GET /api/p2p-shell", a.handleP2PShell)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)
@@ -818,6 +820,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"workspace":        a.Cfg.Workspace,
 		"allowShell":       a.Cfg.AllowShell,
 		"bindHost":         a.Cfg.BindHost,
+		"lanIPs":           lanIPv4s(),
+		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
 		"keepRounds":       a.Cfg.KeepRounds,
@@ -835,6 +839,11 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Model           *string `json:"model"`
 		Workspace       *string `json:"workspace"`
 		BindHost        *string `json:"bindHost"`
+		RemoteEnabled   *bool   `json:"remoteEnabled"`   // 远程接入（公网中继）总开关，重启生效
+		RemoteMyID      *string `json:"remoteMyId"`      // 远程接入设备号（手机入口 /a/<设备号>）
+		RemotePairKey   *string `json:"remotePairKey"`   // 远程接入配对密钥（端到端加密密钥的种子）
+		RemoteHost      *string `json:"remoteHost"`      // 中继网关地址（域名或 IP，不带协议与端口）
+		RemotePort      *int    `json:"remotePort"`      // 中继网关端口
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
 		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
@@ -893,7 +902,48 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.Cfg.Workspace = strings.TrimSpace(*body.Workspace)
 	}
 	if body.BindHost != nil {
-		a.Cfg.BindHost = strings.TrimSpace(*body.BindHost)
+		bh := strings.TrimSpace(*body.BindHost)
+		// 只收 localhost 或 IP 字面量（含 0.0.0.0 / :: 通配），防设置页
+		// 误传垃圾值把下次启动的监听地址写坏。
+		if bh != "localhost" && bh != "0.0.0.0" && bh != "::" && net.ParseIP(bh) == nil {
+			writeErr(w, 400, "bindHost 只能是 localhost 或 IP 地址")
+			return
+		}
+		a.Cfg.BindHost = bh
+	}
+	if body.RemoteEnabled != nil {
+		a.Cfg.RemoteAccess.Enabled = *body.RemoteEnabled
+	}
+	if v := body.RemoteMyID; v != nil {
+		id := strings.TrimSpace(*v)
+		if !validRemoteID(id) {
+			writeErr(w, 400, "设备号需为 2~32 位字母/数字/中划线/下划线")
+			return
+		}
+		a.Cfg.RemoteAccess.MyID = id
+	}
+	if v := body.RemotePairKey; v != nil {
+		pk := strings.TrimSpace(*v)
+		if len(pk) < 8 || len(pk) > 64 || strings.ContainsFunc(pk, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			writeErr(w, 400, "配对密钥需为 8~64 位可打印字符")
+			return
+		}
+		a.Cfg.RemoteAccess.PairKey = pk
+	}
+	if v := body.RemoteHost; v != nil {
+		h := strings.TrimSpace(*v)
+		if h != "" && !validRemoteHost(h) {
+			writeErr(w, 400, "网关地址需为域名或 IP（不带 http:// 前缀与端口）")
+			return
+		}
+		a.Cfg.RemoteAccess.Host = h
+	}
+	if v := body.RemotePort; v != nil {
+		if *v < 1 || *v > 65535 {
+			writeErr(w, 400, "网关端口需在 1~65535 之间")
+			return
+		}
+		a.Cfg.RemoteAccess.Port = *v
 	}
 	if body.AllowShell != nil {
 		a.Cfg.AllowShell = *body.AllowShell
