@@ -159,6 +159,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/p2p-shell", a.handleP2PShell)
+	mux.HandleFunc("POST /api/feedback", a.handleFeedbackCreate)
+	mux.HandleFunc("GET /api/feedback", a.handleFeedbackList)
+	mux.HandleFunc("DELETE /api/feedback/{id}", a.handleFeedbackDelete)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)
@@ -588,7 +591,16 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"enabled":   ra.Enabled,
 			"connected": remoteConnected.Load(),
 		},
+		// 更新横幅的数据源：客户端打开时先查这里（SSE 无回放，在线推送靠事件流）
+		"update": updateSnapshot(),
 	})
+}
+
+// updateSnapshot 当前更新检查状态（线程安全读）。
+func updateSnapshot() UpdateState {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	return updateState
 }
 
 // DefaultProviderID 返回全局默认提供方 id（providers[0]）。
@@ -833,6 +845,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"bindHost":         a.Cfg.BindHost,
 		"lanIPs":           lanIPv4s(),
 		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
+		"updateURL":        a.Cfg.UpdateURL,
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
 		"keepRounds":       a.Cfg.KeepRounds,
@@ -855,6 +868,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		RemotePairKey   *string `json:"remotePairKey"`   // 远程接入配对密钥（端到端加密密钥的种子）
 		RemoteHost      *string `json:"remoteHost"`      // 中继网关地址（域名或 IP，不带协议与端口）
 		RemotePort      *int    `json:"remotePort"`      // 中继网关端口
+		UpdateURL       *string `json:"updateURL"`       // 更新检查发布源（"off"/空串关闭）
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
 		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
@@ -955,6 +969,14 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.Cfg.RemoteAccess.Port = *v
+	}
+	if v := body.UpdateURL; v != nil {
+		u := strings.TrimSpace(*v)
+		if u != "" && u != "off" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			writeErr(w, 400, "发布源需为 http(s) 地址，或 off 关闭检查")
+			return
+		}
+		a.Cfg.UpdateURL = u // "off" 落盘成字面量，加载时转成关闭
 	}
 	if body.AllowShell != nil {
 		a.Cfg.AllowShell = *body.AllowShell

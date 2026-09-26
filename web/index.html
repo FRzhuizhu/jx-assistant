@@ -536,6 +536,21 @@
             <p class="tip" id="about-status" style="margin-top:14px"></p>
             <p class="tip">Go 后端（LLM 主循环 + 工具集 + 编排 + 上下文管理）+ 原生 JS 前端；SQLite 存储；单文件交付。</p>
           </div>
+          <div class="gen-section" id="feedback-section">
+            <h4>问题反馈 <span class="sec-sub">反馈连同版本信息存到服务端，供排查改进</span></h4>
+            <div class="set-field">
+              <div class="fb-kinds">
+                <button type="button" class="fb-kind cur" data-kind="bug">问题</button>
+                <button type="button" class="fb-kind" data-kind="idea">建议</button>
+              </div>
+              <textarea id="fb-text" class="pf-input pf-textarea" rows="4" placeholder="遇到了什么问题、想要什么功能？写清报错信息与复现步骤，越具体越快解决"></textarea>
+              <button id="fb-send" class="fb-send" type="button">发送反馈</button>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">最近反馈 <span class="sec-sub" id="fb-count"></span></div>
+              <div id="fb-list"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -713,6 +728,14 @@
 </div>
 
 <input type="file" id="file-input" multiple class="hidden">
+
+<!-- 更新横幅：服务端检查到新版本时置顶展示（在线推送 + 打开页面时从 /api/status 恢复） -->
+<div id="update-banner" class="update-banner hidden">
+  <span class="ub-icon">⬆</span>
+  <span class="ub-text"></span>
+  <span class="ub-hint">点此查看发布页</span>
+  <button class="ub-close" type="button" title="关闭">✕</button>
+</div>
 
 <!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
 <script src="/qrcode.lib.js"></script>

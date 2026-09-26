@@ -128,6 +128,8 @@ func main() {
 	if cfg.RemoteAccess.Enabled {
 		go runRemoteAccess(app, portNo, cfg.RemoteAccess)
 	}
+	// 更新检查：轮询发布源（默认 Gitea releases），新版本经事件流推给客户端
+	StartUpdateChecker(app)
 
 	if wantDesktop && !*browser {
 		// 服务跑在后台 goroutine；窗口关闭即整体退出

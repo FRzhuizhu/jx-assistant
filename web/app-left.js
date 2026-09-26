@@ -23,6 +23,8 @@ async function loadStatus() {
         ? (ra.connected ? '手机远程访问已就绪——点击扫码接入' : '远程访问已开启，网关未连上——点击查看')
         : '开启手机远程访问——点击设置';
     }
+    // 更新横幅：SSE 无回放，刚打开页面从 /api/status 恢复「有新版本」状态
+    if (st.update && st.update.available) showUpdateBanner(st.update);
     syncComposer();
   } catch (e) {
     el.textContent = '服务离线'; el.className = 'pill gray'; el.classList.remove('hidden');

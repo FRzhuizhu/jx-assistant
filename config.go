@@ -84,6 +84,9 @@ type Config struct {
 	// 手机等外部设备经网关的加密中继访问本服务；端到端 AES-256-GCM（密钥由
 	// pairKey 派生），网关只见密文。与聊天服务的 p2p.js 同协议，共用同一网关。
 	RemoteAccess RemoteAccessCfg `json:"remoteAccess"`
+	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
+	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
+	UpdateURL string `json:"updateURL"`
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的
@@ -125,6 +128,7 @@ func DefaultConfig() *Config {
 			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
 			RegKey:  "chat_p2p_v1",
 		},
+		UpdateURL: "http://nas.example.org:3000/api/v1/repos/your-org/your-repo/releases/latest",
 	}
 }
 
@@ -201,6 +205,11 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.RemoteAccess.RegKey = def.RemoteAccess.RegKey
 	}
 	ensureRemoteIdentity(cfg, path)
+	// 更新检查：老配置没有这一键时补默认发布源；显式 "off" 原样保留
+	// （转成空的话，下一次保存配置又会被补回默认，用户就关不掉了）
+	if cfg.UpdateURL == "" {
+		cfg.UpdateURL = def.UpdateURL
+	}
 	// 敏感字段透明解密（dpapi:v1: 密文 → 明文；旧版明文原样）。
 	// 首启迁移：明文照常读入，下一次 Save 自动转密文。
 	cfg.APIKey = unprotectSecret(cfg.APIKey)
