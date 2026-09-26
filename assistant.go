@@ -156,15 +156,20 @@ func (t *toolContext) dispatchExtras(sub *SessionMeta, model string) {
 	}
 }
 
-func dispatchSubTool() Tool {
+// dispatchSubTool 构造 dispatch_sub 工具。描述是**纯静态文案**：内置两种模式
+// 写死在说明里，自定义专家名单不嵌进来（嵌了会让 tools 数组随设置增删变化，
+// 前缀缓存从最开头全断）——名单走常驻的 list_experts 工具按需查询，返回内容
+// 作为工具结果落在上下文尾部。
+func (a *App) dispatchSubTool() Tool {
+	desc := "新建一个子对话（挂在本对话下，右栏可见），把一块自洽的子任务交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，子对话完成后结果自动回报到本对话并触发你继续。子对话只有一级，不能再派发。专家预设是选模式的唯一方式：不传 expert 等同内置的「标准子对话」（自足任务、不继承上下文）；要继承本对话聊天记录就填内置的「继承上下文子对话」；自定义专家还有哪些是易变信息——先调用 list_experts 查名单，expert 必须与名单里的名字逐字一致。"
 	return Tool{
-		Spec: toolSpec("dispatch_sub", "新建一个子对话（挂在本对话下，右栏可见），把一块自洽的子任务交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，子对话完成后结果自动回报到本对话并触发你继续。子对话只有一级，不能再派发。可选继承本对话的完整聊天记录（inherit_context），两种模式按需选择。",
+		Spec: toolSpec("dispatch_sub", desc,
 			objSchema(map[string]any{
-				"task":            strProp("完整子任务描述，自带全部上下文（目标、验收标准、涉及目录）"),
-				"title":           strProp("给子对话起的标题，可省略"),
-				"workspace":       strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区"),
-				"model":           strProp("可选：子对话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
-				"inherit_context": boolProp("可选：是否把本对话（我们的聊天记录）完整继承给子对话，默认 false。子任务需要了解此前讨论的来龙去脉、或需要复用本对话里已经交代过的背景时设 true，task 就只用写「接下来要做什么」；一次性的独立子任务保持默认——任务描述写清楚更省 token。"),
+				"task":      strProp("完整子任务描述。未继承上下文的专家（如「标准子对话」）看不到本对话记录，task 必须自带全部上下文（目标、验收标准、涉及目录）；继承上下文的专家（如「继承上下文子对话」）能看到此前的聊天记录，task 只用写「接下来要做什么」"),
+				"expert":    strProp("子对话专家名称：不传等同「标准子对话」；内置另有「继承上下文子对话」；自定义专家的名字与用途先用 list_experts 查询，必须与返回的清单逐字一致"),
+				"title":     strProp("给子对话起的标题，可省略"),
+				"workspace": strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区"),
+				"model":     strProp("可选：覆盖专家预设的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填用预设默认模型或全局默认"),
 			}, "task")),
 		Run: runDispatchSub,
 	}
@@ -172,16 +177,17 @@ func dispatchSubTool() Tool {
 
 // runDispatchSub 派发子对话：被派发的是挂在当前会话下的 task 会话（右栏抽屉
 // 可见），回报链就是 parent_id。主对话与工作任务（task/office）都可派；
-// 子对话本身不能再派发（只有一级）。两种上下文模式：默认只给一段自足的
-// task；inherit_context=true 时先完整继承本会话聊天记录（前端折叠成一条），
-// task 排在继承块之后（子对话读到的最后一条用户消息是自己的任务）。
+// 子对话本身不能再派发（只有一级）。专家是唯一的模式选择路径：expert=名称
+// 按预设派发（继承行为、默认模型、追加提示词都由预设决定），不传 expert
+// 等同内置的「标准子对话」（自足任务、不带上下文）；model 参数可换模型。
+// 子会话记下专家名（SessionMeta.Expert），提示词构建时按名解析追加。
 func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Task           string `json:"task"`
-		Title          string `json:"title"`
-		Workspace      string `json:"workspace"`
-		Model          string `json:"model"`
-		InheritContext bool   `json:"inherit_context"`
+		Task      string `json:"task"`
+		Expert    string `json:"expert"`
+		Title     string `json:"title"`
+		Workspace string `json:"workspace"`
+		Model     string `json:"model"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -193,6 +199,27 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	// 这里硬拦，保证子对话只有一级
 	if t.sess.ParentID != "" {
 		return "", fmt.Errorf("子对话不能再派发子对话（只有一级）；请把这块工作直接做掉")
+	}
+	// 专家解析：名字即参数，逐字匹配；不存在时把可用名单带回去让模型改
+	var ex *ExpertCfg
+	if name := strings.TrimSpace(p.Expert); name != "" {
+		if ex = t.app.enabledExpertByName(name); ex == nil {
+			names := []string{}
+			for _, e := range t.app.enabledExperts() {
+				names = append(names, "「"+strings.TrimSpace(e.Name)+"」")
+			}
+			return "", fmt.Errorf("子对话专家「%s」不存在（名称要与 list_experts 返回的清单逐字一致），可用：%s",
+				name, strings.Join(names, "、"))
+		}
+	} else {
+		// 不传 expert = 内置「标准子对话」（自足任务、不继承上下文）
+		sys := systemExperts()
+		ex = &sys[0]
+	}
+	// 模型默认链：显式参数 > 专家预设 > 空（沿用全局默认）
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = strings.TrimSpace(ex.Model)
 	}
 	ws := t.workspace()
 	if strings.TrimSpace(p.Workspace) != "" {
@@ -208,17 +235,18 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		Mode:      "task",
 		Workspace: ws,
 		ParentID:  t.sess.ID, // 子对话挂在当前会话下；回报链走 parent_id
+		Expert:    strings.TrimSpace(ex.Name),
 		CreatedAt: now(),
 		UpdatedAt: now(),
 	}
-	t.dispatchExtras(sub, p.Model)
+	t.dispatchExtras(sub, model)
 	if err := t.app.Store.Create(sub); err != nil {
 		return "", err
 	}
-	// 带上下文模式：把本会话的完整历史复制进子对话，task 排在继承块之后——
-	// 子对话读到的最后一条用户消息是自己的任务，而不是本会话里某句旧话
+	// 预设要继承上下文时：把本会话的完整历史复制进子对话，task 排在继承块
+	// 之后——子对话读到的最后一条用户消息是自己的任务，而不是本会话里某句旧话
 	inherited := 0
-	if p.InheritContext {
+	if ex.InheritContext {
 		n, err := t.app.copyInheritedContext(t.sess.ID, sub.ID)
 		if err != nil {
 			return "", fmt.Errorf("继承本会话上下文失败：%w", err)
@@ -226,11 +254,20 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		inherited = n
 	}
 	t.app.appendRow(sub, StoredMessage{Message: TextMessage("user", "【派发子对话】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
-	hint := ""
-	if inherited > 0 {
-		hint = fmt.Sprintf("（已继承本会话上下文 %d 条，子对话能看到此前的聊天记录）", inherited)
+	var hints []string
+	if strings.TrimSpace(ex.Prompt) != "" {
+		hints = append(hints, fmt.Sprintf("已按专家预设「%s」派发，追加提示词已生效", sub.Expert))
+	} else {
+		hints = append(hints, fmt.Sprintf("已按「%s」模式派发", sub.Expert))
 	}
-	return t.launchSub(sub, hint)
+	if inherited > 0 {
+		hints = append(hints, fmt.Sprintf("已继承本会话上下文 %d 条，子对话能看到此前的聊天记录", inherited))
+	}
+	note := ""
+	if len(hints) > 0 {
+		note = "（" + strings.Join(hints, "；") + "）"
+	}
+	return t.launchSub(sub, note)
 }
 
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {

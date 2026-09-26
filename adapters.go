@@ -84,6 +84,10 @@ func (r *PluginRegistry) rescan() {
 			if !e.IsDir() {
 				continue
 			}
+			// 回收站/：已退役适配器的坟场（保留作未来组件化重写的参考），不参与扫描
+			if e.Name() == "回收站" {
+				continue
+			}
 			name := e.Name()
 			data, err := os.ReadFile(filepath.Join(r.dir, name, "manifest.json"))
 			if err != nil {
@@ -106,7 +110,8 @@ func (r *PluginRegistry) rescan() {
 	unadapted := []string{}
 	if entries, err := os.ReadDir(r.pluginsDir); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			// 回收站/：已退役 DSH 原件的坟场（保留作参考），不算未适配原件
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "回收站" {
 				continue
 			}
 			if _, ok := manifests[e.Name()]; !ok {

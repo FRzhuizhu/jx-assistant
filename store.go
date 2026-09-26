@@ -253,6 +253,15 @@ var storeMigrations = []migration{
 				`AND parent_id IN (SELECT id FROM sessions WHERE mode = 'assistant')`,
 		},
 	},
+	{
+		// 子对话专家名：dispatch_sub 按专家预设派发时记下名字，系统提示词
+		// 构建时按名解析追加（见 experts.go / agent.go 的 systemPrompt）。
+		id:       "0011_session_expert",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE sessions ADD COLUMN expert TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
@@ -408,7 +417,7 @@ func (s *Store) GetSessionData(sessionID, key string) string {
 
 // ---------- 会话 ----------
 
-const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by`
+const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert`
 
 func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 
@@ -437,7 +446,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 			remote = string(b)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, mode=excluded.mode,
 		workspace=excluded.workspace, parent_id=excluded.parent_id, provider=excluded.provider,
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
@@ -447,12 +456,12 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 		goal_text=excluded.goal_text, goal_status=excluded.goal_status, goal_rounds=excluded.goal_rounds,
 		usage_prompt=excluded.usage_prompt, usage_cache_hit=excluded.usage_cache_hit,
 		usage_output=excluded.usage_output, usage_calls=excluded.usage_calls, origin=excluded.origin,
-		dispatched_by=excluded.dispatched_by`,
+		dispatched_by=excluded.dispatched_by, expert=excluded.expert`,
 		m.ID, m.Title, m.Mode, m.Workspace, m.ParentID, m.Provider, m.Model,
 		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote,
 		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt, m.Thinking,
 		m.GoalText, m.GoalStatus, m.GoalRounds, m.UsagePrompt, m.UsageCacheHit, m.UsageOutput, m.UsageCalls,
-		m.Origin, m.DispatchedBy)
+		m.Origin, m.DispatchedBy, m.Expert)
 	return err
 }
 
@@ -471,7 +480,7 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote,
 		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Thinking,
 		&m.GoalText, &m.GoalStatus, &m.GoalRounds, &m.UsagePrompt, &m.UsageCacheHit, &m.UsageOutput, &m.UsageCalls,
-		&m.Origin, &m.DispatchedBy)
+		&m.Origin, &m.DispatchedBy, &m.Expert)
 	if err != nil {
 		return nil, err
 	}

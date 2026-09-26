@@ -60,6 +60,7 @@ async function openSettings() {
   mountPluginSections();
   renderComponentList();
   renderSkillsPanel();
+  renderExpertsPanel();
   setSettingsPane('general');
   // 关于页信息
   try {
@@ -68,6 +69,14 @@ async function openSettings() {
     $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
   } catch (e) { $('about-status').textContent = '服务状态未知'; }
   $('settings').classList.remove('hidden');
+  // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并从一级菜单起步；
+  // 压一层历史让返回手势可以退出设置（见底部两级菜单节）
+  narrowClosePanels();
+  setL2On(false);
+  if (isNarrow() && setHistDepth === 0) {
+    setHistDepth = 1;
+    history.pushState({ jxSettings: 1 }, '');
+  }
 }
 
 /* ---------- 组件清单（/api/components + CX 运行时热开关） ---------- */
@@ -560,7 +569,7 @@ async function saveSettings() {
     },
   };
   await api('/api/config', { method: 'POST', body: JSON.stringify(body) });
-  $('settings').classList.add('hidden');
+  closeSettingsUI();
   loadStatus();
 }
 
@@ -602,11 +611,59 @@ $('set-snapshot-days').onchange = () => {
 };
 
 $('btn-settings').onclick = openSettings;
-$('set-cancel').onclick = () => $('settings').classList.add('hidden');
 $('set-save').onclick = saveSettings;
-$('settings').onclick = (e) => { if (e.target === $('settings')) $('settings').classList.add('hidden'); };
+
+/* ---------- 手机端：两级菜单 + 返回键逐级退出 ----------
+   一级＝导航列表（整屏），点入二级＝对应分区（带返回头）。打开/进入二级时
+   pushState 压栈，手机返回手势由此逐级退回（二级→一级→关设置回对话区）；
+   取消/保存则主动回退等量历史，不留死栈。桌面不压栈、不分页，维持左右布局。 */
+let setHistDepth = 0; // 已压入的设置历史层数：0 无 / 1 设置一级 / 2 二级分区
+
+function settingsCard() { return document.querySelector('.settings-card'); }
+
+// 手机一级 ⇄ 二级的视图切换（只动 class，桌面 CSS 不消费这些类）。
+// 返回头标题随之切换：一级叫「设置」，二级＝当前分区名
+function setL2On(on) {
+  const card = settingsCard();
+  if (!card) return;
+  card.classList.toggle('pane-open', !!on);
+  const nav = document.querySelector('.set-nav-item.active');
+  $('set-back-title').textContent = on && nav ? nav.textContent.trim() : '设置';
+}
+
+function closeSettingsUI() {
+  $('settings').classList.add('hidden');
+  setL2On(false);
+  const d = setHistDepth;
+  setHistDepth = 0;
+  if (d > 0) history.go(-d); // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
+}
+
+window.addEventListener('popstate', (e) => {
+  const d = (e.state && e.state.jxSettings) || 0;
+  if ($('settings').classList.contains('hidden')) { setHistDepth = 0; return; } // UI 已关：只对齐
+  setHistDepth = d;
+  if (d >= 1) setL2On(d === 2); // 返回手势：二级退一级、一级再退＝下面的 d===0
+  if (d === 0) closeSettingsUI();
+});
+
+$('set-cancel').onclick = closeSettingsUI;
+$('settings').onclick = (e) => { if (e.target === $('settings')) closeSettingsUI(); };
+$('set-back').onclick = () => {
+  if (setHistDepth >= 2) history.back(); // 二级：返回＝回一级（走 popstate 统一处理）
+  else closeSettingsUI();                // 一级：返回＝退出设置回对话区
+};
 document.querySelectorAll('.set-nav-item').forEach((b) => {
-  b.onclick = () => setSettingsPane(b.dataset.pane);
+  b.onclick = () => {
+    setSettingsPane(b.dataset.pane);
+    if (isNarrow()) {
+      setL2On(true);
+      if (setHistDepth < 2) {
+        setHistDepth++;
+        history.pushState({ jxSettings: setHistDepth }, '');
+      }
+    }
+  };
 });
 // 模型页：「添加提供方」= 插入一张展开的自定义卡片
 $('prov-add-card').onclick = () => {
@@ -799,7 +856,6 @@ makeSelect('sel-compact-threshold', 'compactThreshold', [
   { v: '0.8', label: '80%' },
   { v: '0.9', label: '90%' },
 ], null);
-$('btn-drawer').onclick = () => rpToggle('subs');
 
 /* ---------- 技能管理（/api/skills：自带只读展示，用户可加/开关/删） ---------- */
 
@@ -902,3 +958,299 @@ async function installSkillFromPicker(kind) {
 $('skill-add-btn').onclick = () => openPopover('skill-add-pop', $('skill-add-btn'));
 $('sa-folder').onclick = () => installSkillFromPicker('folder');
 $('sa-zip').onclick = () => installSkillFromPicker('zip');
+
+/* ---------- 子对话专家（/api/experts：内置只读展示，自定义可增删改开关） ---------- */
+
+// 名称即调用参数：这里展示的每个名称（内置与自定义）都与 dispatch_sub 的
+// expert 参数共用同一份后端事实来源（/api/experts 的 builtin/user），前端
+// 不抄写不改写——保证「所见名称 = 可填参数」100% 一致。
+
+let expertDraft = [];     // 编辑中的专家列表（改动先落草稿，点保存才提交）
+let expertOrig = [];      // 打开面板时的原始快照（取消 = 回滚到它）
+let expertOpenID = null;  // 展开编辑的卡片：专家 id / '__new' / null（手风琴式单开）
+
+// 专家预设的模型格式：''（跟随主对话）| providerId/modelId | 纯 modelId。
+// 显示名从已配置模型清单（state.models）解析，解析不到原样展示。
+function expertModelLabel(m) {
+  m = (m || '').trim();
+  if (!m) return '';
+  const slash = m.indexOf('/');
+  const pid = slash > 0 ? m.slice(0, slash) : '';
+  const mid = slash > 0 ? m.slice(slash + 1) : m;
+  const list = state.models || [];
+  const hit = list.find((x) => x.providerId === pid && x.modelId === mid) ||
+    (pid === '' ? list.find((x) => x.modelId === mid) : null);
+  return (hit && (hit.modelName || hit.modelId)) || m;
+}
+
+function expertMeta(e) {
+  const parts = [e.inheritContext ? '继承上下文' : '不继承上下文'];
+  parts.push(e.model ? '默认模型 ' + expertModelLabel(e.model) : '模型随主对话');
+  return parts.join(' · ');
+}
+
+// 专家表单的模型选择面板：与对话区同源（/api/models），点选写回草稿。
+// 选中后 renderExpertCards 重建卡片（expertOpenID 不变，卡片保持展开）。
+async function openExpertModelPop(e, anchor) {
+  if (!(state.models || []).length) await loadModels(); // 设置页早于首页加载时兜底
+  const pop = $('expert-model-pop');
+  const cur = (e.model || '').trim();
+  let html = `<button class="pop-item model-item ${cur === '' ? 'sel' : ''}" data-key="">跟随主对话（默认）</button>`;
+  let lastProv = '';
+  for (const m of state.models || []) {
+    if (m.providerId !== lastProv) {
+      html += `<div class="pop-group">${esc(m.providerName)}</div>`;
+      lastProv = m.providerId;
+    }
+    const k = m.providerId + '/' + m.modelId;
+    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span></button>`;
+  }
+  if (!(state.models || []).length) html = '<div class="pop-group">还没有已配置的模型，先到「模型」页添加提供方</div>';
+  pop.innerHTML = html;
+  pop.querySelectorAll('.model-item').forEach((b) => {
+    b.onclick = () => {
+      e.model = b.dataset.key;
+      closePopovers();
+      renderExpertCards();
+    };
+  });
+  openPopover('expert-model-pop', anchor);
+}
+
+async function renderExpertsPanel() {
+  const bBox = $('expert-builtin-list');
+  const uBox = $('expert-user-list');
+  if (!bBox || !uBox) return;
+  bBox.innerHTML = '';
+  uBox.innerHTML = '加载中…';
+  let data;
+  try { data = await api('/api/experts'); } catch (e) { uBox.textContent = '专家清单读取失败：' + e.message; return; }
+  // 内置：直接渲染后端清单（名称=可填参数，一个字都不改）
+  for (const b of (data.builtin || [])) {
+    const row = document.createElement('div');
+    row.className = 'plugin-row';
+    row.innerHTML =
+      `<div class="pr-info"><div class="pr-line"><b>${esc(b.name)}</b></div>` +
+      `<p>${esc(b.description || '')}</p></div>`;
+    const tag = document.createElement('span');
+    tag.className = 'skill-constant';
+    tag.textContent = '常开';
+    row.appendChild(tag);
+    bBox.appendChild(row);
+  }
+  const fields = (e) => ({
+    id: e.id || '', name: e.name || '', description: e.description || '',
+    prompt: e.prompt || '', model: e.model || '',
+    inheritContext: !!e.inheritContext, enabled: !!e.enabled,
+  });
+  expertDraft = (data.user || []).map(fields);
+  expertOrig = (data.user || []).map(fields);
+  expertOpenID = null;
+  renderExpertCards();
+}
+
+function renderExpertCards() {
+  const box = $('expert-user-list');
+  if (!box) return;
+  box.innerHTML = '';
+  expertDraft.forEach((e) => box.appendChild(buildExpertCard(e)));
+  if (!expertDraft.length) {
+    box.innerHTML = '<div class="skill-empty">还没有自定义专家。点上方「添加专家」创建——比如一个带专属审查提示词、默认用别的模型的审查员。</div>';
+  }
+}
+
+// 开关即时保存：upsert 同一条记录，只翻 enabled
+async function toggleExpertEnabled(e, on) {
+  try {
+    await api('/api/experts', { method: 'POST', body: JSON.stringify({ ...e, enabled: on }) });
+    e.enabled = on;
+  } catch (err) {
+    alert('切换失败：' + err.message);
+  }
+}
+
+function buildExpertCard(e) {
+  const isNew = e.id === '__new'; // 新建草稿的临时 id（保存时才换成后端 id）
+  const open = expertOpenID === e.id;
+  const card = document.createElement('div');
+  card.className = 'prov-card' + (open ? ' open' : '') + (e.enabled ? '' : ' off');
+
+  // 折叠头：名称+描述（与「内置组件」行同款排版）+ 元信息 + 开关 + 编辑；
+  // 点名称区展开，开关不冒泡
+  const head = document.createElement('div');
+  head.className = 'pv-head';
+  const info = document.createElement('div');
+  info.className = 'pr-info ex-head-info';
+  info.innerHTML =
+    `<div class="pr-line"><b>${esc(e.name || '未命名专家')}</b></div>` +
+    `<p>${esc(e.description || '（没有描述）')}</p>`;
+  head.appendChild(info);
+  const meta = document.createElement('span');
+  meta.className = 'ex-meta';
+  meta.textContent = expertMeta(e);
+  head.appendChild(meta);
+  if (!isNew) { // 新卡片保存前不给开关（还没落到后端）
+    const tg = document.createElement('label');
+    tg.className = 'pr-toggle';
+    tg.title = e.enabled ? '停用后主对话看不到该专家' : '启用后主对话可按名称派发';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!e.enabled;
+    cb.onclick = (ev) => ev.stopPropagation();
+    cb.onchange = async () => { await toggleExpertEnabled(e, cb.checked); renderExpertCards(); };
+    tg.appendChild(cb);
+    tg.appendChild(document.createElement('span'));
+    tg.onclick = (ev) => ev.stopPropagation(); // 点开关只翻转，不触发展开/收起
+    head.appendChild(tg);
+  }
+  const edit = document.createElement('span');
+  edit.className = 'pv-edit';
+  edit.textContent = open ? '收起' : '编辑';
+  head.appendChild(edit);
+  head.onclick = () => {
+    if (open) {
+      if (isNew) { expertDraft = expertDraft.filter((x) => x !== e); }
+      else { // 收起 = 丢弃未保存的修改，回滚到打开面板时的快照
+        const o = expertOrig.find((x) => x.id === e.id);
+        if (o) Object.assign(e, o);
+      }
+      expertOpenID = null;
+    } else {
+      expertOpenID = e.id;
+    }
+    renderExpertCards();
+  };
+  card.appendChild(head);
+  if (!open) return card;
+
+  // 展开表单
+  const form = document.createElement('div');
+  form.className = 'pv-form';
+  const mk = (labelText, inputEl, full) => {
+    const cell = document.createElement('div');
+    if (full) cell.className = 'full';
+    const l = document.createElement('div');
+    l.className = 'pf-label';
+    l.textContent = labelText;
+    cell.appendChild(l);
+    cell.appendChild(inputEl);
+    return cell;
+  };
+  const grid = document.createElement('div');
+  grid.className = 'pf-two ex-form-grid';
+  const inName = document.createElement('input');
+  inName.className = 'pf-input';
+  inName.placeholder = '专家名称（主对话派发时填它）';
+  inName.value = e.name;
+  inName.oninput = () => { e.name = inName.value; };
+  grid.appendChild(mk('名称', inName));
+  const btnModel = document.createElement('button');
+  btnModel.type = 'button';
+  btnModel.className = 'chip-btn ex-model-chip';
+  btnModel.title = '选择该专家的默认模型';
+  btnModel.innerHTML =
+    `<span>${esc(expertModelLabel(e.model) || '跟随主对话（默认）')}</span>` +
+    '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>';
+  btnModel.onclick = (ev) => { ev.stopPropagation(); openExpertModelPop(e, btnModel); };
+  grid.appendChild(mk('默认模型', btnModel));
+  form.appendChild(grid);
+
+  const inDesc = document.createElement('input');
+  inDesc.className = 'pf-input';
+  inDesc.placeholder = '给主对话看的选用依据（会列进 dispatch_sub 的工具说明）';
+  inDesc.value = e.description;
+  inDesc.oninput = () => { e.description = inDesc.value; };
+  form.appendChild(mk('描述', inDesc, true));
+
+  const inPrompt = document.createElement('textarea');
+  inPrompt.className = 'pf-input pf-textarea';
+  inPrompt.placeholder = '追加的系统提示词：拼在该子对话模式基础提示词之后，定义这位专家的立场与工作方式';
+  inPrompt.value = e.prompt;
+  inPrompt.oninput = () => { e.prompt = inPrompt.value; };
+  form.appendChild(mk('追加提示词', inPrompt, true));
+
+  // 继承上下文开关
+  const ctxRow = document.createElement('div');
+  ctxRow.className = 'ex-inline-toggle';
+  const ctxTg = document.createElement('label');
+  ctxTg.className = 'pr-toggle';
+  const ctxCb = document.createElement('input');
+  ctxCb.type = 'checkbox';
+  ctxCb.checked = !!e.inheritContext;
+  ctxCb.onchange = () => { e.inheritContext = ctxCb.checked; };
+  ctxTg.appendChild(ctxCb);
+  ctxTg.appendChild(document.createElement('span'));
+  ctxRow.appendChild(ctxTg);
+  const ctxDesc = document.createElement('span');
+  ctxDesc.className = 'sf-desc';
+  ctxDesc.textContent = '继承对话上下文（开启后子对话完整继承主对话聊天记录，任务只需写「接下来做什么」；是否继承完全由专家预设决定）';
+  ctxRow.appendChild(ctxDesc);
+  form.appendChild(mk('上下文', ctxRow, true));
+
+  // 操作区：删除 | 取消 | 保存
+  const acts = document.createElement('div');
+  acts.className = 'pf-actions';
+  if (!isNew) {
+    const del = document.createElement('button');
+    del.className = 'pf-del';
+    del.textContent = '删除专家';
+    del.onclick = async () => {
+      if (!(await confirmCenter('删除专家「' + (e.name || '未命名') + '」？已派发的子对话保留，只是不再追加该提示词。', false, true))) return;
+      try {
+        await api('/api/experts/delete', { method: 'POST', body: JSON.stringify({ id: e.id }) });
+        renderExpertsPanel();
+      } catch (err) { alert('删除失败：' + err.message); }
+    };
+    acts.appendChild(del);
+  }
+  const btnCancel = document.createElement('button');
+  btnCancel.className = 'pf-cancel';
+  btnCancel.textContent = '取消';
+  btnCancel.onclick = () => {
+    if (isNew) expertDraft = expertDraft.filter((x) => x !== e);
+    else { // 取消 = 丢弃未保存的修改
+      const o = expertOrig.find((x) => x.id === e.id);
+      if (o) Object.assign(e, o);
+    }
+    expertOpenID = null;
+    renderExpertCards();
+  };
+  const btnSave = document.createElement('button');
+  btnSave.className = 'pf-save';
+  btnSave.textContent = '保存';
+  btnSave.onclick = async () => {
+    if (!e.name.trim()) { alert('请填写名称（它是主对话派发时的调用参数）'); return; }
+    if (!e.prompt.trim()) { alert('请填写追加提示词'); return; }
+    try {
+      await api('/api/experts', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: isNew ? '' : e.id, name: e.name, description: e.description,
+          prompt: e.prompt, model: e.model,
+          inheritContext: !!e.inheritContext, enabled: !!e.enabled,
+        }),
+      });
+      renderExpertsPanel();
+    } catch (err) { alert('保存失败：' + err.message); }
+  };
+  acts.appendChild(btnCancel);
+  acts.appendChild(btnSave);
+  form.appendChild(acts);
+
+  card.appendChild(form);
+  return card;
+}
+
+// 「添加专家」= 插入一张展开的新卡片（enabled 默认开；__new 是临时 id）
+$('expert-add-btn').onclick = () => {
+  if (expertOpenID === '__new') return;
+  expertDraft.push({ id: '__new', name: '', description: '', prompt: '', model: '', inheritContext: false, enabled: true });
+  expertOpenID = '__new';
+  renderExpertCards();
+  const box = $('expert-user-list');
+  if (box && box.lastElementChild) {
+    box.lastElementChild.scrollIntoView({ block: 'nearest' });
+    const first = box.lastElementChild.querySelector('.pf-input');
+    if (first) first.focus();
+  }
+};

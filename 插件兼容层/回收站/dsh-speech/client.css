@@ -19,8 +19,10 @@
 }
 @keyframes mic-blink { 0% { opacity: 1; } 50% { opacity: .55; } 100% { opacity: 1; } }
 
-/* 润色气泡（听写激活时出现在输入框右上角，漫画气泡带尾巴） */
-#composer-wrap { position: relative; }
+/* 润色气泡（听写激活时出现在输入框右上角，漫画气泡带尾巴）。
+   锚点说明：气泡 absolute 挂在 #composer-wrap 里；宿主的输入区外壳本身就是
+   position:absolute（悬浮布局，见 web/style.css 输入区节），天然是定位锚点，
+   这里不再覆盖它的 position（曾经的 relative 会把悬浮定位压回流式布局） */
 .polish-bubble {
   position: absolute; right: 14px; top: -8px; transform: translateY(-100%);
   display: flex; align-items: center; gap: 8px;

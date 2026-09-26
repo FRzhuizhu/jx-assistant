@@ -17,9 +17,8 @@ import (
 //     缓存命中率突降通常就发生在两次调用之间的这类事件上——文首的调用表
 //     给出每次调用的命中量，对着时间线即可定位是哪次变更打破了前缀。
 //   原始数据（format=json，contextengine.go 组装）：引擎缓存的最近三轮真正
-//     发给模型的完整请求体（与线上发送逐字节同源）+ 相邻两两对比
-//     （消息条数/token 估算/工具目录指纹/首条变化消息的位置），直接服务于
-//     观察上下文变化与缓存命中。
+//     发给模型的请求体**原样数组**（旧→新，与线上发送逐字节同源），不带任何
+//     导出侧元数据——纯原始数据；会话信息与调用统计在运行日志里。
 // 两者都取自 messages 表原始历史（append-only），与展示层无关。
 
 func modeLabelOf(mode string) string {
@@ -59,7 +58,7 @@ func expText(s string) string {
 // 历史系统注入通知的前缀清单。
 func isSysNote(text string) bool {
 	for _, p := range []string{"【派发回报】", "【系统中断】", "【执行中断】", "【文件上传】", "【文件回退】",
-		"【目标续跑】", "【派发子对话】", "【数字助理派发】", "【数字助理转达】", "【待办任务派发｜", "<goal_round>"} {
+		"【目标续跑】", "【派发子对话】", "【数字助理派发】", "【数字助理转达】", "【待办任务派发｜", "【网页查看】", "<goal_round>"} {
 		if strings.HasPrefix(text, p) {
 			return true
 		}
@@ -144,6 +143,9 @@ func writeCallTable(b *strings.Builder, msgs []*StoredMessage) {
 		if len(c.ar.Tools) > 0 {
 			res += " + 工具 " + strings.Join(c.ar.Tools, ",")
 		}
+		if c.ar.Scope == "summarize" {
+			res = "（摘要调用）" + res
+		}
 		if c.ar.Error != "" {
 			res = "失败：" + clipText(c.ar.Error, 40)
 		}
@@ -213,7 +215,7 @@ func (st *timelineState) render(b *strings.Builder, m *StoredMessage) {
 	}
 }
 
-// promptRec 是 kind=prompt 行正文的解析形态（RunAgent 每轮开始时落库）。
+// promptRec 是 kind=prompt 行正文的解析形态（上下文引擎每轮开轮时落库，见 OpenRound）。
 type promptRec struct {
 	Sys   string    `json:"sys"`
 	Env   string    `json:"env"`
@@ -351,8 +353,12 @@ func (st *timelineState) renderAudit(b *strings.Builder, m *StoredMessage) {
 	switch ar.Type {
 	case "call":
 		st.callNo++
-		tlLine(b, m.CreatedAt, fmt.Sprintf("模型调用 #%d（本轮第 %d 步）：发送 %d 条消息 · 约 %d tok",
-			st.callNo, ar.Step, ar.Msgs, ar.Est))
+		head := fmt.Sprintf("（本轮第 %d 步）", ar.Step)
+		if ar.Scope == "summarize" {
+			head = "（摘要调用）"
+		}
+		tlLine(b, m.CreatedAt, fmt.Sprintf("模型调用 #%d%s：发送 %d 条消息 · 约 %d tok",
+			st.callNo, head, ar.Msgs, ar.Est))
 		switch {
 		case ar.Error != "":
 			b.WriteString("  失败：" + expText(ar.Error) + "\n\n")

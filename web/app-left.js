@@ -730,7 +730,7 @@ async function loadSessionsNow() {
 /* ---------- 侧栏收起/展开（顶栏最左按钮，状态落本地） ---------- */
 
 function setSidebarBtn(collapsed) {
-  const label = collapsed ? '展开侧边栏' : '收起侧边栏';
+  const label = collapsed ? '展开左侧栏' : '收起左侧栏';
   const btn = document.getElementById('btn-sidebar');
   if (btn) btn.title = label;
   const txt = document.getElementById('sb-btn-text');

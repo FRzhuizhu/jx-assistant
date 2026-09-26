@@ -129,18 +129,15 @@ func TestCopyInheritedContextKeepsModelVisibleSequenceEqual(t *testing.T) {
 		t.Fatalf("摘要覆盖边界未正确重映射：得到 %d，期望 7", childSummary.CoversUpTo)
 	}
 
-	// 核心断言：模型可见序列一致（尾部环境快照各自生成，只比对它之前的部分）
+	// 核心断言：模型可见序列逐条一致（env 行随继承复制，子对话前缀与父逐字节相同，
+	// 前缀缓存可命中整段父上下文；子会话自己的 env 更新之后才会追加）
 	sys := "同一份系统提示词"
-	pm := a.buildContext(parent, sys, "父环境")
-	cm := a.buildContext(child, sys, "子环境")
+	pm := a.buildContext(parent, sys)
+	cm := a.buildContext(child, sys)
 	if len(pm) != len(cm) {
 		t.Fatalf("可见序列长度不同：父 %d，子 %d\n父=%s\n子=%s", len(pm), len(cm), dumpMsgs(pm), dumpMsgs(cm))
 	}
-	if last := cm[len(cm)-1].Text(); last != "子环境" {
-		t.Fatalf("尾部环境快照应为子会话自己的，得到 %q", last)
-	}
-	// 子会话带一条 inherit 标记行，组装时跳过——除尾部环境外两条序列应逐条相同
-	assertSameMessages(t, cm[:len(cm)-1], pm[:len(pm)-1], "克隆后模型可见序列")
+	assertSameMessages(t, cm, pm, "克隆后模型可见序列")
 }
 
 // 父会话正在执行时：只复制到最后一条完整答复，悬空的工具调用不带进子对话。
@@ -185,9 +182,9 @@ func TestCopyInheritedContextSkipsUnfinishedTail(t *testing.T) {
 		}
 		t.Fatalf("应复制到最后一条完整答复，实际末尾为 %q", got)
 	}
-	// 组装后的上下文尾部不应留下悬空工具调用
-	cm := a.buildContext(&SessionMeta{ID: "c1", Mode: "task"}, "sys", "env")
-	for _, m := range cm[:len(cm)-1] {
+	// 组装后的上下文不应留下悬空工具调用
+	cm := a.buildContext(&SessionMeta{ID: "c1", Mode: "task"}, "sys")
+	for _, m := range cm {
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			if m.ToolCalls[0].ID == "x1" {
 				t.Fatal("悬空的工具调用行被带进了子对话")
@@ -367,8 +364,8 @@ func TestDispatchTaskNoContextAndNestingGuard(t *testing.T) {
 }
 
 // dispatch_sub 派发子对话：主对话与工作任务都可派（挂在当前会话下，
-// 右栏抽屉可见）；两种上下文模式（默认自足 / inherit_context 继承本会话）；
-// 子对话本身不能再派（只有一级）。
+// 右栏抽屉可见）；专家是唯一模式路径——不传 expert = 标准子对话（自足），
+// expert=继承上下文子对话 继承本会话记录；子对话本身不能再派（只有一级）。
 func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	a.Cfg.BaseURL = "mock" // 后台子会话走内置演示模型，离线可跑
@@ -381,7 +378,7 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 		t.Fatalf("建任务会话失败: %v", err)
 	}
 
-	// 工作任务派子对话（默认不带上下文）：挂在任务下、mode=task
+	// 工作任务派子对话（不传 expert = 标准子对话，不带上下文）：挂在任务下、mode=task
 	tctx := &toolContext{app: a, sess: task, emit: func(Event) {}}
 	out, err := runDispatchSub(tctx, json.RawMessage(`{"task":"把附录单独整理成一份"}`))
 	if err != nil {
@@ -398,16 +395,20 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 		t.Fatalf("子对话应挂在 t1 下且不带 dispatched_by（mode=%q parent=%q disp=%q n=%d）",
 			kids[0].Mode, kids[0].ParentID, kids[0].DispatchedBy, len(kids))
 	}
+	if kids[0].Expert != "标准子对话" {
+		t.Fatalf("不传 expert 应记为标准子对话，得到 %q", kids[0].Expert)
+	}
 	raw, _ := a.Store.RawMessagesAll(kids[0].ID)
 	if len(raw) != 1 || !strings.Contains(raw[0].Text(), "【派发子对话】") {
 		t.Fatalf("子对话应只含一条派发需求，实际 %d 条", len(raw))
 	}
 	plainKid := kids[0].ID
 
-	// 带上下文模式：继承任务历史，标记行在最前，派发需求在其后
+	// 继承上下文：用内置专家「继承上下文子对话」按名派发，继承任务历史，
+	// 标记行在最前，派发需求在其后
 	_ = a.Store.Append("t1", TextMessage("user", "帮我把日志整理一下"))
 	_ = a.Store.Append("t1", Message{Role: "assistant", Content: "好的，我安排一下"})
-	out, err = runDispatchSub(tctx, json.RawMessage(`{"task":"接着刚才的聊","inherit_context":true}`))
+	out, err = runDispatchSub(tctx, json.RawMessage(`{"task":"接着刚才的聊","expert":"继承上下文子对话"}`))
 	if err != nil {
 		t.Fatalf("带上下文派发子对话失败: %v", err)
 	}
@@ -424,6 +425,9 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	if inherited == nil {
 		t.Fatal("找不到继承上下文的子对话")
 	}
+	if inherited.Expert != "继承上下文子对话" {
+		t.Fatalf("子会话应记录内置专家名，得到 %q", inherited.Expert)
+	}
 	raw, _ = a.Store.RawMessagesAll(inherited.ID)
 	if len(raw) < 3 || raw[0].Kind != inheritKind {
 		t.Fatalf("继承派发应带标记行 + 历史，实际 %d 条（首行 kind=%q）", len(raw), raw[0].Kind)
@@ -433,7 +437,7 @@ func TestDispatchSubFromTaskAndAssistant(t *testing.T) {
 	}
 	// 子对话里模型可见：父会话的聊天记录在前，自己的任务在后
 	sub := &SessionMeta{ID: inherited.ID, Mode: "task"}
-	cm := a.buildContext(sub, "task 系统提示词", "env")
+	cm := a.buildContext(sub, "task 系统提示词")
 	var sawParent, sawTask bool
 	for _, msg := range cm {
 		if strings.Contains(msg.Text(), "帮我把日志整理一下") {

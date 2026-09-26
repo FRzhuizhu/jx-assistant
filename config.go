@@ -34,10 +34,13 @@ type Config struct {
 	// Office 文档等大文件）默认不限量——清理靠 7 天过期；确有磁盘压力时再配
 	// 500/1024 这一级别的大预算。SnapshotEnabled 是设置页「文件备份」总开关
 	//（指针类型：配置文件里没写这一项 = 开启）。
-	SnapshotEnabled      *bool `json:"snapshotEnabled,omitempty"`
-	SnapshotDays         int   `json:"snapshotDays"`            // 快照保留天数，默认 7；-1=永不过期
-	SnapshotMaxMB        int   `json:"snapshotMaxMB"`           // 每会话自动快照总量上限（MB），默认 32；-1=不限量
-	SnapshotManualMaxMB  int   `json:"snapshotManualMaxMB"`     // 每会话手动快照总量上限（MB），默认 -1 不限量；需要时设 500/1024
+	SnapshotEnabled     *bool `json:"snapshotEnabled,omitempty"`
+	SnapshotDays        int   `json:"snapshotDays"`        // 快照保留天数，默认 7；-1=永不过期
+	SnapshotMaxMB       int   `json:"snapshotMaxMB"`       // 每会话自动快照总量上限（MB），默认 32；-1=不限量
+	SnapshotManualMaxMB int   `json:"snapshotManualMaxMB"` // 每会话手动快照总量上限（MB），默认 -1 不限量；需要时设 500/1024
+	// 子对话专家（专家团）预设：dispatch_sub 按名称选用的命名预设（追加提示词/
+	// 默认模型/默认上下文继承/启用开关）。配置文件没写过这一键时补种演示专家。
+	Experts []ExpertCfg `json:"experts"`
 }
 
 func DefaultConfig() *Config {
@@ -61,6 +64,7 @@ func DefaultConfig() *Config {
 		SnapshotMaxMB:         32,
 		SnapshotManualMaxMB:   -1,
 		SnapshotEnabled:       nil, // 缺省开启；nil 表示"未配置"，按开处理
+		Experts:               defaultExperts(),
 	}
 }
 

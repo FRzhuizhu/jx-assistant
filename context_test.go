@@ -97,17 +97,13 @@ func TestRuleCompactKeepsRecentAndCollapsesOldToolDetail(t *testing.T) {
 		t.Fatalf("前两轮应各折叠 1 调用行 + 1 结果行，得到 %d/%d", compactedAssistant, omittedTool)
 	}
 	if compactedUser != 2 {
-		t.Fatalf("应有两个用户消息", )
+		t.Fatalf("应有两个用户消息")
 	}
 
-	ctxMsgs := a.buildContext(sess, "SYS", "ENV")
-	// SYS + 前两轮的 2 用户原文 + 2 折叠 assistant + 后两轮原始 6 条 + 尾部环境快照
-	if len(ctxMsgs) != 12 {
-		t.Fatalf("组装长度应为 12，得到 %d", len(ctxMsgs))
-	}
-	// 环境快照固定在序列末尾（易变内容永远在尾部，前缀缓存稳定）
-	if last := ctxMsgs[len(ctxMsgs)-1]; last.Role != "user" || last.Content != "ENV" {
-		t.Fatalf("末尾应为环境快照 user 消息，得到 %+v", last)
+	ctxMsgs := a.buildContext(sess, "SYS")
+	// SYS + 前两轮的 2 用户原文 + 2 折叠 assistant + 后两轮原始 6 条（无尾部环境追加）
+	if len(ctxMsgs) != 11 {
+		t.Fatalf("组装长度应为 11，得到 %d", len(ctxMsgs))
 	}
 	hasDangling := false
 	for _, m := range ctxMsgs {
@@ -137,7 +133,7 @@ func TestSummariesAssemblyStacksManualAndLatestAuto(t *testing.T) {
 	_ = a.Store.AppendRow("s2", &StoredMessage{Message: TextMessage("user", "【旧自动摘要】"), Kind: "summary", Origin: "auto", CoversUpTo: 6, Superseded: true})
 	_ = a.Store.AppendRow("s2", &StoredMessage{Message: TextMessage("user", "【新自动摘要】第二批"), Kind: "summary", Origin: "auto", CoversUpTo: 6})
 
-	msgs := a.buildContext(sess, "SYS", "ENV")
+	msgs := a.buildContext(sess, "SYS")
 	var manualCount, autoCount, staleAuto int
 	var rawOld int
 	for _, m := range msgs {

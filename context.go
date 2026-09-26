@@ -1,10 +1,10 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -92,13 +92,14 @@ func activeSummaries(msgs []*StoredMessage) []*StoredMessage {
 
 // buildContext 是组装管线：系统提示词 + 活跃摘要 + 边界后消息
 // （规则压缩视图生效，最近轮保持原文），并修剪结尾悬空的工具调用。
-// 环境快照（env）不进历史序列——历史里的 kind=env/prompt 行全部跳过，
-// 最新环境快照作为一条 user 消息固定放在序列末尾：模型永远读到最新环境，
-// 旧快照不重复占用表面上下文，系统提示词前缀保持稳定命中缓存。
-func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
+// 环境快照行（kind=env）按落位进上下文，**追加式**（已发送的前缀绝不改写）：
+// 可见的首条快照整份呈现（摘要折叠后以边界后首条重新作为完整基线），
+// 其后相邻快照按行差分渲染为一条短的「环境更新」消息——变化永远以新消息
+// 出现在尾部，系统提示词与历史前缀逐字节稳定，前缀缓存命中最大化。
+func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
-		return []Message{TextMessage("system", sys), TextMessage("user", env)}
+		return []Message{TextMessage("system", sys)}
 	}
 	summaries := activeSummaries(raw)
 	boundary := int64(0)
@@ -114,8 +115,19 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 	for _, s := range summaries {
 		out = append(out, TextMessage("user", s.Text()))
 	}
+	prevEnv := "" // 上一条可见快照；空 = 下一条整份呈现（首轮，或摘要折叠后的首条）
 	for _, m := range raw {
-		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" || m.Kind == "audit" {
+		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" || m.Kind == "audit" {
+			continue
+		}
+		if m.Kind == "env" {
+			env := m.Text()
+			if prevEnv == "" {
+				out = append(out, TextMessage("user", env))
+			} else {
+				out = append(out, TextMessage("user", envUpdateMessage(prevEnv, env)))
+			}
+			prevEnv = env
 			continue
 		}
 		if ruleMode && m.Compact != "" {
@@ -142,9 +154,74 @@ func (a *App) buildContext(sess *SessionMeta, sys, env string) []Message {
 		}
 		break
 	}
-	// 环境快照固定在序列末尾（易变内容永远在尾部，前缀缓存不受影响）
-	out = append(out, TextMessage("user", env))
 	return out
+}
+
+// envUpdateMessage 把相邻两份环境快照渲染成一条短的「环境更新」：只含有变化
+// 的行（新增/修改按新文原文），被移除的条目归入「不再适用」清单。确定性纯函数
+// （存储文本唯一决定输出），同文快照的标题行会被精确匹配自然滤掉。
+// 被替换条目的旧行（如旧时间 "- 当前时间：22:00" → 新值已在上文）不再重复
+// 报进「不再适用」——按 envLineKey 抑制；纯注记行（非 "- " 条目，如技能变更
+// 说明）过期后静默消失，不进清单。
+func envUpdateMessage(prev, cur string) string {
+	prevCount := map[string]int{}
+	for _, l := range strings.Split(prev, "\n") {
+		prevCount[l]++
+	}
+	changed := []string{}
+	curKeys := map[string]bool{}
+	for _, l := range strings.Split(cur, "\n") {
+		if prevCount[l] > 0 {
+			prevCount[l]--
+			continue // 整行未变
+		}
+		if k := envLineKey(l); k != "" {
+			curKeys[k] = true
+		}
+		changed = append(changed, l)
+	}
+	removed := []string{}
+	for l, n := range prevCount {
+		if n == 0 || strings.TrimSpace(l) == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(l), "- ") {
+			continue // 纯注记行（标题/技能变更说明等）：过期即消失，不作条目公告
+		}
+		if curKeys[envLineKey(l)] {
+			continue // 同条目已有新值在上文，旧值不重复报
+		}
+		removed = append(removed, l)
+	}
+	sort.Strings(removed)
+	sort.Strings(changed) // 均来自 map/无序收集，排序保证确定性
+
+	var b strings.Builder
+	b.WriteString("# 环境更新（取代更早的快照与更新）\n")
+	for _, l := range changed {
+		b.WriteString(l + "\n")
+	}
+	if len(removed) > 0 {
+		b.WriteString("（以下条目已不再适用）\n")
+		for _, l := range removed {
+			b.WriteString(l + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// envLineKey 取环境快照行的条目键："- key：value" 形式取 key（同条目的新旧
+// 取值归并），其余行整行作键；空行返回空串。
+func envLineKey(l string) string {
+	s := strings.TrimSpace(l)
+	if !strings.HasPrefix(s, "- ") {
+		return s
+	}
+	rest := s[len("- "):]
+	if i := strings.Index(rest, "："); i > 0 {
+		return rest[:i]
+	}
+	return s
 }
 
 // ---------- 子对话的上下文继承（分支克隆） ----------
@@ -293,17 +370,11 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 	}
 
 	sys := a.systemPrompt(sess)
-	env := a.envPrompt(sess)
 	add("系统提示词", TextMessage("system", sys))
-	add("环境快照", TextMessage("user", env))
 
 	// 工具定义按序列化后的 JSON 体积估算（与消息同一 rune*3/4 启发式）
 	if tools := a.toolsFor(sess.Mode); len(tools) > 0 {
-		defs := make([]ToolDef, len(tools))
-		for i, tl := range tools {
-			defs[i] = tl.Spec
-		}
-		if raw, err := json.Marshal(defs); err == nil {
+		if raw, err := json.Marshal(toolDefsOf(tools)); err == nil {
 			cats["系统工具"] += len([]rune(string(raw))) * 3 / 4
 		}
 	}
@@ -320,8 +391,19 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 		for _, s := range summaries {
 			add("摘要", TextMessage("user", s.Text()))
 		}
+		prevEnv := "" // 与 buildContext 同一套环境快照渲染口径（首条整份、后续差分）
 		for _, m := range raw {
-			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "env" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
+			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
+				continue
+			}
+			if m.Kind == "env" {
+				env := m.Text()
+				if prevEnv == "" {
+					add("环境快照", TextMessage("user", env))
+				} else {
+					add("环境快照", TextMessage("user", envUpdateMessage(prevEnv, env)))
+				}
+				prevEnv = env
 				continue
 			}
 			if ruleMode && m.Compact != "" {
@@ -525,7 +607,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 		b.WriteString(fmt.Sprintf("%s：%s\n", role, clipText(strings.TrimSpace(text), 4000)))
 	}
 
-	summary, err := a.callSummarizer(sess, summarizeInstruction+"\n\n"+b.String())
+	summary, err := a.ctxEngine().CallSummarizer(sess, summarizeInstruction+"\n\n"+b.String())
 	if err != nil {
 		return "", err
 	}
@@ -544,29 +626,8 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	return summary, nil
 }
 
-// callSummarizer 发起一次摘要调用（复用会话的模型；mock 模式直接给占位摘要）。
-func (a *App) callSummarizer(sess *SessionMeta, input string) (string, error) {
-	target := a.resolveTarget(sess)
-	if target.BaseURL == "mock" {
-		return "（离线演示摘要：本段历史已完成创建演示文件并验证，细节见原始记录。）", nil
-	}
-	req := ChatRequest{Messages: []Message{
-		TextMessage("system", "你是严谨的对话历史压缩助手。"),
-		TextMessage("user", input),
-	}}
-	var sb strings.Builder
-	err := StreamChat(context.Background(), target, req, StreamCallbacks{
-		OnText: func(s string) { sb.WriteString(s) },
-	})
-	if err != nil {
-		return "", fmt.Errorf("摘要调用失败: %w", err)
-	}
-	out := strings.TrimSpace(sb.String())
-	if out == "" {
-		return "", fmt.Errorf("摘要调用没有产出内容")
-	}
-	return out, nil
-}
+// callSummarizer 已并入上下文引擎（ContextEngine.CallSummarizer）：摘要调用
+// 要把对话历史发给模型，拼装与发送归引擎统一口径，此处不再保留旁路。
 
 // maybeAutoCompact 在 llm 模式下请求前检查：估算 token 超过阈值就自动压缩。
 func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int) error {

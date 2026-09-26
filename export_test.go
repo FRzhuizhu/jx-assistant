@@ -92,8 +92,8 @@ func TestExportTimeline(t *testing.T) {
 	}
 }
 
-// 原始数据导出（引擎）：无请求时报错；环形保留最近三轮；导出含全部缓存请求
-// 与两两对比（消息条数变化、工具目录未变、首条变化消息定位、指纹变化）。
+// 原始数据导出（引擎）：无请求时报错；导出是纯请求体数组（旧→新、逐字节
+// 同源），不带会话标题/调用统计等导出侧元数据；环形保留最近三轮。
 func TestEngineExportRawRequests(t *testing.T) {
 	a := newExportApp(t, "data-export-req-test")
 	sess := &SessionMeta{ID: "s2", Title: "请求导出", Mode: "task", CreatedAt: now()}
@@ -121,30 +121,32 @@ func TestEngineExportRawRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("导出失败: %v", err)
 	}
-	var doc rawRequestExport
-	if err := json.Unmarshal(out, &doc); err != nil {
-		t.Fatalf("导出的不是合法 JSON: %v\n%s", err, out)
+	// 纯数组：顶层就是请求体本身，没有会话元数据包裹
+	var bodies []json.RawMessage
+	if err := json.Unmarshal(out, &bodies); err != nil {
+		t.Fatalf("导出的应是请求体数组: %v\n%s", err, out)
 	}
-	if doc.Count != keepRequests || len(doc.Requests) != keepRequests || len(doc.Diffs) != keepRequests-1 {
-		t.Fatalf("应导出 %d 条请求与 %d 条对比，实际 %d/%d/%d", keepRequests, keepRequests-1,
-			doc.Count, len(doc.Requests), len(doc.Diffs))
+	if len(bodies) != keepRequests {
+		t.Fatalf("应导出 %d 条请求体，实际 %d", keepRequests, len(bodies))
 	}
-	// 环形：最早一条（body1）已被裁掉，留存的旧→新为 body2/3/4
-	if !bytes.Contains(doc.Requests[0].Body, []byte("你好")) || bytes.Contains(doc.Requests[0].Body, []byte(`{"role":"assistant","content":"好的"}`)) {
-		t.Fatalf("环形裁剪后最旧一条应是 body2: %s", doc.Requests[0].Body)
+	if bytes.Contains(out, []byte("请求导出")) || bytes.Contains(out, []byte("\"session\"")) || bytes.Contains(out, []byte("sysHash")) {
+		t.Fatalf("导出不应带会话标题/统计等元数据:\n%.200s", out)
 	}
-	// 对比 #1→#2（body2→body3）：工具未变、sys 未变、env 指纹变、追加式增长（第 2 条起变化）
-	d1 := doc.Diffs[0]
-	if d1.ToolsChanged || !d1.EnvHashChanged || d1.SysHashChanged || d1.FirstDiffMessage != 2 || d1.MsgsDelta != 1 {
-		t.Fatalf("对比 #1→#2 不符: %+v", d1)
+	// 环形：最早一条（body1）已被裁掉，留存的旧→新为 body2/3/4，逐字节同源
+	if !bytes.Contains(bodies[0], []byte("你好")) || bytes.Contains(bodies[0], []byte(`"好的"`)) {
+		t.Fatalf("环形裁剪后最旧一条应是 body2: %s", bodies[0])
 	}
-	// 对比 #2→#3（body3→body4）：指纹全未变，前缀从第 3 条起变化
-	d2 := doc.Diffs[1]
-	if d2.ToolsChanged || d2.SysHashChanged || d2.EnvHashChanged || d2.FirstDiffMessage != 3 {
-		t.Fatalf("对比 #2→#3 不符: %+v", d2)
+	if !bytes.Contains(bodies[len(bodies)-1], []byte("再来")) {
+		t.Fatal("导出应含最新请求的原始消息内容")
 	}
-	if !bytes.Contains(out, []byte("再来")) {
-		t.Fatal("导出应内嵌最新请求的原始消息内容")
+	for i, b := range bodies {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+			Tools    json.RawMessage   `json:"tools"`
+		}
+		if err := json.Unmarshal(b, &req); err != nil || len(req.Messages) == 0 || len(req.Tools) == 0 {
+			t.Fatalf("第 %d 条请求体不完整: %s", i+1, b)
+		}
 	}
 }
 
@@ -160,12 +162,12 @@ func TestBuildContextSkipsAuditAndRequest(t *testing.T) {
 	rec, _ := json.Marshal(lastRequestRec{URL: "http://x", Model: "m", Body: json.RawMessage(`{"messages":[]}`)})
 	appendTestRow(t, a, "s3", &StoredMessage{Message: TextMessage("system", string(rec)), Kind: "request"})
 
-	msgs := a.buildContext(sess, "SYS", "ENV")
+	msgs := a.buildContext(sess, "SYS")
 	joined, _ := json.Marshal(msgs)
 	if strings.Contains(string(joined), "audit") || strings.Contains(string(joined), "lastRequestRec") {
 		t.Errorf("审计/请求行混进了模型上下文: %s", joined)
 	}
-	if len(msgs) != 3 { // system SYS + user 你好 + user ENV
-		t.Fatalf("组装结果应为 3 条，实际 %d: %s", len(msgs), joined)
+	if len(msgs) != 2 { // system SYS + user 你好（无尾部环境追加）
+		t.Fatalf("组装结果应为 2 条，实际 %d: %s", len(msgs), joined)
 	}
 }

@@ -65,7 +65,7 @@ type ChatRequest struct {
 	Stream   bool      `json:"stream"`
 	// 流尾统计：OpenAI 兼容端（DeepSeek/GLM 等）要求显式开启才在最后一个
 	// chunk 附带 usage（缓存命中率的数据来源）
-	StreamOptions   *StreamOptionsCfg `json:"stream_options,omitempty"`
+	StreamOptions *StreamOptionsCfg `json:"stream_options,omitempty"`
 	// 思考控制：DeepSeek/智谱等用 thinking{type}，OpenAI o/gpt-5 系用 reasoning_effort
 	Thinking        *ThinkingCfg `json:"thinking,omitempty"`
 	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
@@ -124,11 +124,11 @@ type StreamCallbacks struct {
 
 // Usage 是流尾统计块（OpenAI 兼容 + DeepSeek 缓存命中扩展）。
 type Usage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	PromptCacheHit      int `json:"prompt_cache_hit_tokens"`
-	PromptCacheMiss     int `json:"prompt_cache_miss_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
+	PromptTokens     int `json:"prompt_tokens"`
+	PromptCacheHit   int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMiss  int `json:"prompt_cache_miss_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // StreamChat 向解析后的 LLM 目标发起一轮流式对话。
@@ -180,10 +180,10 @@ func upstreamErrText(status int, body []byte) string {
 		Code    any    `json:"code"`
 	}
 	var wrap struct {
-		Error  *apiErr `json:"error"`
-		Msg    string  `json:"msg"`
-		Message string `json:"message"`
-		Detail string  `json:"detail"`
+		Error   *apiErr `json:"error"`
+		Msg     string  `json:"msg"`
+		Message string  `json:"message"`
+		Detail  string  `json:"detail"`
 	}
 	var text string
 	if json.Unmarshal(body, &wrap) == nil {
@@ -227,13 +227,58 @@ func connErrText(err error) string {
 	return truncateRunes(strings.Join(strings.Fields(msg), " "), 300)
 }
 
+// isModelUnavailableErr 判断一次模型调用失败是不是「这个模型/提供方用不了」：
+// 余额或额度耗尽、鉴权失败、模型不存在、提供方连不上这类硬性不可用。
+// 纯限流（rate limit）与请求被取消不算——它们是瞬时的，换个模型不是正解。
+// 专家预设模型的回退兜底（RunAgent）靠它判定。
+func isModelUnavailableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	if strings.Contains(s, "无法连接模型服务") {
+		return !strings.Contains(s, "请求已取消") // 提供方连不上：换默认提供方有意义
+	}
+	quotaWords := []string{"余额", "额度", "欠费", "充值", "balance", "quota", "insufficient", "arrear"}
+	hardWords := append(append([]string{}, quotaWords...),
+		"unauthorized", "forbidden", "invalid api key", "authentication",
+		"not exist", "not found", "no such model", "permission denied")
+	for _, sc := range []int{400, 401, 402, 403, 404, 429} {
+		if !strings.Contains(s, fmt.Sprintf("返回 %d", sc)) {
+			continue
+		}
+		switch sc {
+		case 429: // 限流类 429 只在说余额/额度时才算不可用
+			return containsAnyFold(s, quotaWords)
+		case 400: // 400 多为请求本身的问题；只有点名「模型不存在」这类才算
+			// （错误前缀「模型服务返回…」自带"模型"二字，不能拿它当关键词）
+			return containsAnyFold(s, []string{"not exist", "no such model", "unknown model",
+				"invalid model", "model not found", "模型不存在", "未知模型", "无可用模型"})
+		default: // 401/402/403/404：鉴权失败、欠费、禁止、模型不存在，一律算
+			return true
+		}
+	}
+	return containsAnyFold(s, hardWords)
+}
+
+// containsAnyFold 大小写不敏感地判断 s 是否含 words 中任一词。
+func containsAnyFold(s string, words []string) bool {
+	ls := strings.ToLower(s)
+	for _, w := range words {
+		if strings.Contains(ls, strings.ToLower(w)) {
+			return true
+		}
+	}
+	return false
+}
+
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			Reasoning string `json:"reasoning"`         // OpenAI 新版/部分网关
+			Content          string `json:"content"`
+			Reasoning        string `json:"reasoning"`         // OpenAI 新版/部分网关
 			ReasoningContent string `json:"reasoning_content"` // DeepSeek/GLM 风格
-			ToolCalls []struct {
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Function struct {

@@ -111,7 +111,7 @@ func (a *App) toolsFor(mode string) []Tool {
 	// 各模式都有；组件关掉时为空。
 	todos := a.todoTools()
 	if mode == "assistant" {
-		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), dispatchSubTool(), sendToSessionTool(),
+		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), a.dispatchSubTool(), a.listExpertsTool(), sendToSessionTool(),
 			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	}
 	if mode == "aux" {
@@ -124,7 +124,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
-		snapshotFileTool(), deliverResultTool(), dispatchSubTool(),
+		snapshotFileTool(), deliverResultTool(), a.dispatchSubTool(), a.listExpertsTool(),
 		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -104,25 +105,66 @@ func TestEnvSnapshotDiff(t *testing.T) {
 }
 
 // prompt/env 行不进模型上下文；prompt 行记录 {sys,env}。
-func TestBuildContextSkipsPromptAndEnvRows(t *testing.T) {
+func TestBuildContextEnvRowsAppendOnly(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	sess := &SessionMeta{ID: "sp4", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
 	_ = a.Store.Create(sess)
 	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "你好"), Kind: "chat", CreatedAt: now()})
-	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "ENV-OLD"), Kind: "env", CreatedAt: now()})
-	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", `{"sys":"S","env":"E"}`), Kind: "prompt", CreatedAt: now()})
+	// 首份快照：整份呈现
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user",
+		"# 运行环境快照（最新，取代更早的快照）\n- 当前时间：22:00\n- 权限模式：只读"), Kind: "env", CreatedAt: now()})
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", `{"sys":"S","env":"E","tools":[]}`), Kind: "prompt", CreatedAt: now()})
 	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("assistant", "好的"), Kind: "chat", CreatedAt: now()})
-	msgs := a.buildContext(sess, "SYS", "ENV-NEW")
+	// 第二份快照：时间变、新增一行、其余不变 → 渲染为短「环境更新」
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user",
+		"# 运行环境快照（最新，取代更早的快照）\n- 当前时间：22:05\n- 权限模式：只读\n- 能力：已开启「操作浏览器」"), Kind: "env", CreatedAt: now()})
+
+	msgs := a.buildContext(sess, "SYS")
+	// prompt 行不进上下文；env 行按落位进：[SYS, 你好, 快照整份, 好的, 环境更新]
+	if len(msgs) != 5 || msgs[0].Content != "SYS" || msgs[1].Content != "你好" || msgs[3].Content != "好的" {
+		t.Fatalf("组装序列应为 [SYS, 你好, 快照, 好的, 更新]，得到 %v", dumpContents(msgs))
+	}
+	if full := msgs[2].Text(); !strings.Contains(full, "权限模式：只读") || !strings.Contains(full, "22:00") {
+		t.Fatalf("首份快照应整份呈现: %q", full)
+	}
+	upd := msgs[4].Text()
+	if !strings.Contains(upd, "环境更新") || !strings.Contains(upd, "22:05") || !strings.Contains(upd, "操作浏览器") {
+		t.Fatalf("第二份快照应渲染为含变化行的更新: %q", upd)
+	}
+	if strings.Contains(upd, "22:00") || strings.Contains(upd, "权限模式：只读") {
+		t.Fatalf("更新消息不应重复未变化的行: %q", upd)
+	}
+}
+
+// 摘要折叠掉首份快照后，边界后的首条快照重新整份呈现（完整基线不丢）。
+func TestBuildContextEnvBaseResetsAfterSummary(t *testing.T) {
+	a := newTestApp(t, "rule", 5, 5)
+	sess := &SessionMeta{ID: "sp5", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
+	_ = a.Store.Create(sess)
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "第一轮"), Kind: "chat", CreatedAt: now()})
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "- 快照一：完整内容"), Kind: "env", CreatedAt: now()})
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "第一轮答复"), Kind: "chat", CreatedAt: now()})
+	// 摘要覆盖前 3 条（含首份快照）
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "【摘要】已覆盖"), Kind: "summary", Origin: "manual", CoversUpTo: 3, CreatedAt: now()})
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "第二轮"), Kind: "chat", CreatedAt: now()})
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "- 快照一：完整内容\n- 当前时间：22:10"), Kind: "env", CreatedAt: now()})
+
+	msgs := a.buildContext(sess, "SYS")
+	// [SYS, 摘要, 第二轮, 快照二整份（作为新的完整基线）]
+	if len(msgs) != 4 {
+		t.Fatalf("组装序列应为 4 条，得到 %v", dumpContents(msgs))
+	}
+	if last := msgs[3].Text(); !strings.Contains(last, "快照一：完整内容") || !strings.Contains(last, "22:10") {
+		t.Fatalf("摘要边界后的首条快照应整份呈现而非差分: %q", last)
+	}
+}
+
+func dumpContents(msgs []Message) []string {
+	out := []string{}
 	for _, m := range msgs {
-		if s, ok := m.Content.(string); ok {
-			if s == "ENV-OLD" || strings.Contains(s, `"sys":"S"`) {
-				t.Fatalf("env/prompt 行不应进入模型上下文：%s", s)
-			}
-		}
+		out = append(out, fmt.Sprintf("%s:%.40s", m.Role, m.Text()))
 	}
-	if len(msgs) != 4 || msgs[0].Content != "SYS" || msgs[1].Content != "你好" || msgs[2].Content != "好的" || msgs[3].Content != "ENV-NEW" {
-		t.Fatalf("组装序列应为 [SYS, 你好, 好的, ENV-NEW]，得到 %v", msgs)
-	}
+	return out
 }
 
 // update_goal 状态机：未开目标模式报错；complete/blocked 落库并置状态。

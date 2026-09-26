@@ -11,8 +11,8 @@ const kindChat = "chat" // 正常对话：role=user/assistant/tool；assistant �
 // 上下文注入（发给模型的拼装材料；历史行不进上下文，组装时现场归位）
 const (
 	kindSummary = "summary" // 压缩摘要（origin=auto/manual，covers_up_to 标覆盖边界）
-	kindEnv     = "env"     // 运行环境快照：固定作为尾部 user 消息；技能说明也归这里
-	kindPrompt  = "prompt"  // 每轮拼装快照 {sys,env,tools}；sys=请求最前部，tools=请求体平级数组
+	kindEnv     = "env"     // 运行环境快照：追加式进上下文（首条整份、后续按行差分为短更新，前缀不可变）；技能说明也归这里
+	kindPrompt  = "prompt"  // 每轮拼装快照 {sys,env,tools}，上下文引擎开轮落库（OpenRound）；sys=请求最前部，tools=请求体平级数组
 )
 
 // 系统注入与审计工件
