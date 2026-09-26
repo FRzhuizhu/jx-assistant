@@ -302,16 +302,36 @@ function rememberWorkspace(ws) {
 }
 
 // 侧栏「添加工作目录」：弹选择框并登记。
-// 窄屏统一浮窗告知（原生选择框在宿主机上弹，手机端派不上用场）
+// 窄屏不支持新增（原生选择框在宿主机上弹，手机端派不上用场）：
+// 与排序工具同款——从按钮向下弹出告知卡，再点一下工具或点其他区域即收起
 async function addWorkFolder() {
   if (isNarrow()) {
-    showToast('手机端不支持新增工作目录，请到电脑宽屏上操作', $('wst-add'));
+    toggleWsAddNotice($('wst-add'));
     return;
   }
   const p = await pickWorkFolder();
   if (!p) return;
   rememberWorkspace(p);
   loadSessions();
+}
+
+// 窄屏「添加工作目录」的告知卡：复用排序菜单同一张弹出卡（#ctx-menu）。
+// 收起的两条路：① 按钮二连击在这里自己收（.ws-tools 在外点关闭的豁免名单里，
+// 按钮点击不会触发文档级收起）；② 点卡片外其他区域/点卡片本身由既有的
+// 文档级 closePopovers 与下方 onclick 负责。
+function toggleWsAddNotice(anchor) {
+  const m = ensureCtxMenu();
+  if (!m.classList.contains('hidden') && m.querySelector('.pop-notice')) {
+    closePopovers(); // 已开着这张告知卡：再点一下工具 = 收起
+    return;
+  }
+  m.innerHTML = '<div class="pop-notice">手机端不支持新增工作目录，请到电脑宽屏上操作</div>';
+  m.querySelector('.pop-notice').onclick = () => closePopovers();
+  closePopovers();
+  m.classList.remove('hidden');
+  const r = anchor.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(r.left, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.min(r.bottom + 6, window.innerHeight - m.offsetHeight - 8) + 'px';
 }
 
 // 右键/三个点共用的上下文菜单（动态 popover）

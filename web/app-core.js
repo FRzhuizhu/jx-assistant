@@ -705,37 +705,3 @@ function updateSendKeyHint() {
   if (!el) return;
   el.placeholder = sendKeyHint();
 }
-
-/* ---------- 轻提示浮窗：弹出卡片同族样式，自动消散（纯展示不挡点击） ----------
-   用途：窄屏上替代不可用的本机交互（如新增工作目录），告知去哪里完成操作 */
-let toastTimer = null;
-function showToast(msg, anchor) {
-  let t = document.getElementById('jx-toast');
-  if (!t) {
-    t = document.createElement('div');
-    t.id = 'jx-toast';
-    t.className = 'jx-toast';
-    document.body.appendChild(t);
-  }
-  t.textContent = msg;
-  // 有锚点就贴着锚点上方弹（同弹层菜单的方位感），放不下或无锚点贴屏幕下方居中
-  t.classList.remove('show');
-  t.style.left = t.style.top = '';
-  if (anchor && anchor.getBoundingClientRect) {
-    const r = anchor.getBoundingClientRect();
-    const w = t.offsetWidth, h = t.offsetHeight;
-    let x = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
-    let y = r.top - h - 10;
-    if (y < 8) y = Math.min(r.bottom + 10, window.innerHeight - h - 8);
-    t.style.left = x + 'px';
-    t.style.top = y + 'px';
-  } else {
-    t.style.left = Math.max(8, (window.innerWidth - t.offsetWidth) / 2) + 'px';
-    t.style.top = (window.innerHeight - 72) + 'px';
-  }
-  // 提交起始态再翻到 show，保证重复触发时过渡重播
-  void t.offsetWidth;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
-}
