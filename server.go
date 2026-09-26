@@ -214,6 +214,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/git/unstage", a.handleGitUnstage)
 	mux.HandleFunc("POST /api/git/commit", a.handleGitCommitMsg)
 	mux.HandleFunc("POST /api/git/summarize", a.handleGitSummarize)
+	mux.HandleFunc("POST /api/git/checkout", a.handleGitCheckout)
 	a.Plugins.MountRoutes(a, mux)
 	mux.HandleFunc("GET /", a.handleStatic)
 	return mux

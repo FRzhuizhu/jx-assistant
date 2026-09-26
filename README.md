@@ -550,9 +550,11 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   示例组件，现已并入主程序 `web/app-settings.js`（常规 → 外观 → 点缀色）。
 - 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
   宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
-  `git-panel`（Git 面板——右栏「Git」页签：VSCode 式更改清单（暂存/取消暂存/提交/
-  AI 摘要/逐行 diff）+ 分支泳道图谱（全部分支拓扑、合并分叉、引用徽标、提交详情），
-  宿主半边在 `gitpanel.go`，写边界只有暂存/取消暂存/提交，不做 push/pull/reset/checkout）、
+  `git-panel`（Git 面板——右栏「Git」页签：同屏双区（默认上下堆叠、可切左右分栏、
+  分隔条可拖）——更改区为 VSCode 式清单（暂存/取消暂存/提交/AI 摘要/逐行 diff），
+  图谱区为分支泳道图（全部分支拓扑、合并分叉、引用徽标、HEAD 高亮、提交详情），
+  顶栏可选仓库与切换本地分支。宿主半边在 `gitpanel.go`，写边界只有暂存/取消暂存/
+  提交/切换本地分支，不做 push/pull/reset/discard）、
   `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）。
 
 ## 插件与插件兼容层
@@ -643,7 +645,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |
 | `GET /api/todos/workspaces` | 程序任务可选的工作目录（默认工作区 + 历史会话用过的目录） |
 | `GET /api/git/status` `/diff` `/graph` `/commit` `/branches` | Git 面板读接口（组件 `git-panel`；未启用时 404。graph 为 `--all --topo-order` 的父母哈希+装饰引用，泳道由前端计算） |
-| `POST /api/git/stage` `/unstage` `/commit` `/summarize` | Git 面板写接口：暂存 / 取消暂存 / 提交 / AI 生成提交信息（只生成不提交）。仓库只能选服务端扫描出的候选，路径经 pathspec 校验 |
+| `POST /api/git/stage` `/unstage` `/commit` `/summarize` `/checkout` | Git 面板写接口：暂存 / 取消暂存 / 提交 / AI 生成提交信息（只生成不提交）/ 切换本地分支（分支名限服务端列出的清单，改动会被覆盖时 git 拒绝）。仓库只能选服务端扫描出的候选，路径经 pathspec 校验 |
 | `POST /api/plugins/dsh-speech/polish` | 转写润色（dsh-speech 适配器 Go 半边） |
 | `GET /` | 内嵌前端页面（按开关注入插件资产） |
 

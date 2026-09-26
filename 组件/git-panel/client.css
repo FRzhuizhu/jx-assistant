@@ -1,36 +1,34 @@
 /* 组件：Git 面板 —— 浏览器半边样式。全部选择器收敛在 .gitp 前缀下，配色用
-   主界面同一批 CSS 变量（亮色主题），不加全局副作用。 */
+   主界面同一批 CSS 变量（亮色主题），不加全局副作用。
+   版面：顶栏（仓库/分支/布局/刷新）+ 同屏双区（更改 | 图谱），默认上下堆叠，
+   可切左右分栏；--gitp-ratio 是更改区的占比（20..80），分隔条拖动改写。 */
 
 .gitp { min-height: 0; font-size: 13px; }
 
-/* ---------- 顶栏：仓库下拉 + 分支徽标 + 刷新 ---------- */
+/* ---------- 顶栏：仓库下拉 + 分支下拉 + 布局 + 刷新 ---------- */
 .gitp-top {
   height: 42px; flex-shrink: 0;
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 6px;
   padding: 0 10px 0 12px; border-bottom: 1px solid var(--border-2);
 }
-.gitp-repo {
-  flex: 1; min-width: 0; max-width: 46%;
-  height: 28px; padding: 0 6px;
+.gitp-repo, .gitp-branch-sel {
+  min-width: 0; height: 28px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 7px;
   background: var(--bg); color: var(--text); font-size: 12.5px;
   text-overflow: ellipsis;
 }
-.gitp-branch { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
-.gitp-branch-name {
-  font-weight: 600; font-size: 12.5px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
-.gitp-ab { color: var(--accent); font-size: 12px; white-space: nowrap; }
+.gitp-repo { flex: 5; max-width: 42%; }
+.gitp-branch-sel { flex: 4; }
+.gitp-branch-sel:disabled { color: var(--text-3); background: var(--gray-bg); }
 .gitp-icon-btn {
   border: none; background: none; color: var(--text-2); cursor: pointer;
-  font-size: 15px; padding: 4px 8px; border-radius: 7px; flex-shrink: 0;
+  font-size: 15px; padding: 4px 7px; border-radius: 7px; flex-shrink: 0;
 }
 .gitp-icon-btn:hover { background: var(--hover); color: var(--text); }
 
 /* ---------- 状态条（错误 / 提示 / 未连仓库） ---------- */
 .gitp-strip {
-  flex-shrink: 0; padding: 7px 12px; font-size: 12.5px; line-height: 1.5;
+  flex-shrink: 0; padding: 6px 12px; font-size: 12.5px; line-height: 1.5;
   border-bottom: 1px solid var(--border-2);
 }
 .gitp-strip.hidden { display: none; }
@@ -38,51 +36,86 @@
 .gitp-strip.warn { color: var(--amber); background: var(--amber-bg); }
 .gitp-strip.note { color: var(--green); background: var(--green-bg); }
 
-/* ---------- 内页签 ---------- */
-.gitp-tabs {
-  flex-shrink: 0; display: flex; gap: 4px;
-  padding: 6px 12px 0; border-bottom: 1px solid var(--border-2);
-}
-.gitp-tab {
-  border: none; background: none; color: var(--text-2); cursor: pointer;
-  font-size: 12.5px; padding: 5px 10px; border-radius: 7px 7px 0 0;
-  border-bottom: 2px solid transparent;
-}
-.gitp-tab:hover { background: var(--hover); }
-.gitp-tab.active { color: var(--accent); font-weight: 600; border-bottom-color: var(--accent); }
-.gitp-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.gitp-page.hidden { display: none; }
+/* ---------- 同屏双区：更改 | 图谱 ---------- */
+.gitp-split { flex: 1; min-height: 0; display: flex; }
+.gitp-split.vertical { flex-direction: column; }
+.gitp-split.horizontal { flex-direction: row; }
+.gitp-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+/* 更改区按 --gitp-ratio 占比，图谱区吃剩余 */
+.gitp-split.vertical .gitp-pane-changes { flex: 0 0 calc(var(--gitp-ratio, 46) * 1%); }
+.gitp-split.vertical .gitp-pane-graph { flex: 1; }
+.gitp-split.horizontal .gitp-pane-changes { flex: 0 0 calc(var(--gitp-ratio, 46) * 1%); }
+.gitp-split.horizontal .gitp-pane-graph { flex: 1; }
+.gitp-split.vertical .gitp-pane-changes { min-height: 140px; }
+.gitp-split.horizontal .gitp-pane-changes { min-width: 140px; }
+.gitp-split.horizontal .gitp-pane-graph { min-width: 150px; }
 
-/* ---------- 更改页：提交区 ---------- */
-.gitp-commitbar { flex-shrink: 0; padding: 10px 12px; border-bottom: 1px solid var(--border-2); }
+/* 分隔条：上下布局是横条（row-resize），左右布局是竖条（col-resize） */
+.gitp-divider { flex: none; position: relative; }
+.gitp-split.vertical .gitp-divider {
+  height: 7px; margin: 0 0; cursor: row-resize;
+  border-top: 1px solid var(--border-2); border-bottom: 1px solid var(--border-2);
+}
+.gitp-split.horizontal .gitp-divider {
+  width: 7px; cursor: col-resize;
+  border-left: 1px solid var(--border-2); border-right: 1px solid var(--border-2);
+}
+.gitp-divider::after {
+  content: ""; position: absolute; border-radius: 2px; background: transparent;
+  transition: background .15s;
+}
+.gitp-split.vertical .gitp-divider::after {
+  left: 50%; top: 2px; width: 34px; height: 3px; transform: translateX(-50%);
+}
+.gitp-split.horizontal .gitp-divider::after {
+  top: 50%; left: 2px; height: 34px; width: 3px; transform: translateY(-50%);
+}
+.gitp-divider:hover::after, .gitp-divider.dragging::after { background: var(--accent); }
+
+/* 区头（对齐 VSCode 折叠节的节标题） */
+.gitp-pane-head {
+  flex-shrink: 0; display: flex; align-items: center; gap: 7px;
+  padding: 6px 12px 4px;
+}
+.gitp-pane-title { font-weight: 600; font-size: 12.5px; color: var(--text-2); }
+.gitp-pane-badge {
+  min-width: 17px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--chip); color: var(--text-2); font-size: 10.5px; line-height: 16px;
+  text-align: center;
+}
+.gitp-pane-badge:empty { display: none; }
+.gitp-pane-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---------- 更改区：提交区 ---------- */
+.gitp-commitbar { flex-shrink: 0; padding: 8px 12px; border-bottom: 1px solid var(--border-2); }
 .gitp-commit-msg {
-  width: 100%; resize: none; padding: 7px 9px;
+  width: 100%; resize: none; padding: 6px 9px;
   border: 1px solid var(--border); border-radius: 8px;
   font: inherit; font-size: 12.5px; background: var(--bg); color: var(--text);
 }
 .gitp-commit-msg:focus { outline: none; border-color: var(--accent); }
-.gitp-commit-btns { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+.gitp-commit-btns { display: flex; gap: 8px; margin-top: 7px; justify-content: flex-end; }
 .gitp-btn {
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
-  font-size: 12.5px; padding: 5px 12px; border-radius: 7px; cursor: pointer;
+  font-size: 12.5px; padding: 4px 12px; border-radius: 7px; cursor: pointer;
 }
 .gitp-btn:hover { background: var(--hover); }
 .gitp-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .gitp-btn.primary:hover { background: var(--accent-hover); }
 .gitp-btn:disabled { opacity: .55; cursor: default; }
 
-/* ---------- 更改页：文件分组 ---------- */
-.gitp-groups { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 12px; }
-.gitp-group { margin-top: 6px; }
+/* ---------- 更改区：文件分组 ---------- */
+.gitp-groups { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
+.gitp-group { margin-top: 4px; }
 .gitp-group-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 12px 3px; position: sticky; top: 0;
+  padding: 5px 12px 3px; position: sticky; top: 0;
   background: var(--bg); z-index: 1;
 }
 .gitp-group-title { color: var(--text-2); font-size: 12px; font-weight: 600; }
 .gitp-file {
   display: flex; align-items: center; gap: 7px;
-  padding: 4px 12px; cursor: pointer; min-width: 0;
+  padding: 3px 12px; cursor: pointer; min-width: 0;
 }
 .gitp-file:hover { background: var(--hover); }
 .gitp-file:hover .row-act { visibility: visible; }
@@ -104,7 +137,7 @@
 }
 .gitp-mini-btn:hover { background: var(--hover); color: var(--text); }
 .row-act { visibility: hidden; padding: 1px 8px; }
-.gitp-clean { padding: 22px 16px; color: var(--text-3); text-align: center; font-size: 12.5px; }
+.gitp-clean { padding: 18px 16px; color: var(--text-3); text-align: center; font-size: 12.5px; }
 
 /* ---------- diff 逐行配色（GitHub 亮色系） ---------- */
 .gitp-diff {
@@ -125,29 +158,29 @@
 .gitp-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .gitp-detail-head {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; border-bottom: 1px solid var(--border-2); min-width: 0;
+  padding: 7px 12px; border-bottom: 1px solid var(--border-2); min-width: 0;
 }
 .gitp-detail-title {
   font-weight: 600; font-size: 12.5px; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.gitp-detail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 0 16px; }
+.gitp-detail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 16px; }
 .gitp-commit-meta { padding: 2px 12px 6px; }
 .gitp-commit-msg {
-  margin: 0 12px 8px; padding: 8px 10px;
+  margin: 0 12px 8px; padding: 7px 10px;
   font-size: 12.5px; white-space: pre-wrap;
   background: var(--code-bg); border: 1px solid var(--border-2); border-radius: 8px;
 }
 .gitp-cfiles {
   margin: 0 12px 8px; border: 1px solid var(--border-2); border-radius: 8px; overflow: hidden;
 }
-.gitp-cfiles .gitp-file { padding: 4px 8px; }
+.gitp-cfiles .gitp-file { padding: 3px 8px; }
 
 /* 提交 diff 的分段（按 diff --git 切） */
 .gitp-psec { margin: 0 12px 8px; border: 1px solid var(--border-2); border-radius: 8px; overflow: hidden; }
 .gitp-psec-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 5px 9px; cursor: pointer; background: var(--hover);
+  padding: 4px 9px; cursor: pointer; background: var(--hover);
   font-size: 12px;
 }
 .gitp-psec-head:hover { background: var(--active); }
@@ -157,17 +190,17 @@
 .gitp-psec-body.hidden { display: none; }
 .gitp-psec.flash { outline: 2px solid var(--accent); }
 
-/* ---------- 图谱页 ---------- */
+/* ---------- 图谱区 ---------- */
 .gitp-branchline { flex-shrink: 0; border-bottom: 1px solid var(--border-2); }
 .gitp-branchline-head {
   width: 100%; display: flex; align-items: center; gap: 7px;
-  border: none; background: none; padding: 8px 12px; cursor: pointer;
+  border: none; background: none; padding: 6px 12px; cursor: pointer;
   font-size: 12.5px; color: var(--text); text-align: left; min-width: 0;
 }
 .gitp-branchline-head:hover { background: var(--hover); }
 .gitp-branch-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .gitp-branchline-head .gitp-caret { margin-left: auto; color: var(--text-3); }
-.gitp-branchlist { padding: 0 8px 8px; max-height: 180px; overflow-y: auto; }
+.gitp-branchlist { padding: 0 8px 8px; max-height: 150px; overflow-y: auto; }
 .gitp-branch-row {
   display: flex; align-items: center; gap: 7px;
   padding: 3px 6px; border-radius: 6px; font-size: 12px; min-width: 0;
@@ -183,16 +216,21 @@
 .gitp-chip.tag { color: var(--amber); background: var(--amber-bg); border-color: transparent; }
 .gitp-chip.remote { color: var(--text-2); }
 
-.gitp-graph-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 14px; }
+.gitp-graph-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
 .gitp-crow {
-  display: flex; align-items: center; min-height: 46px; cursor: pointer;
+  display: flex; align-items: center; height: 26px; cursor: pointer;
 }
 .gitp-crow:hover { background: var(--hover); }
 .gitp-lane { flex-shrink: 0; display: block; }
-.gitp-cinfo { flex: 1; min-width: 0; padding-right: 10px; }
-.gitp-cl1 { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.gitp-csubject {
-  font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+.gitp-cinfo {
+  flex: 1; min-width: 0; padding-right: 10px;
+  display: flex; align-items: center; gap: 5px;
 }
-.gitp-cl2 { color: var(--text-3); font-size: 11px; margin-top: 1px; }
-.gitp-loadmore { display: block; margin: 10px auto 4px; }
+.gitp-csubject {
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.gitp-cmeta {
+  margin-left: auto; flex-shrink: 0; max-width: 42%;
+  color: var(--text-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gitp-loadmore { display: block; margin: 8px auto 4px; }

@@ -2,6 +2,9 @@
   "id": "git-panel",
   "name": "Git 面板",
   "version": "1.0.0",
-  "description": "右侧栏多一个 Git 页签：识别会话工作区所在的 git 仓库，VSCode 式源代码管理（暂存 / 取消暂存 / 提交 / AI 生成提交摘要 / 逐行 diff）加分泳道图谱（全部分支拓扑图，合并分叉与引用徽标一目了然，点开提交看文件与 diff，AI 干完活自动刷新）。写操作只有暂存、取消暂存与提交，不碰 push/pull/reset/checkout。宿主半边见 gitpanel.go。",
-  "client": { "js": "client.js", "css": "client.css" }
+  "description": "右侧栏多一个 Git 页签：同屏双区（上下堆叠可切左右分栏，分隔条可拖）——更改区：VSCode 式清单（暂存/取消暂存/提交/AI 摘要/逐行 diff）；图谱区：分支泳道图（全部分支拓扑、合并分叉、引用徽标、HEAD 高亮、提交详情）。顶栏可选仓库与切换本地分支（冲突时 git 拒绝）。写操作：暂存、取消暂存、提交、切换本地分支；不做 push/pull/reset/discard。宿主半边见 gitpanel.go。",
+  "client": {
+    "js": "client.js",
+    "css": "client.css"
+  }
 }

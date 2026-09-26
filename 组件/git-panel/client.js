@@ -1,21 +1,23 @@
 /* 组件：Git 面板 —— 浏览器半边。
  *
- * 右侧栏多一个「Git」页签（原生视图，注册进 app-right.js 的 rpViews，不用 iframe）：
- *   - 顶栏：仓库候选下拉 + 当前分支徽标（↑领先 ↓落后）+ 刷新；
- *   - 「更改」页：VSCode 源代码管理式四组文件清单（冲突/已暂存/未暂存/未跟踪，
- *     状态字母配色），逐文件与整组暂存/取消暂存，提交信息输入框 + AI 摘要 + 提交，
- *     点文件看逐行 diff（大 diff 先渲染 400 行可展开）；
- *   - 「图谱」页：分支泳道图（git log --all --topo-order 的父母哈希在前端算泳道，
- *     SVG 贝塞尔曲线画合并分叉，引用徽标标注分支/远程/标签，HEAD 高亮），
- *     可展开本地/远程分支清单，点提交看完整信息、文件清单与分文件 diff，可加载更早；
+ * 右侧栏多一个「Git」页签（原生视图，注册进 app-right.js 的 rpViews，不用 iframe）。
+ * 版面同屏双区（对齐 VSCode 源代码管理 + 图形的上下结构）：
+ *   - 顶栏：仓库候选下拉 + 分支下拉（切换本地分支，冲突时 git 拒绝）+ 布局切换 + 刷新；
+ *   - 更改区：提交信息框（AI 摘要 / 提交）+ 四组文件清单（冲突/已暂存/未暂存/未跟踪），
+ *     逐文件与整组暂存/取消暂存，点文件看逐行 diff（大 diff 先渲染 400 行可展开）；
+ *   - 图谱区：分支泳道图（git log --all --topo-order 的父母哈希在前端算泳道，
+ *     SVG 贝塞尔曲线画合并分叉，引用徽标标注分支/远程/标签，HEAD 高亮，紧凑单行），
+ *     分支行可展开本地/远程分支清单，点提交看完整信息、文件清单与分文件 diff，可加载更早；
+ *   - 布局：默认上下堆叠，可一键切左右分栏；分隔条可拖，比例与方向落盘记忆；
  *   - 跟随当前会话的工作区（JX 'session:open' 换仓库，'message:done' 自动刷新——
- *     AI 在对话里做的提交/合并，图谱随后就变）；
- *   - 面板打开 / 切仓库 / 页面重新可见时刷新一次，另有 12 秒轻量轮询（仅 status）。
+ *     AI 在对话里做的提交/合并，图谱随后就变）；面板打开 / 切仓库 / 页面重新可见
+ *     时刷新一次，另有 12 秒轻量轮询（仅 status）。
  *
  * 安全与边界（与宿主半边 gitpanel.go 对应）：仓库只能选宿主扫描出的候选；
- * 写操作只有暂存 / 取消暂存 / 提交（AI 摘要只生成不提交）；不做 push/pull/
- * reset/checkout/丢弃。渲染全部走文本节点与 createTextNode，不用 innerHTML 拼
- * 仓库内容（防提交信息/路径里的 HTML）。dispose 撤掉视图、定时器与事件监听。
+ * 写操作：暂存 / 取消暂存 / 提交 / 切换本地分支（分支名限宿主列出的清单，
+ * 有覆盖风险的切换被 git 拒绝）；AI 摘要只生成不提交；不做 push/pull/reset/discard。
+ * 渲染全部走文本节点与 createTextNode，不用 innerHTML 拼仓库内容。
+ * dispose 撤掉视图、定时器与事件监听。
  */
 (function () {
   if (!window.CX) return;
@@ -26,15 +28,12 @@
   const DIFF_FIRST_LINES = 400;
   // 泳道配色（与对话区亮色主题协调；下标 = 泳道色序号轮转）
   const PAL = ['#4d6bfe', '#e08a1e', '#1f9d55', '#b05bd6', '#0ea5b7', '#d6455d', '#8a7a2a', '#6b7684'];
-  const LANE_W = 13, ROW_H = 46, DOT_R = 4;
+  const LANE_W = 12, ROW_H = 26, DOT_R = 3.5;
   const LETTER_CLS = { M: 'm', A: 'a', D: 'd', U: 'd', R: 'r', C: 'c', T: 'm', '?': 'a' };
 
   /* ---------- 本地小工具 ---------- */
 
   const $id = (id) => document.getElementById(id);
-  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -76,17 +75,18 @@
 
   const S = {
     session: null,        // 跟随的会话 id（null=首页）
-    repo: lsGet('jx.gitp.repo', ''),
+    repo: '',
     repos: [], branch: '', oid: '', upstream: '', ahead: 0, behind: 0,
     groups: { staged: [], unstaged: [], untracked: [], conflicted: [] },
     reason: '', error: '', note: '',
-    tab: 'changes',       // changes | graph
-    detail: null,         // {type:'file', path, staged} | {type:'commit', hash}
+    layout: 'vertical',   // vertical=上下 | horizontal=左右
+    ratio: 46,            // 更改区占 split 的百分比（20..80）
+    detail: null,         // 更改区：{type:'file', path, staged}
     diff: null, diffShowAll: false,
-    commit: null,         // 点开的提交详情（图谱页）
+    commit: null,         // 图谱区：点开的提交详情
     commits: [], commitsMore: false, commitsLoading: false,
     branches: null, branchesOpen: false,
-    timer: null, inFlight: 0,
+    timer: null,
   };
 
   /* ---------- 泳道计算：单遍状态机（思路对齐 VSCode 内置源代码管理图谱） ----------
@@ -154,7 +154,7 @@
     root = el('div', 'rp-view gitp');
     root.id = 'rp-view-git';
 
-    /* 顶栏：仓库下拉 + 分支徽标 + 刷新 */
+    /* 顶栏：仓库 + 分支 + 布局 + 刷新 */
     const top = el('div', 'gitp-top');
     const repoSel = el('select', 'gitp-repo');
     repoSel.id = 'gitp-repo';
@@ -165,13 +165,20 @@
       S.commits = []; S.branches = null; S.detail = null; S.commit = null;
       refreshAll();
     };
+    top.appendChild(repoSel);
+    const brSel = el('select', 'gitp-branch-sel');
+    brSel.id = 'gitp-branch-sel';
+    brSel.title = '切换本地分支（未提交改动会被覆盖时 git 会拒绝）';
+    brSel.onchange = () => checkoutBranch(brSel.value);
+    top.appendChild(brSel);
+    const layoutBtn = el('button', 'gitp-icon-btn gitp-layout-btn', S.layout === 'vertical' ? '⇕' : '⇔');
+    layoutBtn.id = 'gitp-layout-btn';
+    layoutBtn.title = '切换布局：上下堆叠 / 左右分栏（当前：' + (S.layout === 'vertical' ? '上下' : '左右') + '）';
+    layoutBtn.onclick = toggleLayout;
+    top.appendChild(layoutBtn);
     const refresh = el('button', 'gitp-icon-btn', '⟳');
     refresh.title = '刷新';
     refresh.onclick = refreshAll;
-    top.appendChild(repoSel);
-    const branchBadge = el('span', 'gitp-branch');
-    branchBadge.id = 'gitp-branch-badge';
-    top.appendChild(branchBadge);
     top.appendChild(refresh);
     root.appendChild(top);
 
@@ -180,40 +187,88 @@
     strip.id = 'gitp-strip';
     root.appendChild(strip);
 
-    /* 内页签 */
-    const tabs = el('div', 'gitp-tabs');
-    for (const [key, name] of [['changes', '更改'], ['graph', '图谱']]) {
-      const b = el('button', 'gitp-tab', name);
-      b.dataset.tab = key;
-      b.onclick = () => {
-        S.tab = key;
-        S.detail = null; S.commit = null;
-        renderTabs();
-        render();
-        if (key === 'graph' && !S.commits.length) loadGraph(true);
-        if (key === 'graph') loadBranches();
-      };
-      tabs.appendChild(b);
-    }
-    root.appendChild(tabs);
+    /* 同屏双区：更改（上/左） + 图谱（下/右），分隔条可拖 */
+    const split = el('div', 'gitp-split ' + S.layout);
+    split.id = 'gitp-split';
+    split.style.setProperty('--gitp-ratio', S.ratio);
 
-    /* 更改页 */
-    const changes = el('div', 'gitp-page');
-    changes.id = 'gitp-changes';
-    root.appendChild(changes);
+    const paneCh = el('div', 'gitp-pane gitp-pane-changes');
+    const chHead = el('div', 'gitp-pane-head');
+    chHead.appendChild(el('span', 'gitp-pane-title', '更改'));
+    chHead.appendChild(el('span', 'gitp-pane-badge', ''));
+    paneCh.appendChild(chHead);
+    const chBody = el('div', 'gitp-pane-body');
+    chBody.id = 'gitp-changes';
+    paneCh.appendChild(chBody);
 
-    /* 图谱页 */
-    const graph = el('div', 'gitp-page hidden');
-    graph.id = 'gitp-graph';
-    root.appendChild(graph);
+    const divider = el('div', 'gitp-divider');
+    divider.id = 'gitp-divider';
+    divider.title = '拖动调整两区大小（双击恢复）';
 
+    const paneGr = el('div', 'gitp-pane gitp-pane-graph');
+    const grBody = el('div', 'gitp-pane-body');
+    grBody.id = 'gitp-graph';
+    paneGr.appendChild(grBody);
+
+    split.appendChild(paneCh);
+    split.appendChild(divider);
+    split.appendChild(paneGr);
+    root.appendChild(split);
+    setupDivider(split, divider);
     return root;
   }
 
-  function renderTabs() {
-    root.querySelectorAll('.gitp-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === S.tab));
-    $id('gitp-changes').classList.toggle('hidden', S.tab !== 'changes');
-    $id('gitp-graph').classList.toggle('hidden', S.tab !== 'graph');
+  /* 布局切换与分隔条拖拽；方向与比例落盘记忆 */
+  function applyLayout() {
+    const split = $id('gitp-split');
+    if (!split) return;
+    split.classList.toggle('vertical', S.layout === 'vertical');
+    split.classList.toggle('horizontal', S.layout === 'horizontal');
+    split.style.setProperty('--gitp-ratio', S.ratio);
+    const btn = $id('gitp-layout-btn');
+    if (btn) {
+      btn.textContent = S.layout === 'vertical' ? '⇕' : '⇔';
+      btn.title = '切换布局：上下堆叠 / 左右分栏（当前：' + (S.layout === 'vertical' ? '上下' : '左右') + '）';
+    }
+  }
+
+  function toggleLayout() {
+    S.layout = S.layout === 'vertical' ? 'horizontal' : 'vertical';
+    lsSet('jx.gitp.split', JSON.stringify({ mode: S.layout, ratio: S.ratio }));
+    applyLayout();
+  }
+
+  function setupDivider(split, divider) {
+    let dragging = false, rect = null;
+    divider.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      rect = split.getBoundingClientRect();
+      divider.setPointerCapture(e.pointerId);
+      divider.classList.add('dragging');
+      e.preventDefault();
+    });
+    divider.addEventListener('pointermove', (e) => {
+      if (!dragging || !rect) return;
+      let pct = S.layout === 'vertical'
+        ? (e.clientY - rect.top) / rect.height * 100
+        : (e.clientX - rect.left) / rect.width * 100;
+      S.ratio = Math.round(Math.min(80, Math.max(20, pct)));
+      split.style.setProperty('--gitp-ratio', S.ratio);
+    });
+    const done = () => {
+      if (!dragging) return;
+      dragging = false;
+      divider.classList.remove('dragging');
+      lsSet('jx.gitp.split', JSON.stringify({ mode: S.layout, ratio: S.ratio }));
+    };
+    divider.addEventListener('pointerup', done);
+    divider.addEventListener('pointercancel', done);
+    divider.addEventListener('dblclick', () => {
+      S.ratio = 46;
+      split.style.setProperty('--gitp-ratio', S.ratio);
+      lsSet('jx.gitp.split', JSON.stringify({ mode: S.layout, ratio: S.ratio }));
+    });
   }
 
   /* 状态条：error（红，持续到下次成功）> note（绿，短暂）> reason（黄，没仓库） */
@@ -234,7 +289,7 @@
     }
   }
 
-  /* ---------- 渲染：顶栏 ---------- */
+  /* ---------- 渲染：顶栏（仓库 + 分支） ---------- */
 
   function renderTop() {
     const sel = $id('gitp-repo');
@@ -248,23 +303,65 @@
     sel.value = S.repo;
     if (!S.repo && S.repos.length) sel.value = S.repos[0].path;
 
-    const badge = $id('gitp-branch-badge');
-    badge.innerHTML = '';
-    if (!S.repo) return;
-    const name = S.branch || '(游离 HEAD)';
-    const b = el('span', 'gitp-branch-name', name);
-    b.title = S.upstream ? S.branch + ' → ' + S.upstream : name;
-    badge.appendChild(b);
-    if (S.ahead > 0 || S.behind > 0) {
-      badge.appendChild(el('span', 'gitp-ab', (S.ahead ? '↑' + S.ahead : '') + (S.behind ? ' ↓' + S.behind : '')));
+    /* 分支下拉：本地分支清单（切到未加载时先只有当前分支一项） */
+    const br = $id('gitp-branch-sel');
+    br.innerHTML = '';
+    if (!S.repo) {
+      br.appendChild(el('option', null, '分支'));
+      br.disabled = true;
+      return;
+    }
+    const locals = (S.branches && S.branches.locals) || [];
+    if (S.branch && !locals.some((b) => b.name === S.branch)) {
+      const o = el('option', null, S.branch);
+      o.value = S.branch;
+      br.appendChild(o);
+    }
+    for (const b of locals) {
+      const o = el('option', null, b.name + (b.current ? ' ✓' : '') + (b.ahead ? ' ↑' + b.ahead : '') + (b.behind ? ' ↓' + b.behind : ''));
+      o.value = b.name;
+      o.title = b.short + ' ' + (b.subject || '');
+      br.appendChild(o);
+    }
+    if (!br.children.length) br.appendChild(el('option', null, S.branch || '(无提交)'));
+    br.value = S.branch || '';
+    br.disabled = locals.length === 0;
+  }
+
+  /* 切换本地分支：确认后调宿主 checkout（分支名校验与冲突拒绝在服务端） */
+  async function checkoutBranch(name) {
+    if (!name || name === S.branch) {
+      renderTop(); // 复位下拉显示
+      return;
+    }
+    let ok = true;
+    if (typeof confirmCenter === 'function') {
+      ok = await confirmCenter('切换到分支「' + name + '」？工作区会切到该分支（未提交的改动一并带过去；有冲突时 git 会拒绝）。', false);
+    }
+    if (!ok) { renderTop(); return; }
+    try {
+      const d = await gitPost('checkout', { branch: name });
+      S.error = '';
+      S.note = d.summary || '已切换到 ' + name;
+      S.commits = []; S.detail = null; S.commit = null;
+      await refreshAll();
+    } catch (e) {
+      S.error = e.message;
+      renderStrip();
+      renderTop(); // 切换失败：下拉回到当前分支
     }
   }
 
-  /* ---------- 渲染：更改页 ---------- */
+  /* ---------- 渲染：更改区 ---------- */
 
   function renderChanges() {
     const box = $id('gitp-changes');
+    if (!box) return;
     box.innerHTML = '';
+    const head = root.querySelector('.gitp-pane-changes .gitp-pane-badge');
+    const total = S.groups.staged.length + S.groups.unstaged.length + S.groups.untracked.length + S.groups.conflicted.length;
+    if (head) head.textContent = total ? String(total) : '';
+
     if (S.detail) { box.appendChild(renderFileDetail()); return; }
 
     /* 提交区（VSCode SCM 式：消息框在清单上方） */
@@ -309,12 +406,12 @@
     const mkGroup = (title, list, kind) => {
       if (!list.length) return;
       const g = el('div', 'gitp-group');
-      const head = el('div', 'gitp-group-head');
-      head.appendChild(el('span', 'gitp-group-title', title + '（' + list.length + '）'));
+      const ghead = el('div', 'gitp-group-head');
+      ghead.appendChild(el('span', 'gitp-group-title', title + '（' + list.length + '）'));
       const all = el('button', 'gitp-mini-btn', kind === 'stage' ? '全部暂存 +' : '全部取消暂存 −');
       all.onclick = () => act(kind, list.map((f) => f.path));
-      head.appendChild(all);
-      g.appendChild(head);
+      ghead.appendChild(all);
+      g.appendChild(ghead);
       for (const f of list) g.appendChild(fileRow(f, kind));
       body.appendChild(g);
     };
@@ -323,8 +420,7 @@
     mkGroup('未暂存的更改', S.groups.unstaged, 'stage');
     mkGroup('未跟踪', S.groups.untracked, 'stage');
     if (!body.children.length) {
-      const clean = el('div', 'gitp-clean', '工作区干净，没有待提交的改动');
-      body.appendChild(clean);
+      body.appendChild(el('div', 'gitp-clean', '工作区干净，没有待提交的改动'));
     }
     box.appendChild(body);
   }
@@ -351,11 +447,11 @@
       await gitPost(kind, { paths });
       S.error = '';
       await loadStatus();
-      if (S.commits.length || S.tab === 'graph') await loadGraph(true);
+      await loadGraph(true);
     } catch (e) { S.error = e.message; renderStrip(); }
   }
 
-  /* ---------- 渲染：文件 diff 详情 ---------- */
+  /* ---------- 渲染：文件 diff 详情（更改区内） ---------- */
 
   async function openFileDiff(path, staged) {
     S.detail = { type: 'file', path, staged };
@@ -372,15 +468,10 @@
     const box = el('div', 'gitp-detail');
     const head = el('div', 'gitp-detail-head');
     const back = el('button', 'gitp-mini-btn', '← 返回');
-    back.onclick = () => { S.detail = null; S.commit = null; render(); };
+    back.onclick = () => { S.detail = null; renderChanges(); };
     head.appendChild(back);
-    if (d.type === 'file') {
-      head.appendChild(el('span', 'gitp-detail-title', d.path));
-      head.appendChild(el('span', 'gitp-dir', d.staged ? '已暂存的改动' : '工作区的改动'));
-    } else {
-      head.appendChild(el('span', 'gitp-detail-title', d.subject));
-      head.appendChild(el('span', 'gitp-dir', d.short + ' · ' + d.author + ' · ' + relTime(d.date)));
-    }
+    head.appendChild(el('span', 'gitp-detail-title', d.path));
+    head.appendChild(el('span', 'gitp-dir', d.staged ? '已暂存的改动' : '工作区的改动'));
     box.appendChild(head);
     const body = el('div', 'gitp-detail-body');
     if (!S.diff) {
@@ -418,27 +509,29 @@
       more.textContent = truncated
         ? 'diff 过大已截断，已展示前 ' + limit + ' 行'
         : '还有 ' + (all.length - limit) + ' 行，点击全部展开';
-      more.onclick = () => { S.diffShowAll = true; render(); };
+      more.onclick = () => { S.diffShowAll = true; renderChanges(); };
       wrap.appendChild(more);
     }
     return wrap;
   }
 
-  /* ---------- 渲染：图谱页 ---------- */
+  /* ---------- 渲染：图谱区 ---------- */
 
   function renderGraph() {
     const box = $id('gitp-graph');
+    if (!box) return;
     box.innerHTML = '';
     if (S.commit) { box.appendChild(commitDetail()); return; }
 
-    /* 分支条：当前分支 + 可展开清单 */
+    /* 分支行：当前分支 + 可展开清单 */
     const bl = el('div', 'gitp-branchline');
     const cur = el('button', 'gitp-branchline-head');
     cur.appendChild(el('span', 'gitp-branch-dot'));
     cur.appendChild(el('span', null, S.branch || '(游离 HEAD)'));
     if (S.upstream) cur.appendChild(el('span', 'gitp-dir', '→ ' + S.upstream));
-    const bn = S.branches ? S.branches.locals.length + '/' + S.branches.remotes.length : '';
-    cur.appendChild(el('span', 'gitp-dir', bn ? '　' + S.branches.locals.length + ' 本地 · ' + S.branches.remotes.length + ' 远程' : ''));
+    if (S.branches) {
+      cur.appendChild(el('span', 'gitp-dir', '　' + S.branches.locals.length + ' 本地 · ' + S.branches.remotes.length + ' 远程'));
+    }
     cur.appendChild(el('span', 'gitp-caret', S.branchesOpen ? '▾' : '▸'));
     cur.onclick = () => { S.branchesOpen = !S.branchesOpen; renderGraph(); };
     bl.appendChild(cur);
@@ -465,7 +558,7 @@
     }
     box.appendChild(bl);
 
-    /* 泳道图 */
+    /* 泳道图（紧凑单行：徽标 + 主题 + 右侧暗色作者·时间） */
     const scroll = el('div', 'gitp-graph-scroll');
     if (!S.commits.length) {
       scroll.appendChild(el('div', 'gitp-clean', S.commitsLoading ? '加载中…' : '这个仓库还没有提交'));
@@ -481,6 +574,7 @@
     S.commits.forEach((c, i) => {
       const row = el('div', 'gitp-crow');
       row.dataset.hash = c.hash;
+      row.title = c.subject + '\n' + c.author + ' · ' + c.hash.slice(0, 8) + ' · ' + (c.date || '').slice(0, 19).replace('T', ' ');
       const svg = document.createElementNS(SVGNS, 'svg');
       svg.setAttribute('width', svgW);
       svg.setAttribute('height', ROW_H);
@@ -511,7 +605,7 @@
         const ring = document.createElementNS(SVGNS, 'circle');
         ring.setAttribute('cx', x(lr.node.col));
         ring.setAttribute('cy', ROW_H / 2);
-        ring.setAttribute('r', DOT_R + 3);
+        ring.setAttribute('r', DOT_R + 2.5);
         ring.setAttribute('fill', 'none');
         ring.setAttribute('stroke', PAL[lr.node.color % PAL.length]);
         ring.setAttribute('stroke-width', '1.5');
@@ -520,14 +614,11 @@
       row.appendChild(svg);
 
       const info = el('div', 'gitp-cinfo');
-      const l1 = el('div', 'gitp-cl1');
       for (const ref of c.refs || []) {
-        l1.appendChild(el('span', 'gitp-chip ' + ref.kind + (ref.current ? ' cur' : ''), ref.name));
+        info.appendChild(el('span', 'gitp-chip ' + ref.kind + (ref.current ? ' cur' : ''), ref.name));
       }
-      l1.appendChild(el('span', 'gitp-csubject', c.subject));
-      info.appendChild(l1);
-      const l2 = el('div', 'gitp-cl2', c.author + ' · ' + c.hash.slice(0, 8) + ' · ' + relTime(c.date));
-      info.appendChild(l2);
+      info.appendChild(el('span', 'gitp-csubject', c.subject));
+      info.appendChild(el('span', 'gitp-cmeta', c.author + ' · ' + relTime(c.date)));
       row.appendChild(info);
       row.onclick = () => openCommit(c);
       scroll.appendChild(row);
@@ -565,11 +656,9 @@
     head.appendChild(el('span', 'gitp-detail-title', c.subject));
     box.appendChild(head);
 
-    const meta = el('div', 'gitp-commit-meta');
-    meta.appendChild(el('div', 'gitp-cl2', c.author + ' · ' + c.hash.slice(0, 8) + ' · ' + relTime(c.date)));
-    box.appendChild(meta);
-
     const body = el('div', 'gitp-detail-body');
+    body.appendChild(el('div', 'gitp-cl2', c.author + ' · ' + c.hash.slice(0, 8) + ' · ' + relTime(c.date)));
+
     if (!S.diff) {
       body.appendChild(el('div', 'gitp-clean', '加载中…'));
       box.appendChild(body);
@@ -604,7 +693,6 @@
       box.appendChild(body);
       return box;
     }
-
     /* 按 diff --git 分段：每段一个可折叠文件区块 */
     const text = S.diff.text || '';
     if (!text.trim()) {
@@ -613,14 +701,11 @@
       return box;
     }
     const parts = text.split(/\n(?=diff --git )/);
-    parts.forEach((part, idx) => {
+    parts.forEach((part) => {
       const lines = part.split('\n');
       let title = '改动';
       const m = /^diff --git a\/(.+) b\/(.+)$/.exec(lines[0] || '');
       if (m) title = m[2];
-      else if (idx === 0 && !m && lines[0] && !/^diff --git /.test(lines[0])) {
-        // 段首可能有非 diff 的说明行，并进第一段
-      }
       const sec = el('div', 'gitp-psec');
       const secHead = el('div', 'gitp-psec-head');
       secHead.appendChild(el('span', 'gitp-name', title));
@@ -662,7 +747,6 @@
   }
 
   async function loadStatus() {
-    S.inFlight++;
     try {
       const d = await gitGet('status');
       S.repos = d.repos || [];
@@ -675,7 +759,7 @@
       S.groups = { staged: d.staged || [], unstaged: d.unstaged || [], untracked: d.untracked || [], conflicted: d.conflicted || [] };
       S.reason = d.reason || '';
       S.error = '';
-      if (S.tab === 'changes' && S.detail) {
+      if (S.detail) {
         // 文件在刷新后可能已消失（被提交/撤销）：退回清单
         const stillThere = S.groups.staged.concat(S.groups.unstaged, S.groups.untracked, S.groups.conflicted)
           .some((f) => f.path === S.detail.path);
@@ -688,7 +772,6 @@
       S.error = e.message;
       renderStrip();
     }
-    S.inFlight--;
   }
 
   async function loadGraph(reset) {
@@ -704,8 +787,8 @@
       S.commitsMore = !!d.more;
       renderGraph();
     } catch (e) {
-      S.error = e.message;
-      renderStrip();
+      if (reset) S.commits = [];
+      renderGraph();
     }
     S.commitsLoading = false;
   }
@@ -713,21 +796,23 @@
   async function loadBranches() {
     try {
       S.branches = await gitGet('branches');
+      renderTop();
       renderGraph();
     } catch (e) { /* 分支清单失败不拦主流程 */ }
   }
 
   function render() {
-    renderTabs();
-    if (S.tab === 'changes') renderChanges();
-    else renderGraph();
+    renderTop();
+    renderChanges();
+    renderGraph();
     renderStrip();
   }
 
   function refreshAll() {
     syncSession();
     loadStatus();
-    if (S.tab === 'graph') { loadGraph(true); loadBranches(); }
+    loadGraph(true);
+    loadBranches();
   }
 
   /* ---------- 生命周期 ---------- */
@@ -737,19 +822,29 @@
   CX.register({
     id: ID,
     init() {
+      // 记忆的布局：方向与分隔比例
+      try {
+        const saved = JSON.parse(lsGet('jx.gitp.split', 'null') || 'null');
+        if (saved && (saved.mode === 'vertical' || saved.mode === 'horizontal')) {
+          S.layout = saved.mode;
+          if (saved.ratio >= 20 && saved.ratio <= 80) S.ratio = saved.ratio;
+        }
+      } catch (e) { /* 记忆坏了用默认 */ }
+
       if (!root) root = buildDom();
+      applyLayout();
       const body = $id('rp-body');
       if (body && !root.parentNode) body.appendChild(root);
       rpRegister('git', {
         title: 'Git',
-        onOpen() { syncSession(); renderTabs(); refreshAll(); },
+        onOpen() { syncSession(); refreshAll(); },
       });
       if (typeof rpRenderTabs === 'function') rpRenderTabs();
       syncSession();
-      renderTop();
+      render();
 
       onSessionOpen = () => { syncSession(); if (rpActive === 'git') refreshAll(); };
-      onMessageDone = () => { if (rpActive === 'git') { loadStatus(); if (S.tab === 'graph') loadGraph(true); } };
+      onMessageDone = () => { if (rpActive === 'git') { loadStatus(); loadGraph(true); } };
       onVisible = () => { if (rpActive === 'git' && !document.hidden) loadStatus(); };
       JX.on('session:open', onSessionOpen);
       JX.on('message:done', onMessageDone);

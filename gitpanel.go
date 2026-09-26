@@ -956,6 +956,50 @@ func (a *App) gitCommit(ctx context.Context, session, repo, message string) (str
 	return "", nil
 }
 
+// gitCheckout 切换本地分支（git checkout <branch>）。分支名必须精确匹配
+// for-each-ref 列出的本地分支（不接受任意引用与路径）；未提交改动会被切换
+// 覆盖时 git 自己拒绝，这里把原因转成人话。
+func (a *App) gitCheckout(ctx context.Context, session, repo, branch string) (string, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return "", errors.New("分支名为空")
+	}
+	if strings.HasPrefix(branch, "-") {
+		return "", errors.New("分支名不合法：" + branch)
+	}
+	locals, _, err := a.gitBranches(ctx, session, repo)
+	if err != nil {
+		return "", err
+	}
+	known := false
+	for _, b := range locals {
+		if b.Name == branch {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return "", errors.New("没有这个本地分支：" + branch)
+	}
+	root, _, reason := a.gitResolve(ctx, session, repo)
+	if root == "" {
+		return "", errors.New(reason)
+	}
+	raw, _, err := a.gitRun(ctx, root, gitCommitTimeout, "checkout", branch)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "would be overwritten") || strings.Contains(msg, "Please commit your changes") {
+			return "", errors.New("有未提交改动会被切换覆盖：请先暂存或提交，再切换分支")
+		}
+		return "", gitErr("切换分支失败", err)
+	}
+	summary := strings.TrimSpace(raw)
+	if summary == "" {
+		summary = "已切换到 " + branch
+	}
+	return strings.SplitN(summary, "\n", 2)[0], nil
+}
+
 // ---------- AI 提交摘要 ----------
 
 // gitSummarize 用当前会话配置的模型为已暂存改动生成提交信息（不提交，只生成）。
@@ -1020,6 +1064,7 @@ type gitRequest struct {
 	Repo    string   `json:"repo"`
 	Paths   []string `json:"paths"`
 	Message string   `json:"message"`
+	Branch  string   `json:"branch"`
 }
 
 // decodeGitRequest 解析 POST 请求体；查询参数兜底（GET/POST 统一取 session/repo）。
@@ -1148,4 +1193,17 @@ func (a *App) handleGitSummarize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": 1, "message": message})
+}
+
+func (a *App) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
+	if !a.gitGuard(w) {
+		return
+	}
+	body := decodeGitRequest(r)
+	summary, err := a.gitCheckout(r.Context(), body.Session, body.Repo, body.Branch)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": 1, "summary": summary})
 }
