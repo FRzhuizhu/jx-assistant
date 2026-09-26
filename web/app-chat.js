@@ -1562,13 +1562,11 @@ function handleGlobalEvent(ev) {
     case 'progress':
       loadProgress();
       break;
-    case 'feedback':
-      // 客户端发来一条问题反馈（桌面端/多端都能看到）：轻提示即可，
-      // 明细在 设置→关于 的反馈列表里
-      jxToast(ev.kind === 'idea' ? '收到一条功能建议' : '收到一条问题反馈');
-      break;
     case 'update_available':
-      showUpdateBanner({ latest: ev.title, notes: ev.summary, url: ev.url });
+      // 门铃事件：拉全量信息（含安装包直链）渲染更新横幅
+      api('/api/status').then((st) => {
+        if (st.update && st.update.available) showUpdateBanner(st.update);
+      }).catch(() => {});
       break;
     // 浏览器面板（桌面原生 WebView2）：browser_nav 同步工具栏地址/标题
     // （AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
@@ -2111,26 +2109,10 @@ function hideRunError(view, remember) {
   box.innerHTML = '';
 }
 
-/* ---------- 全局 toast 与更新横幅（服务端推送的统一出口） ---------- */
+/* ---------- 更新横幅（服务端推送通知的统一出口） ---------- */
 
-// jxToast 右下角轻提示：几秒后自动消失，不挡操作。msg 支持字符串。
-let jxToastTimer = null;
-function jxToast(msg, ms) {
-  let box = document.getElementById('jx-toast');
-  if (!box) {
-    box = document.createElement('div');
-    box.id = 'jx-toast';
-    box.className = 'jx-toast';
-    document.body.appendChild(box);
-  }
-  box.textContent = msg;
-  box.classList.add('on');
-  clearTimeout(jxToastTimer);
-  jxToastTimer = setTimeout(() => box.classList.remove('on'), ms || 3200);
-}
-
-// showUpdateBanner 新版本横幅：顶部常驻可关（区别于几秒即逝的 toast）；
-// 在线时由 update_available 事件触发，刚打开页面时由 /api/status 的 update 字段恢复。
+// showUpdateBanner 新版本横幅：置顶常驻，「确认更新」直接下载安装包；
+// 在线时由 update_available 门铃事件触发，刚打开页面时从 /api/status 的 update 恢复。
 function showUpdateBanner(u) {
   if (!u || !u.latest) return;
   const bar = document.getElementById('update-banner');
@@ -2138,6 +2120,7 @@ function showUpdateBanner(u) {
   bar.querySelector('.ub-text').innerHTML =
     '新版本 <b>' + esc(u.latest) + '</b> 可用（当前 ' + esc(u.current || '') + '）' +
     (u.notes ? '　<span class="ub-notes">' + esc(String(u.notes).slice(0, 80)) + '</span>' : '');
+  bar.dataset.download = u.downloadUrl || '';
   bar.dataset.url = u.url || '';
   bar.classList.remove('hidden');
 }
@@ -2145,8 +2128,21 @@ function showUpdateBanner(u) {
 $('update-banner').addEventListener('click', (e) => {
   const bar = e.currentTarget;
   if (e.target.closest('.ub-close')) { bar.classList.add('hidden'); return; }
-  const url = bar.dataset.url;
-  if (url) window.open(url, '_blank'); // 外部发布页（远程模式也直开外链，不经隧道）
+  if (e.target.closest('.ub-confirm')) {
+    // 确认更新：直接下载安装包（发布附件直链；浏览器接管下载进度）
+    const dl = bar.dataset.download;
+    if (dl) {
+      const a = document.createElement('a');
+      a.href = dl;
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } else if (bar.dataset.url) {
+      window.open(bar.dataset.url, '_blank'); // 没挂附件就退回发布页
+    }
+    bar.classList.add('hidden');
+  }
 });
 
 

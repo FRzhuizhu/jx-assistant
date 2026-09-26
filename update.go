@@ -23,6 +23,7 @@ type UpdateState struct {
 	Latest      string `json:"latest,omitempty"`     // 最新版本号（tag_name，去 v 前缀）
 	Notes       string `json:"notes,omitempty"`      // 发布说明（body 截断）
 	URL         string `json:"url,omitempty"`        // 发布页（html_url）
+	DownloadURL string `json:"downloadUrl,omitempty"` // 安装包直链（release 附件，客户端「确认更新」下载用）
 	PublishedAt string `json:"publishedAt,omitempty"`
 	Current     string `json:"current"`              // 当前运行版本
 	CheckedAt   string `json:"checkedAt,omitempty"`  // 最近一次成功检查时间
@@ -102,11 +103,37 @@ func StopUpdateChecker() {
 
 // releaseInfo Gitea releases API（/releases/latest）用到的字段。
 type releaseInfo struct {
-	TagName     string `json:"tag_name"`
-	Name        string `json:"name"`
-	Body        string `json:"body"`
-	HTMLURL     string `json:"html_url"`
-	PublishedAt string `json:"published_at"`
+	TagName     string       `json:"tag_name"`
+	Name        string       `json:"name"`
+	Body        string       `json:"body"`
+	HTMLURL     string       `json:"html_url"`
+	PublishedAt string       `json:"published_at"`
+	Assets      []releaseAsset `json:"assets"`
+}
+
+// releaseAsset 发布附件（安装包等）。
+type releaseAsset struct {
+	Name              string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+// pickInstaller 从附件里挑安装包：优先名字含「安装包」的 .exe，其次任意 .exe。
+// 都没有返回空串——客户端就没有可下载物，横幅只提示不发版。
+func pickInstaller(assets []releaseAsset) string {
+	fallback := ""
+	for _, a := range assets {
+		n := strings.ToLower(a.Name)
+		if !strings.HasSuffix(n, ".exe") {
+			continue
+		}
+		if strings.Contains(a.Name, "安装包") || strings.Contains(strings.ToLower(a.Name), "setup") || strings.Contains(n, "installer") {
+			return a.BrowserDownloadURL
+		}
+		if fallback == "" {
+			fallback = a.BrowserDownloadURL
+		}
+	}
+	return fallback
 }
 
 func (a *App) checkUpdateOnce(url string) {
@@ -155,10 +182,12 @@ func applyUpdateInfo(a *App, rel releaseInfo) {
 	if len(notes) > 500 {
 		notes = notes[:500] + "…"
 	}
+	download := pickInstaller(rel.Assets)
 	updateMu.Lock()
 	updateState.Latest = latest
 	updateState.Notes = notes
 	updateState.URL = rel.HTMLURL
+	updateState.DownloadURL = download
 	updateState.PublishedAt = rel.PublishedAt
 	updateState.Available = versionCompare(latest, appVersion) > 0
 	shouldNotify := updateState.Available && updateNotified != latest
@@ -167,11 +196,12 @@ func applyUpdateInfo(a *App, rel releaseInfo) {
 	}
 	updateMu.Unlock()
 
-	// 提醒过一次就落盘记 version：重启后不重复弹（版本再次更新才会重新提醒）
+	// 提醒过一次就落盘记 version：重启后不重复弹（版本再次更新才会重新提醒）。
+	// 事件只当「门铃」，前端收到后拉 /api/status 取含 downloadUrl 的全量信息。
 	if shouldNotify && !alreadyNotifiedVersion(a, latest) {
 		markNotifiedVersion(a, latest)
 		log.Printf("[更新] 发现新版本 %s（当前 %s），已通知在线客户端", latest, appVersion)
-		a.broadcast(Event{Type: "update_available", Title: latest, Summary: notes, URL: rel.HTMLURL})
+		a.broadcast(Event{Type: "update_available", Title: latest})
 	}
 }
 

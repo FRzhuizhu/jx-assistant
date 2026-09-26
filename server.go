@@ -160,8 +160,6 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/p2p-shell", a.handleP2PShell)
 	mux.HandleFunc("POST /api/feedback", a.handleFeedbackCreate)
-	mux.HandleFunc("GET /api/feedback", a.handleFeedbackList)
-	mux.HandleFunc("DELETE /api/feedback/{id}", a.handleFeedbackDelete)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)

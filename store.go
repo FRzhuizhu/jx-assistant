@@ -262,6 +262,23 @@ var storeMigrations = []migration{
 			`ALTER TABLE sessions ADD COLUMN expert TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// 问题反馈（feedback.go）：客户端一键上报的问题/建议，只进不出——
+		// 没有查看接口，排查时直接查库。diagnostics 存客户端附带的上下文 JSON 原文。
+		id:       "0012_feedback",
+		tolerant: true,
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS feedback (
+				id          TEXT PRIMARY KEY,
+				kind        TEXT NOT NULL DEFAULT 'other',
+				content     TEXT NOT NULL,
+				session_id  TEXT NOT NULL DEFAULT '',
+				diagnostics TEXT NOT NULL DEFAULT '',
+				version     TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL
+			)`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，

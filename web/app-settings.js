@@ -18,10 +18,9 @@ function setSettingsPane(name) {
   document.querySelectorAll('.set-pane').forEach((p) => {
     p.classList.toggle('active', p.id === 'set-pane-' + name);
   });
-  if (name === 'about') refreshFeedbackList(); // 反馈列表每次进关于页都拉最新
 }
 
-/* ---------- 关于页：问题反馈（客户端 → 服务端落盘 + 事件广播） ---------- */
+/* ---------- 关于页：问题反馈（客户端 → 服务端入库；只收不看，排查时查库） ---------- */
 
 let fbKind = 'bug'; // 当前选中的反馈类型
 
@@ -40,7 +39,7 @@ function bindFeedbackForm() {
 
 async function sendFeedback() {
   const text = $('fb-text').value.trim();
-  if (!text) { jxToast('先写两句反馈内容'); return; }
+  if (!text) return;
   const btn = $('fb-send');
   btn.disabled = true;
   btn.textContent = '发送中…';
@@ -55,53 +54,13 @@ async function sendFeedback() {
       }),
     });
     $('fb-text').value = '';
-    jxToast('反馈已发送，谢谢');
-    refreshFeedbackList();
+    btn.textContent = '已发送 ✓';
+    setTimeout(() => { btn.textContent = '发送反馈'; }, 1500);
   } catch (e) {
     alert('发送失败：' + e.message);
+    btn.textContent = '发送反馈';
   }
   btn.disabled = false;
-  btn.textContent = '发送反馈';
-}
-
-async function refreshFeedbackList() {
-  const box = $('fb-list');
-  if (!box) return;
-  let items = [];
-  try { items = (await api('/api/feedback')).items || []; } catch (e) { box.textContent = '反馈列表读取失败'; return; }
-  $('fb-count').textContent = items.length ? items.length + ' 条' : '';
-  box.innerHTML = '';
-  if (!items.length) {
-    box.innerHTML = '<p class="sf-desc" style="margin:0">还没有反馈记录。</p>';
-    return;
-  }
-  for (const it of items) {
-    const row = document.createElement('div');
-    row.className = 'fb-item';
-    const head = document.createElement('div');
-    head.className = 'fb-head';
-    head.innerHTML = '<span class="fb-badge ' + esc(it.kind) + '">' +
-      (it.kind === 'bug' ? '问题' : it.kind === 'idea' ? '建议' : '其他') + '</span>' +
-      '<span class="fb-meta">' + esc(it.createdAt) + ' · v' + esc(it.version) + '</span>';
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'fb-del';
-    del.title = '删除这条反馈';
-    del.textContent = '✕';
-    del.onclick = async () => {
-      try {
-        await api('/api/feedback/' + encodeURIComponent(it.id), { method: 'DELETE' });
-        refreshFeedbackList();
-      } catch (e) { alert('删除失败：' + e.message); }
-    };
-    head.appendChild(del);
-    const body = document.createElement('div');
-    body.className = 'fb-body';
-    body.textContent = it.content;
-    row.appendChild(head);
-    row.appendChild(body);
-    box.appendChild(row);
-  }
 }
 
 // openFeedbackForm 打开设置关于页并预填反馈（报错条「反馈」按钮的入口）

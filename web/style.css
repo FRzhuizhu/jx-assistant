@@ -166,30 +166,24 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 .remote-qr svg { display: block; width: 208px; height: 208px; }
 
-/* 全局 toast：右下角浮出，自动消失，不挡操作 */
-.jx-toast {
-  position: fixed; right: 20px; bottom: 24px; z-index: 10001;
-  max-width: 320px; padding: 10px 16px;
-  background: #23262d; color: #fff; font-size: 13px;
-  border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
-  opacity: 0; transform: translateY(8px); pointer-events: none;
-  transition: opacity .18s, transform .18s;
-}
-.jx-toast.on { opacity: 1; transform: translateY(0); }
-
-/* 更新横幅：置顶常驻可关，强调色描边；整条可点开发布页 */
+/* 更新横幅：置顶常驻可关，强调色描边；「确认更新」直接下载安装包 */
 .update-banner {
   position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 10000;
   display: flex; align-items: center; gap: 10px;
   max-width: min(92vw, 720px); margin-top: 10px; padding: 9px 14px;
   background: var(--card, #fff); color: var(--text);
   border: 1px solid var(--accent); border-radius: 12px;
-  box-shadow: 0 6px 24px rgba(0,0,0,.12); font-size: 13px; cursor: pointer;
+  box-shadow: 0 6px 24px rgba(0,0,0,.12); font-size: 13px;
 }
 .update-banner.hidden { display: none; }
 .update-banner .ub-icon { color: var(--accent); font-weight: 700; }
 .update-banner .ub-notes { color: var(--text-2); }
-.update-banner .ub-hint { color: var(--accent); white-space: nowrap; }
+.update-banner .ub-confirm {
+  flex: none; padding: 4px 14px; border: none; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 12.5px; cursor: pointer;
+  white-space: nowrap;
+}
+.update-banner .ub-confirm:hover { filter: brightness(1.08); }
 .update-banner .ub-close {
   border: none; background: none; color: var(--text-2); cursor: pointer;
   font-size: 13px; padding: 2px 4px;
@@ -208,16 +202,6 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   background: var(--accent); color: #fff; font-size: 13px; cursor: pointer;
 }
 .fb-send:disabled { opacity: .6; cursor: default; }
-.fb-item { padding: 8px 0; border-top: 1px solid var(--border, #eceef2); }
-.fb-head { display: flex; align-items: center; gap: 8px; }
-.fb-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
-.fb-badge.bug { color: #c22f2f; background: rgba(194,47,47,.1); }
-.fb-badge.idea { color: var(--green, #1f9d55); background: rgba(31,157,85,.1); }
-.fb-badge.other { color: var(--text-2); background: var(--gray-bg); }
-.fb-meta { flex: 1; font-size: 11.5px; color: var(--text-2); }
-.fb-del { border: none; background: none; color: var(--text-2); cursor: pointer; font-size: 12px; }
-.fb-del:hover { color: #c22f2f; }
-.fb-body { margin-top: 4px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; color: var(--text); }
 
 /* ---------- 主区 ---------- */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
