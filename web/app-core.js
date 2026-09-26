@@ -119,6 +119,102 @@ if (narrowMq) {
   if (narrowMq.addEventListener) narrowMq.addEventListener('change', onNarrowMq);
   else if (narrowMq.addListener) narrowMq.addListener(onNarrowMq); // 旧 Safari
 }
+
+/* ---------- 侧栏滑动手势（方向×状态感知，触发即等效点击开合按钮） ----------
+   定义（关键：栏开没开，手势含义不同）：
+   * 栏收着：从屏幕缘热区向中间滑 → 拉出该侧栏（窄屏下两栏都收着才拉得开，
+     手势绝不把两栏同时打开；桌面两栏本可并存，不设此限）。
+   * 栏开着：在栏身上向屏幕外方向滑 → 收起该栏；向中间滑不动作。
+   触发仍是单次位移 ≥44px 且横向主导，直接调用与按钮相同的 toggleSidebar /
+   toggleRpanel——状态机、记忆、文案全走按钮那一条路。
+   触摸走非被动 Touch 事件（横向确立即 preventDefault，阻断浏览器收编成滚动
+   ——真机拉不出来的根因）；鼠标/笔走 Pointer 事件。轻微上下漂移容忍。
+   收起手势的起点豁免：拖宽把手（#rp-resize 等）、输入框——它们有自己的交互。 */
+(function () {
+  const EDGE = 24;    // 屏幕左右缘热区（px），拉出手势的起点
+  const TRIGGER = 44; // 单向滑过此距离即触发一次
+  const CLAIM = 10;   // 横向位移超过此值且未明显纵向 → 接管手势
+  let g = null;
+
+  const modalOpen = () => [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
+  const leftOpen = () => isNarrow() ? document.body.classList.contains('sb-show') : !document.body.classList.contains('sb-collapsed');
+  const rightOpen = () => !document.getElementById('rpanel').classList.contains('hidden');
+  const verticalIntent = (dx, dy) => Math.abs(dy) > Math.abs(dx) * 1.5 + 12;
+  const fire = (side) => { if (side === 'left') toggleSidebar(); else toggleRpanel(); };
+
+  // 按起点与两侧栏状态定手势：先看是不是点在开着的栏身上（收起手势），
+  // 再看是不是屏幕缘热区（拉出手势，窄屏要求两栏都收着）
+  function armAt(target, x) {
+    if (target && target.closest) {
+      if (target.closest('#rp-resize, [class*="handle"], [class*="resize"], [class*="drag"]')) return null;
+      if (target.closest('input, textarea, select, [contenteditable]')) return null;
+      if (target.closest('#sidebar') && leftOpen()) return { side: 'left', close: true };
+      if (target.closest('#rpanel') && rightOpen()) return { side: 'right', close: true };
+    }
+    const vw = window.innerWidth;
+    if (x <= EDGE && !leftOpen() && (!isNarrow() || !rightOpen())) return { side: 'left', close: false };
+    if (x >= vw - EDGE && !rightOpen() && (!isNarrow() || !leftOpen())) return { side: 'right', close: false };
+    return null;
+  }
+
+  // toward：开向位移（左栏向右为正 / 右栏向左为正）。拉出在 ≥TRIGGER 触发；
+  // 收起在 ≤-TRIGGER（向屏幕外）触发，反向滑回中间则放弃
+  const towardOf = (g2, x) => (x - g2.x0) * (g2.side === 'left' ? 1 : -1);
+  const hit = (g2, toward) => g2.close ? toward <= -TRIGGER : toward >= TRIGGER;
+  const quit = (g2, toward) => g2.close ? toward >= TRIGGER : toward <= -TRIGGER;
+
+  document.addEventListener('touchstart', (e) => {
+    if (g || e.touches.length !== 1 || modalOpen()) return;
+    const t = e.touches[0];
+    const arm = armAt(e.target, t.clientX);
+    if (!arm) return;
+    g = { ...arm, x0: t.clientX, y0: t.clientY, claimed: false, done: false, touch: true };
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!g || !g.touch || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - g.x0, dy = t.clientY - g.y0;
+    if (!g.claimed) {
+      if (verticalIntent(dx, dy)) { g = null; return; } // 纵向：让位给滚动
+      if (Math.abs(dx) < CLAIM) return;
+      g.claimed = true;
+      e.preventDefault(); // 锁定：浏览器不再把本次触摸收编为滚动
+    } else {
+      e.preventDefault();
+    }
+    const toward = towardOf(g, t.clientX);
+    if (!g.done && hit(g, toward)) { g.done = true; fire(g.side); } // 一次手势只触发一次
+    else if (quit(g, toward)) g = null;
+  }, { passive: false });
+  const touchEnd = () => { if (g && g.touch) g = null; };
+  document.addEventListener('touchend', touchEnd);
+  document.addEventListener('touchcancel', touchEnd);
+
+  document.addEventListener('pointerdown', (e) => {
+    if (g || e.pointerType === 'touch' || e.button !== 0 || modalOpen()) return;
+    const arm = armAt(e.target, e.clientX);
+    if (!arm) return;
+    g = { ...arm, x0: e.clientX, y0: e.clientY, claimed: false, done: false, touch: false };
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!g || g.touch) return;
+    const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+    if (!g.claimed) {
+      if (verticalIntent(dx, dy)) { g = null; return; }
+      if (Math.abs(dx) < CLAIM) return;
+      g.claimed = true;
+      e.preventDefault(); // 鼠标：横向确立后抑制拖动选中
+    }
+    const toward = towardOf(g, e.clientX);
+    if (!g.done && hit(g, toward)) { g.done = true; fire(g.side); }
+    else if (quit(g, toward)) g = null;
+  });
+  const pointerEnd = () => { if (g && !g.touch) g = null; };
+  document.addEventListener('pointerup', pointerEnd);
+  document.addEventListener('pointercancel', pointerEnd);
+})();
+
+
 window.addEventListener('resize', leaveNarrowIfNeeded);
 
 /* ---------- Markdown 渲染（围栏代码块、标题、列表、表格、行内样式、链接） ---------- */
