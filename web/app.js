@@ -10,6 +10,7 @@ setupWidthHandles();  // 对话区两侧拖拽把手
 setupJumpLatest();    // 回到底部按钮（挂进上面刚建好的 #msg-zone，需在其后）
 setupScrollTuck();    // 滚动显隐：回到底部按钮 + 手机端输入区收起/展开
 applyTheme();         // 恢复常规页选的主题色（白/黑/跟随系统）
+restoreSidebarWidth(); // 恢复上次拖定的左侧栏宽度（--sb-w，须在 applySidebarState 之前）
 applySidebarState();
 resetEmpty();
 loadStatus().then(loadSessions);

@@ -400,7 +400,16 @@ function sessionItem(s) {
   const timeCell = s.status === 'running'
     ? '<span class="s-time running" title="正在执行（切走不影响，切回来会接上）">⟳ 运行中</span>'
     : `<span class="s-time">${esc(relTime(s.updatedAt))}</span>`;
+  // 时间线视图：条目脱离了工作区分组的语境，行首补一枚工作目录小胶囊
+  //（取目录名开头两三个字，塞不下的从右缘直接裁掉——不用省略号，固定宽一列对齐）
+  let wsChip = '';
+  if (viewCfg.group === 'time' && !binView) {
+    const ws = wsOf(s);
+    const name = lsGet('jx.wsalias', {})[ws] || baseName(ws) || '默认工作区';
+    wsChip = `<span class="s-ws" title="${esc(ws ? name + '（' + ws + '）' : '默认工作区')}">${esc(name)}</span>`;
+  }
   item.innerHTML =
+    wsChip +
     `<span class="dot${dot}"></span>` +
     `<span class="s-title">${esc(s.title || '(未命名)')}</span>` +
     timeCell +
@@ -776,7 +785,7 @@ function toggleSidebar() {
   setSidebarBtn(collapsed);
   lsSet('jx.sb', collapsed ? '1' : '0');
   rpApply();
-  slidePane(sb, collapsed ? 272 : 0, collapsed ? 0 : 272); // 收起 272→0，展开 0→272
+  slidePane(sb, collapsed ? sbWidth() : 0, collapsed ? 0 : sbWidth()); // 收起 w→0，展开 0→w
 }
 
 $('btn-new-task').onclick = () => { if (binView) setBinView(false); goHomeNewTask(); };
@@ -801,3 +810,69 @@ $('btn-new-assistant').onclick = () => {
   openAssistant();
 };
 $('btn-recycle').onclick = () => setBinView(!binView);
+
+/* ---------- 左侧栏拖拽调宽：272~560，记忆落本机（jx.sbw，经 --sb-w 生效） ----------
+   桌面专属：窄屏浮层恒为整屏宽（把手 CSS 禁指针 + JS 双保险，不写不落盘防污染
+   桌面记忆）。拖拽中改 --sb-w，#sidebar 与 .sb-inner 一起变、列表实时回流；
+   开合动画照旧走 slidePane（只动 #sidebar 内联宽，--sb-w 不参与）。 */
+const SB_MIN = 272, SB_MAX = 560; // 窄到默认即止（再窄列表挤不出信息），宽过手机断点一档
+
+function sbWidth() {
+  const v = parseFloat(document.documentElement.style.getPropertyValue('--sb-w'));
+  return isNaN(v) ? 272 : v;
+}
+
+function applySidebarWidth(px, save) {
+  if (isNarrow()) return NaN;
+  // 夹取 272~560；窗口太窄时上限收到「窗口宽-320」，给对话区留条活路
+  const upper = Math.max(SB_MIN, Math.min(SB_MAX, window.innerWidth - 320));
+  px = Math.round(Math.min(Math.max(px, SB_MIN), upper));
+  document.documentElement.style.setProperty('--sb-w', px + 'px');
+  if (save) lsSet('jx.sbw', String(px));
+  rpApply(); // 右栏可瓜分的宽随左栏变（开着时重推导）
+  return px;
+}
+
+function restoreSidebarWidth() {
+  const px = parseFloat(lsGet('jx.sbw', ''));
+  if (px >= SB_MIN) applySidebarWidth(px);
+}
+
+function setupSidebarResize() {
+  const sb = $('sidebar');
+  const h = document.createElement('div');
+  h.className = 'sb-resize';
+  h.title = '拖动调整左侧栏宽度（双击恢复默认）';
+  sb.appendChild(h);
+  let startX = 0, startW = SB_MIN, moved = false;
+  h.addEventListener('pointerdown', (e) => {
+    if (isNarrow()) return;
+    e.preventDefault();
+    sb._slideTok = ++slideSeq; // 作废进行中的开合动画，宽度交还给 --sb-w
+    sb.classList.remove('anim');
+    sb.style.width = sb.style.minWidth = '';
+    startX = e.clientX;
+    startW = sbWidth();
+    moved = false;
+    h.classList.add('dragging');
+    try { h.setPointerCapture(e.pointerId); } catch (err) { /* 旧浏览器忽略 */ }
+  });
+  h.addEventListener('pointermove', (e) => {
+    if (!h.classList.contains('dragging')) return;
+    if (applySidebarWidth(startW + (e.clientX - startX)) !== startW) moved = true;
+  });
+  const up = () => {
+    if (!h.classList.contains('dragging')) return;
+    h.classList.remove('dragging');
+    if (moved) applySidebarWidth(sbWidth(), true); // 松手落盘
+  };
+  h.addEventListener('pointerup', up);
+  h.addEventListener('pointercancel', up);
+  h.addEventListener('dblclick', () => {
+    lsSet('jx.sbw', null);
+    applySidebarWidth(272);
+  });
+  // 窗口缩窄时把过宽的栏夹回可用范围（只改当前宽，不动记忆）
+  window.addEventListener('resize', () => { if (!isNarrow()) applySidebarWidth(sbWidth()); });
+}
+setupSidebarResize();

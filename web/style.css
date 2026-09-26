@@ -36,14 +36,32 @@ svg { width: 16px; height: 16px; flex: none; }
 #app { display: flex; height: 100vh; }
 
 /* ---------- 左侧栏 ---------- */
-/* 宽度动画：#sidebar 只承载宽度/裁剪，内容装在固定 272px 的 .sb-inner 里，
-   收起时内容不回流换行，像抽屉一样滑出 */
+/* 宽度动画：#sidebar 只承载宽度/裁剪，内容装在与栏同宽的 .sb-inner 里，
+   收起时内容不回流换行，像抽屉一样滑出。
+   栏宽右缘可拖（.sb-resize，272~560，记忆 jx.sbw），拖拽改 --sb-w 让
+   #sidebar 与 .sb-inner 一起变（列表实时回流）；开合动画只动 #sidebar 的
+   内联宽、--sb-w 不变，.sb-inner 保持原宽被裁剪——抽屉语义在任意栏宽下都成立 */
 #sidebar {
-  width: 272px; min-width: 272px; background: var(--side-bg);
+  width: var(--sb-w, 272px); min-width: var(--sb-w, 272px); background: var(--side-bg);
   border-right: 1px solid var(--border);
   overflow: hidden;
+  position: relative; /* 承载右缘拖拽条 .sb-resize */
 }
-.sb-inner { width: 272px; height: 100%; display: flex; flex-direction: column; }
+.sb-inner { width: var(--sb-w, 272px); height: 100%; display: flex; flex-direction: column; }
+/* 左栏右缘拖拽条：拖动调宽左侧栏（272~560，松手落盘 jx.sbw；双击恢复默认）。
+   造型对齐右栏的 .rp-resize：右探 5px 的命中条，悬停/拖拽亮起竖线 */
+.sb-resize {
+  position: absolute; right: -5px; top: 0; bottom: 0; width: 10px;
+  cursor: col-resize; z-index: 6; touch-action: none;
+}
+.sb-resize::after {
+  content: ""; position: absolute; top: 0; bottom: 0; right: 4px; width: 2px;
+  border-radius: 2px; background: transparent; opacity: 0;
+  transition: opacity .15s;
+}
+.sb-resize:hover::after, .sb-resize.dragging::after {
+  opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
+}
 #sidebar.anim, #rpanel.anim {
   transition: width .22s cubic-bezier(.4, 0, .2, 1), min-width .22s cubic-bezier(.4, 0, .2, 1);
 }
@@ -91,6 +109,15 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .dot.hot { background: #2fc06a; }
 .s-title { flex: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-time { font-size: 11.5px; color: var(--text-3); flex: none; }
+/* 时间线视图行首的工作目录小胶囊：偏方形小圆角、1px 细边框，文字左起、
+   到右缘直接裁断（不用省略号）——固定宽度塞几个字算几个，一列胶囊上下对齐 */
+.s-ws {
+  flex: none; width: 38px; height: 19px; padding: 0 2px;
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border-2); border-radius: 5px;
+  font-size: 10.5px; line-height: 1; color: var(--text-3);
+  white-space: nowrap; overflow: hidden;
+}
 
 .sidebar-foot {
   display: flex; flex-direction: column; gap: 3px;
@@ -1781,8 +1808,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
     z-index: 210;
   }
   body.rp-open #rpanel { transform: none; }
-  .rp-resize { pointer-events: none; }
-  .rp-resize::after { display: none; }
+  .rp-resize, .sb-resize { pointer-events: none; }
+  .rp-resize::after, .sb-resize::after { display: none; }
   .w-handle { display: none; } /* 对话区已占满全宽 */
   /* 悬浮输入卡贴边留缝（含 iPhone 底部手势条安全区） */
   .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
