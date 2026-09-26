@@ -83,6 +83,7 @@
       <button id="btn-settings" class="foot-btn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
         设置
+        <span id="status-phone" class="foot-phone hidden" title="手机远程访问：点击查看扫码入口"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span>
         <span id="status-text" class="pill gray">连接中…</span>
       </button>
     </div>
@@ -407,7 +408,8 @@
                 <label class="pr-toggle"><input type="checkbox" id="set-remote-on"><span></span></label>
                 <span class="sf-desc" id="set-remote-state"></span>
               </div>
-              <p class="sf-desc" id="set-remote-entry"></p>
+              <p class="sf-desc" id="set-remote-entry" title="点击复制入口链接"></p>
+              <div id="remote-qr" class="remote-qr hidden" title="手机扫码直接打开远程接入入口"></div>
               <p class="sf-desc">经自建网关的加密中继（端到端 AES-256-GCM，网关只见密文）从外网访问本助手；手机入口为网关配对页（下方地址含配对密钥，收藏即可自动连接）。改动需重启程序后生效；知道配对密钥的人都能使用本助手，请妥善保管密钥。</p>
             </div>
             <div class="set-field">
@@ -713,6 +715,7 @@
 <input type="file" id="file-input" multiple class="hidden">
 
 <!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
+<script src="/qr.js"></script>
 <script src="/app-core.js"></script>
 <script src="/app-left.js"></script>
 <script src="/app-right.js"></script>

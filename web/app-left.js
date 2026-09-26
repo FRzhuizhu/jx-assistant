@@ -3,19 +3,37 @@
 
 /* ---------- 状态与侧栏 ---------- */
 
+// 顶栏状态区：异常态（缺 Key / 离线）才显示告警胶囊；正常态收起胶囊，
+// 换成手机图标——远程访问的快捷入口，点击直达设置的网络访问分区看扫码。
 async function loadStatus() {
   const el = $('status-text');
+  const ph = $('status-phone');
   try {
     const st = await api('/api/status');
     state.defaultWs = st.workspace || '';
-    if (!st.hasKey) { el.textContent = '未配置 Key'; el.className = 'pill warn'; }
-    else { el.textContent = '✓ 已连接'; el.className = 'pill ok'; }
+    if (!st.hasKey) {
+      el.textContent = '未配置 Key'; el.className = 'pill warn'; el.classList.remove('hidden');
+      ph.classList.add('hidden');
+    } else {
+      el.classList.add('hidden');
+      ph.classList.remove('hidden');
+      const ra = st.remote || {};
+      ph.className = 'foot-phone' + (ra.enabled ? (ra.connected ? '' : ' half') : ' off');
+      ph.title = ra.enabled
+        ? (ra.connected ? '手机远程访问已就绪——点击扫码接入' : '远程访问已开启，网关未连上——点击查看')
+        : '开启手机远程访问——点击设置';
+    }
     syncComposer();
   } catch (e) {
-    el.textContent = '服务离线';
-    el.className = 'pill gray';
+    el.textContent = '服务离线'; el.className = 'pill gray'; el.classList.remove('hidden');
+    ph.classList.add('hidden');
   }
 }
+
+$('status-phone').addEventListener('click', (e) => {
+  e.stopPropagation(); // 拦住外层设置按钮的默认打开路径，改直达网络访问分区
+  openSettings('network');
+});
 
 
 // 侧栏视图设置：分组方式（ws=按工作区 flat=单列表）与排序方式

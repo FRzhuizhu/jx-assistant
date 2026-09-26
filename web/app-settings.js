@@ -36,7 +36,8 @@ function loadProvDraft(c) {
   }));
 }
 
-async function openSettings() {
+// pane 可选：打开后直接落在指定分区（如 'network'，左下角手机图标用）；缺省常规页
+async function openSettings(pane) {
   const c = await api('/api/config');
   presetsCache = c.presets || [];
   provDraft = loadProvDraft(c);
@@ -69,7 +70,7 @@ async function openSettings() {
   renderComponentList();
   renderSkillsPanel();
   renderExpertsPanel();
-  setSettingsPane('general');
+  setSettingsPane(pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : 'general');
   // 关于页信息
   try {
     const st = await api('/api/status');
@@ -659,20 +660,52 @@ $('set-lan-on').onchange = async () => {
 
 /* ---------- 网络访问页：远程接入（开关 + 设备号/密钥/网关编辑，重启生效） ---------- */
 
+let lastRemoteEntry = ''; // 入口链接快照：复制用 + 二维码按它增量重绘
+
 function syncRemoteState(c) {
   const ra = c.remoteAccess || {};
   $('set-remote-state').textContent = ra.connected
     ? '已连接网关（重启程序后改动生效）'
     : (ra.enabled ? '已开启（网关未连上：' + (ra.lastError || '等待重连') + '）' : '已关闭');
-  $('set-remote-entry').innerHTML = ra.enabled && ra.entry
-    ? '手机（外网可用）浏览器打开并收藏：<b>' + esc(ra.entry) + '</b>'
+  const entryEl = $('set-remote-entry');
+  entryEl.innerHTML = ra.enabled && ra.entry
+    ? '手机（外网可用）扫码或浏览器打开并收藏：<b>' + esc(ra.entry) + '</b>'
     : '';
+  entryEl.style.cursor = ra.entry ? 'pointer' : '';
+  lastRemoteEntry = ra.entry || '';
+  // 二维码：入口变化才重绘（生成不便宜），未开启时收起
+  const qrBox = $('remote-qr');
+  if (qrBox) {
+    if (ra.enabled && ra.entry) {
+      if (qrBox.dataset.entry !== ra.entry) {
+        try {
+          qrBox.innerHTML = qrLib.qrSVG(ra.entry, { size: 208 });
+          qrBox.dataset.entry = ra.entry;
+        } catch (e) { qrBox.textContent = '二维码生成失败：' + e.message; }
+      }
+      qrBox.classList.remove('hidden');
+    } else {
+      qrBox.classList.add('hidden');
+      qrBox.dataset.entry = '';
+    }
+  }
   // 输入框以服务端落库值为准回显（焦点中不清扰，保存回包才刷新）
   if (document.activeElement !== $('set-remote-id')) $('set-remote-id').value = ra.myId || '';
   if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
   if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
 }
+
+// 入口链接点击复制（含配对密钥，复制成功给个轻提示）
+$('set-remote-entry').addEventListener('click', () => {
+  if (!lastRemoteEntry) return;
+  navigator.clipboard.writeText(lastRemoteEntry).then(() => {
+    const el = $('set-remote-entry');
+    const old = el.innerHTML;
+    el.innerHTML = '<b>已复制 ✓</b>';
+    setTimeout(() => { el.innerHTML = old; }, 1200);
+  }).catch(() => {});
+});
 
 $('set-remote-on').onchange = async () => {
   const on = $('set-remote-on').checked;
@@ -737,6 +770,7 @@ function closeSettingsUI() {
   const d = setHistDepth;
   setHistDepth = 0;
   if (d > 0) history.go(-d); // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
+  loadStatus(); // 设置里可能刚改了远程开关：左下角手机图标状态随之对齐
 }
 
 window.addEventListener('popstate', (e) => {

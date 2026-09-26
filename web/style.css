@@ -117,6 +117,28 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .pill.warn { color: var(--amber); background: var(--amber-bg); }
 .pill.gray { color: var(--text-2); background: var(--gray-bg); }
 
+/* 手机远程访问图标（正常态顶替绿色胶囊）：强调色小图标，点击直达网络访问分区。
+   .half=已开启但网关未连上；.off=未开启（灰淡，悬停点亮引导去设置） */
+.foot-phone {
+  margin-left: auto; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px;
+  color: var(--accent); background: var(--accent-bg, rgba(77, 107, 254, .12));
+  cursor: pointer;
+}
+.foot-phone svg { width: 14px; height: 14px; }
+.foot-phone:hover { filter: brightness(1.08); }
+.foot-phone.half { opacity: .55; }
+.foot-phone.off { color: var(--text-2); background: var(--gray-bg); opacity: .6; }
+
+/* 远程访问二维码卡片：白底圆角，深浅主题下都保证扫码对比度 */
+.remote-qr {
+  display: flex; justify-content: center;
+  width: fit-content; margin: 10px 0 4px; padding: 10px;
+  background: #fff; border-radius: 12px; border: 1px solid var(--border, #e2e4e9);
+}
+.remote-qr svg { display: block; width: 208px; height: 208px; }
+
 /* ---------- 主区 ---------- */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 #topbar {

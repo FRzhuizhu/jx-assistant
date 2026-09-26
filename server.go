@@ -573,6 +573,7 @@ func searchSnippet(content, q string) string {
 
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	t := a.DefaultTarget()
+	ra := a.Cfg.RemoteAccess
 	writeJSON(w, 200, map[string]any{
 		"name":       "坚祥数字助理",
 		"version":    appVersion,
@@ -581,6 +582,11 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"mock":       t.BaseURL == "mock",
 		"workspace":  a.Cfg.Workspace,
 		"allowShell": a.Cfg.AllowShell,
+		// 左下角手机图标的状态来源：正常态显示「可远程访问」，异常态回退告警胶囊
+		"remote": map[string]any{
+			"enabled":   ra.Enabled,
+			"connected": remoteConnected.Load(),
+		},
 	})
 }
 
