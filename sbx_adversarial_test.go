@@ -12,8 +12,9 @@ import (
 )
 
 // 对抗性验证：workspace-write 沙箱下的各类逃逸尝试。
-// 预期：全部被拒（含官方文档自报的 Everyone/硬链接缺口——密级关卡
-// 落地后一并封堵，断言已从记录翻转为硬失败）。
+// 预期：DSH 官方同款语义——写类穿越/注册表/子进程/硬链接必须被拒；
+// 已知盲区（父目录清柜权删除路线、Everyone 可写位置）为官方自报缺口，
+// 2026-09 决策接受并显式钉住当前行为（未来从工具层限制）。
 func TestSandboxAdversarial(t *testing.T) {
 	skipIfNestedSandbox(t)
 	ws := t.TempDir()
@@ -57,19 +58,18 @@ func TestSandboxAdversarial(t *testing.T) {
 		}
 	})
 
-	t.Run("删除外部文件", func(t *testing.T) {
+	t.Run("删除外部文件（已知盲区）", func(t *testing.T) {
 		victim := filepath.Join(outside, "victim.txt")
 		_ = os.WriteFile(victim, []byte("keep"), 0644)
 		out := try("del-out", `Remove-Item -LiteralPath '`+victim+`' -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath '`+victim+`') { 'del-denied' } else { 'del-done' }`)
-		// 判定实验（sbx_delete_matrix_test.go）已定音：删除走父目录
-		// FILE_DELETE_CHILD 路线时不触发 WRITE_RESTRICTED pass-2（官方同款
-		// 盲区），%TEMP% 等用户 FullControl 位置曾可被非 -Force 删除。
-		// 密级关卡（Low IL + mandatory label）以 NO_WRITE_UP 路线无关封堵，
-		// 此断言为硬失败：外部文件必须仍在。
+		// 判定实验（sbx_delete_matrix_test.go）：删除走父目录 FILE_DELETE_CHILD
+		// （清柜权）路线时不触发 WRITE_RESTRICTED pass-2——%TEMP% 类用户
+		// FullControl 位置可被非 -Force 删除（DSH 官方同款已知盲区，密级关卡
+		// 撤除后接受，未来从工具层限制）。两种结果都记录不判败。
 		if _, err := os.Stat(victim); err != nil {
-			t.Errorf("外部文件被删除（密级关卡失效）: %v，输出 %s", err, out)
+			t.Logf("已知盲区：外部文件被删穿（官方同款，接受）: %s", strings.TrimSpace(out))
 		} else {
-			t.Logf("✓ 外部删除被拒")
+			t.Logf("✓ 外部删除被拒: %s", strings.TrimSpace(out))
 		}
 	})
 
@@ -98,10 +98,17 @@ func TestSandboxAdversarial(t *testing.T) {
 		}
 	})
 
-	t.Run("硬链接穿透（两个顺序都必须拦）", func(t *testing.T) {
-		// 顺序1：先建链后授权——共享 SD 会被授权/标签的自动传播打中，
-		// 外部别名跟着降成低密可写（判定实验探针D 曾实测穿透）。
-		// fixupMultiLinked 对多链接文件摘标签/摘 ACE 还原共享 SD，必须拦住。
+	t.Run("硬链接穿透（已知盲区，两个顺序都记录）", func(t *testing.T) {
+		// DSH 官方自报缺口（密级关卡撤除后重新打开）：工作区授权的继承 ACE
+		// 会进入硬链接文件的共享 SD，外部别名随之对受限令牌可写。
+		//   顺序1（先建链后授权）：授权传播直接打中共享 SD（探针实测：
+		//   建链后一次 grantWriteAce，外部名字的 SD 即出现 S-1-80-*(I)(W,D,DC)）。
+		//   顺序2（先授权后建链）：受限进程打开 ws 内链接名时，NTFS 懒传播
+		//   把根上待传播的继承 ACE 应用到共享 SD，pass-2 随即放行（探针实测：
+		//   建链后 SD 无该 ACE，沙箱内 Add-Content 后出现且写入成功）。
+		// 曾以首授后全树扫描摘 ACE 收尾（fixupMultiLinked），因懒传播在下次
+		// 打开时重新应用而无效，已移除。两种结果都记录不判败（未来从工具层
+		// 限制）。
 		outFile := filepath.Join(outside, "linked.txt")
 		_ = os.WriteFile(outFile, []byte("orig"), 0644)
 		link := filepath.Join(ws, "hardlink.txt")
@@ -111,13 +118,11 @@ func TestSandboxAdversarial(t *testing.T) {
 		try("hardlink", `Add-Content -Path .\hardlink.txt -Value 'hacked'`)
 		data, _ := os.ReadFile(outFile)
 		if strings.Contains(string(data), "hacked") {
-			t.Errorf("硬链接写穿透（顺序1：先建链后授权）: %s", string(data))
+			t.Logf("已知盲区（官方同款，接受）：硬链接写穿透（顺序1：先建链后授权）")
 		} else {
 			t.Logf("✓ 硬链接写被拦（顺序1）: %s", string(data))
 		}
 
-		// 顺序2：先授权后建链——新链不带低密标签（共享 SD 保持 Medium），
-		// 密级岗同样拦住。
 		outFile2 := filepath.Join(outside, "linked2.txt")
 		_ = os.WriteFile(outFile2, []byte("orig"), 0644)
 		link2 := filepath.Join(ws, "hardlink2.txt")
@@ -127,7 +132,7 @@ func TestSandboxAdversarial(t *testing.T) {
 		try("hardlink2", `Add-Content -Path .\hardlink2.txt -Value 'hacked'`)
 		data2, _ := os.ReadFile(outFile2)
 		if strings.Contains(string(data2), "hacked") {
-			t.Errorf("硬链接写穿透（顺序2：先授权后建链）: %s", string(data2))
+			t.Logf("已知盲区（官方同款，接受）：硬链接写穿透（顺序2：先授权后建链，懒传播）")
 		} else {
 			t.Logf("✓ 硬链接写被拦（顺序2）: %s", string(data2))
 		}
@@ -162,9 +167,12 @@ func TestSandboxJobTreeKill(t *testing.T) {
 	}
 }
 
-// TestSandboxEveryoneWriteDenied 验证官方自报缺口1（Everyone 可写位置）
-// 已被密级关卡封堵：显式授 Everyone:(M) 的目录，沙箱内写入仍必须被拒。
-func TestSandboxEveryoneWriteDenied(t *testing.T) {
+// TestSandboxEveryoneWriteKnownGap 钉住官方自报缺口1（Everyone 可写位置）
+// 的当前行为：显式授 Everyone:(M) 的目录，沙箱内写入会被放行——Everyone
+// 在 restricting 列表里，pass-2 双检对其放行（DSH 官方同款；密级关卡撤除
+// 后重新打开，2026-09 决策接受，未来从工具层限制）。后续若重新收紧，
+// 翻转此断言即可。
+func TestSandboxEveryoneWriteKnownGap(t *testing.T) {
 	skipIfNestedSandbox(t)
 	ws := t.TempDir()
 	everyoneDir := t.TempDir()
@@ -182,15 +190,15 @@ func TestSandboxEveryoneWriteDenied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(probe); err == nil {
-		t.Errorf("Everyone 可写位置写入成功（官方缺口1 未堵）: %s", out)
+	if _, err := os.Stat(probe); err != nil {
+		t.Errorf("Everyone 可写位置写入被拒（当前语义应放行——若已收紧防护请翻转本断言）: %s", out)
 	} else {
-		t.Logf("✓ Everyone 可写位置被密级岗拦住")
+		t.Logf("已知盲区（官方同款，接受）：Everyone 可写位置被写入")
 	}
 }
 
 // cmd shell 也要能跑（buildShellCmdline 的另一分支）；顺带钉住 NUL 重定向
-// 兼容性（Low IL 写 NUL 设备——密级关卡 PoC 门项）。
+// 兼容性（受限令牌写 NUL 设备）。
 func TestSandboxCmdShell(t *testing.T) {
 	skipIfNestedSandbox(t)
 	ws := t.TempDir()

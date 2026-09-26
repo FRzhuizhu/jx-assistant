@@ -3,22 +3,26 @@ package main
 // P0-0 判定实验（固化为常驻测试）：删除路线 × 父目录 ACL 矩阵。
 //
 // 判定实验结论（2026-09，两套沙箱真机对照）：**分支1——路线级盲区**。
-// 密级关卡（Low IL + mandatory label）落地前，两套沙箱（本产品 Go 版与
-// DSH 官方 sandbox-windows-acl 的 TypeScript 版，后者经 dsh runner 同矩阵
-// 25 格实测）在「父目录给用户清柜权 FILE_DELETE_CHILD(0x40)」的位置上
-// （%TEMP%/Documents/Desktop）均被非 -Force Remove-Item 与 cmd del 删穿，
-// 而「父目录无 0x40」的位置（D:\智能体工作区）四路全拒——删除走父目录
-// 清柜权路线时不触发 WRITE_RESTRICTED 第二道检查，官方同款。密级关卡
-// 落地后本矩阵 16 格全拒（NO_WRITE_UP 在访问检查末端不分路线统一拦）。
+// 两套沙箱（本产品 Go 版与 DSH 官方 sandbox-windows-acl 的 TypeScript 版，
+// 后者经 dsh runner 同矩阵 25 格实测）在「父目录给用户清柜权
+// FILE_DELETE_CHILD(0x40)」的位置上（%TEMP%/Documents/Desktop）均被
+// 非 -Force Remove-Item 与 cmd del 删穿，而「父目录无 0x40」的位置
+// （D:\智能体工作区）四路全拒——删除走父目录清柜权路线时不触发
+// WRITE_RESTRICTED 第二道检查，官方同款。
+//
+// 曾以密级关卡（Low IL + mandatory label）封堵该盲区（16 格全拒），
+// 2026-09 因常驻 Low 标签污染真实工作区整体撤除（见 sandbox_windows.go
+// 文件头历史注记），回到官方同款语义。当前断言：
+//   - 无清柜权位置（dshroot）：四条删除路线必须全拒（硬断言）；
+//   - 有清柜权位置（temp/docs/desktop）：删穿属已知盲区（记录不判失败，
+//     未来从工具层限制）；
+//   - 创建/修改对照组必须全拒；工作区内创建/改名/删除必须成功（回归钉子）。
 //
 //	位置：temp    —— %TEMP% 新建目录树（用户 FullControl，含清柜权 0x40）
 //	      docs    —— 用户 Documents（同类 ACL）
 //	      desktop —— 用户 Desktop（同类 ACL）
 //	      dshroot —— JX_SBX_NO40_DIR（缺省 D:\智能体工作区）：用户 Modify 不含 0x40 的对照组
 //	路线：Remove-Item 无 -Force / Remove-Item -Force / [IO.File]::Delete() / cmd /c del
-//
-// 断言：删除矩阵 16 格必须全拒；创建/修改对照组必须全拒；
-// 工作区内创建/改名/删除必须成功（回归钉子）。
 
 import (
 	"context"
@@ -197,14 +201,20 @@ func TestSandboxDeleteMatrix(t *testing.T) {
 	}
 	t.Log(sb.String())
 
-	escapes := 0
+	escapes, knownGaps := 0, 0
 	for _, c := range results {
-		if c.escaped {
+		if !c.escaped {
+			continue
+		}
+		if c.loc == "dshroot" {
 			escapes++
-			t.Errorf("删除逃逸 %s @ %s（密级关卡应拦住一切路线）", c.route, c.loc)
+			t.Errorf("无清柜权位置删除逃逸 %s @ %s（写受限双检在这类位置必须有效）", c.route, c.loc)
+		} else {
+			knownGaps++
+			t.Logf("已知盲区（官方同款，接受并记录）：%s @ %s 走父目录清柜权路线删穿", c.route, c.loc)
 		}
 	}
 	if escapes == 0 {
-		t.Logf("✓ 删除矩阵全拒（%d 格）", len(results))
+		t.Logf("✓ 无清柜权位置删除矩阵全拒；已知盲区 %d 格（清柜权位置，官方同款）", knownGaps)
 	}
 }

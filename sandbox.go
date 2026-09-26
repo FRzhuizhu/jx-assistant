@@ -27,13 +27,6 @@ import (
 	"jxassistant/sandboxhelper"
 )
 
-// sandboxIntegrityLow 控制受限子进程是否降为低完整性级别（密级关卡）。
-// 默认开：配合工作区/临时目录的 Low 标签，把「写/删工作区外对象」在内核
-// 密级岗路线无关地拒掉（判定实验已证实父目录 FILE_DELETE_CHILD 删除路线
-// 绕过 WRITE_RESTRICTED 双检——官方同款盲区）。config sandbox.integrityLevel
-// = off 可回退官方同款行为（仅双检）。全局开关，启动时从 Config 初始化。
-var sandboxIntegrityLow = true
-
 // sandboxRun 是一次沙箱内执行的全部输入。
 type sandboxRun struct {
 	Dir       string // 子进程工作目录（cwd 本身不是边界）

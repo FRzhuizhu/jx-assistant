@@ -165,19 +165,23 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   SHA-256 派生，长期 ACE 授权工作区、一次性授权每运行私有临时目录）；子进程
   每次写都过内核两段检查。令牌默认 DACL 按官方 setTokenDefaultDaclGrant
   补授（临时 SID 优先，新建对象不携带共享工作区能力），保证管道/临时文件
-  可创建。
-- **密级关卡（Low 完整性级别，本产品在官方之上的封堵）**：受限令牌降为低
-  完整性（S-1-16-4096），工作区与私有临时目录打 Low 强制标签——内核
-  NO_WRITE_UP 在每次访问检查末端**不分路线**统一拒绝「写/删密级更高的
-  对象」。这堵死了写受限双检的一个路线级盲区：判定实验（两套沙箱真机
-  对照，矩阵固化在 sbx_delete_matrix_test.go）证实删除走**父目录
-  FILE_DELETE_CHILD 路线**（如 PowerShell 不带 -Force 的 Remove-Item、
-  cmd del）时不触发第二道 restricting 检查——DSH 官方沙箱同款（其
-  runner.spec.ts 只钉了工作区内删除成功，外部删除未实证）。密级关卡
-  同时封堵官方自报的另两个缺口（Everyone 可写位置、NTFS 硬链接写穿，
-  含"先建链后授权"顺序——多链接文件的共享 SD 还原收尾见
-  fixupMultiLinked）。16 格删除矩阵（4 删除路线 × 4 类父目录 ACL）全拒；
-  `sandbox.integrityLevel=off` 可回退官方同款行为（默认 low）。
+  可创建。NTFS 硬链接写穿属官方自报缺口（密级关卡撤除后重新打开：受限
+  进程打开工作区内硬链接名时，NTFS 懒传播会把继承授权 ACE 应用到共享
+  SD，外部别名随之可写——首授后全树扫描摘 ACE 的收尾因懒传播在下次
+  打开时重新应用而无效，已移除）。
+- **密级关卡（已撤除）**：曾在官方之上叠加 Low 完整性级别封堵——受限
+  令牌降为低完整性（S-1-16-4096）、工作区与私有临时目录打 Low 强制标签，
+  内核 NO_WRITE_UP 不分路线统一拒绝「写/删密级更高的对象」。因常驻
+  Low 标签污染真实工作区（把程序自身目录、数据文件一并降级，低级别
+  进程链连锁出各种「权限过低」），2026-09 整体撤除，回到官方同款语义。
+  由此接受官方已知盲区：删除走**父目录 FILE_DELETE_CHILD（清柜权）路线**
+  时不触发写受限双检（%TEMP%/Documents/Desktop 等用户 FullControl 位置可
+  被 非 -Force Remove-Item 与 cmd del 删穿，判定实验矩阵固化在
+  sbx_delete_matrix_test.go，其中无清柜权位置仍四路全拒）；**Everyone
+  可写位置**可写穿（ Everyone 在 restricting 列表内，pass-2 放行）。
+  后续计划从工具层（命令限制/审批）补防。历史残留的 Low 标签由启动时
+  `restoreStaleIntegrityLabels` 自动还原（WO 引导三步，见其注释），手动
+  清理用 `sandbox acl-audit --revoke`。
 - **Job Object 进程树兜底**（官方 createKillOnCloseJob 同款）：子进程挂起
   创建（CREATE_SUSPENDED）→ 分配 kill-on-close Job → 恢复线程；超时/取消
   TerminateJobObject 整树终止（含孙进程），主进程崩溃句柄关闭自动清场。
@@ -193,10 +197,10 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
 - **同源校验**：HTTP 面去掉 `Access-Control-Allow-Origin: *`，Origin 与
   Host 不符一律 403——堵死本机恶意网页跨域点「允许」/切 full 绕过沙箱
   体系的 CSRF 面。
-- **常驻授权审计**：工作区 ACE 与密级标签是跨会话复用的常驻授权（官方同款
-  设计，副作用是换工作区后留残留）。`jx-assistant.exe sandbox acl-audit
-  [--revoke] [--yes]` 报告并确认后清理两代合成 SID（本产品 S-1-80-* 与
-  DSH 官方 S-1-4-*）授权与 Low 标签残留。
+- **常驻授权审计**：工作区 ACE（及历史密级标签）是跨会话复用的常驻授权
+  （官方同款设计，副作用是换工作区后留残留）。`jx-assistant.exe sandbox
+  acl-audit [--revoke] [--yes]` 报告并确认后清理两代合成 SID（本产品
+  S-1-80-* 与 DSH 官方 S-1-4-*）授权与 Low 标签残留。
 - **Linux 后端**：额外放行 `/dev/null` sink（对齐官方 POSIX 后端），沙箱内
   `>/dev/null`、`2>/dev/null` 类重定向正常工作。
 - **Linux 后端**（`sandboxhelper`，对齐官方 Landlock 方案）：非特权

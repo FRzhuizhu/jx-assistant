@@ -86,6 +86,13 @@ func runSandboxCLI(args []string) int {
 			return 0
 		}
 	}
+	// 先走 WO 引导还原 Low 标签（根上带 (OI)(CI) Low 的毒树直接逐条摘会整树
+	// 失败，见 restoreStaleIntegrityLabels 注释），再逐条清合成 SID ACE。
+	if n, err := restoreStaleIntegrityLabels(roots); err != nil {
+		fmt.Printf("Low 标签引导还原：完成 %d 个工作区后部分失败: %v\n", n, err)
+	} else if n > 0 {
+		fmt.Printf("已引导还原 %d 个工作区的 Low 标签。\n", n)
+	}
 	cleaned, err := auditSandboxGrants(roots, true, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "清理失败: %v\n", err)

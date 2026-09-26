@@ -8,3 +8,5 @@ package main
 func auditSandboxGrants(roots []string, revoke, oursOnly bool) ([]string, error) { return nil, nil }
 
 func cleanupResidualGrants(roots []string) (int, error) { return 0, nil }
+
+func restoreStaleIntegrityLabels(roots []string) (int, error) { return 0, nil }

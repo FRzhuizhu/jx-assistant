@@ -1355,6 +1355,39 @@ func (a *App) scheduleResidualCleanup(workspace string) {
 	}()
 }
 
+// startupIntegrityLabelRestore 启动期把历史密级沙箱（机制已撤除）打在
+// 工作区上的常驻 Low 完整性标签还原为 Medium。收集配置工作区与全部会话
+// 工作区，异步执行、失败只记日志（WO 引导三步见 restoreStaleIntegrityLabels）。
+func (a *App) startupIntegrityLabelRestore(primary string) {
+	roots := map[string]bool{}
+	if p := strings.TrimSpace(primary); p != "" {
+		roots[p] = true
+	}
+	if a.Store != nil {
+		if ss, err := a.Store.List(); err == nil {
+			for _, s := range ss {
+				if p := strings.TrimSpace(s.Workspace); p != "" {
+					roots[p] = true
+				}
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return
+	}
+	list := make([]string, 0, len(roots))
+	for p := range roots {
+		list = append(list, p)
+	}
+	n, err := restoreStaleIntegrityLabels(list)
+	switch {
+	case err != nil:
+		log.Printf("还原历史 Low 完整性标签：完成 %d 个工作区后部分失败: %v", n, err)
+	case n > 0:
+		log.Printf("已还原历史密级沙箱残留的 Low 完整性标签（%d 个工作区: %v）", n, list)
+	}
+}
+
 // handleCompact 手动压缩：把 [最后摘要边界, 保留轮数之前] 的区间压成一条
 // 手动摘要；已有摘要永不重压，多次手动压缩叠加。
 func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {

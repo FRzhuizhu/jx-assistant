@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unsafe"
@@ -82,6 +83,47 @@ func cleanupResidualGrants(roots []string) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// restoreStaleIntegrityLabels 把历史密级沙箱（机制已撤除，见 sandbox_windows.go
+// 文件头）打在工作区树上的常驻 Low 完整性标签还原为 Medium。只处理根目录
+// 带 Low 标签的树（普通用户工作区不会有根级 Low 标签；浏览器等组件的 Low
+// 缓存只标自己的文件，不会标工作区根）；根干净即跳过、零开销。
+//
+// 还原采用「WO 引导」三步（真实大树实测验证）：直接替换根上带 (OI)(CI) 的
+// Low 标签会触发向下自动传播，传播逐子对象改标签需要 WRITE_OWNER，Modify
+// 档 ACL 没有 → 整个调用失败（实测 Win32 1299/5），且根上的继承 Low 会经
+// 懒传播不断把子文件标签污染回去。故先在根上并入当前用户可继承的
+// WRITE_OWNER ACE 引导传播铺权限，再换根标签（一次传播治愈全树），再
+// /T 补扫未重同步的残余，最后摘掉引导 ACE。
+func restoreStaleIntegrityLabels(roots []string) (int, error) {
+	n := 0
+	var firstErr error
+	for _, root := range roots {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+			continue
+		}
+		if !hasLowLabel(abs) {
+			continue
+		}
+		_, _ = grantWriteOwnerAce(abs, true) // 引导 ACE，尽力而为（失败仍尝试换标签）
+		_, flipErr := exec.Command("icacls", abs, "/setintegritylevel", "M").CombinedOutput()
+		_, sweepErr := exec.Command("icacls", abs,
+			"/setintegritylevel", "M", "/T", "/C", "/Q").CombinedOutput()
+		_ = stripWriteOwnerAce(abs)
+		if flipErr != nil || sweepErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("icacls %s: flip=%v sweep=%v", abs, flipErr, sweepErr)
+			}
+			continue
+		}
+		n++
+	}
+	return n, firstErr
 }
 
 // isOurSyntheticSid 只认本产品 sidForPath 形态（S-1-80-<4 子权威>）。

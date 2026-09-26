@@ -61,10 +61,7 @@ type Config struct {
 	Workspace  string        `json:"workspace"`
 	MaxSteps   int           `json:"maxSteps"`
 	AllowShell bool          `json:"allowShell"`
-	// 沙箱密级关卡：low=受限子进程降 Low 完整性（默认，路线无关封堵写/删）
-	// off=回退官方同款（仅 WRITE_RESTRICTED 双检）
-	SandboxIntegrityLevel string `json:"sandboxIntegrityLevel"`
-	DataDir               string `json:"dataDir"`
+	DataDir    string        `json:"dataDir"`
 	SkillsDir             string `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
 	// 上下文压缩设置
 	CompactMode      string  `json:"compactMode"`      // rule=规则压缩(默认) llm=模型摘要 off=关闭
@@ -110,9 +107,8 @@ func DefaultConfig() *Config {
 		Model:                 "deepseek-chat",
 		Workspace:             wd,
 		MaxSteps:              30,
-		AllowShell:            true,
-		SandboxIntegrityLevel: "low",
-		DataDir:               "data",
+		AllowShell: true,
+		DataDir:    "data",
 		CompactMode:           "rule",
 		KeepRounds:            5,
 		RuleInterval:          5,
@@ -191,9 +187,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.CompactThreshold <= 0.5 || cfg.CompactThreshold >= 1 {
 		cfg.CompactThreshold = def.CompactThreshold
-	}
-	if cfg.SandboxIntegrityLevel != "off" {
-		cfg.SandboxIntegrityLevel = "low"
 	}
 	// 远程接入：老配置没有这一键时补默认网关地址；设备号与配对密钥留空则
 	// 为本机随机生成并立即落盘——每台安装天然拿到互不冲突的设备号和独立

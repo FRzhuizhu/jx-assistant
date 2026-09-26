@@ -1,10 +1,11 @@
 package main
 
 // 真实工作区初始化回归（曾全线失败的根因固化）：
-//   - 场景1：真实 Modify 档 ACL 的工作目录（Authenticated Users:(M)，不含
-//     WRITE_OWNER）上，授权+密级标签+沙箱执行必须全通。历史缺陷：写强制
-//     标签要求 WRITE_OWNER，Modify 档与所有者隐式权限都不含——%TEMP% 的
-//     FullControl 档测试目录测不出（setLabelAce 的补授权重试修复）。
+//   - 场景1：真实 Modify 档 ACL 的工作目录（Authenticated Users:(M)）上，
+//     授权+沙箱执行必须全通。历史缺陷出在密级标签时代（已整体撤除）：
+//     写强制标签要求 WRITE_OWNER，Modify 档与所有者隐式权限都不含——
+//     %TEMP% 的 FullControl 档测试目录测不出（setLabelAce 的补授权重试
+//     曾为此而修，标签机制撤除后该路径仅服务于残留清理）。
 //   - 场景2：悬空工作区路径（目录改名/移动残留）必须给出中文明确指引，
 //     而非裸错误码。
 
@@ -33,7 +34,7 @@ func TestSandboxRealWorkspaceInit(t *testing.T) {
 	if !strings.Contains(out, "real-ok") {
 		t.Fatalf("真实工作区命令输出异常: %q", out)
 	}
-	// 二次执行验证幂等（标签已存在，走快速路径）
+	// 二次执行验证幂等（授权 ACE 已存在，走快速路径）
 	out2, err := spawnConfinedWindows(context.Background(), sandboxRun{
 		Dir: realWS, Command: `echo real-ok-2`, Shell: "cmd",
 		Timeout: 120 * time.Second, Policy: permWorkspace, Workspace: realWS,

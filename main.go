@@ -84,7 +84,6 @@ func main() {
 			}
 		}
 	}
-	sandboxIntegrityLow = cfg.SandboxIntegrityLevel != "off"
 	// -port 只覆盖本次监听，不写进 cfg.Port：否则运行期任何一次保存配置
 	// （如设置页改专家/提供方）都会把临时端口永久落盘，改变下次启动行为
 	listenPort := cfg.Port
@@ -96,6 +95,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化失败: %v", err)
 	}
+
+	// 历史密级沙箱残留还原：旧版给工作区打过常驻 Low 完整性标签（机制已
+	// 撤除），启动时自动还原为 Medium（异步；根级签名校验防误伤他人标签）。
+	go app.startupIntegrityLabelRestore(cfg.Workspace)
 
 	host := cfg.BindHost
 	if host == "" {
