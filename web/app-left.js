@@ -275,17 +275,13 @@ function openViewMenu(anchor) {
 // 调后端弹出系统原生「选择文件夹」对话框，返回所选目录绝对路径；取消返回空串。
 // 浏览器自身的目录选择 API 不回传绝对路径，而本服务就跑在用户本机上，
 // 由后端代为弹框既能拿到真实路径，体验也与系统/浏览器一致。
-// 窄屏（手机远程访问）例外：原生对话框弹在宿主机屏幕上，手机这边只会
-// 永远转圈——改为直接输入绝对路径，按钮在手机端才真正可用。
+// 窄屏（手机远程访问）不支持：原生对话框弹在宿主机屏幕上，手机端永远等不到——
+// 点了只弹轻提示告知去电脑上操作（守卫在 addWorkFolder）。
 let pickingFolder = false;
 async function pickWorkFolder() {
   if (pickingFolder) return '';
   pickingFolder = true;
   try {
-    if (isNarrow()) {
-      const p = prompt('输入工作目录的完整路径（如 D:\\项目\\某目录）', state.defaultWs || '');
-      return (p || '').trim();
-    }
     const start = state.defaultWs ? '?start=' + encodeURIComponent(state.defaultWs) : '';
     const res = await api('/api/pick-folder' + start);
     return (res && res.path) || '';
@@ -305,8 +301,13 @@ function rememberWorkspace(ws) {
   if (h.includes(ws)) lsSet('jx.wshidden', h.filter((x) => x !== ws)); // 手动重新添加 = 取消拉黑
 }
 
-// 侧栏「添加工作目录」：弹选择框并登记
+// 侧栏「添加工作目录」：弹选择框并登记。
+// 窄屏统一浮窗告知（原生选择框在宿主机上弹，手机端派不上用场）
 async function addWorkFolder() {
+  if (isNarrow()) {
+    showToast('手机端不支持新增工作目录，请到电脑宽屏上操作', $('wst-add'));
+    return;
+  }
   const p = await pickWorkFolder();
   if (!p) return;
   rememberWorkspace(p);

@@ -62,6 +62,18 @@ svg { width: 16px; height: 16px; flex: none; }
 .sb-resize:hover::after, .sb-resize.dragging::after {
   opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
 }
+
+/* 轻提示浮窗：弹出卡片同族样式语言，自动消散（showToast）。
+   z-index 同 .popover：窄屏上要在整屏浮层之上才看得见 */
+.jx-toast {
+  position: fixed; z-index: 240; max-width: min(86vw, 340px);
+  background: #fff; border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(20, 24, 32, .14);
+  padding: 10px 14px; font-size: 13px; line-height: 1.5; color: var(--text);
+  opacity: 0; transform: translateY(4px); pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease;
+}
+.jx-toast.show { opacity: 1; transform: none; }
 #sidebar.anim, #rpanel.anim {
   transition: width .22s cubic-bezier(.4, 0, .2, 1), min-width .22s cubic-bezier(.4, 0, .2, 1);
 }
@@ -1640,6 +1652,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   --danger: #ff9d8f;
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
+:root[data-theme='dark'] .jx-toast { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .modal-card { background: #1d2026; }
 :root[data-theme='dark'] .composer-card:focus-within { border-color: #4a5158; }
 :root[data-theme='dark'] ::-webkit-scrollbar-thumb { background: #3d434d; }

@@ -3043,7 +3043,7 @@ function syncComposer(view) {
   viewEl(view, 'flag-goal').classList.toggle('on', s.goalMode);
   viewEl(view, 'flag-goal').title = s.goalMode ? ('目标模式：' + (s.goalText || '（未填写目标）')) : '目标模式';
   viewEl(view, 'mode-flags').classList.toggle('hidden', !s.planMode && !s.goalMode);
-  if (vcur) viewEl(view, 'input').placeholder = '发消息或创建任务…';
+  if (vcur) viewEl(view, 'input').placeholder = sendKeyHint(); // 占位跟随发送快捷键设置
   refreshCtxChip(view);
   // 以下只属于主对话区（首页草稿 / 顶栏徽标 / 目录胶囊）
   if (view !== mainView) return;
@@ -3071,7 +3071,7 @@ function syncComposer(view) {
     wsRow.classList.add('hidden');
     modeRow.classList.add('hidden');
   }
-  $('input').placeholder = state.cur ? '发消息或创建任务…' : '描述你想要构建的内容…';
+  $('input').placeholder = sendKeyHint(); // 占位跟随发送快捷键设置（首页/会话同一提示）
   persistHomeDraftLS(); // 所有选择改动都会走到这里，统一落一次本地草稿
 }
 

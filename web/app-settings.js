@@ -20,9 +20,11 @@ function setSettingsPane(name) {
   });
 }
 
-/* ---------- 关于页：问题反馈（客户端 → 服务端入库；只收不看，排查时查库） ---------- */
+/* ---------- 关于页：问题反馈（标题+正文+截图，服务端入库存图；只收不看） ---------- */
 
-let fbKind = 'bug'; // 当前选中的反馈类型
+const FB_MAX_IMAGES = 4;
+let fbKind = 'bug';       // 当前选中的反馈类型
+let fbImages = [];        // 待发送的图片 File 列表
 
 function bindFeedbackForm() {
   const wrap = document.getElementById('feedback-section');
@@ -34,26 +36,69 @@ function bindFeedbackForm() {
       wrap.querySelectorAll('.fb-kind').forEach((x) => x.classList.toggle('cur', x === b));
     };
   });
+  $('fb-img-btn').onclick = () => $('fb-img-input').click();
+  $('fb-img-input').onchange = () => {
+    for (const f of $('fb-img-input').files) {
+      if (fbImages.length >= FB_MAX_IMAGES) { alert(`截图最多 ${FB_MAX_IMAGES} 张`); break; }
+      fbImages.push(f);
+    }
+    $('fb-img-input').value = '';
+    renderFbImages();
+  };
   $('fb-send').onclick = sendFeedback;
 }
 
+// renderFbImages 缩略图预览 + 单张移除
+function renderFbImages() {
+  const box = $('fb-img-previews');
+  box.innerHTML = '';
+  $('fb-img-hint').textContent = fbImages.length ? `${fbImages.length}/${FB_MAX_IMAGES} 张` : '';
+  fbImages.forEach((f, i) => {
+    const cell = document.createElement('span');
+    cell.className = 'fb-thumb';
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(f);
+    img.onload = () => URL.revokeObjectURL(img.src);
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'fb-thumb-x';
+    x.textContent = '✕';
+    x.title = '移除这张截图';
+    x.onclick = () => { fbImages.splice(i, 1); renderFbImages(); };
+    cell.appendChild(img);
+    cell.appendChild(x);
+    box.appendChild(cell);
+  });
+}
+
 async function sendFeedback() {
+  const title = $('fb-title').value.trim();
   const text = $('fb-text').value.trim();
-  if (!text) return;
+  if (!title) { alert('请填写标题'); return; }
+  if (!text) { alert('请填写正文'); return; }
   const btn = $('fb-send');
   btn.disabled = true;
   btn.textContent = '发送中…';
   try {
-    await api('/api/feedback', {
-      method: 'POST',
-      body: JSON.stringify({
-        kind: fbKind,
-        content: text,
-        sessionId: (state.cur && state.cur.id) || '',
-        diagnostics: { ua: navigator.userAgent, page: location.href },
-      }),
+    // FormData：远程模式下由 remote-boot 自动转 multipart 帧协议走加密中继
+    const fd = new FormData();
+    fd.append('kind', fbKind);
+    fd.append('title', title);
+    fd.append('content', text);
+    fd.append('sessionId', (state.cur && state.cur.id) || '');
+    fd.append('diagnostics', JSON.stringify({ ua: navigator.userAgent, page: location.href }));
+    for (const f of fbImages) fd.append('images', f, f.name);
+    await fetch('/api/feedback', { method: 'POST', body: fd }).then(async (res) => {
+      if (!res.ok) {
+        let msg = res.statusText;
+        try { msg = (await res.json()).error || msg; } catch (e) { /* 保留状态文本 */ }
+        throw new Error(msg);
+      }
     });
+    $('fb-title').value = '';
     $('fb-text').value = '';
+    fbImages = [];
+    renderFbImages();
     btn.textContent = '已发送 ✓';
     setTimeout(() => { btn.textContent = '发送反馈'; }, 1500);
   } catch (e) {
@@ -67,7 +112,11 @@ async function sendFeedback() {
 async function openFeedbackForm(prefill, sessionId) {
   await openSettings('about');
   const ta = $('fb-text');
-  if (ta && prefill && !ta.value.trim()) ta.value = prefill;
+  if (ta && prefill && !ta.value.trim()) {
+    $('fb-title').value = prefill.split('
+')[0].slice(0, 100);
+    ta.value = prefill;
+  }
   if (ta) ta.focus();
 }
 
@@ -1031,7 +1080,7 @@ buildAccentRow();
 makeSelect('sel-sendkey', 'sendkey', [
   { v: 'enter', label: 'Enter 发送，Shift+Enter 换行' },
   { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter 换行' },
-], (v) => lsSet('jx.sendkey', v));
+], (v) => { lsSet('jx.sendkey', v); updateSendKeyHint(); }); // 输入框占位文案同步跟随
 makeSelect('sel-midrun', 'midrun', [
   { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
