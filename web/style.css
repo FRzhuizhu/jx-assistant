@@ -754,8 +754,11 @@ body.rp-open .w-handle { display: none; }
 .mode-flags.hidden { display: none; }
 
 /* ---------- 弹出面板 ---------- */
+/* z-index 必须压过窄屏的整屏浮层（左/右栏 210、顶栏 220、设置 230）：
+   弹层挂在 body 上而非浮层内，层级低于 210 时手机端点排序/菜单只会
+   「弹到浮层背后」——按钮看起来完全没反应 */
 .popover {
-  position: fixed; z-index: 90; background: #fff; border: 1px solid var(--border);
+  position: fixed; z-index: 240; background: #fff; border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 8px 28px rgba(20, 24, 32, .14);
   padding: 6px; min-width: 190px; max-width: 340px;
 }
@@ -1234,9 +1237,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .badge.remote { cursor: pointer; border: none; font: inherit; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.remote:hover { background: rgba(77, 107, 254, .16); }
 
-/* 审批卡片：右下角堆叠，等待用户对越权动作的决定 */
+/* 审批卡片：右下角堆叠，等待用户对越权动作的决定。
+   z-index 压过窄屏整屏浮层（同 .popover 的理由）：手机端左/右栏浮层开着时
+   审批卡弹在浮层背后等于永远等不到用户决定 */
 #approval-bar {
-  position: fixed; right: 16px; bottom: 16px; z-index: 60;
+  position: fixed; right: 16px; bottom: 16px; z-index: 240;
   display: flex; flex-direction: column; gap: 10px; max-width: 380px;
 }
 .ap-card {

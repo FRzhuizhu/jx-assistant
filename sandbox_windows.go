@@ -900,7 +900,7 @@ func spawnConfinedWindows(ctx context.Context, r sandboxRun) (string, error) {
 	var buf syncBuffer
 	go child.drain(&buf)
 	timedOut := child.wait(ctx, r.Timeout)
-	res := strings.TrimRight(buf.String(), "\r\n")
+	res := strings.TrimRight(decodeCmdOutput(buf.Bytes()), "\r\n")
 	if len(res) > 64*1024 {
 		res = res[:64*1024] + "\n[输出过长已截断]"
 	}
@@ -929,6 +929,14 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// Bytes 取原始输出字节（GBK 等非 UTF-8 控制台输出必须在字节层交给
+// decodeCmdOutput 解码；String() 的隐式转换会先把非法字节永久替换成 U+FFFD）
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Bytes()
 }
 
 // buildShellCmdline 解析 shell 名并构造 (appName, commandLine)。

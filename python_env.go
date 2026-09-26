@@ -65,13 +65,13 @@ func (p *pythonRuntime) run(args []string, timeout time.Duration) (string, error
 		return "", fmt.Errorf("脚本执行超时（%v）", timeout)
 	}
 	if err != nil {
-		tail := string(out)
+		tail := decodeCmdOutput(out)
 		if len(tail) > 1500 {
 			tail = tail[:1500] + "…"
 		}
 		return "", fmt.Errorf("脚本执行失败: %v\n%s", err, tail)
 	}
-	return string(out), nil
+	return decodeCmdOutput(out), nil
 }
 
 // pyMissingFromStderr 从脚本报错里识别 ModuleNotFoundError：便携运行时

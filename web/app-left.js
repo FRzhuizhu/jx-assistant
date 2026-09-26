@@ -273,11 +273,17 @@ function openViewMenu(anchor) {
 // 调后端弹出系统原生「选择文件夹」对话框，返回所选目录绝对路径；取消返回空串。
 // 浏览器自身的目录选择 API 不回传绝对路径，而本服务就跑在用户本机上，
 // 由后端代为弹框既能拿到真实路径，体验也与系统/浏览器一致。
+// 窄屏（手机远程访问）例外：原生对话框弹在宿主机屏幕上，手机这边只会
+// 永远转圈——改为直接输入绝对路径，按钮在手机端才真正可用。
 let pickingFolder = false;
 async function pickWorkFolder() {
   if (pickingFolder) return '';
   pickingFolder = true;
   try {
+    if (isNarrow()) {
+      const p = prompt('输入工作目录的完整路径（如 D:\\项目\\某目录）', state.defaultWs || '');
+      return (p || '').trim();
+    }
     const start = state.defaultWs ? '?start=' + encodeURIComponent(state.defaultWs) : '';
     const res = await api('/api/pick-folder' + start);
     return (res && res.path) || '';

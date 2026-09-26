@@ -354,7 +354,7 @@ func (c *remoteClient) run(ctx context.Context, dir, command string, timeout tim
 		out = out[:64*1024]
 		note += "\n[输出过长已截断]"
 	}
-	res := strings.TrimRight(string(out), "\r\n") + note
+	res := strings.TrimRight(decodeCmdOutput(out), "\r\n") + note
 	if strings.TrimSpace(res) == "" {
 		res = "（命令执行完成，无输出）"
 	}

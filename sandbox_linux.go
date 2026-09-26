@@ -47,7 +47,7 @@ func spawnConfinedLinuxReexec(r sandboxRun) (string, error) {
 		out = out[:64*1024]
 		note += "\n[输出过长已截断]"
 	}
-	res := strings.TrimRight(string(out), "\r\n") + note
+	res := strings.TrimRight(decodeCmdOutput(out), "\r\n") + note
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			res += fmt.Sprintf("\n[exit code %d]", ee.ExitCode())

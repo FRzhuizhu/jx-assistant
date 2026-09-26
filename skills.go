@@ -299,9 +299,9 @@ func runCommandCapture(ctx context.Context, exe string, args []string, dir strin
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(out), err
+		return decodeCmdOutput(out), err
 	}
-	return string(out), nil
+	return decodeCmdOutput(out), nil
 }
 
 func tailRunes(s string, n int) string {

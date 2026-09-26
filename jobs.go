@@ -45,7 +45,9 @@ func (b *lockedBuffer) Write(p []byte) (int, error) {
 func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := b.buf.String()
+	// 控制台字节按 UTF-8/GB18030 还原（与前台 runCommand 同规则）：
+	// 缓冲里是原始字节，这里是对外的唯一字符串出口，解码只此一处
+	s := decodeCmdOutput(b.buf.Bytes())
 	if b.drop > 0 {
 		return fmt.Sprintf("…（开头 %d 字节已被截断）\n%s", b.drop, s)
 	}
