@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -1169,6 +1170,42 @@ func (a *App) sessionFromPath(w http.ResponseWriter, r *http.Request) *SessionMe
 	return m
 }
 
+// promptBrief 下发瘦身的比对基元：prompt 快照里只取与缓存相关的 sys/tools。
+// env 逐轮必变（时间/环境），且其变化由独立的 env 行驱动前端展示，比较时忽略。
+type promptBrief struct {
+	Sys   string          `json:"sys"`
+	Tools json.RawMessage `json:"tools"`
+}
+
+// trimMessagesForUI 对下发前端的消息副本做瘦身（只改本次响应的内存对象，库内原样）：
+//   - request/audit 是审计工件：前端不展示（导出走 /api/sessions/{id}/export
+//     服务端直读），正文不下发——与 checkpoint 的 Before 不下发同一思路；
+//   - prompt 拼装快照与上一条的 sys+tools 相同 → 只发空壳 {}，前端跳过空壳、
+//     只见变化行（规范 §4「只讲变化」的对应瘦身）；有变化才完整下发。
+//
+// 比对基于原始正文（上一条 prompt 的原始 sys/tools），空壳只是替换下发副本、
+// 不参与比较，否则「A→A→B」会因中间行被掏空而误判为变化。
+func trimMessagesForUI(msgs []*StoredMessage) {
+	var last *promptBrief
+	for _, m := range msgs {
+		switch m.Kind {
+		case kindRequest, kindAudit:
+			m.Content = ""
+		case kindPrompt:
+			var cur promptBrief
+			if json.Unmarshal([]byte(m.Text()), &cur) != nil {
+				continue // 坏行原样下发（前端同样忽略坏行）
+			}
+			if last != nil && cur.Sys == last.Sys && bytes.Equal(cur.Tools, last.Tools) {
+				m.Content = "{}"
+				continue
+			}
+			cur.Tools = append(json.RawMessage(nil), cur.Tools...) // 自持副本，别引用解码缓冲
+			last = &cur
+		}
+	}
+}
+
 func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
@@ -1179,6 +1216,7 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	trimMessagesForUI(msgs) // 下发瘦身：库内原样，只削响应副本（见函数注释）
 	// running 与 pending 以内存运行时为准：刷新页面后据此自动接上执行流、
 	// 恢复「已插话/已排队」的显示，不依赖刷新前的页面状态
 	cps, err := a.Store.CheckpointsAfter(m.ID, 0) // seq 从 1 起，>0 即全部

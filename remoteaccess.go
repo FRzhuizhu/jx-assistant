@@ -426,7 +426,6 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	if ct := fr.Headers["content-type"]; ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
-	wantGz := fr.Headers["x-p2p-gzip"] == "1"
 
 	// send：单帧 seal 后经 {t:'res'} 回传；失败即中止整条桥接
 	send := func(v any) bool {
@@ -450,6 +449,11 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	}
 	defer resp.Body.Close()
 
+	// 响应体 gzip 仅对一次性 JSON 响应启用（前端带 x-p2p-gzip 头时）：正文先压
+	// 再 base64/加密，膨胀只作用于压缩后字节。SSE/流式响应必须排除——gzip 内部
+	// 缓冲不及时吐，会拖走对话流的实时性。
+	wantGz := fr.Headers["x-p2p-gzip"] == "1" &&
+		strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json")
 	head := map[string]any{
 		"t": "head", "id": fr.ID,
 		"status":      resp.StatusCode,

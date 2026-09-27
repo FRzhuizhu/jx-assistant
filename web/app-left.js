@@ -813,6 +813,7 @@ function toggleSidebar() {
   if (isNarrow()) {
     const show = document.body.classList.toggle('sb-show');
     setSidebarBtn(!show);
+    if (!show) onLeftPanelClosed(); // 收起：补回历史哨兵，下一次返回重新呼出左栏
     return;
   }
   const sb = $('sidebar');
@@ -911,3 +912,76 @@ function setupSidebarResize() {
   window.addEventListener('resize', () => { if (!isNarrow()) applySidebarWidth(sbWidth()); });
 }
 setupSidebarResize();
+
+/* ---------- 手机端返回键守卫（仅窄屏）：先呼出左栏，再按才离开 ----------
+   三态收敛（见 backGuardPop）：右栏浮层开着 → 先关右栏；左栏开着 → 放行离开
+   （浏览器无更早页面即关闭，有则回上一页）；都给关着 → 呼出左栏。用户手动
+   收起左栏（顶栏按钮/滑动手势/选中会话/进设置）后，下一次返回重新呼出左栏
+   （收起钩子 onLeftPanelClosed 挂在 toggleSidebar 与 narrowClosePanels 上）。
+
+   实现基于一条历史哨兵：窄屏页面加载即压一条 {jxGuard:1}，popstate 按到达点
+   校准 guardOn（当前位置是否站在哨兵上）；需要拦住返回时就补压哨兵。
+   桌面宽屏不压哨兵、不拦截——浏览器后退行为完全不变。 */
+
+let guardOn = false;            // 当前位置是否在我方哨兵条目上（popstate 按到达点校准）
+let exiting = false;            // 已放行退出：不再拦截，直到页面重载
+let backGuardSkipOnce = false;  // 设置页主动退栈（history.go）的一次性豁免，见 app-settings.js
+let guardReadyAt = 0;           // 加载瞬间的杂散 popstate 忽略窗口
+
+function backGuardArm() {
+  if (guardOn) return; // 幂等：栈顶已有哨兵，不再堆叠
+  guardOn = true;
+  history.pushState({ jxGuard: 1 }, '');
+}
+
+// 左栏被收起后的统一钩子：补回哨兵，让下一次返回键重新从「呼出左栏」开始。
+// 宽屏/已放行退出时自动跳过（幂等，可被多处重复调用）。
+function onLeftPanelClosed() {
+  if (!isNarrow() || exiting) return;
+  backGuardArm();
+}
+
+function backGuardPop(e) {
+  guardOn = !!(e.state && e.state.jxGuard); // 先按到达点校准
+  if (Date.now() < guardReadyAt) return;     // 加载瞬间：浏览器可能补发杂散 popstate
+  if (backGuardSkipOnce) { backGuardSkipOnce = false; return; } // 设置页程序性退栈
+  // 设置弹窗：它有自己的两级返回（setHistDepth）。本守卫先于设置页注册，
+  // 事件派发到这里时设置 UI 还没被关闭，「可见」即可靠；停在设置层（state
+  // 带 jxSettings）时一并跳过。
+  if (!$('settings').classList.contains('hidden')) return;
+  if (e.state && e.state.jxSettings) return;
+  if (!isNarrow() || exiting) return;
+  // 弹出菜单开着：先关菜单（返回键逐层收敛），下一次返回才开左栏
+  if (document.querySelector('.popover:not(.hidden)')) {
+    closePopovers();
+    backGuardArm();
+    return;
+  }
+  // 居中层（确认框等 modal）开着：本次按键放行给「关掉弹层后的下一次返回」——
+  // 不拦截也不补哨兵，第二次按即离开页面
+  if ([...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'))) return;
+  // 右栏浮层开着：先关右栏
+  if (!$('rpanel').classList.contains('hidden')) {
+    rpClose();
+    backGuardArm();
+    return;
+  }
+  // 左栏开着：放行离开——主动再退一步，让「第二次按返回＝离开页面」成立；
+  // 无更早历史时 back() 静默无效，下一次按键由浏览器接管关闭
+  if (document.body.classList.contains('sb-show')) {
+    exiting = true;
+    history.back();
+    return;
+  }
+  // 都给关着：呼出左栏（与 toggleSidebar 窄屏分支同一套状态）
+  document.body.classList.add('sb-show');
+  setSidebarBtn(false);
+  backGuardArm();
+}
+
+(function initLeftBackGuard() {
+  if (!isNarrow()) return; // 桌面/宽屏：不参与返回键语义
+  guardReadyAt = Date.now() + 600;
+  window.addEventListener('popstate', backGuardPop);
+  backGuardArm(); // 加载即压哨兵：第一次按返回先给左栏，而不是直接离开
+})();

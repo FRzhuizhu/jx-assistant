@@ -92,6 +92,7 @@ function isNarrow() { return !!(narrowMq && narrowMq.matches); }
 // 窄屏下收起左栏浮层：选中/新建会话等入口调用（右栏浮层保持用户手开的状态）
 function narrowClosePanels() {
   if (isNarrow()) document.body.classList.remove('sb-show');
+  onLeftPanelClosed(); // 返回键守卫：收起后补历史哨兵（宽屏/已放行退出时内部自动跳过）
 }
 
 // 断点跨越（拖拽窗口跨 500px）：窄→宽清浮层类并恢复桌面记忆与右栏推导；

@@ -519,7 +519,8 @@ function displayKindOf(m) {
 
 // 存储行类型 → 条目构造器（契约的注册表）。后端新增类型：在此注册一行
 // 构造器即可获得标准样式；需要新样式先在规范 §3 登记样式基元。
-// 构造器往当前回合塞条目；request/audit 是审计工件不展示（导出功能的数据源）。
+// 构造器往当前回合塞条目；request/audit 是审计工件不展示（导出功能的数据源，
+// 正文由服务端下发瘦身时置空，见 server.go trimMessagesForUI）。
 const ROW_ITEM_BUILDERS = {
   // 对话内容：user 开新回合；assistant 拆 think/text/tool 条目（复合行拆分规则见规范 §3）
   chat(m, st) {
@@ -577,10 +578,14 @@ const ROW_ITEM_BUILDERS = {
       st.cur.items.push({ k: 'prompttail', seq: m.seq, env, tools });
       st.lastEnv = env;
     } else {
-      if (sys !== st.lastSys) st.cur.items.push({ k: 'syschange', seq: m.seq, sys, prev: st.lastSys });
-      if (toolsJson !== st.lastToolsJson) st.cur.items.push({ k: 'toolschange', seq: m.seq, tools, prevTools: st.lastTools });
+      // 空壳行（服务端把与上一条逐字节相同的快照瘦成 {} 后）不产生任何变更展示：
+      // 有值才比较、才推进基线——sys/tools 真实“变空”不可能发生，空值只来自瘦身
+      if (sys && sys !== st.lastSys) st.cur.items.push({ k: 'syschange', seq: m.seq, sys, prev: st.lastSys });
+      if (toolsJson && toolsJson !== st.lastToolsJson) st.cur.items.push({ k: 'toolschange', seq: m.seq, tools, prevTools: st.lastTools });
     }
-    st.sawPrompt = true; st.lastSys = sys; st.lastToolsJson = toolsJson; st.lastTools = tools;
+    st.sawPrompt = true;
+    if (sys) st.lastSys = sys;
+    if (toolsJson) { st.lastToolsJson = toolsJson; st.lastTools = tools; }
   },
   // 继承标记行由 inheritBlock 分段处理（这里不产条目）
   inherit() {},

@@ -945,7 +945,10 @@ function closeSettingsUI() {
   setL2On(false);
   const d = setHistDepth;
   setHistDepth = 0;
-  if (d > 0) history.go(-d); // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
+  if (d > 0) {
+    backGuardSkipOnce = true; // 程序性退栈：返回键守卫跳过这次 popstate（左栏别跟着弹出来）
+    history.go(-d);           // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
+  }
   loadStatus(); // 设置里可能刚改了远程开关：左下角手机图标状态随之对齐
 }
 

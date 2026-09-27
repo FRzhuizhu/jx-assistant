@@ -5,7 +5,10 @@
    1. gate 换页时注入 window.P2P_GATE=true 与 P2P_APP_ID，配对信息已存
       localStorage['p2p_cfg_v1_<设备号>']
    2. 本脚本劫持 window.fetch：同源 /api/* 请求 → 封 {t:'req'} 帧 AES-GCM 加密后
-      POST /relay（NDJSON 流式响应）→ 还原成带流的 Response（对话流/事件流可用）
+      POST /relay（NDJSON 流式响应）→ 还原成带流的 Response（对话流/事件流可用）；
+      请求附 x-p2p-gzip 头（浏览器支持 DecompressionStream 时），服务端只对
+      一次性 JSON 响应整体 gzip（先压再 base64/加密，膨胀只作用于压缩后字节），
+      接收端按 head.gz 流式解压；SSE/流式响应不压（gzip 缓冲会破坏实时性）
    3. 劫持 window.EventSource：/api/events 的 SSE 长连接改为「流式 fetch + 自动重连」
       （210 对单请求有 150s 上限，断开后 3s 重连；会话执行流的接回由应用既有
       「接回执行流」机制自动完成）
@@ -29,6 +32,7 @@
 
   var realFetch = window.fetch.bind(window);
   var HAS_SUBTLE = typeof crypto !== 'undefined' && !!crypto.subtle;
+  var HAS_DECOMPRESS = typeof DecompressionStream === 'function'; // 响应 gzip 解压能力（现代浏览器）
 
   /* ---------- base64 工具 ---------- */
   function b64ToBytes(b64) {
@@ -304,6 +308,7 @@
       };
       var ct = getH('content-type') || (body && body.contentType);
       if (typeof ct === 'string' && ct) headers['content-type'] = ct;
+      if (HAS_DECOMPRESS) headers['x-p2p-gzip'] = '1'; // 声明可解压；服务端按响应类型决定是否压
       var method = (init.method || 'GET').toUpperCase();
       var id = 'r' + (++seq);
       var frame = { t: 'req', id: id, method: method, path: u.pathname + u.search, headers: headers };
@@ -346,9 +351,14 @@
           var handleFrame = function (fr) {
             if (fr.t === 'head' && !settled) {
               settled = true;
-              var stream = new ReadableStream({
+              // head.gz：响应体是 gzip 流（服务端已压缩）——chunk 帧仍进 raw 控制器，
+              // 外层套 DecompressionStream 流式解压给消费方；解压错误沿管道传播
+              var raw = new ReadableStream({
                 start: function (c) { controllerRef = c; },
               });
+              var stream = (fr.gz && HAS_DECOMPRESS)
+                ? raw.pipeThrough(new DecompressionStream('gzip'))
+                : raw;
               var hdrs = new Headers();
               if (fr.contentType) hdrs.set('Content-Type', fr.contentType);
               resolve(new Response(stream, { status: fr.status || 200, headers: hdrs }));
