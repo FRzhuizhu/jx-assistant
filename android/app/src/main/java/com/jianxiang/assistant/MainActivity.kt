@@ -15,6 +15,11 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.updatePadding
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -28,12 +33,21 @@ import java.net.URL
  */
 class MainActivity : Activity() {
 
+    private lateinit var root: FrameLayout
     private lateinit var web: WebView
     private var loaded = false
     @Volatile private var probing = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // targetSdk 35 起系统强制边缘到边缘（edge-to-edge）：窗口不再自动避开状态栏/导航条，
+        // 必须显式声明，让系统把 Insets 交给应用自行处理（否则顶部被通知栏盖住、
+        // 底部被三键导航条盖住）
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        root = FrameLayout(this)
+        root.setBackgroundColor(0xFFFFFFFF.toInt())
+        setContentView(root)
+        applyWindowInsets()
         buildWebView()
         showSplash("数字助理启动中…")
         // 通知权限（13+ 运行时申请）：拒绝也继续，通知只影响完成提醒
@@ -99,6 +113,33 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 边缘到边缘适配：把系统栏（状态栏/导航条）、刘海与输入法占用的区域，
+     * 实时折算成根容器的内边距——内容永远不会被通知栏/导航条盖住，
+     * 键盘弹出时底部也随之上抬（配合 manifest 的 adjustResize）。
+     */
+    private fun applyWindowInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            v.updatePadding(
+                left = bars.left,
+                top = bars.top,
+                right = bars.right,
+                bottom = maxOf(bars.bottom, ime.bottom),
+            )
+            insets
+        }
+        // 浅色窗口：状态栏/导航条图标用深色，保证看得清
+        WindowInsetsControllerCompat(window, root).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+        ViewCompat.requestApplyInsets(root)
+    }
+
     private fun buildWebView() {
         web = WebView(this)
         web.layoutParams = ViewGroup.LayoutParams(
@@ -120,21 +161,17 @@ class MainActivity : Activity() {
 
     /** 引擎就绪前的极简启动页（应用自带，不联网）。 */
     private fun showSplash(text: String) {
-        setContentView(
-            FrameLayout(this).apply {
-                setBackgroundColor(0xFFFFFFFF.toInt())
-                addView(
-                    TextView(this@MainActivity).apply {
-                        this.text = text
-                        textSize = 16f
-                        setTextColor(0xFF1A56DB.toInt())
-                        gravity = Gravity.CENTER
-                    },
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                )
-            }
+        root.removeAllViews()
+        root.addView(
+            TextView(this).apply {
+                this.text = text
+                textSize = 16f
+                setTextColor(0xFF1A56DB.toInt())
+                gravity = Gravity.CENTER
+            },
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
         )
     }
 
@@ -142,7 +179,8 @@ class MainActivity : Activity() {
     private fun loadUI() {
         if (loaded) return
         loaded = true
-        setContentView(web)
+        root.removeAllViews()
+        root.addView(web)
         web.loadUrl("http://127.0.0.1:${EngineService.PORT}")
     }
 

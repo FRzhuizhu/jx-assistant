@@ -708,7 +708,7 @@ body.rp-open .w-handle { display: none; }
 .ctx-tok-head b { color: var(--text); font-variant-numeric: tabular-nums; }
 .ctx-cat .cc-val { color: var(--text); font-variant-numeric: tabular-nums; }
 
-/* ---------- 对话区选中文字浮窗（复制 / 添加到当前对话 / 右侧辅助问答） ----------
+/* ---------- 对话区选中文字浮窗（复制 / 引用到下方输入框 / 右侧辅助问答） ----------
    底色跟随系统主题（浅色=白底黑字，深色=黑底白字），不做彩色强调 */
 #sel-pop {
   position: fixed; z-index: 45; display: flex; align-items: center; gap: 2px;
@@ -1499,6 +1499,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .pv-name { font-size: 13px; }
 .pv-meta { font-size: 12px; color: var(--text-3); }
 .pv-edit { margin-left: auto; font-size: 12px; color: var(--text-3); }
+.pv-dirty { font-size: 11px; color: var(--amber); border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; line-height: 17px; flex-shrink: 0; }
 .pv-form { padding: 4px 14px 14px; border-top: 1px solid var(--border); }
 .pf-label { font-size: 12px; color: var(--text-3); margin: 10px 0 4px; }
 .pf-input {

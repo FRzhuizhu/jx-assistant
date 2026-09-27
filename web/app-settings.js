@@ -321,7 +321,8 @@ function effURL(p) {
 async function reloadProviders() {
   const c = await api('/api/config');
   provDraft = loadProvDraft(c);
-  provOpenKey = null; provNew = null; provTest = {}; provModelOpen = {};
+  provOpenKey = null; provTest = {}; provModelOpen = {};
+  // 不清 provNew：「添加提供方」的草稿卡片由保存/取消按钮显式处理，避免重载时误丢输入
   renderProvCards();
   loadModels();
 }
@@ -331,7 +332,8 @@ function renderProvCards() {
   if (!box) return;
   box.innerHTML = '';
   provDraft.forEach((p) => box.appendChild(buildProvCard(p, p.id)));
-  if (provOpenKey === 'new' && provNew) box.appendChild(buildProvCard(provNew, 'new'));
+  // 草稿卡片常驻列表（收起只是折叠）：收起/切换卡片都不丢已输入的内容
+  if (provNew) box.appendChild(buildProvCard(provNew, 'new'));
 }
 
 function buildProvCard(p, key) {
@@ -347,16 +349,18 @@ function buildProvCard(p, key) {
     `<span class="pv-dot ${configured ? 'ok' : 'no'}" title="${configured ? '密钥已配置' : '未配置密钥'}"></span>` +
     `<b class="pv-name">${esc(p.name || '未命名提供方')}</b>` +
     `<span class="pv-meta">${p.models.length} 个模型</span>` +
+    (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '') +
     `<span class="pv-edit">${open ? '收起' : '编辑'}</span>`;
   head.onclick = () => {
+    // 收起/展开只切换视图，不重载服务器数据：已输入的密钥、模型修改都留在草稿里，
+    // 只有「取消」「保存」才丢弃或提交（修复：随便点哪，输入的内容就消失）
     if (open) {
-      if (key === 'new') { provNew = null; provOpenKey = null; renderProvCards(); }
-      else reloadProviders(); // 收起 = 丢弃未保存的修改
+      provOpenKey = null;
     } else {
       provOpenKey = key;
       if (provModelOpen[key] === undefined) provModelOpen[key] = -1;
-      renderProvCards();
     }
+    renderProvCards();
   };
   card.appendChild(head);
   if (!open) return card;
@@ -444,6 +448,7 @@ function buildProvCard(p, key) {
   inKey.type = 'password';
   inKey.autocomplete = 'new-password';
   inKey.placeholder = p.keyMasked ? '留空保持不变，输入可替换' : (p.presetId === 'ollama' ? '本地服务可留空' : '必填，如 sk-…');
+  inKey.value = p.key || ''; // 重渲染回填已输入但未保存的密钥，避免视觉上「消失」
   inKey.oninput = () => { p.key = inKey.value; };
   keyRow.appendChild(inKey);
   form.appendChild(keyRow);
@@ -574,7 +579,7 @@ function buildProvCard(p, key) {
     try {
       const d = await api('/api/providers/fetch', {
         method: 'POST',
-        body: JSON.stringify({ id: key === 'new' ? '' : p.id, baseURL: effURL(p), apiKey: p.key }),
+        body: JSON.stringify({ id: p.id || p.presetId || '', baseURL: effURL(p), apiKey: p.key }),
       });
       const oldMap = new Map(p.models.map((m) => [m.id, m]));
       const merged = [];
@@ -604,7 +609,7 @@ function buildProvCard(p, key) {
     try {
       const d = await api('/api/providers/test', {
         method: 'POST',
-        body: JSON.stringify({ id: key === 'new' ? '' : p.id, baseURL: effURL(p), apiKey: p.key, models: ids }),
+        body: JSON.stringify({ id: p.id || p.presetId || '', baseURL: effURL(p), apiKey: p.key, models: ids }),
       });
       provTest[key] = {};
       for (const r of (d.results || [])) provTest[key][r.id] = { state: r.ok ? 'ok' : 'fail', ms: r.ms, err: r.err || '失败' };
@@ -649,12 +654,16 @@ function buildProvCard(p, key) {
       await api('/api/providers', {
         method: 'POST',
         body: JSON.stringify({
-          id: p.id, name: p.name,
+          // 新卡片选了预置提供方时本地 id 还是空的：用预置 id 作为保存目标，
+          // 否则后端识别不出预置（baseURL 传空）会报「必须填写 API 地址」
+          id: p.id || p.presetId || '',
+          name: p.name,
           baseURL: p.presetId ? '' : p.baseURL.trim(),
           apiKey: p.key,
           models: p.models,
         }),
       });
+      if (key === 'new') provNew = null; // 草稿已保存转正：清掉常驻草稿卡片
       reloadProviders();
     } catch (e) { alert('保存失败：' + e.message); }
   };
@@ -902,9 +911,11 @@ document.querySelectorAll('.set-nav-item').forEach((b) => {
     }
   };
 });
-// 模型页：「添加提供方」= 插入一张展开的自定义卡片
+// 模型页：「添加提供方」= 插入一张展开的自定义卡片（已有未保存草稿则直接展开，不覆盖）
 $('prov-add-card').onclick = () => {
-  provNew = { id: '', presetId: null, presetURL: '', name: '', baseURL: '', key: '', keyMasked: '', models: [] };
+  if (!provNew) {
+    provNew = { id: '', presetId: null, presetURL: '', name: '', baseURL: '', key: '', keyMasked: '', models: [] };
+  }
   provOpenKey = 'new';
   provModelOpen['new'] = -1;
   renderProvCards();

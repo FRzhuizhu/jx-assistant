@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="launcher_bg">#1A56DB</color>
+    <!-- 自适应图标背景色：与桌面端 logo（白底黑图形）保持一致 -->
+    <color name="launcher_bg">#FFFFFF</color>
 </resources>

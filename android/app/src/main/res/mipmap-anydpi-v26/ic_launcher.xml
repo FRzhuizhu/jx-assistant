@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/launcher_bg" />
-    <foreground android:drawable="@drawable/launcher_fg" />
+    <!-- 前景＝桌面端同款 logo（由 android/make_icons.py 从 web/logo.png 生成各密度 PNG） -->
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
 </adaptive-icon>
