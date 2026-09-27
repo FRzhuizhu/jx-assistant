@@ -152,16 +152,57 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		}
 		out = append(out, msg)
 	}
-	// 修剪尾部悬空的工具调用（客户端中断可能留下未配对的调用）
-	for len(out) > 0 {
-		last := out[len(out)-1]
-		if last.Role == "assistant" && len(last.ToolCalls) > 0 {
-			out = out[:len(out)-1]
-			continue
+	// 全序列修复工具调用配对（协议硬要求；残缺可能出现在任何位置，见函数注释）
+	return repairToolPairing(out)
+}
+
+// repairToolPairing 修复工具调用配对。OpenAI 兼容网关硬校验「assistant 的每个
+// tool_calls 调用都必须紧跟一条对应的 tool 响应，且 tool 响应必须有对应调用」，
+// 违反一律 400（"must be followed by tool messages"）。残缺配对不只出现在尾部：
+// 客户端中断在中间轮、进程崩溃/服务重启的恢复路径（repairDanglingToolCalls 补的
+// 合成结尾落在历史尾部、而调用在中段）、规则压缩边界都可能留下悬空调用或孤儿
+// 响应。这里做全序列视图修复（消费式重排）：
+//   - 已答复的调用：响应重排为**紧跟**其 assistant 消息之后（按 calls 顺序）。
+//     历史里响应本就紧随调用时，重排与原顺序逐字节等价（KV 前缀缓存不受影响）；
+//     只有兜底补的合成行落在尾部这种错位场景才真正移动位置；
+//   - 无响应的 tool_call 从 assistant 上剔除；清空后若有正文保留为普通消息，
+//     纯调用且无正文则整条剔除；
+//   - 孤儿 tool 响应（无对应调用或缺少 id）整条丢弃。
+// 不改落库数据，未配对的原文仍可经历史查询工具读到。
+func repairToolPairing(msgs []Message) []Message {
+	replies := map[string]Message{} // 调用 id → 响应（有响应才进表）
+	for _, m := range msgs {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			replies[m.ToolCallID] = m
 		}
-		break
 	}
-	return out
+	fixed := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		switch {
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			var kept []ToolCall
+			for _, tc := range m.ToolCalls {
+				if _, ok := replies[tc.ID]; !ok {
+					continue
+				}
+				kept = append(kept, tc)
+			}
+			if len(kept) == 0 && strings.TrimSpace(m.Text()) == "" {
+				continue // 纯调用且全部无响应：整条剔除
+			}
+			m.ToolCalls = kept // 全无响应但有正文 → nil，退化为普通文本消息
+			fixed = append(fixed, m)
+			// 响应紧跟（按 calls 顺序）——原位置的响应行在后面遇到时跳过
+			for _, tc := range kept {
+				fixed = append(fixed, replies[tc.ID])
+			}
+		case m.Role == "tool":
+			continue // 响应已随其调用带出；走到这里的只剩已消费/孤儿/缺 id 的响应
+		default:
+			fixed = append(fixed, m)
+		}
+	}
+	return fixed
 }
 
 // envUpdateMessage 把相邻两份环境快照渲染成一条短的「环境更新」：只含有变化

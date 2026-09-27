@@ -948,7 +948,10 @@ func buildShellCmdline(shell, command string) (string, string, error) {
 			comspec = `C:\Windows\system32\cmd.exe`
 		}
 		return comspec, `"` + comspec + `" /C ` + command, nil
-	case "", "pwsh", "powershell": // 空 shell 缺省 powershell（曾报「不支持的 shell: 」）
+	case "", "pwsh", "powershell": // 空 shell 缺省 powershell（曾报「不支持的 shell: 」；空串直接 LookPath 会失败报「找不到 」）
+		if shell == "" {
+			shell = "powershell"
+		}
 		exe, err := exec.LookPath(shell)
 		if err != nil {
 			return "", "", fmt.Errorf("找不到 %s", shell)

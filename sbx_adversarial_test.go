@@ -259,3 +259,18 @@ func TestSandboxBackgroundJob(t *testing.T) {
 	wait()
 	t.Fatalf("后台作业 15 秒内未产出文件，输出: %s", jobOut.String())
 }
+
+// buildShellCmdline 空 shell 缺省 powershell：run_command 不带 shell 参数时走
+// 的默认路径——空串直接 LookPath 会报「找不到 」（实测踩坑，回归用例）。
+func TestBuildShellCmdlineEmptyShellDefaultsPowerShell(t *testing.T) {
+	exe, line, err := buildShellCmdline("", "echo hi")
+	if err != nil {
+		t.Fatalf("空 shell 应缺省 powershell，得到错误: %v", err)
+	}
+	if exe == "" || !strings.Contains(strings.ToLower(exe), "powershell") {
+		t.Fatalf("应解析到 powershell 可执行文件，得到 %q", exe)
+	}
+	if !strings.Contains(line, "echo hi") {
+		t.Fatalf("命令行应包含原命令: %q", line)
+	}
+}

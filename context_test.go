@@ -196,3 +196,129 @@ func TestEstimateTokensMonotonic(t *testing.T) {
 		t.Fatalf("token 估算不合理: %d vs %d", small, big)
 	}
 }
+
+// buildContext 的全序列工具配对修复：悬空调用/孤儿响应可能来自中断、崩溃恢复
+// 与压缩边界——出现在任何位置都要修掉，否则网关 400「tool_calls 必须跟随响应」。
+func TestBuildContextRepairsToolPairing(t *testing.T) {
+	a := newTestApp(t, "llm", 99, 99) // 不触发折叠，聚焦配对修复
+	sess := &SessionMeta{ID: "p1", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
+	_ = a.Store.Create(sess)
+
+	// 第 1 轮：完整配对（两条调用两条响应）
+	_ = a.Store.Append("p1", TextMessage("user", "完整轮"))
+	_ = a.Store.AppendRow("p1", &StoredMessage{Message: Message{Role: "assistant", ToolCalls: []ToolCall{
+		{ID: "a1", Type: "function", Function: ToolCallFunc{Name: "read"}},
+		{ID: "a2", Type: "function", Function: ToolCallFunc{Name: "read"}},
+	}}, Kind: "chat"})
+	_ = a.Store.Append("p1", Message{Role: "tool", Content: "r-a1", ToolCallID: "a1"})
+	_ = a.Store.Append("p1", Message{Role: "tool", Content: "r-a2", ToolCallID: "a2"})
+
+	// 第 2 轮：部分响应（b1 有响应，b2/b3 悬空）且位于历史中段——
+	// 旧的尾部修剪覆盖不到（其后还有新消息），这就是「永久 400」的来源
+	_ = a.Store.Append("p1", TextMessage("user", "部分轮"))
+	_ = a.Store.AppendRow("p1", &StoredMessage{Message: Message{Role: "assistant", ToolCalls: []ToolCall{
+		{ID: "b1", Type: "function", Function: ToolCallFunc{Name: "write"}},
+		{ID: "b2", Type: "function", Function: ToolCallFunc{Name: "write"}},
+		{ID: "b3", Type: "function", Function: ToolCallFunc{Name: "write"}},
+	}}, Kind: "chat"})
+	_ = a.Store.Append("p1", Message{Role: "tool", Content: "r-b1", ToolCallID: "b1"})
+	// 孤儿响应：无任何调用与之对应
+	_ = a.Store.Append("p1", Message{Role: "tool", Content: "孤儿", ToolCallID: "zz"})
+
+	_ = a.Store.Append("p1", TextMessage("user", "继续"))
+	// 纯悬空调用（无正文无响应，如中断残留）：整条剔除
+	_ = a.Store.AppendRow("p1", &StoredMessage{Message: Message{Role: "assistant", ToolCalls: []ToolCall{
+		{ID: "c1", Type: "function", Function: ToolCallFunc{Name: "run_command"}},
+	}}, Kind: "chat"})
+	// 有正文的悬空调用：保留文本、去掉调用
+	_ = a.Store.AppendRow("p1", &StoredMessage{Message: Message{Role: "assistant", Content: "我先查一下", ToolCalls: []ToolCall{
+		{ID: "d1", Type: "function", Function: ToolCallFunc{Name: "read"}},
+	}}, Kind: "chat"})
+	_ = a.Store.Append("p1", TextMessage("assistant", "好了"))
+
+	msgs := a.buildContext(sess, "SYS")
+
+	answered := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			answered[m.ToolCallID] = true
+		}
+	}
+	calls := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			calls[tc.ID] = true
+			if !answered[tc.ID] {
+				t.Fatalf("悬空调用未修复: %s", tc.ID)
+			}
+		}
+	}
+	for _, m := range msgs {
+		if m.Role == "tool" && !calls[m.ToolCallID] {
+			t.Fatalf("孤儿响应未丢弃: %s", m.ToolCallID)
+		}
+	}
+	var sawB1Call, sawB1Tool, sawKeptText, sawTail bool
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			switch tc.ID {
+			case "b1":
+				sawB1Call = true
+			case "b2", "b3", "c1", "d1":
+				t.Fatalf("无响应调用不应出现: %s", tc.ID)
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID == "b1" {
+			sawB1Tool = true
+		}
+		if s, ok := m.Content.(string); ok {
+			if s == "我先查一下" {
+				sawKeptText = true
+			}
+			if s == "好了" {
+				sawTail = true
+			}
+		}
+	}
+	if !sawB1Call || !sawB1Tool || !sawKeptText || !sawTail {
+		t.Fatalf("修复结果不符合预期: b1call=%v b1tool=%v 保留正文=%v 尾部=%v",
+			sawB1Call, sawB1Tool, sawKeptText, sawTail)
+	}
+}
+
+// TestRepairToolPairingRelocatesLateResults 覆盖兜底补齐行的错位场景：合成结尾
+// （或任何响应）落在历史尾部、而调用在中段时，发送视图必须把响应重排为紧跟其
+// assistant 消息之后（网关硬校验「assistant 带 tool_calls 后必须紧跟对应 tool
+// 响应」，错位一律 400）；顺带看护正常配对的逐字节等价（原位响应不移动）。
+func TestRepairToolPairingRelocatesLateResults(t *testing.T) {
+	msgs := []Message{
+		TextMessage("user", "干活"),
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "x1", Type: "function", Function: ToolCallFunc{Name: "read"}},
+			{ID: "x2", Type: "function", Function: ToolCallFunc{Name: "read"}},
+		}},
+		{Role: "tool", Content: "r1", ToolCallID: "x1"}, // 原位响应
+		TextMessage("user", "继续"),                       // 调用之后还有后续对话
+		TextMessage("assistant", "好"),
+		{Role: "tool", Content: interruptNoteNotRun, ToolCallID: "x2"}, // 补的合成结尾落在尾部
+	}
+	fixed := repairToolPairing(msgs)
+	wantRoles := []string{"user", "assistant", "tool", "tool", "user", "assistant"}
+	if len(fixed) != len(wantRoles) {
+		t.Fatalf("修复后应有 %d 条，得到 %d：%+v", len(wantRoles), len(fixed), fixed)
+	}
+	for i, want := range wantRoles {
+		if fixed[i].Role != want {
+			t.Fatalf("第 %d 条角色应为 %s，得到 %s", i, want, fixed[i].Role)
+		}
+	}
+	if fixed[2].ToolCallID != "x1" || fixed[3].ToolCallID != "x2" {
+		t.Fatalf("响应未按 calls 顺序紧跟：%s, %s", fixed[2].ToolCallID, fixed[3].ToolCallID)
+	}
+	if s, _ := fixed[2].Content.(string); s != "r1" {
+		t.Fatalf("原位响应内容被改动: %q", s)
+	}
+}

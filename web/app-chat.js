@@ -2034,7 +2034,17 @@ function handleEvent(ev, view) {
       showRunError(view, ev.error);
       break;
     case 'retry':
-      hideRunError(view); // 重试已开始：报错条收掉
+      // 重试即将开始（人工点重试 / 网络失败自动重试）：本步已流出的半截作废——
+      // 服务端会从头重新输出，本地同步清干净并收掉报错条（observe 也已清掉
+      // 重连补发的半截缓冲）
+      hideRunError(view);
+      view.state.streamText = '';
+      view.state.streamThinking = '';
+      removeLive(view);
+      break;
+    case 'auto_retry':
+      // 自动重试提示条：output 非空=显示（几秒后第 X/5 次重试）；空=重试成功，清除
+      view.hint.textContent = ev.output || '';
       break;
     case 'done':
       view.hint.textContent = '';

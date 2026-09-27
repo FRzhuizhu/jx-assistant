@@ -572,6 +572,24 @@ func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking strin
 	return sm
 }
 
+// modelTries 与 modelRetryDelays 是模型调用失败后的自动重试参数：总共尝试
+// 5 次（首次 + 4 次重试），失败间隔 1s/2s/3s/4s 递增——网络抖动/网关瞬断
+// 通常在数秒内恢复；连不通 5 次就停手，等人工处理好环境再点「重试」。
+const modelTries = 5
+
+var modelRetryDelays = [modelTries - 1]time.Duration{
+	1 * time.Second, 2 * time.Second, 3 * time.Second, 4 * time.Second,
+}
+
+// interruptNoteNotRun / interruptNoteAborted 是会话被中断时给未执行 / 被中止的
+// 工具调用补的合成结尾（对齐 DSH 的 "tool call aborted before dispatch" /
+// "tool call aborted"——每个 tool_call 都必须有结果，历史与回放才不留悬空）。
+// 模型在下一轮能看到这些结尾，自行决定要不要重做那个调用。
+const (
+	interruptNoteNotRun  = "（会话被中断，此工具调用未执行）"
+	interruptNoteAborted = "（会话被中断，工具执行被中止）"
+)
+
 // RunAgent 是核心主循环：向上下文引擎取包 → 流式请求模型 → 执行工具 → 回填结果，
 // 循环直到模型不再发起工具调用、用户中断或达到步数上限。
 // 发给模型的内容一律来自引擎的 Assembly（组装、开轮留痕、测量口径全归引擎），
@@ -599,6 +617,10 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		return got
 	}
 
+	// 开轮前先补齐历史里的悬空工具结尾（异常中断——进程崩溃、服务重启等
+	// 留下的「调用已落库、结果未落库」）：重试与新消息都经这里，保证发给
+	// 模型的历史配对完整，模型也能看到上次工具被中断的真实结尾
+	a.repairDanglingToolCalls(sess, emit)
 	// 开轮留痕：本轮拼装快照（系统提示词/环境快照/工具定义）由上下文引擎
 	// 组装并落 kind=prompt 行（OpenRound），主循环不再亲手拼这条行
 	a.ctxEngine().OpenRound(sess, emit)
@@ -620,35 +642,73 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		var reasoning strings.Builder
 		var calls []ToolCall
 		var usage *Usage // 本步流尾用量（审计行用；网关不带 usage 则为 nil）
-		callStart := time.Now()
-		err := StreamChat(ctx, target, req, StreamCallbacks{
-			// 请求发出前捕获全量请求体，经引擎缓存（环形保留最近三轮，「导出原始数据」数据源）
-			OnRequest: func(u string, body []byte) {
-				a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)
-			},
-			OnText: func(s string) {
-				text.WriteString(s)
-				emit(Event{Type: "delta", Delta: s})
-			},
-			OnReasoning: func(s string) {
-				reasoning.WriteString(s)
-				emit(Event{Type: "reasoning", Delta: s})
-			},
-			OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
-			OnUsage: func(u Usage) { // 流尾用量按 token 累计落盘（缓存命中率/Token 用量面板数据源）
-				uu := u
-				usage = &uu
-				sess.UsagePrompt += int64(u.PromptTokens)
-				sess.UsageCacheHit += int64(u.PromptCacheHit)
-				sess.UsageOutput += int64(u.CompletionTokens)
-				sess.UsageCalls++
-				_ = a.Store.SaveMeta(sess)
-			},
-		})
-		// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时
-		a.ctxEngine().RecordCall(sess, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, time.Since(callStart).Milliseconds(),
-			usage, len([]rune(text.String())), toolNamesOf(calls), err)
+		// 模型调用（含网络自动重试）：同一请求最多尝试 modelTries 次，失败间隔
+		// 1s/2s/3s/4s 递增；等待可用停止按钮打断。瞬态网络故障（连接失败、
+		// 超时、流中途断开、网关 5xx/限流 429）自动重试；请求级错误（鉴权/
+		// 余额/模型不存在/请求非法）与上下文超限重试无益，直接交给下方兜底。
+		// 每次尝试都从零累积输出：上一次失败尝试流出的半截作废（前端收到
+		// retry 事件也同步清掉），成功后从完整输出继续。
+		var err error
+		attempt := 0 // 本步模型调用已尝试次数（循环外的收尾判断重试是否发生过）
+		for {
+			attempt++
+			text.Reset()
+			reasoning.Reset()
+			calls = nil
+			usage = nil
+			callStart := time.Now()
+			err = StreamChat(ctx, target, req, StreamCallbacks{
+				// 请求发出前捕获全量请求体，经引擎缓存（环形保留最近三轮，「导出原始数据」数据源）
+				OnRequest: func(u string, body []byte) {
+					a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)
+				},
+				OnText: func(s string) {
+					text.WriteString(s)
+					emit(Event{Type: "delta", Delta: s})
+				},
+				OnReasoning: func(s string) {
+					reasoning.WriteString(s)
+					emit(Event{Type: "reasoning", Delta: s})
+				},
+				OnToolCall: func(tc ToolCall) { calls = append(calls, tc) },
+				OnUsage: func(u Usage) { // 流尾用量按 token 累计落盘（缓存命中率/Token 用量面板数据源）
+					uu := u
+					usage = &uu
+					sess.UsagePrompt += int64(u.PromptTokens)
+					sess.UsageCacheHit += int64(u.PromptCacheHit)
+					sess.UsageOutput += int64(u.CompletionTokens)
+					sess.UsageCalls++
+					_ = a.Store.SaveMeta(sess)
+				},
+			})
+			// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时（重试的每次尝试各一条）
+			a.ctxEngine().RecordCall(sess, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, time.Since(callStart).Milliseconds(),
+				usage, len([]rune(text.String())), toolNamesOf(calls), err)
+			if err == nil {
+				if attempt > 1 {
+					emit(Event{Type: "auto_retry"}) // 重试成功：收掉重试提示条
+				}
+				break
+			}
+			if attempt >= modelTries || ctx.Err() != nil || !isRetryableModelErr(err) {
+				break
+			}
+			delay := modelRetryDelays[attempt-1]
+			emit(Event{Type: "retry"}) // 半截流式作废：前端清掉，下一次尝试从头输出
+			emit(Event{Type: "auto_retry", Output: fmt.Sprintf("网络异常（%s）；%d 秒后自动重试（第 %d/%d 次）…",
+				truncateRunes(strings.Join(strings.Fields(err.Error()), " "), 120), int(delay/time.Second), attempt+1, modelTries)})
+			select {
+			case <-ctx.Done(): // 等待期间被停止：不再重试，走下方的停止收尾
+				err = ctx.Err()
+			case <-time.After(delay):
+				continue
+			}
+			break
+		}
 		if err != nil {
+			if attempt > 1 {
+				emit(Event{Type: "auto_retry"}) // 重试耗尽：收掉重试提示条，失败原因走报错区
+			}
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次
 			if isOverflowError(err) && !overflowRetried {
 				if cerr := a.overflowCompact(sess); cerr == nil {
@@ -678,11 +738,16 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					continue
 				}
 			}
-			// 半截正文落盘，历史不留空洞（这是助手自己说过的话，标一下被中断）
+			// 半截正文落盘，历史不留空洞（这是助手自己说过的话，标一下被中断；
+			// 用户停止与网络故障给的标注不同，便于回看时区分）
 			// 说明：异常收尾不往对话里塞“系统交代”，用户可见的报错统一走前端的报错区，
 			// 见 executeRun 的终态事件与前端 runErrorBar
 			if strings.TrimSpace(text.String()) != "" {
-				a.appendMessageThinking(sess, TextMessage("assistant", text.String()+"\n\n（本轮输出中断）"), reasoning.String())
+				note := "\n\n（本轮输出中断）"
+				if ctx.Err() != nil {
+					note = "\n\n（会话被中断）"
+				}
+				a.appendMessageThinking(sess, TextMessage("assistant", text.String()+note), reasoning.String())
 			}
 			return err
 		}
@@ -719,8 +784,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		interrupted := false
 		for _, tc := range calls {
 			if ctx.Err() != nil {
-				tm := Message{Role: "tool", Content: "（用户中断，未执行）", ToolCallID: tc.ID}
-				a.appendMessage(sess, tm)
+				// 会话已中断：不再启动新调用，给每个剩余调用补合成结尾
+				// （对齐 DSH「aborted before dispatch」：每个 tool_call 都必须
+				// 有结果，历史与回放才不留悬空），并实时下发给前端
+				tm := Message{Role: "tool", Content: interruptNoteNotRun, ToolCallID: tc.ID}
+				tsm := a.appendMessage(sess, tm)
+				emit(Event{Type: "message", Message: &tsm.Message, Seq: tsm.Seq, Kind: kindChat})
+				emit(Event{Type: "tool_end", Name: tc.Function.Name, Output: interruptNoteNotRun})
 				interrupted = true
 				continue
 			}
@@ -734,7 +804,16 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				tctx := &toolContext{ctx: ctx, app: a, sess: sess, emit: emit,
 					seq: asm.Seq, callID: tc.ID, toolName: tc.Function.Name}
 				res, rerr := run(tctx, json.RawMessage(tc.Function.Arguments))
-				if rerr != nil {
+				if ctx.Err() != nil {
+					// 执行期间会话被中断：工具已被取消信号尽力中止（能停则停），
+					// 结尾统一标注中断语义——原始错误（多为 "context canceled"）
+					// 对模型没有信息量；中断前已产出的输出附后不丢。模型下一轮
+					// 自行决定要不要重做该调用
+					out = interruptNoteAborted
+					if strings.TrimSpace(res) != "" {
+						out += "\n" + res
+					}
+				} else if rerr != nil {
 					out = "工具执行失败: " + rerr.Error()
 				} else {
 					out = res

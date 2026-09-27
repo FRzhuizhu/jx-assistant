@@ -322,7 +322,6 @@ func (a *App) subscribe() (chan Event, func()) {
 	}
 }
 
-
 // maxGoalRounds 是目标模式自动续跑的轮数上限（防止无限消耗）。
 const maxGoalRounds = 8
 
@@ -345,14 +344,14 @@ func (a *App) runGoalRounds(ctx context.Context, sess *SessionMeta, emit func(Ev
 		if round+1 >= maxGoalRounds {
 			sm := a.appendRow(sess, StoredMessage{
 				Message: TextMessage("user", "【目标续跑】已达到自动续跑上限（"+itoa(maxGoalRounds)+" 轮），暂停自动推进；目标尚未标记完成。可补充指示后继续。"),
-				Kind: kindReport, Origin: "goal", CreatedAt: now(),
+				Kind:    kindReport, Origin: "goal", CreatedAt: now(),
 			})
 			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindReport, Origin: "goal"})
 			return nil
 		}
 		sm := a.appendRow(sess, StoredMessage{
 			Message: TextMessage("user", "<goal_round> 继续推进当前目标（第 "+itoa(round+2)+" 轮）。若已达成或确认无法推进，调用 update_goal 汇报并写最终总结；否则继续执行下一步，保持进度、不要重复已完成的步骤。"),
-			Kind: kindReport, Origin: "goal", CreatedAt: now(),
+			Kind:    kindReport, Origin: "goal", CreatedAt: now(),
 		})
 		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindReport, Origin: "goal"})
 	}
@@ -376,7 +375,7 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 		// 只在「消息级」里程碑广播会话更新（前端据此刷侧栏/列表）；
 		// delta/reasoning 这类高频事件不广播，否则会打出一串无效请求
 		switch ev.Type {
-		case "delta", "reasoning", "tool_start", "tool_end", "tool_wait", "resume", "pending":
+		case "delta", "reasoning", "tool_start", "tool_end", "tool_wait", "resume", "pending", "retry", "auto_retry":
 		case "done", "stopped":
 			// 终态原样进全局总线：前端据此点亮「完成未查看」绿点并刷新侧栏
 			a.broadcast(ev)
@@ -519,6 +518,43 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	}
 }
 
+// repairDanglingToolCalls 扫描会话历史，为「assistant 发起了、但没有任何
+// tool 结果」的悬空调用补一条合成结尾行（对齐 DSH 的「每个 tool_call 都必须
+// 有结果，回放才不失效」）。正常运行路径上工具循环已保证每个调用都有结尾
+// （含中断时刻的合成结尾）；这里兜底的是异常路径：进程崩溃/服务重启落在
+// 「调用已落库、结果未落库」窗口的调用。幂等——已补齐的不再补。
+// emit 可用时把补的行实时下发给前端；启动恢复等无前端场景传 nil。
+func (a *App) repairDanglingToolCalls(sess *SessionMeta, emit func(Event)) {
+	raw, err := a.Store.RawMessagesAll(sess.ID)
+	if err != nil {
+		return
+	}
+	answered := map[string]bool{}
+	for _, m := range raw {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			answered[m.ToolCallID] = true
+		}
+	}
+	for _, m := range raw {
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 || m.Kind != kindChat {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "" || answered[tc.ID] {
+				continue
+			}
+			sm := a.appendRow(sess, StoredMessage{
+				Message: Message{Role: "tool", Content: interruptNoteNotRun, ToolCallID: tc.ID},
+				Kind:    kindChat, Origin: "interrupt", CreatedAt: now(),
+			})
+			answered[tc.ID] = true
+			if emit != nil {
+				emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat, Origin: "interrupt"})
+			}
+		}
+	}
+}
+
 // recoverInterrupted 服务启动时的中断恢复：把重启前 running 的会话补一条
 // 中断记录并置为空闲；被派发的子会话同时给主对话补中断回报。
 func (a *App) recoverInterrupted() {
@@ -527,24 +563,27 @@ func (a *App) recoverInterrupted() {
 		return
 	}
 	for _, s := range sessions {
+		// 先把上一进程崩溃时留下的悬空工具调用补上合成结尾（历史配对完整），
+		// 再补系统中断报告——顺序反了的话报告会插在悬空调用与补行之间
+		a.repairDanglingToolCalls(s, nil)
 		_ = a.Store.AppendRow(s.ID, &StoredMessage{
 			Message: TextMessage("user", "【系统中断】服务在执行期间重启，本会话当时被中断。可发「继续」接续执行。"),
 			Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
 		})
 		_ = a.Store.UpdateStatus(s.ID, "idle")
-	// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
-	// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
-	owner := s.DispatchedBy
-	if owner == "" {
-		owner = s.ParentID
-	}
-	if owner != "" {
-		if _, perr := a.Store.Get(owner); perr == nil {
-			_ = a.Store.AppendRow(owner, &StoredMessage{
-				Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
-				Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
-			})
+		// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
+		// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
+		owner := s.DispatchedBy
+		if owner == "" {
+			owner = s.ParentID
 		}
-	}
+		if owner != "" {
+			if _, perr := a.Store.Get(owner); perr == nil {
+				_ = a.Store.AppendRow(owner, &StoredMessage{
+					Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
+					Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
+				})
+			}
+		}
 	}
 }

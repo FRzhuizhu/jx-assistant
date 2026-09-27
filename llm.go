@@ -266,6 +266,25 @@ func isModelUnavailableErr(err error) bool {
 	return containsAnyFold(s, hardWords)
 }
 
+// isRetryableModelErr 判断一次模型调用失败是否值得自动重试。值得的是瞬态
+// 网络类：连接失败/超时（"无法连接模型服务"）、流中途断开（parseSSE 抛出的
+// 原始 IO 错误）、网关 5xx 与限流 429。请求级错误（400/401/402/403/404——
+// 请求非法/鉴权失败/余额不足/模型不存在）换个时机结果一样；上下文超限交给
+// overflowCompact 兜底——两者都不在此重试。调用方还需自行排除 ctx 取消
+// （用户点了停止，绝不重试）。
+func isRetryableModelErr(err error) bool {
+	if err == nil || isOverflowError(err) {
+		return false
+	}
+	s := err.Error()
+	for _, sc := range []int{400, 401, 402, 403, 404} {
+		if strings.Contains(s, fmt.Sprintf("模型服务返回 %d", sc)) {
+			return false
+		}
+	}
+	return true
+}
+
 // containsAnyFold 大小写不敏感地判断 s 是否含 words 中任一词。
 func containsAnyFold(s string, words []string) bool {
 	ls := strings.ToLower(s)
