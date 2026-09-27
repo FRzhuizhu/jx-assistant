@@ -12,8 +12,6 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * 引擎前台服务：拉起并看护 Go 引擎进程（libjx.so，位于
@@ -100,9 +98,14 @@ class EngineService : Service() {
         }
     }
 
-    /** 引擎进程 + 看护协程：进程死亡后自动重启（服务活着就保引擎活着）。 */
+    /**
+     * 引擎进程 + 看护线程：进程死亡后自动重启（服务活着就保引擎活着）。
+     * 就绪探测不在这里做——广播发过即焚，热启动的新 Activity 永远收不到；
+     * Activity 直连 HTTP 探测（见 MainActivity.probeUntilReady）。
+     */
     private fun startEngineIfNeeded() {
         if (proc?.isAlive == true) return
+        killOrphanedEngines()
         val root = engineRoot(this).apply {
             mkdirs()
             // 数据根只归本应用 uid，权限最小化
@@ -112,7 +115,6 @@ class EngineService : Service() {
         Log.e(TAG, "engine lib=${lib.absolutePath} exists=${lib.exists()} canExec=${lib.canExecute()}")
         if (!lib.exists() || !lib.canExecute()) {
             Log.e(TAG, "engine lib 不可执行，放弃")
-            broadcastReady(false)
             return
         }
         // config.json 不预置：首次启动引擎会用默认配置（mock 模式 + 空工作区），
@@ -123,6 +125,14 @@ class EngineService : Service() {
             "-port", PORT.toString(),
             "-config", File(root, "config.json").absolutePath
         )
+        // 收养兜底：极端情况下（如旧版本未带 PDEATHSIG）端口已被某个
+        // 幸存引擎占着——与其让新引擎绑定失败进入秒退循环，不如直接
+        // 收养现役实例（数据目录同属本应用，服务的是同一份数据）。
+        // 新版本引擎均带 PDEATHSIG，孤儿不会再出现，此分支仅防旧残留。
+        if (portResponds()) {
+            Log.w(TAG, "端口已被幸存引擎占用，收养之（不再重复拉起）")
+            return
+        }
         try {
             val pb = ProcessBuilder(args).apply {
                 directory(root)
@@ -131,7 +141,8 @@ class EngineService : Service() {
                 redirectErrorStream(true)
             }
             proc = pb.start()
-            // 吞掉引擎 stdout（避免管道写满阻塞引擎），进程结束后触发守护重启
+            Log.i(TAG, "engine 进程已启动 pid=${proc.hashCode()}")
+            // 读干引擎 stdout（避免管道写满阻塞引擎）；退出即触发守护重启
             val p = proc!!
             Thread {
                 val out = try {
@@ -149,37 +160,51 @@ class EngineService : Service() {
             }.start()
         } catch (e: Exception) {
             Log.e(TAG, "engine start 失败", e)
-            broadcastReady(false)
             return
         }
-        // 就绪探测：HTTP 200 即广播（WebView 收到广播后才加载，避免白屏）
-        Thread {
-            for (i in 1..100) {
-                if (proc?.isAlive != true) return@Thread
-                try {
-                    val c = URL("http://127.0.0.1:$PORT/api/status").openConnection() as HttpURLConnection
-                    c.connectTimeout = 1500
-                    c.readTimeout = 1500
-                    if (c.responseCode == 200) {
-                        c.disconnect()
-                        broadcastReady(true)
-                        return@Thread
-                    }
-                    c.disconnect()
-                } catch (_: Exception) {}
-                Thread.sleep(300)
-            }
-        }.start()
     }
+
+    /**
+     * 清理孤儿引擎：应用进程崩溃/被杀/重装更新时，它拉起的引擎子进程
+     * 会变成孤儿继续运行并占着端口——新引擎绑定失败→秒退→守护重启，
+     * 永远循环，启动页永远转圈。拉起前先杀掉同 uid 的遗留 libjx 进程。
+     */
+    private fun killOrphanedEngines() {
+        val mine = android.os.Process.myUid()
+        File("/proc").listFiles()?.forEach { d ->
+            val pid = d.name.toIntOrNull() ?: return@forEach
+            if (pid == android.os.Process.myPid()) return@forEach
+            val cmd = runCatching {
+                File(d, "cmdline").readBytes().toString(Charsets.UTF_8)
+            }.getOrDefault("")
+            if (cmd.contains("libjx")) {
+                val uid = runCatching {
+                    File(d, "status").readLines().firstOrNull { it.startsWith("Uid:") }
+                        ?.split(Regex("\\s+"))?.getOrNull(2)?.toInt()
+                }.getOrNull()
+                if (uid == mine) {
+                    Log.w(TAG, "清理孤儿引擎 pid=$pid")
+                    runCatching { android.os.Process.killProcess(pid) }
+                }
+            }
+        }
+        // 给内核一点时间回收端口
+        runCatching { Thread.sleep(200) }
+    }
+
+    private fun portResponds(): Boolean = try {
+        val c = java.net.URL("http://127.0.0.1:$PORT/api/status").openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 500
+        c.readTimeout = 500
+        val ok = c.responseCode == 200
+        c.disconnect()
+        ok
+    } catch (e: Exception) { false }
 
     private fun stopEngine() {
         Log.e(TAG, "stopEngine called")
         proc?.destroy()
         proc = null
-    }
-
-    private fun broadcastReady(ok: Boolean) {
-        sendBroadcast(Intent(BROADCAST_READY).setPackage(packageName).putExtra("ok", ok))
     }
 
     override fun onDestroy() {

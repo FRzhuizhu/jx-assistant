@@ -27,6 +27,9 @@ func main() {
 	// 安卓 x86_64：modernc sqlite 的 lstat 会被应用 seccomp 杀死（SIGSYS），
 	// 必须在首次打开数据库前替换为 newfstatat 实现（其他平台空操作）。
 	patchSqliteSyscallsForAndroid()
+	// 安卓：父进程（应用壳）死亡时内核自动回收引擎，杜绝孤儿占端口
+	// 导致的下一次启动绑定失败死循环（其他平台空操作）。
+	setupParentDeathSignal()
 
 	// 顶层进程树兜底：自身挂入 kill-on-close Job，正常退出 / 被强杀 /
 	// 崩溃时内核终止它启动过的全部后代（含沙箱外 start 出来的孙进程、
