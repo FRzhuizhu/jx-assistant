@@ -15,7 +15,7 @@ let pass = 0, fail = 0;
 const cases = [
   // [输入, 期望 file-link 的 data-path（或 null）, 期望 URL 链接数]
   ['产物在 web/index.html，请查看。', 'web/index.html', 0],
-  [S`绝对路径 D:\智能体工作区\软著版数字助理\README.md 已更新`, S`D:\智能体工作区\软著版数字助理\README.md`, 0],
+  [S`绝对路径 D:\智能体工作区\软著版数字助理\AGENT.md 已更新`, S`D:\智能体工作区\软著版数字助理\AGENT.md`, 0],
   ['./mock-演示.txt 已生成。', './mock-演示.txt', 0],
   ['参考 https://example.com/a?b=1 文档。', null, 1],
   ['写进了 `config.json` 里。', 'config.json', 0],
