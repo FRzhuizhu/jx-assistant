@@ -1732,27 +1732,64 @@ function renderQuestionsInto(bar) {
   }
 }
 
-/* ---------- 进度面板（progress_write） ---------- */
+/* ---------- 进度面板（progress_write）：可折叠 · 宽屏自动展开 / 窄屏右上角胶囊 ---------- */
+// 进度清单常驻在顶栏下方会一直占掉对话区的高度（手机上尤其致命），所以面板分两态：
+// 收起＝右上角一枚「进度」小胶囊（点它展开），展开＝完整清单（点头部收起）。
+// 用户没点过时按「对话区有没有富余宽度」自动定：宽屏（≥500，与 CSS 的窄屏浮层断点
+// 同源）自动展开；窄屏（手机）没有富余宽度，一律折叠成胶囊，不再顶掉那块高度。
+// 用户点过之后按用户的选择来（本次页面有效，刷新复位）；切换折叠只在本地重画。
+let pgItems = [];       // 最近一次取到的进度项（空 = 没有进度，面板整体隐藏）
+let pgFold = null;      // 用户显式选择：null=自动；true=展开；false=收起
+let pgDrawnOpen = null; // 上次画出来的展开状态（窗口缩放只在状态翻转时重画）
+
+// 有富余宽度才自动展开：高度也要够（手机横屏高度不足，展开清单会顶掉半屏对话）
+function pgAutoExpand() { return innerWidth >= 500 && innerHeight >= 480; }
+function pgExpanded() { return pgFold === null ? pgAutoExpand() : pgFold; }
 
 async function loadProgress() {
   const panel = $('progress-panel');
   if (!panel) return;
-  if (!state.cur) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+  if (!state.cur) { pgItems = []; pgFold = null; drawProgress(); return; }
   try {
     const d = await api('/api/sessions/' + state.cur.id + '/progress');
-    const items = d.progress || [];
-    if (!items.length) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
-    const done = items.filter((t) => t.status === 'completed').length;
-    let html = '<div class="progress-head"><b>进度</b><span>' + done + '/' + items.length + '</span></div><ul>';
-    for (const t of items) {
-      const mark = t.status === 'completed' ? '✔' : (t.status === 'in_progress' ? '▶' : '·');
-      html += '<li class="pg-' + (t.status || 'pending') + '"><span class="pg-mark">' + mark + '</span>' + esc(t.content) + '</li>';
-    }
-    html += '</ul>';
-    panel.innerHTML = html;
-    panel.classList.remove('hidden');
-  } catch (e) { /* 会话不存在等情况忽略 */ }
+    pgItems = d.progress || [];
+  } catch (e) { /* 会话不存在/服务离线：维持上一次的样子 */ }
+  drawProgress();
 }
+
+// 按当前折叠状态重画面板：收起＝胶囊，展开＝头部（整行是收起按钮）+ 清单
+function drawProgress() {
+  const panel = $('progress-panel');
+  if (!panel) return;
+  const items = pgItems;
+  if (!items.length) { panel.classList.add('hidden'); panel.innerHTML = ''; pgDrawnOpen = null; return; }
+  const open = pgExpanded();
+  pgDrawnOpen = open;
+  panel.classList.remove('hidden');
+  panel.classList.toggle('pg-folded', !open); // 收起态：胶囊（宽/窄屏各有定位规则）
+  if (!open) {
+    panel.innerHTML = '<button type="button" class="pg-pill" title="展开进度清单">进度' + chev('pg-chev') + '</button>';
+    panel.querySelector('.pg-pill').onclick = () => { pgFold = true; drawProgress(); };
+    return;
+  }
+  const done = items.filter((t) => t.status === 'completed').length;
+  let html = '<button type="button" class="progress-head" title="收起进度清单">'
+    + '<b>进度</b><span class="pg-count">' + done + '/' + items.length + '</span>'
+    + '<svg class="pg-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>'
+    + '</button><ul>';
+  for (const t of items) {
+    const mark = t.status === 'completed' ? '✔' : (t.status === 'in_progress' ? '▶' : '·');
+    html += '<li class="pg-' + (t.status || 'pending') + '"><span class="pg-mark">' + mark + '</span>' + esc(t.content) + '</li>';
+  }
+  html += '</ul>';
+  panel.innerHTML = html;
+  panel.querySelector('.progress-head').onclick = () => { pgFold = false; drawProgress(); };
+}
+
+// 窗口缩放/转屏：自动模式下展开与否由宽度决定，翻转了才重画（拖拽缩放过程不重画）
+window.addEventListener('resize', () => {
+  if (pgItems.length && pgExpanded() !== pgDrawnOpen) drawProgress();
+});
 
 /* ---------- SSH 远程工作区（两步式：连接配置 → 保存 → 浏览目录 → 使用） ---------- */
 

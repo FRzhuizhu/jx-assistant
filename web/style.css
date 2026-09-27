@@ -1602,15 +1602,36 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   white-space: pre-wrap; word-break: break-word; font-family: inherit;
 }
 
-/* 进度面板：会话顶栏下的窄条（progress_write 的渲染） */
+/* 进度面板：会话顶栏下的窄条（progress_write 的渲染）。
+   宽屏在流内占一行（有富余宽度时自动展开）；收起态是右上角一枚「进度」胶囊，
+   点开才展开清单。窄屏（手机）不再占流内那一行，改右上角浮层（规则见文末的
+   窄屏浮层布局节）；两态由 app-chat.js 的 pgFold 决定，收起时挂 .pg-folded。 */
 #progress-panel {
   margin: 10px auto 0; max-width: 720px; width: calc(100% - 48px);
   border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
   padding: 8px 12px; font-size: 12px;
 }
-#progress-panel .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
-#progress-panel .progress-head b { font-size: 12px; }
-#progress-panel .progress-head span { color: var(--text-3); font-size: 11px; }
+#progress-panel.pg-folded {
+  width: fit-content; max-width: none; margin: 10px 24px 0 auto; /* 收起态：贴右的小胶囊 */
+  padding: 0; border-radius: 999px; box-shadow: 0 2px 8px rgba(16, 20, 26, .08);
+}
+/* 收起态的胶囊本体：「进度」两个字 + 展开小符号（整个胶囊可点） */
+.pg-pill {
+  display: flex; align-items: center; gap: 3px;
+  padding: 5px 12px; border: none; border-radius: 999px; background: none;
+  color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer;
+}
+.pg-pill:hover { background: var(--hover); color: var(--text); }
+.pg-chev { width: 12px; height: 12px; flex: none; color: var(--text-3); }
+/* 展开态的头部即收起按钮（整行可点，与排队坞 .qd-head 同一套切换语义） */
+.progress-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; margin-bottom: 4px;
+  padding: 0; border: none; background: none; color: inherit; font: inherit;
+  cursor: pointer; text-align: left;
+}
+.progress-head b { font-size: 12px; }
+.progress-head:hover b { color: var(--accent); }
+.progress-head .pg-count { margin-left: auto; color: var(--text-3); font-size: 11px; }
 #progress-panel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 #progress-panel li { display: flex; gap: 6px; align-items: baseline; line-height: 1.5; }
 #progress-panel li .pg-mark { width: 14px; flex-shrink: 0; text-align: center; color: var(--text-3); }
@@ -1883,6 +1904,19 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   .w-handle { display: none; } /* 对话区已占满全宽 */
   /* 悬浮输入卡贴边留缝（含 iPhone 底部手势条安全区） */
   .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  /* 进度面板：手机端不再占流内那一行（顶栏下方的高度全留给对话），改右上角浮层：
+     收起＝一枚「进度」胶囊，展开＝限高的浮动卡（长清单卡内滚动，最多占半屏）。
+     层级 5：压在对话内容之上、输入区（z-index 6）之下——报错条必须始终看得见。 */
+  #progress-panel, #progress-panel.pg-folded {
+    position: absolute; top: calc(var(--tb-h) + 8px); right: 10px; left: auto;
+    width: auto; max-width: calc(100% - 20px); margin: 0; padding: 0;
+    z-index: 5; border-radius: 999px;
+    box-shadow: 0 4px 16px rgba(16, 20, 26, .16);
+  }
+  #progress-panel:not(.pg-folded) { /* 展开态：左右贴边的浮动卡 */
+    left: 10px; right: 10px; padding: 8px 12px; border-radius: 12px;
+  }
+  #progress-panel ul { max-height: min(46vh, 300px); overflow-y: auto; }
   /* 回收站红边（桌面规则 body.bin-mode #sidebar{position:relative}）特异性更高，
      会把浮层定位压回流式布局——窄屏显式压回 fixed，红边与动画照常复用 */
   body.bin-mode #sidebar { position: fixed; }
