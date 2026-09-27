@@ -78,6 +78,16 @@ func spawnConfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		return spawnConfinedWindows(ctx, r)
 	case isLinuxRuntime:
 		return spawnConfinedLinuxReexec(r)
+	case isAndroidRuntime:
+		// 安卓：内核禁用 Landlock 与非特权用户命名空间（android 内核
+		// CONFIG 均未启用），OS 级命令沙箱不可用。对齐 DSH 手机版社区
+		// 方案：命令直接执行，隔离由安卓应用沙箱（app uid + SELinux）
+		// 承担；文件边界与审批仍由引擎上层把守。
+		out, err := runUnconfinedLocal(ctx, r)
+		if err != nil {
+			return "", err
+		}
+		return out + "\n[安卓设备直接执行｜无 OS 级命令沙箱，隔离由安卓应用沙箱承担]", nil
 	default:
 		return "", fmt.Errorf("sandbox unavailable: 当前平台暂无沙箱后端；如确需执行，可带 sandbox_permissions=danger-full-access 与 justification 申请升级（将弹审批）")
 	}
@@ -129,6 +139,21 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		}
 		waitDone := make(chan struct{}, 1)
 		go func() { _ = cmd.Wait(); os.RemoveAll(tempDir); close(waitDone) }()
+		return func() bool { <-waitDone; return true }, nil
+	case isAndroidRuntime:
+		// 安卓后台作业：同前台，无 OS 级沙箱，直接 sh 执行（见
+		// spawnConfinedLocal 的安卓分支注释）。
+		wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
+		cmd := exec.CommandContext(ctx, "sh", "-c", wrapped)
+		cmd.Dir = r.Dir
+		cmd.Env = sandboxEnv(true)
+		cmd.Stdout = w
+		cmd.Stderr = w
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("sandbox unavailable: %w", err)
+		}
+		waitDone := make(chan struct{}, 1)
+		go func() { _ = cmd.Wait(); close(waitDone) }()
 		return func() bool { <-waitDone; return true }, nil
 	default:
 		return nil, fmt.Errorf("sandbox unavailable: 当前平台暂无沙箱后端")

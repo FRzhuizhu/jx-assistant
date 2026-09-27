@@ -141,6 +141,8 @@ func permModeOf(s *SessionMeta) string {
 	switch s.Permission {
 	case permReadOnly, permFull, permWorkspace:
 		return s.Permission
+	case "danger-full-access": // 官方风格别名：等价 full（与 sandbox_permissions 的接受范围一致）
+		return permFull
 	default:
 		return permWorkspace
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -207,14 +208,25 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		b.WriteString("- 操作系统：" + a.osDescription() + "\n")
 		b.WriteString("- 工作区目录：" + wsOr(a, sess) + "\n")
 	}
+	if exe, err := os.Executable(); err == nil {
+		b.WriteString("- 引擎程序：" + exe + "（支持子命令，如 `apkinfo <file.apk>` 查看 APK 包名/版本/签名）\n")
+	}
 	mode := permModeOf(sess)
 	switch mode {
 	case permReadOnly:
-		b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
+		if isAndroidRuntime {
+			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；文件工具禁止写入。本机命令无 OS 级沙箱（安卓），不要执行会产生写入副作用的命令\n")
+		} else {
+			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
+		}
 	case permFull:
 		b.WriteString("- 权限模式：完全访问——读写与命令不受限（助手自身配置/数据仍受保护）；已捆绑开启「允许工作区外执行命令」「操作浏览器」「操作电脑」能力\n")
 	default:
-		b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
+		if isAndroidRuntime {
+			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；本机命令无 OS 级沙箱（安卓内核禁用 Landlock），命令直接执行、由安卓应用沙箱承担隔离（对齐社区方案），联网不限\n")
+		} else {
+			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
+		}
 	}
 	b.WriteString("- 沙箱拒绝是正常工作方式：命令/写入直接尝试，被拒会得到 [sandbox: … denied under <mode> mode] 标记。若更宽权限能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档：workspace-write / danger-full-access / 文件写边界外用 full）与一句 justification 重试一次；重试会弹审批由用户批准\n")
 	b.WriteString("- 审批卡上用户点「始终允许」= 常设授权：命令升级点亮对应能力开关（如「允许工作区外执行命令」），工作区外写入把会话权限提升为完全访问（捆绑能力一并点亮），之后该类动作不再逐次审批\n")
@@ -260,7 +272,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	}
 	// 自带技能一览（静态）；用户技能段也归入快照——开关技能只影响尾部
 	// 快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
-	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南），需要时直接调用对应工具\n")
+	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南）、downloader（下载器：aria2c 下载落盘）、apkinfo（APK 包名/版本/签名查看），需要时直接调用对应工具或子命令\n")
 	if sess.Mode == "task" {
 		if block := a.userSkillsPromptBlock(); block != "" {
 			b.WriteString(block + "\n")
@@ -279,12 +291,28 @@ func (a *App) osDescription() string {
 	return a.osDesc
 }
 
-// detectOSDesc 探测系统描述：Windows 版本（cmd /c ver）+ PowerShell 版本
-// （pwsh 优先，回退 powershell）。探测失败降级；结果由调用方缓存。
+// detectOSDesc 探测系统描述：给模型「我在哪、有什么、注意什么」——
+// Windows 版本 + PowerShell 版本 + 中文编码规则；Linux 发行版与内核；
+// 安卓版本/ABI + toybox 边界与常见坑。探测失败逐项降级、缺哪段省哪段；
+// 结果由调用方缓存。
 func detectOSDesc() string {
-	if runtime.GOOS != "windows" {
+	switch runtime.GOOS {
+	case "windows":
+		return detectOSDescWindows()
+	case "linux":
+		return detectOSDescLinux()
+	case "android":
+		return detectOSDescAndroid()
+	default:
 		return runtime.GOOS + "（类 Unix）"
 	}
+}
+
+// detectOSDescWindows：Windows 版本（cmd /c ver）+ PowerShell 版本
+// （pwsh 优先，回退 powershell），附中文编码规则（沿袭 dsh-env-context
+// 插件的 WIN32_NOTES：cmd 默认 GBK 代码页、PowerShell 控制台编码、
+// 文件一律 UTF-8 无 BOM）。
+func detectOSDescWindows() string {
 	desc := "Windows"
 	if out, err := exec.Command("cmd", "/c", "ver").Output(); err == nil {
 		s := strings.TrimSpace(string(out))
@@ -302,7 +330,95 @@ func detectOSDesc() string {
 			break
 		}
 	}
-	return desc + " · " + ps + "（run_command 支持 powershell 与 cmd）"
+	return desc + " · " + ps + "（run_command 支持 powershell 与 cmd）\n" +
+		"- 中文编码：cmd 默认代码页 936（GBK），涉及中文输入输出先执行 chcp 65001；Windows PowerShell 5.1 按控制台编码输出，中文 I/O 前设 [Console]::OutputEncoding 为 UTF-8\n" +
+		"- 文件一律 UTF-8 无 BOM 读写；路径、标识符、命令保持原文不翻译（常见 GBK 命令输出引擎已自动解码）"
+}
+
+// kernelRelease：uname -r，失败返回空。
+func kernelRelease() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "uname", "-r").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// osReleasePrettyName：/etc/os-release 的 PRETTY_NAME，失败返回空。
+func osReleasePrettyName() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(line, "PRETTY_NAME="); ok {
+			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	return ""
+}
+
+// detectOSDescLinux：发行版 + 内核 + shell 提示。
+func detectOSDescLinux() string {
+	head := "linux"
+	if pretty := osReleasePrettyName(); pretty != "" {
+		head += "（" + pretty + "）"
+	}
+	if kr := kernelRelease(); kr != "" {
+		head += " · 内核 " + kr
+	}
+	return head + " · shell 为 sh（run_command 的 shell 参数用 sh）· 文本默认 UTF-8"
+}
+
+// detectOSDescAndroid：安卓版本/ABI/机型/内核 + toybox 命令边界与
+// 常见坑（SELinux 禁硬链接、/sdcard noexec、精简版 grep/sed、无
+// TLS 命令行下载工具——写清一次，避免每轮现场重新探测）。
+func detectOSDescAndroid() string {
+	prop := func(name string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "getprop", name).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	rel := prop("ro.build.version.release")
+	sdk := prop("ro.build.version.sdk")
+	abi := prop("ro.product.cpu.abi")
+	model := prop("ro.product.model")
+	if rel == "" {
+		// 极端环境（连 getprop 都没有）至少如实降级
+		head := "android"
+		if kr := kernelRelease(); kr != "" {
+			head += " · 内核 " + kr
+		}
+		return head + " · shell 为 sh"
+	}
+	parts := []string{}
+	if sdk != "" {
+		parts = append(parts, "API "+sdk)
+	}
+	if abi != "" {
+		parts = append(parts, abi)
+	}
+	if model != "" {
+		parts = append(parts, model)
+	}
+	head := "Android " + rel
+	if len(parts) > 0 {
+		head += "（" + strings.Join(parts, "，") + "）"
+	}
+	if kr := kernelRelease(); kr != "" {
+		head += " · 内核 " + kr
+	}
+	head += " · shell 为 toybox（run_command 的 shell 参数用 sh）"
+	return head + "\n" +
+		"- 可用命令：pm am dumpsys settings getprop input uiautomator screencap logcat monkey cmd content 及常用 toybox 工具（grep/sed 为精简版，部分 GNU 选项不支持）\n" +
+		"- 没有 curl、https 版 wget、openssl、python、aapt2/apksigner/keytool——下载用「下载器」技能（aria2c），APK 校验用 apkinfo 子命令，不要反复探测\n" +
+		"- 常见坑：SELinux 禁硬链接（建临时文件用占位+rename，write_file 已内置处理）；/sdcard 多为 noexec 挂载，可执行文件放 /data/local/tmp 或应用 nativeLibraryDir，放 /sdcard 会 Permission denied；文本默认 UTF-8 无编码坑"
 }
 
 // maybeAppendEnvSnapshot 环境快照 diff：与最近一条 kind=env 快照比较（比较时

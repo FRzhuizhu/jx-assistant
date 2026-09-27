@@ -835,7 +835,7 @@ func runCommandTool() Tool {
 		Spec: toolSpec("run_command", "执行一条 shell 命令并返回输出。命令按会话权限模式在 OS 级沙箱内执行：workspace-write 下只能写工作区与私有临时目录（Windows 受限令牌 / Linux Landlock / 远程沙箱 helper），read-only 下不能写任何位置，联网不受限。尝试沙箱可能拒绝的命令是安全且符合预期的：直接运行并读取标记。若命令因沙箱拒绝失败且更宽档位能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档）与一句 justification 重试同一命令一次——该重试会弹审批由用户批准；未经真实拒绝不要请求升级；被拒后该命令终局，停止并说明，不要绕过。",
 			objSchema(map[string]any{
 				"command":             strProp("要执行的命令"),
-				"shell":               strProp("本地执行时的 shell：powershell（默认）或 cmd；远程执行忽略"),
+				"shell":               strProp("本地执行时的 shell：Windows 默认 powershell（或 cmd），其他平台默认 sh；远程执行忽略"),
 				"cwd":                 strProp("工作目录（可选，默认会话工作区；是否可写由沙箱决定，cwd 本身不受限）"),
 				"timeout_sec":         intProp("超时秒数，默认 60，上限 600；后台作业忽略"),
 				"run_in_background":   boolProp("true 时后台执行并立即返回作业 id（仅本地）"),
@@ -947,7 +947,11 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 	}
 	shell := strings.TrimSpace(r.Shell)
 	if shell == "" {
-		shell = "powershell"
+		if isWindowsRuntime {
+			shell = "powershell"
+		} else {
+			shell = "sh"
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
@@ -955,6 +959,8 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 	switch strings.ToLower(shell) {
 	case "cmd":
 		cmd = exec.CommandContext(ctx, "cmd", "/C", r.Command)
+	case "sh", "bash":
+		cmd = exec.CommandContext(ctx, "sh", "-c", r.Command)
 	case "pwsh", "powershell":
 		exe := "powershell"
 		if strings.ToLower(shell) == "pwsh" {
@@ -962,7 +968,7 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		}
 		cmd = exec.CommandContext(ctx, exe, "-NoProfile", "-NonInteractive", "-Command", r.Command)
 	default:
-		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd）", r.Shell)
+		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd / sh）", r.Shell)
 	}
 	cmd.Dir = r.Dir
 	cmd.Env = sandboxEnv(true)

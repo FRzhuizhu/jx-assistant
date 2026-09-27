@@ -41,6 +41,11 @@ func main() {
 		attachParentConsole() // GUI 子系统构建时挂回终端，保证 CLI 回显
 		os.Exit(runSandboxCLI(os.Args[2:]))
 	}
+	// APK 元数据查看子命令：jx-assistant.exe apkinfo <file.apk>
+	if len(os.Args) > 1 && os.Args[1] == "apkinfo" {
+		attachParentConsole()
+		os.Exit(runApkInfoCLI(os.Args[2:]))
+	}
 
 	cfgPath := flag.String("config", "config.json", "配置文件路径")
 	port := flag.Int("port", 0, "覆盖配置中的监听端口")

@@ -268,8 +268,10 @@ func (c *Config) Save(path string) error {
 	// （多实例/诊断脚本与正在运行的实例交错写同一文件）把 config.json
 	// 写成交错残片——密文尾部截断后永久无法解密，设置保存表现为随机
 	// 失败。改名覆盖是原子的：读者要么看到旧文件、要么看到新文件。
+	// 0600：Windows 上密钥已有 DPAPI 加密、权限位无意义；安卓/Linux
+	// 上密钥为明文落盘（无系统级密钥服务），配置文件只归当前用户所有。
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}

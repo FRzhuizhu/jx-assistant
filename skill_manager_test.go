@@ -45,8 +45,8 @@ func TestUserSkillLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.BuiltIn) != 3 {
-		t.Fatalf("自带技能应为 3 个（pdf/ocr/office），得到 %d", len(list.BuiltIn))
+	if len(list.BuiltIn) != 5 {
+		t.Fatalf("自带技能应为 5 个（pdf/ocr/office/downloader/apkinfo），得到 %d", len(list.BuiltIn))
 	}
 	// 内嵌母本可能自带演示用户技能，断言只认本测试创建的那个
 	var mine *userSkillEntry

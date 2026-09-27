@@ -1,0 +1,6 @@
+{
+  "id": "downloader",
+  "name": "下载器",
+  "version": "1.0.0",
+  "description": "内置 aria2c 官方二进制：HTTP/HTTPS/FTP 文件下载落盘，支持断点续传与多连接；Windows/安卓缺 curl、wget 环境的下载方案。"
+}

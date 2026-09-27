@@ -1,0 +1,6 @@
+{
+  "id": "apkinfo",
+  "name": "APK 查看",
+  "version": "1.0.0",
+  "description": "引擎子命令 apkinfo：读取 APK 的包名、版本、SDK 档位、权限、ABI 与签名证书指纹，安装前验包用；纯 Go 实现，安卓与桌面通用。"
+}

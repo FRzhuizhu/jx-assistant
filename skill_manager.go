@@ -19,7 +19,7 @@ import (
 )
 
 // 内置技能 id：只读展示、不可删除、不可关闭。
-var builtinSkillIDs = map[string]bool{"pdf": true, "ocr": true, "office": true}
+var builtinSkillIDs = map[string]bool{"pdf": true, "ocr": true, "office": true, "downloader": true, "apkinfo": true}
 
 const (
 	userSkillBodyMax = 6000 // read_skill 返回的单个技能说明上限（字符）
@@ -142,7 +142,7 @@ func (a *App) listSkills() (*SkillLists, error) {
 	}
 	st := a.loadSkillsState()
 	// 自带技能：读各自 manifest
-	for _, id := range []string{"pdf", "ocr", "office"} {
+	for _, id := range []string{"pdf", "ocr", "office", "downloader", "apkinfo"} {
 		m, _, err := a.readSkillManifest(id)
 		if err != nil {
 			continue
