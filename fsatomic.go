@@ -8,9 +8,56 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
+
+// copyFileAtomic 以原子替换语义把 src 复制到 dst：同目录建临时文件 →
+// 流式拷贝（io.Copy，不进内存，大文件友好）→ fsync → rename 覆盖。
+// 与 writeFileAtomic 同款语义，供上传复制与交付搬运共用。
+func copyFileAtomic(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".jx-atomic-*")
+	if err != nil {
+		// 临时文件建不出来时退回直写（少一层原子性但功能不减）
+		out, err := os.Create(dst)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // rename 成功后这是 no-op
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	copySecurityDescriptorBestEffort(dst, tmpName)
+	if err := os.Rename(tmpName, dst); err != nil {
+		return fmt.Errorf("替换写入 %s 失败: %w（常见原因：目标文件正被其他程序占用或为只读）", filepath.ToSlash(dst), err)
+	}
+	return nil
+}
 
 // writeFileAtomic 以原子替换语义写文件：同目录建临时文件 → 写入 + fsync →
 // （Windows：尽力把原文件的安全描述符复制到临时文件）→ rename 覆盖。

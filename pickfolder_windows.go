@@ -43,6 +43,7 @@ const (
 	clsctxInprocServer      = 1
 	fosPickFolders          = 0x20 // 只选文件夹
 	fosForceFileSystem      = 0x40 // 限定真实文件系统路径
+	fosAllowMultiSelect     = 0x200
 	sigdnFilesysPath        = 0x80058000
 	hresultCancelled        = 0x800704C7 // ERROR_CANCELLED(1223)：用户点了取消/关闭
 )
@@ -73,73 +74,89 @@ const (
 	vtSetClientGuid
 	vtClearClientData
 	vtSetFilter
+	vtGetResults // IFileOpenDialog::GetResults：多选结果集（IShellItemArray）
+)
+
+// IShellItemArray 的 vtable 槽位（0-2 为 IUnknown；BindToHandler=3、GetAttributesAt=4）
+const (
+	vtArrayGetCount  = 5
+	vtArrayGetItemAt = 6
 )
 
 // pickFolderNative 弹出选择框并阻塞到用户关闭；返回所选目录，
 // 用户取消返回空串。COM 的 STA 约定要求调用固定在一个 OS 线程上。
 func pickFolderNative(startDir, title string) (string, error) {
-	return pickDialogNative(startDir, title, true)
+	paths, err := pickDialogNative(startDir, title, false, false, false)
+	if err != nil || len(paths) == 0 {
+		return "", err
+	}
+	return paths[0], nil
 }
 
-// pickFileNative 同款 IFileOpenDialog，但选择文件而非文件夹；
-// 过滤器限定 ZIP 压缩包（附「所有文件」兜底）。
-func pickFileNative(startDir, title string) (string, error) {
-	return pickDialogNative(startDir, title, false)
+// pickFileNative 同款 IFileOpenDialog，但选择文件而非文件夹。
+// allFilter=false 时限定 ZIP 压缩包（技能安装场景，附「所有文件」兜底）；
+// allFilter=true 时不设过滤器（任意文件，聊天上传场景）。
+// multi=true 允许多选（FOS_ALLOWMULTISELECT + GetResults）。
+func pickFileNative(startDir, title string, allFilter, multi bool) ([]string, error) {
+	return pickDialogNative(startDir, title, false, allFilter, multi)
 }
 
-func pickDialogNative(startDir, title string, pickFolder bool) (string, error) {
+func pickDialogNative(startDir, title string, pickFolder, allFilter, multi bool) ([]string, error) {
 	type pickResult struct {
-		path string
-		err  error
+		paths []string
+		err   error
 	}
 	ch := make(chan pickResult, 1)
 	go func() {
 		runtime.LockOSThread()
-		path, err := pickDialogSTA(startDir, title, pickFolder)
+		paths, err := pickDialogSTA(startDir, title, pickFolder, allFilter, multi)
 		runtime.UnlockOSThread()
-		ch <- pickResult{path, err}
+		ch <- pickResult{paths, err}
 	}()
 	r := <-ch
-	return r.path, r.err
+	return r.paths, r.err
 }
 
-func pickDialogSTA(startDir, title string, pickFolder bool) (string, error) {
+func pickDialogSTA(startDir, title string, pickFolder, allFilter, multi bool) ([]string, error) {
 	hr, _, _ := procCoInitializeEx.Call(0, coinitApartmentThreaded)
 	if hr != 0 && hr != 1 { // S_FALSE=1 表示本线程已初始化，同样可用
-		return "", fmt.Errorf("COM 初始化失败 (0x%x)", hr)
+		return nil, fmt.Errorf("COM 初始化失败 (0x%x)", hr)
 	}
 	defer procCoUninitialize.Call()
 
 	clsid, err := parseGUID("{DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7}") // CLSID_FileOpenDialog
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	iid, err := parseGUID("{D57C7288-D4AD-4768-BE02-9D969532D960}") // IID_IFileOpenDialog
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var dlg unsafe.Pointer
 	if hr, _, _ = procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsid)), 0, clsctxInprocServer,
 		uintptr(unsafe.Pointer(&iid)), uintptr(unsafe.Pointer(&dlg))); hr != 0 {
-		return "", fmt.Errorf("创建文件对话框失败 (0x%x)", hr)
+		return nil, fmt.Errorf("创建文件对话框失败 (0x%x)", hr)
 	}
 	vt := *(**[29]uintptr)(unsafe.Pointer(dlg))
 	defer syscall.SyscallN(vt[2], uintptr(dlg)) // IUnknown::Release
 
 	var opts uintptr
-	if hr, _, _ := syscall.SyscallN(vt[vtGetOptions], uintptr(dlg), uintptr(unsafe.Pointer(&opts))); hr != 0 {
-		return "", fmt.Errorf("GetOptions 失败 (0x%x)", hr)
+	if hr, _, _ = syscall.SyscallN(vt[vtGetOptions], uintptr(dlg), uintptr(unsafe.Pointer(&opts))); hr != 0 {
+		return nil, fmt.Errorf("GetOptions 失败 (0x%x)", hr)
 	}
 	if pickFolder {
 		opts |= fosPickFolders | fosForceFileSystem
 	} else {
 		opts |= fosForceFileSystem
+		if multi {
+			opts |= fosAllowMultiSelect
+		}
 	}
-	if hr, _, _ := syscall.SyscallN(vt[vtSetOptions], uintptr(dlg), opts); hr != 0 {
-		return "", fmt.Errorf("SetOptions 失败 (0x%x)", hr)
+	if hr, _, _ = syscall.SyscallN(vt[vtSetOptions], uintptr(dlg), opts); hr != 0 {
+		return nil, fmt.Errorf("SetOptions 失败 (0x%x)", hr)
 	}
-	if !pickFolder {
+	if !pickFolder && !allFilter {
 		// COMDLG_FILTERSPEC{lpwcsName, lpwcsSpec}；默认扩展名兜 .zip
 		nameZip, _ := syscall.UTF16PtrFromString("ZIP 压缩包 (*.zip)")
 		nameAll, _ := syscall.UTF16PtrFromString("所有文件 (*.*)")
@@ -149,8 +166,8 @@ func pickDialogSTA(startDir, title string, pickFolder bool) (string, error) {
 			{unsafe.Pointer(nameZip), unsafe.Pointer(specZip)},
 			{unsafe.Pointer(nameAll), unsafe.Pointer(specAll)},
 		}
-		if hr, _, _ := syscall.SyscallN(vt[vtSetFileTypes], uintptr(dlg), 2, uintptr(unsafe.Pointer(&specs[0]))); hr != 0 {
-			return "", fmt.Errorf("SetFileTypes 失败 (0x%x)", hr)
+		if hr, _, _ = syscall.SyscallN(vt[vtSetFileTypes], uintptr(dlg), 2, uintptr(unsafe.Pointer(&specs[0]))); hr != 0 {
+			return nil, fmt.Errorf("SetFileTypes 失败 (0x%x)", hr)
 		}
 		syscall.SyscallN(vt[vtSetDefaultExtension], uintptr(dlg), uintptr(unsafe.Pointer(specZip)))
 	}
@@ -158,7 +175,7 @@ func pickDialogSTA(startDir, title string, pickFolder bool) (string, error) {
 		syscall.SyscallN(vt[vtSetTitle], uintptr(dlg), uintptr(unsafe.Pointer(t)))
 	}
 	if si := shellItemFromPath(startDir); si != nil {
-		syscall.SyscallN(vt[vtSetFolder], uintptr(dlg), uintptr(si)) // 起始定位目录
+		syscall.SyscallN(vt[vtSetFolder], uintptr(dlg), uintptr(unsafe.Pointer(si))) // 起始定位目录
 		sivt := *(**[8]uintptr)(unsafe.Pointer(si))
 		syscall.SyscallN(sivt[2], uintptr(si))
 	}
@@ -167,25 +184,58 @@ func pickDialogSTA(startDir, title string, pickFolder bool) (string, error) {
 
 	if hr, _, _ = syscall.SyscallN(vt[vtShow], uintptr(dlg), 0); hr != 0 {
 		if hr == hresultCancelled {
-			return "", nil
+			return nil, nil
 		}
-		return "", fmt.Errorf("对话框显示失败 (0x%x)", hr)
+		return nil, fmt.Errorf("对话框显示失败 (0x%x)", hr)
+	}
+
+	if multi && !pickFolder {
+		// 多选：GetResults 拿 IShellItemArray，逐项取文件系统路径
+		var arr unsafe.Pointer
+		if hr, _, _ = syscall.SyscallN(vt[vtGetResults], uintptr(dlg), uintptr(unsafe.Pointer(&arr))); hr != 0 {
+			return nil, fmt.Errorf("GetResults 失败 (0x%x)", hr)
+		}
+		avt := *(**[8]uintptr)(unsafe.Pointer(arr))
+		defer syscall.SyscallN(avt[2], uintptr(arr)) // IUnknown::Release
+		var cnt uintptr
+		if hr, _, _ = syscall.SyscallN(avt[vtArrayGetCount], uintptr(arr), uintptr(unsafe.Pointer(&cnt))); hr != 0 {
+			return nil, fmt.Errorf("GetCount 失败 (0x%x)", hr)
+		}
+		paths := []string{}
+		for i := uintptr(0); i < cnt; i++ {
+			var item unsafe.Pointer
+			if hr, _, _ = syscall.SyscallN(avt[vtArrayGetItemAt], uintptr(arr), i, uintptr(unsafe.Pointer(&item))); hr != 0 {
+				continue
+			}
+			if p, ok := itemFilePath(item); ok {
+				paths = append(paths, p)
+			}
+		}
+		return paths, nil
 	}
 
 	var item unsafe.Pointer
 	if hr, _, _ = syscall.SyscallN(vt[vtGetResult], uintptr(dlg), uintptr(unsafe.Pointer(&item))); hr != 0 {
-		return "", fmt.Errorf("GetResult 失败 (0x%x)", hr)
+		return nil, fmt.Errorf("GetResult 失败 (0x%x)", hr)
 	}
-	ivt := *(**[8]uintptr)(unsafe.Pointer(item))
-	defer syscall.SyscallN(ivt[2], uintptr(item))
+	if p, ok := itemFilePath(item); ok {
+		return []string{p}, nil
+	}
+	return nil, fmt.Errorf("GetDisplayName 失败")
+}
 
+// itemFilePath 从 IShellItem 取文件系统路径（SIGDN_FILESYSPATH），
+// 无论成败都负责释放 item 的引用。
+func itemFilePath(item unsafe.Pointer) (string, bool) {
+	ivt := *(**[8]uintptr)(unsafe.Pointer(item))
+	defer syscall.SyscallN(ivt[2], uintptr(item)) // IUnknown::Release
 	var pstr *uint16
-	if hr, _, _ = syscall.SyscallN(ivt[5], uintptr(item), sigdnFilesysPath, uintptr(unsafe.Pointer(&pstr))); hr != 0 || pstr == nil {
-		return "", fmt.Errorf("GetDisplayName 失败 (0x%x)", hr)
+	if hr, _, _ := syscall.SyscallN(ivt[5], uintptr(item), sigdnFilesysPath, uintptr(unsafe.Pointer(&pstr))); hr != 0 || pstr == nil {
+		return "", false
 	}
 	defer procCoTaskMemFree.Call(uintptr(unsafe.Pointer(pstr)))
 	n, _, _ := procLstrlenW.Call(uintptr(unsafe.Pointer(pstr)))
-	return syscall.UTF16ToString(unsafe.Slice(pstr, n)), nil
+	return syscall.UTF16ToString(unsafe.Slice(pstr, n)), true
 }
 
 // shellItemFromParsingName 把路径包成 IShellItem（失败返回 nil，调用方忽略即可）。
@@ -219,10 +269,10 @@ type comdlgFilterSpec struct {
 }
 
 // pickFileSerialized 选文件的串行化包装，与文件夹选择框共用一把锁。
-func pickFileSerialized(startDir, title string) (string, error) {
+func pickFileSerialized(startDir, title string, allFilter, multi bool) ([]string, error) {
 	pickFolderMu.Lock()
 	defer pickFolderMu.Unlock()
-	return pickFileNative(startDir, title)
+	return pickFileNative(startDir, title, allFilter, multi)
 }
 
 // parseGUID 解析 "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" 形式的 GUID。

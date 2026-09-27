@@ -124,7 +124,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
-		snapshotFileTool(), deliverResultTool(), a.dispatchSubTool(), a.listExpertsTool(),
+		snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
 	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)

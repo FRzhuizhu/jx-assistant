@@ -288,6 +288,40 @@ var storeMigrations = []migration{
 			`ALTER TABLE feedback ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// 桌面端上传登记 + 会话后交付（deliver.go）：uploads 只登记带原件
+		// 真实路径的桌面上传（uid 供模型在 deliver_file 里引用，原件路径即
+		// 交付目标）；delivery_jobs 是模型登记、本轮结束后由系统执行的搬运
+		// 队列（快照备份→原子替换→移动语义）。
+		id:       "0014_upload_delivery",
+		tolerant: true,
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS uploads (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id  TEXT NOT NULL,
+				uid         TEXT NOT NULL,
+				orig_path   TEXT NOT NULL DEFAULT '',
+				copy_path   TEXT NOT NULL DEFAULT '',
+				name        TEXT NOT NULL DEFAULT '',
+				size        INTEGER NOT NULL DEFAULT 0,
+				created_at  TEXT NOT NULL
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_uploads_session_uid ON uploads(session_id, uid)`,
+			`CREATE TABLE IF NOT EXISTS delivery_jobs (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id  TEXT NOT NULL,
+				source_path TEXT NOT NULL,
+				target_dir  TEXT NOT NULL,
+				target_name TEXT NOT NULL,
+				backup_path TEXT NOT NULL DEFAULT '',
+				status      TEXT NOT NULL DEFAULT 'pending',
+				error       TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL,
+				executed_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_delivery_jobs_session ON delivery_jobs(session_id, status)`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
@@ -1262,6 +1296,221 @@ func (s *Store) CopySnapshots(fromID, toID string, seqMap map[int64]int64) ([][2
 		}
 	}
 	return pairs, nil
+}
+
+// Upload 是一条桌面上传登记：原件真实路径只在桌面端原生文件选择框里采集到
+// （浏览器给不出本机路径），orig_path 既是模型的只读参考，也是 deliver_file
+// 的交付目标来源。uid（"u1"/"u2"...）会话内唯一，分支继承时原样保留，
+// 历史注记里的编号在新会话里继续有效。
+type Upload struct {
+	ID        int64  `json:"id"`
+	SessionID string `json:"sessionId"`
+	UID       string `json:"uid"`
+	OrigPath  string `json:"origPath"`
+	CopyPath  string `json:"copyPath"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	CreatedAt string `json:"createdAt"`
+}
+
+const uploadCols = `id, session_id, uid, orig_path, copy_path, name, size, created_at`
+
+func scanUpload(sc interface{ Scan(dest ...any) error }) (*Upload, error) {
+	u := &Upload{}
+	if err := sc.Scan(&u.ID, &u.SessionID, &u.UID, &u.OrigPath, &u.CopyPath, &u.Name, &u.Size, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// AddUpload 登记一条上传；uid 留空时按会话内自增分配（u1、u2…）。
+func (s *Store) AddUpload(u *Upload) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if u.UID == "" {
+		var n int64
+		if err := s.db.QueryRow(`SELECT COALESCE(MAX(CAST(SUBSTR(uid, 2) AS INTEGER)), 0)
+			FROM uploads WHERE session_id=?`, u.SessionID).Scan(&n); err != nil {
+			return err
+		}
+		u.UID = fmt.Sprintf("u%d", n+1)
+	}
+	res, err := s.db.Exec(`INSERT INTO uploads (session_id, uid, orig_path, copy_path, name, size, created_at)
+		VALUES(?,?,?,?,?,?,?)`, u.SessionID, u.UID, u.OrigPath, u.CopyPath, u.Name, u.Size, u.CreatedAt)
+	if err != nil {
+		return err
+	}
+	u.ID, _ = res.LastInsertId()
+	return nil
+}
+
+// UploadsFor 返回会话全部上传登记（按登记顺序）。
+func (s *Store) UploadsFor(sessionID string) ([]*Upload, error) {
+	rows, err := s.db.Query(`SELECT `+uploadCols+` FROM uploads WHERE session_id=? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Upload{}
+	for rows.Next() {
+		if u, err := scanUpload(rows); err == nil {
+			out = append(out, u)
+		}
+	}
+	return out, rows.Err()
+}
+
+// CopyUploadsOnBranch 分支对话用：把源会话的上传登记原样（uid 不变）复制到
+// 新会话，历史注记里的 u 编号在新会话里继续可解析。
+func (s *Store) CopyUploadsOnBranch(fromID, toID string) error {
+	ups, err := s.UploadsFor(fromID)
+	if err != nil {
+		return err
+	}
+	for _, u := range ups {
+		nu := *u
+		nu.ID, nu.SessionID = 0, toID
+		if err := s.AddUpload(&nu); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteUploadsForSession 删除会话时清掉它的上传登记。
+func (s *Store) DeleteUploadsForSession(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM uploads WHERE session_id=?`, sessionID)
+	return err
+}
+
+// DeliveryJob 是一条登记在册、等待本轮结束后执行的交付搬运：
+// 把 source_path 移动到 target_dir/target_name，目标处若有将被替代的
+// 同名文件先快照备份（backup_path 记录备份去处）。
+type DeliveryJob struct {
+	ID         int64  `json:"id"`
+	SessionID  string `json:"sessionId"`
+	SourcePath string `json:"sourcePath"`
+	TargetDir  string `json:"targetDir"`
+	TargetName string `json:"targetName"`
+	BackupPath string `json:"backupPath"`
+	Status     string `json:"status"` // pending | running | done | failed
+	Error      string `json:"error"`
+	CreatedAt  string `json:"createdAt"`
+	ExecutedAt string `json:"executedAt"`
+}
+
+const deliveryJobCols = `id, session_id, source_path, target_dir, target_name, backup_path, status, error, created_at, executed_at`
+
+func scanDeliveryJob(sc interface{ Scan(dest ...any) error }) (*DeliveryJob, error) {
+	j := &DeliveryJob{}
+	if err := sc.Scan(&j.ID, &j.SessionID, &j.SourcePath, &j.TargetDir, &j.TargetName,
+		&j.BackupPath, &j.Status, &j.Error, &j.CreatedAt, &j.ExecutedAt); err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
+// AddDeliveryJob 登记一条待执行交付。同一会话里目标位置（target_dir +
+// target_name）相同的 pending 作业只保留一条：后登记的覆盖先登记的源文件，
+// 避免模型反复调整后同一目标被搬两次。
+func (s *Store) AddDeliveryJob(j *DeliveryJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM delivery_jobs
+		WHERE session_id=? AND status='pending' AND target_dir=? AND target_name=?`,
+		j.SessionID, j.TargetDir, j.TargetName).Scan(&id)
+	switch {
+	case err == nil:
+		_, err = s.db.Exec(`UPDATE delivery_jobs SET source_path=?, created_at=? WHERE id=?`,
+			j.SourcePath, j.CreatedAt, id)
+		j.ID = id
+		return err
+	case err != sql.ErrNoRows:
+		return err
+	}
+	res, err := s.db.Exec(`INSERT INTO delivery_jobs
+		(session_id, source_path, target_dir, target_name, status, created_at)
+		VALUES(?,?,?,?, 'pending', ?)`, j.SessionID, j.SourcePath, j.TargetDir, j.TargetName, j.CreatedAt)
+	if err != nil {
+		return err
+	}
+	j.ID, _ = res.LastInsertId()
+	j.Status = "pending"
+	return nil
+}
+
+// ClaimPendingJobs 原子认领待执行交付（pending→running）并返回认领到的作业。
+// sessionID 为空串时认领全部会话的（启动恢复兜底用）。
+func (s *Store) ClaimPendingJobs(sessionID string) ([]*DeliveryJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q := `SELECT ` + deliveryJobCols + ` FROM delivery_jobs WHERE status='pending'`
+	var args []any
+	if sessionID != "" {
+		q += ` AND session_id=?`
+		args = append(args, sessionID)
+	}
+	q += ` ORDER BY id`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := []*DeliveryJob{}
+	for rows.Next() {
+		if j, err := scanDeliveryJob(rows); err == nil {
+			out = append(out, j)
+		}
+	}
+	rows.Close()
+	for _, j := range out {
+		if _, err := s.db.Exec(`UPDATE delivery_jobs SET status='running' WHERE id=? AND status='pending'`, j.ID); err != nil {
+			return out, err
+		}
+		j.Status = "running"
+	}
+	return out, nil
+}
+
+// UpdateDeliveryJob 回写执行结果（状态/备份去处/错误/完成时间）。
+func (s *Store) UpdateDeliveryJob(j *DeliveryJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE delivery_jobs SET backup_path=?, status=?, error=?, executed_at=? WHERE id=?`,
+		j.BackupPath, j.Status, j.Error, j.ExecutedAt, j.ID)
+	return err
+}
+
+// ResetStuckJobs 启动恢复：上一进程崩溃时可能停在 running，复位回 pending
+// 等待统一重放。返回复位条数。
+func (s *Store) ResetStuckJobs() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE delivery_jobs SET status='pending' WHERE status='running'`)
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
+// PendingDeliveryCount 返回会话待执行交付条数（工具回执里给模型一个队列概览）。
+func (s *Store) PendingDeliveryCount(sessionID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM delivery_jobs WHERE session_id=? AND status='pending'`, sessionID).Scan(&n)
+	return n
+}
+
+// DeletePendingJobsForSession 删除会话时清掉它的待执行交付（用户删会话即放弃）。
+func (s *Store) DeletePendingJobsForSession(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM delivery_jobs WHERE session_id=? AND status IN ('pending','running')`, sessionID)
+	return err
 }
 
 // SearchMessages 跨会话全文搜索（当前 LIKE 实现；个人规模数据足够，量大后可升 FTS）。

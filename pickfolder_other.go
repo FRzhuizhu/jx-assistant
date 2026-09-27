@@ -10,6 +10,6 @@ func pickFolderSerialized(startDir, title string) (string, error) {
 }
 
 // pickFileSerialized 同上，选文件变体。
-func pickFileSerialized(startDir, title string) (string, error) {
-	return "", errors.New("文件选择框仅支持 Windows")
+func pickFileSerialized(startDir, title string, allFilter, multi bool) ([]string, error) {
+	return nil, errors.New("文件选择框仅支持 Windows")
 }

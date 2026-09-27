@@ -159,7 +159,7 @@ function isSysNote(txt) {
   return txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') ||
     txt.startsWith('【文件上传】') || txt.startsWith('【文件回退】') || txt.startsWith('【目标续跑】') ||
     txt.startsWith('【派发子对话】') || txt.startsWith('【数字助理派发】') || txt.startsWith('【数字助理转达】') ||
-    txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>');
+    txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>') || txt.startsWith('【交付完成】');
 }
 
 function cjkWidth(t) {
@@ -3165,9 +3165,46 @@ async function doUpload(view) {
     return;
   }
   if (view.state.streaming) return;
+  // 桌面壳（shell=desktop）的本地会话：走系统原生文件选择框采集本机真实路径
+  // （它同时是 deliver_file 的交付目标来源）；用户取消则静默结束，接口不可用
+  // 回退浏览器文件选择。手机/远程（JX_REMOTE）与局域网浏览器（非桌面壳，
+  // 弹了也是弹在宿主机上、路径对用户那台机器无意义）走 multipart 原路径。
+  if (document.documentElement.classList.contains('desktop-shell') && !view.state.cur.remote) {
+    try {
+      const r = await fetch('/api/pick-file?filter=all&multi=1&title=' + encodeURIComponent('选择要上传的文件'));
+      if (r.ok) {
+        const d = await r.json();
+        const paths = d.paths || (d.path ? [d.path] : []);
+        if (paths.length) { await uploadByPaths(paths, view); }
+        return; // 选到了就传完收工，取消就什么都不做
+      }
+    } catch (e) { /* 原生选择框不可用：走下面的浏览器回退 */ }
+  }
   uploadTarget = view;
   $('file-input').value = '';
   $('file-input').click();
+}
+
+// 按本机真实路径上传（桌面端原生选择框路径）：登记原件路径进 uploads 表，
+// 后端会向模型注入注记说明该路径可用作交付目标。
+async function uploadByPaths(paths, view) {
+  const cur = view.state.cur;
+  if (!cur) return;
+  let ok = 0, last = '';
+  for (const p of paths) {
+    try {
+      const r = await fetch('/api/sessions/' + cur.id + '/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p })
+      });
+      if (r.ok) { ok++; last = p; } else { last = await r.text(); }
+    } catch (e) { last = String(e); }
+  }
+  if (view === mainView) await openSession(cur.id); // 主对话：就地刷新；子对话：刷新右栏
+  else await openSubSession(cur.id);
+  view.hint.textContent = ok ? ('已上传 ' + ok + ' 个文件（原件路径已登记）') : ('上传失败：' + (last || '未知原因'));
+  setTimeout(() => { view.hint.textContent = ''; }, 3000);
 }
 
 async function uploadFiles(files, view) {

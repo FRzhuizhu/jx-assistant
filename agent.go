@@ -531,6 +531,7 @@ func skillNamesInEnv(env string) map[string]bool {
 var planSuspendedTask = map[string]bool{
 	"write": true, "edit": true, "run_command": true,
 	"job_output": true, "job_list": true, "job_kill": true,
+	"deliver_file": true, // 登记即承诺搬运，计划模式下不该落任何实际行动
 }
 
 // suspendedInPlan 判断某工具在计划模式下是否被暂停。工具目录跨模式保持

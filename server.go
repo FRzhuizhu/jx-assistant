@@ -109,6 +109,12 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
 	a.recoverInterrupted()
+	// 交付队列崩溃残留兜底：上一进程若死在执行中（running），复位回 pending
+	// 并统一重放——登记过的交付不能因为重启就丢
+	if n := a.Store.ResetStuckJobs(); n > 0 {
+		log.Printf("[交付] 启动恢复：%d 条中断的交付作业已复位待执行", n)
+	}
+	go a.flushDeliveries("")
 	// 待办与定时任务：载入清单并起调度循环（组件关掉时整拍跳过，见 todo.go）
 	a.Todos = newTodoScheduler(a)
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
@@ -1347,6 +1353,10 @@ func (a *App) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// 上传登记与待执行交付一并清掉：用户删会话即放弃这些（done/failed 的
+	// 历史作业行留着无妨，量小且可追溯）
+	_ = a.Store.DeleteUploadsForSession(id)
+	_ = a.Store.DeletePendingJobsForSession(id)
 	a.scheduleResidualCleanup(oldWS) // 会话结束：清本产品的常驻授权残留
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
@@ -1475,9 +1485,16 @@ func wsOr(a *App, m *SessionMeta) string {
 
 // handleUpload 接收文件上传：保存进会话工作区，并注入一条上传记录消息
 // （模型在后续上下文里能看到，可用只读工具查看文件内容）。
+// 两种载荷：multipart（浏览器/手机，只复制字节，原件路径拿不到）与
+// JSON {path}（桌面端经 /api/pick-file 采集到的本机真实路径，会登记
+// uploads 表并告知模型该路径可用作交付目标，见 handleUploadByPath）。
 func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
+		return
+	}
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		a.handleUploadByPath(w, r, m)
 		return
 	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -1526,6 +1543,82 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(dst), "size": len(data)})
 }
 
+// handleUploadByPath 桌面端路径上传：前端经 /api/pick-file 拿到本机真实
+// 路径后送到这里。与 multipart 不同的是原件路径被登记进 uploads 表——
+// 它是 deliver_file 的交付目标来源，注记里会向模型说明这一点。
+// 原件就在工作区内时不做复制（避免自己覆盖自己），只登记。
+func (a *App) handleUploadByPath(w http.ResponseWriter, r *http.Request, m *SessionMeta) {
+	if m.Remote != nil {
+		writeErr(w, 400, "远程会话不支持按本机路径上传，请用网页文件上传")
+		return
+	}
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&p); err != nil {
+		writeErr(w, 400, "请求体解析失败: "+err.Error())
+		return
+	}
+	src := strings.TrimSpace(p.Path)
+	if src == "" {
+		writeErr(w, 400, "缺少 path 字段")
+		return
+	}
+	abs, err := filepath.Abs(src)
+	if err != nil {
+		writeErr(w, 400, "路径解析失败: "+err.Error())
+		return
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		writeErr(w, 400, "文件不存在或不可访问: "+abs)
+		return
+	}
+	if fi.IsDir() {
+		writeErr(w, 400, "路径是目录不是文件: "+abs)
+		return
+	}
+	name := filepath.Base(abs)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/`) {
+		writeErr(w, 400, "非法文件名")
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	ws, err := tctx.resolve("")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	dst := filepath.Join(ws, name)
+	inWorkspace := strings.EqualFold(canonicalFor(abs), canonicalFor(dst))
+	if !inWorkspace {
+		// 用户主动上传不走模型权限审批，直接复制进工作区（流式，不受
+		// multipart 的 32MB 上限约束）
+		if err := copyFileAtomic(dst, abs); err != nil {
+			writeErr(w, 500, "复制进工作区失败: "+err.Error())
+			return
+		}
+	}
+	u := &Upload{SessionID: m.ID, OrigPath: abs, CopyPath: dst, Name: name, Size: fi.Size(), CreatedAt: now()}
+	if err := a.Store.AddUpload(u); err != nil {
+		writeErr(w, 500, "上传登记落库失败: "+err.Error())
+		return
+	}
+	var note string
+	if inWorkspace {
+		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：文件位于工作区内 %s，该路径现在可用作交付工具（deliver_file）的交付目标。",
+			u.UID, name, fi.Size(), filepath.ToSlash(dst))
+	} else {
+		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：原件位于 %s，该路径现在可用作交付工具（deliver_file）的交付目标；已复制一份到工作区 %s。",
+			u.UID, name, fi.Size(), filepath.ToSlash(abs), filepath.ToSlash(dst))
+	}
+	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
+	m.UpdatedAt = now()
+	_ = a.Store.SaveMeta(m)
+	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(dst), "orig": filepath.ToSlash(abs), "uid": u.UID, "size": fi.Size()})
+}
+
 // handleOpenFolder 在系统资源管理器中打开一个目录（工作区行的快捷入口）。
 func (a *App) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -1571,8 +1664,10 @@ func (a *App) handlePickFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"path": path})
 }
 
-// handlePickFile 同款系统原生对话框，但选择文件（当前用于技能 ZIP 安装包），
-// 过滤器限定 *.zip；用户取消时 path 为空串。
+// handlePickFile 同款系统原生对话框，但选择文件。默认过滤器限定 *.zip
+// （技能 ZIP 安装包，旧调用方）；query 加 filter=all 时不设过滤器（任意
+// 文件，聊天上传采集原件真实路径用），multi=1 允许多选。用户取消时
+// paths 为空数组；返回体保留 path 字段（首个）兼容旧调用方。
 func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
 	start := strings.TrimSpace(r.URL.Query().Get("start"))
 	if start == "" {
@@ -1582,12 +1677,18 @@ func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		title = "选择文件"
 	}
-	path, err := pickFileSerialized(start, title)
+	allFilter := r.URL.Query().Get("filter") == "all"
+	multi := r.URL.Query().Get("multi") == "1" || r.URL.Query().Get("multi") == "true"
+	paths, err := pickFileSerialized(start, title, allFilter, multi)
 	if err != nil {
 		writeErr(w, 500, "无法打开文件选择框: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"path": path})
+	first := ""
+	if len(paths) > 0 {
+		first = paths[0]
+	}
+	writeJSON(w, 200, map[string]any{"path": first, "paths": paths})
 }
 
 // handleInterject 对话中途发消息：不打断当前执行。
@@ -1729,6 +1830,10 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[快照] 分支 %s 复制快照失败（分支仍可用，只是缺文件历史）: %v", fork.ID, err)
 	} else {
 		a.copySnapshotFiles(m, fork, pairs)
+	}
+	// 上传登记同迁（uid 原样保留）：分支历史注记里的 u 编号继续可解析
+	if err := a.Store.CopyUploadsOnBranch(m.ID, fork.ID); err != nil {
+		log.Printf("[上传] 分支 %s 复制上传登记失败: %v", fork.ID, err)
 	}
 	(&toolContext{app: a, sess: fork}).ensureJxAI()
 	a.broadcast(Event{Type: "session_updated", SessionID: fork.ID})

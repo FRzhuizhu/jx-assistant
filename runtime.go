@@ -105,6 +105,9 @@ func (a *App) finishRun(id string) {
 	close(r.done)
 	r.cancel()
 	_ = a.Store.UpdateStatus(id, "idle")
+	// 本轮结束（正常/停止/报错收口都走这里）：执行已登记的会话后交付。
+	// 异步执行避免大文件搬运拖住收口；认领机制保证与启动恢复不重不漏。
+	go a.flushDeliveries(id)
 }
 
 // runOf 取会话执行中的运行体；未在执行返回 nil。
