@@ -1002,6 +1002,13 @@ func (a *App) gitCheckout(ctx context.Context, session, repo, branch string) (st
 
 // ---------- AI 提交摘要 ----------
 
+// gitSummarySystemPrompt 是 AI 提交摘要的系统提示词（对齐数字助理2 dsh-git-panel 的写法）。
+const gitSummarySystemPrompt = `你是提交信息撰写员。根据给定的 git 已暂存改动（stat 概览 + diff 正文），写一条提交信息。
+要求：
+- 第一行是简洁的主题行（不超过 50 个字，中文，概括最重要的改动；必要时可用 conventional commit 前缀如 feat:/fix:/docs:/refactor:）。
+- 如果改动较复杂，主题行后空一行，再写 2-4 行正文说明要点；简单改动就不用正文。
+- 只输出提交信息本身：不要代码块、不要引号、不要解释、不要任何多余前言或落款。`
+
 // gitSummarize 用当前会话配置的模型为已暂存改动生成提交信息（不提交，只生成）。
 func (a *App) gitSummarize(ctx context.Context, session, repo string) (string, error) {
 	root, _, reason := a.gitResolve(ctx, session, repo)
@@ -1034,9 +1041,12 @@ func (a *App) gitSummarize(ctx context.Context, session, repo string) (string, e
 	defer cancel()
 	var sb strings.Builder
 	err = StreamChat(sctx, target, ChatRequest{
-		Model:    target.Model,
-		Messages: []Message{TextMessage("user", diffText)},
-		Stream:   true,
+		Model: target.Model,
+		Messages: []Message{
+			TextMessage("system", gitSummarySystemPrompt),
+			TextMessage("user", diffText),
+		},
+		Stream: true,
 	}, StreamCallbacks{OnText: func(s string) { sb.WriteString(s) }})
 	if err != nil {
 		return "", errors.New("生成摘要失败：" + gitTail(err.Error(), 400))
