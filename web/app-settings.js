@@ -135,12 +135,29 @@ function loadProvDraft(c) {
   }));
 }
 
+// 草稿指纹：判断卡片相对「最近一次服务端状态」是否有改动。底部通用「保存」
+// 只提交动过的卡片，未动过的一律不碰（避免无谓写盘，也避免覆盖服务端已有的元信息）。
+function provSig(p) {
+  return JSON.stringify({
+    id: p.id || '', presetId: p.presetId || '', name: p.name || '', baseURL: p.baseURL || '',
+    models: (p.models || []).map((m) => [m.id || '', m.name || '', m.contextWindow || 0, m.maxOutput || 0, !!m.supportsImages]),
+  });
+}
+
+// 重载模型页草稿并记下基线（openSettings / reloadProviders 共用）。
+// p.base 只用于比对，不进入提交体。
+function resetProvDraft(c) {
+  provDraft = loadProvDraft(c);
+  provDraft.forEach((p) => { p.base = provSig(p); });
+  provOpenKey = null; provTest = {}; provModelOpen = {};
+}
+
 // pane 可选：打开后直接落在指定分区（如 'network'，左下角手机图标用）；缺省常规页
 async function openSettings(pane) {
   const c = await api('/api/config');
   presetsCache = c.presets || [];
-  provDraft = loadProvDraft(c);
-  provOpenKey = null; provNew = null; provTest = {}; provModelOpen = {};
+  provNew = null;
+  resetProvDraft(c);
   renderProvCards();
   selRefs.compactMode.set(c.compactMode || 'rule');
   $('set-keeprounds').value = c.keepRounds || 5;
@@ -320,8 +337,7 @@ function effURL(p) {
 
 async function reloadProviders() {
   const c = await api('/api/config');
-  provDraft = loadProvDraft(c);
-  provOpenKey = null; provTest = {}; provModelOpen = {};
+  resetProvDraft(c);
   // 不清 provNew：「添加提供方」的草稿卡片由保存/取消按钮显式处理，避免重载时误丢输入
   renderProvCards();
   loadModels();
@@ -483,7 +499,7 @@ function buildProvCard(p, key) {
       `<span class="mr-id">${esc(m.id || '(未命名模型)')}</span>` +
       `<span class="mr-test"></span>` +
       `<span class="mr-chips">${esc(chips)}</span>` +
-      `<button class="mr-x" title="删除该模型">✕</button>`;
+      `<button class="mr-x" title="删除该模型">删除</button>`;
     const testEl = line.querySelector('.mr-test');
     const t = (provTest[key] || {})[m.id];
     if (t && t.state === 'run') { testEl.textContent = '测试中…'; testEl.className = 'mr-test run'; }
@@ -651,19 +667,7 @@ function buildProvCard(p, key) {
     if (!p.presetId && !p.baseURL.trim()) { alert('请填写 API 地址'); return; }
     if (!p.key && !p.keyMasked && !confirm('尚未填写 API 密钥，确定保存？（本地服务如 Ollama 可不填）')) return;
     try {
-      await api('/api/providers', {
-        method: 'POST',
-        body: JSON.stringify({
-          // 新卡片选了预置提供方时本地 id 还是空的：用预置 id 作为保存目标，
-          // 否则后端识别不出预置（baseURL 传空）会报「必须填写 API 地址」
-          id: p.id || p.presetId || '',
-          name: p.name,
-          baseURL: p.presetId ? '' : p.baseURL.trim(),
-          apiKey: p.key,
-          models: p.models,
-        }),
-      });
-      if (key === 'new') provNew = null; // 草稿已保存转正：清掉常驻草稿卡片
+      await putProvider(p, key);
       reloadProviders();
     } catch (e) { alert('保存失败：' + e.message); }
   };
@@ -675,9 +679,66 @@ function buildProvCard(p, key) {
   return card;
 }
 
+// putProvider 提交单张提供方卡片。卡片内的「保存」与底部通用「保存」共用这一条
+// 路径（原来底部保存只写上下文页，模型页的密钥、增删模型点它不生效）。
+// apiKey 传空串＝后端沿用已保存的密钥，所以没改密钥的卡片提交也无副作用。
+async function putProvider(p, key) {
+  await api('/api/providers', {
+    method: 'POST',
+    body: JSON.stringify({
+      // 新卡片选了预置提供方时本地 id 还是空的：用预置 id 作为保存目标，
+      // 否则后端识别不出预置（baseURL 传空）会报「必须填写 API 地址」
+      id: p.id || p.presetId || '',
+      name: p.name,
+      baseURL: p.presetId ? '' : (p.baseURL || '').trim(),
+      apiKey: p.key,
+      models: p.models,
+    }),
+  });
+  if (key === 'new') provNew = null; // 草稿已保存转正：清掉常驻草稿卡片
+  p.base = provSig(p);               // 已落盘：基线推进，重试时不重复提交
+}
+
+// saveProviderDrafts 把模型页有改动的卡片一并落盘（底部通用「保存」先调它）。
+// 校验不通过就整体不提交、如实指出是哪一张，返回 false 让调用方留在设置页。
+async function saveProviderDrafts() {
+  const targets = [];
+  for (const p of provDraft) {
+    if (p.key || provSig(p) !== p.base) targets.push([p, p.id]);
+  }
+  const nw = provNew;
+  if (nw && (nw.name.trim() || nw.baseURL.trim() || nw.key || nw.models.length)) targets.push([nw, 'new']);
+  if (!targets.length) return true; // 模型页没动过：不打扰用户
+
+  for (const [p] of targets) {
+    if (p.presetId) continue; // 预置提供方用系统地址，名称由后端补
+    if (!p.name.trim()) {
+      alert('有提供方还没填名称，模型页的改动这次没有保存；填好后重新点「保存」即可。');
+      return false;
+    }
+    if (!p.baseURL.trim()) {
+      alert('提供方「' + p.name.trim() + '」还没填 API 地址，模型页的改动这次没有保存；填好后重新点「保存」即可。');
+      return false;
+    }
+  }
+  const noKey = targets.filter(([p]) => !p.key && !p.keyMasked).length;
+  if (noKey && !confirm('有 ' + noKey + ' 家提供方还没填 API 密钥（本地服务如 Ollama 可留空），仍要保存吗？')) return false;
+
+  for (const [p, key] of targets) {
+    try {
+      await putProvider(p, key);
+    } catch (e) {
+      alert('模型改动保存失败：' + e.message + '\n（其余设置这次也没保存，可修正后重新点「保存」）');
+      return false;
+    }
+  }
+  return true;
+}
+
 async function saveSettings() {
-  // 模型页各卡片单独保存（/api/providers）；常规页即时落本机浏览器；
-  // 底部「保存」只负责上下文页。
+  // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
+  // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
+  if (!(await saveProviderDrafts())) return;
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
@@ -686,7 +747,10 @@ async function saveSettings() {
       threshold: parseFloat(selRefs.compactThreshold.get()) || 0.8,
     },
   };
-  await api('/api/config', { method: 'POST', body: JSON.stringify(body) });
+  try {
+    await api('/api/config', { method: 'POST', body: JSON.stringify(body) });
+  } catch (e) { alert('保存失败：' + e.message); return; }
+  loadModels(); // 模型页刚可能增删了模型：对话区的模型芯片跟着刷新
   closeSettingsUI();
   loadStatus();
 }

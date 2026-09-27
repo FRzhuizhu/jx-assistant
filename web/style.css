@@ -1535,8 +1535,13 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .mr-test.run { color: var(--text-3); }
 .mr-test.ok { color: #2ea043; }
 .mr-test.fail { color: #c22f2f; }
-.mr-x { border: none; background: none; color: var(--text-3); cursor: pointer; font-size: 13px; padding: 2px 5px; border-radius: 5px; flex-shrink: 0; }
-.mr-x:hover { color: #c22f2f; background: rgba(194, 47, 47, .08); }
+/* 删除模型：文字按钮（原来是一个「✕」，与「测试连通」的失败标记 ✗ 混在一起分不清），
+   红色与失败态同一个红，鼠标悬停加下划线以示可点 */
+.mr-x {
+  border: none; background: none; color: #c22f2f; cursor: pointer;
+  font-size: 12px; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; line-height: 1.4;
+}
+.mr-x:hover { background: rgba(194, 47, 47, .08); text-decoration: underline; }
 .mr-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; padding: 10px 12px 12px; background: var(--chip); border-top: 1px solid var(--border); }
 .mr-edit .pf-label { margin: 6px 0 4px; }
 .mr-edit .full { grid-column: 1 / -1; }

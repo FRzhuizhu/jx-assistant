@@ -431,11 +431,11 @@
               <p class="sf-desc">中继网关（210 网关 server.js）的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
             </div>
           </div>
-          <p class="tip">网络访问设置保存在服务端，改动重启程序后生效。</p>
+          <p class="tip">网络访问设置保存在服务端；远程接入改动即时生效，局域网绑定改动重启程序后生效。</p>
         </div>
         <div class="set-pane" id="set-pane-models">
           <h3>模型</h3>
-          <div class="tip-inline" style="margin:0 0 10px">一家提供方配一个 API 密钥，可挂多个模型；预置提供方直接用系统存好的地址，自定义提供方才需要填 API 地址。点击卡片即可展开编辑。</div>
+          <div class="tip-inline" style="margin:0 0 10px">一家提供方配一个 API 密钥，可挂多个模型；预置提供方直接用系统存好的地址，自定义提供方才需要填 API 地址。点击卡片即可展开编辑。改完点底部的「保存」即可；卡片里的「保存」只提交这一家提供方。</div>
           <div id="prov-list"></div>
           <button id="prov-add-card" class="pf-add">＋ 添加提供方</button>
         </div>
@@ -559,7 +559,7 @@
     </div>
     <!-- 通用底栏：横跨整个设置卡（导航与分区之下），一级/二级、手机/桌面都在 -->
     <div class="set-footer">
-      <p class="tip" style="margin:0">「对话历史与压缩」改动点「保存」生效；「模型」「子对话专家」在各卡片内单独保存；常规页即时生效</p>
+      <p class="tip" style="margin:0">「对话历史与压缩」「模型」的改动点底部「保存」一并生效（模型卡片内的保存只提交该家提供方）；「子对话专家」在各卡片内单独保存；常规页即时生效</p>
       <div class="modal-actions">
         <button id="set-cancel">取消</button>
         <button id="set-save" class="accent">保存</button>
