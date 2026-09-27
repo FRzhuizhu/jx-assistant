@@ -11,8 +11,8 @@ android {
         applicationId = "com.jianxiang.assistant"
         minSdk = 26          // Android 8.0：前台服务起始；两台真机（三星/荣耀）均覆盖
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.6"
         ndk {
             // 引擎以 libjx.so 形式放在 jniLibs，安装时系统释放到
             // nativeLibraryDir（可执行、免解压）——targetSdk 29+ 的
