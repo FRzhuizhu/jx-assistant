@@ -148,7 +148,10 @@ class EngineService : Service() {
                 val out = try {
                     p.inputStream.use { String(it.readBytes()) }
                 } catch (e: Exception) { "<读取失败: ${e.message}>" }
-                Log.e(TAG, "engine 退出 code=${p.exitValue()} 输出: ${out.take(800)}")
+                // exitValue 仅在进程退出后合法；读取异常（流提前关闭等）时进程可能
+                // 仍在运行，直接调用会抛 IllegalThreadStateException 拖垮整个应用
+                val code = try { p.exitValue() } catch (e: Exception) { -1 }
+                Log.e(TAG, "engine 退出 code=$code 输出: ${out.take(4000)}")
                 if (proc === p && p.isAlive.not()) {
                     // 非正常退出且服务仍在：1 秒后拉起
                     Thread.sleep(1000)

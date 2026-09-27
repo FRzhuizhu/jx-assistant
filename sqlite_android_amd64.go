@@ -21,6 +21,9 @@ package main
 // 调用时机：main() 里首次打开数据库之前（引擎启动最早期）。
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -32,25 +35,54 @@ import (
 //go:linkname sqliteASyscall modernc.org/sqlite/lib._aSyscall
 var sqliteASyscall [29][3]uintptr // Tunix_syscall = {zName, pCurrent, pDefault}
 
-// patchSqliteSyscallsForAndroid 替换 lstat/stat 表项（幂等）。
+// patchSqliteSyscallsForAndroid 替换被封杀的表项（幂等）。
+//
+// 封杀面（模拟器实测 + bionic 走 *_at 推断）分两类：
+//  1. 旧式 stat 族：lstat=6 / stat=4（实测 SIGSYS）——bionic 走 newfstatat=262
+//  2. 其余 legacy：unlink=87（实测 SIGSYS）等——bionic 走 unlinkat=263；
+//     同类（有 *_at 替代而 policy 封旧号）一并预置：open/access/readlink/
+//     rename/mkdir/symlink/fstat。
+// 实测通过的（fcntl/read/write/ftruncate/mmap 等无 *_at 替代）不动。
 func patchSqliteSyscallsForAndroid() {
+	// 诊断：把表内全部可替换系统调用名打一次到 stderr（随引擎日志捕获）
+	names := make([]string, 0, len(sqliteASyscall))
 	for i := range sqliteASyscall {
-		name := libc.GoString(sqliteASyscall[i][0])
-		switch name {
-		case "lstat":
-			fp := jxFuncPtr(jxLstatImpl)
-			sqliteASyscall[i][1] = fp
-			sqliteASyscall[i][2] = fp // 防止 restore-defaults 路径清回被禁实现
-		case "stat":
-			fp := jxFuncPtr(jxStatImpl)
-			sqliteASyscall[i][1] = fp
-			sqliteASyscall[i][2] = fp
+		names = append(names, libc.GoString(sqliteASyscall[i][0]))
+	}
+	fmt.Fprintf(os.Stderr, "[jxpatch] sqlite aSyscall: %s\n", strings.Join(names, ","))
+
+	patch := func(name, impl uintptr) {
+		for i := range sqliteASyscall {
+			if sqliteASyscall[i][0] == name {
+				sqliteASyscall[i][1] = impl
+				sqliteASyscall[i][2] = impl // 防止 restore-defaults 路径清回被禁实现
+			}
 		}
 	}
+	patch(jxNamePtr("lstat"), jxFuncPtr(jxLstatImpl))
+	patch(jxNamePtr("stat"), jxFuncPtr(jxStatImpl))
+	patch(jxNamePtr("fstat"), jxFuncPtr(jxFstatImpl))
+	patch(jxNamePtr("access"), jxFuncPtr(jxAccessImpl))
+	patch(jxNamePtr("open"), jxFuncPtr(jxOpenImpl))
+	patch(jxNamePtr("unlink"), jxFuncPtr(jxUnlinkImpl))
+	patch(jxNamePtr("readlink"), jxFuncPtr(jxReadlinkImpl))
+	patch(jxNamePtr("rename"), jxFuncPtr(jxRenameImpl))
+	patch(jxNamePtr("mkdir"), jxFuncPtr(jxMkdirImpl))
+	patch(jxNamePtr("symlink"), jxFuncPtr(jxSymlinkImpl))
+}
+
+// jxNamePtr 在表内按名字取 FzName 指针（找不到返回 0，patch 自然跳过）。
+func jxNamePtr(want string) uintptr {
+	for i := range sqliteASyscall {
+		if libc.GoString(sqliteASyscall[i][0]) == want {
+			return sqliteASyscall[i][0]
+		}
+	}
+	return 0
 }
 
 // jxFuncPtr 拿到任意无捕获函数首地址（ libc.TLS 首参约定与转译代码一致）。
-func jxFuncPtr(f func(*libc.TLS, uintptr, uintptr) int32) uintptr {
+func jxFuncPtr[T any](f T) uintptr {
 	return *(*uintptr)(unsafe.Pointer(&f))
 }
 
@@ -93,4 +125,59 @@ func jxStatAt(tls *libc.TLS, path, buf uintptr, flags int32) int32 {
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(buf)), 144),
 		unsafe.Slice((*byte)(unsafe.Pointer(&st)), 144))
 	return 0
+}
+
+// ---- 2026-09 模拟器实测扩展：unlink 等 legacy 封杀面 ----
+
+// jxATFDCWD AT_FDCWD=-100 的 uintptr 形态（uintptr(-100) 常量转换会溢出报错）。
+var jxATFDCWD = func() uintptr { v := int64(-100); return uintptr(v) }()
+
+// _AT_EMPTY_PATH：fstatat 对 fd 生效（"" 路径 + 该标志）等价旧式 fstat。
+const _AT_EMPTY_PATH = 0x1000
+
+// jxEmptyPath 供 fstatat(fd, "", ...) 用。
+var jxEmptyPath = [1]byte{0}
+
+// jxSyscallAt 裸调系统调用并回写 errno（musl 同套编号，与 jxStatAt 一致）。
+func jxSyscallAt(tls *libc.TLS, nr uintptr, a1, a2, a3, a4 uintptr) int32 {
+	r, _, errno := syscall.Syscall6(nr, a1, a2, a3, a4, 0, 0)
+	if errno != 0 {
+		*(*int32)(unsafe.Pointer(libc.X__errno_location(tls))) = int32(errno)
+		return -1
+	}
+	return int32(r)
+}
+
+// 各替换实现：参数个数按 SQLite os_unix.c 调用点，TLS 首参约定与转译代码一致。
+
+func jxFstatImpl(tls *libc.TLS, fd, buf, _, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_NEWFSTATAT, fd, uintptr(unsafe.Pointer(&jxEmptyPath[0])), buf, _AT_EMPTY_PATH)
+}
+
+func jxAccessImpl(tls *libc.TLS, path, mode, _, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_FACCESSAT, jxATFDCWD, path, mode, 0)
+}
+
+func jxOpenImpl(tls *libc.TLS, path, flags, mode, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_OPENAT, jxATFDCWD, path, flags, mode)
+}
+
+func jxUnlinkImpl(tls *libc.TLS, path, _, _, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_UNLINKAT, jxATFDCWD, path, 0, 0)
+}
+
+func jxReadlinkImpl(tls *libc.TLS, path, buf, bufsiz, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_READLINKAT, jxATFDCWD, path, buf, bufsiz)
+}
+
+func jxRenameImpl(tls *libc.TLS, oldPath, newPath, _, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_RENAMEAT, jxATFDCWD, oldPath, jxATFDCWD, newPath)
+}
+
+func jxMkdirImpl(tls *libc.TLS, path, mode, _, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_MKDIRAT, jxATFDCWD, path, mode, 0)
+}
+
+func jxSymlinkImpl(tls *libc.TLS, target, linkpath, _, _ uintptr) int32 {
+	return jxSyscallAt(tls, syscall.SYS_SYMLINKAT, target, jxATFDCWD, linkpath, 0)
 }
