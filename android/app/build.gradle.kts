@@ -52,7 +52,10 @@ android {
     }
     packaging {
         jniLibs {
-            useLegacyPackaging = false
+            // 必须为 true：引擎是「以子进程方式执行」的，不是被
+            // System.loadLibrary 加载的——库必须解压成磁盘上的真实
+            // 可执行文件（nativeLibraryDir）；false 会留在 APK 内不落盘
+            useLegacyPackaging = true
         }
     }
 }

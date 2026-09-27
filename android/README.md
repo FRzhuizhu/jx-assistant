@@ -13,14 +13,14 @@ android/
 │   │   ├── MainActivity.kt       通知权限引导 → 拉服务 → 等就绪广播 → WebView
 │   │   └── EngineService.kt      前台服务：拉起 libjx.so、守护重启、通知栏「停止」
 │   └── res/                      自适应图标（蓝底白气泡对勾）
-└── app/jniLibs/arm64-v8a/libjx.so   ← 构建脚本从 ../ 复制（不入库）
+└── app/src/main/jniLibs/<abi>/libjx.so  ← 构建脚本从 ../ 复制（不入库）
 ```
 
 ## 引擎承载方式
 
-引擎二进制**不入 assets**：预编译为 `libjx.so` 放 `jniLibs/<abi>/`，安装时
+引擎二进制**不入 assets**：预编译为 `libjx.so` 放 `app/src/main/jniLibs/<abi>/`，安装时
 系统自动释放到 `nativeLibraryDir`——targetSdk 29+ 禁止执行应用数据目录里的
-文件（W^X），nativeLibraryDir 是唯一豁免路径。引擎数据根 = 应用私有目录
+文件（W^X），nativeLibraryDir 是唯一豁免路径。注意 jniLibs 必须开 `useLegacyPackaging = true`：引擎是子进程方式执行而非 loadLibrary 加载，库必须解压落盘。引擎数据根 = 应用私有目录
 `files/engine/`（config/data/技能），卸载即清、天然隔离其他应用。
 
 ## 构建

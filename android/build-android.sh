@@ -7,9 +7,9 @@ ROOT="$(pwd)"
 NDK_CC='D:\Android\Sdk\ndk\29.0.14206865\toolchains\llvm\prebuilt\windows-x86_64\bin\x86_64-linux-android35-clang.cmd'
 
 echo "[1/4] 交叉编译引擎 arm64 + x86_64"
-CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o android/app/jniLibs/arm64-v8a/libjx.so .
-mkdir -p android/app/jniLibs/x86_64
-CGO_ENABLED=1 CC="$NDK_CC" GOOS=android GOARCH=amd64 go build -ldflags="-s -w" -o android/app/jniLibs/x86_64/libjx.so .
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o android/app/src/main/jniLibs/arm64-v8a/libjx.so .
+mkdir -p android/app/src/main/jniLibs/x86_64
+CGO_ENABLED=1 CC="$NDK_CC" GOOS=android GOARCH=amd64 go build -ldflags="-s -w" -o android/app/src/main/jniLibs/x86_64/libjx.so .
 
 echo "[2/4] 开发签名（首次生成，仅本机自用）"
 KS=android/app/debug.keystore

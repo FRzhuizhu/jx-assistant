@@ -24,6 +24,10 @@ import (
 var desktopDefault string
 
 func main() {
+	// 安卓 x86_64：modernc sqlite 的 lstat 会被应用 seccomp 杀死（SIGSYS），
+	// 必须在首次打开数据库前替换为 newfstatat 实现（其他平台空操作）。
+	patchSqliteSyscallsForAndroid()
+
 	// 顶层进程树兜底：自身挂入 kill-on-close Job，正常退出 / 被强杀 /
 	// 崩溃时内核终止它启动过的全部后代（含沙箱外 start 出来的孙进程、
 	// chromedp 浏览器、技能 python）——不留无人认领的后台残留。

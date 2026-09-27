@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -27,6 +28,7 @@ class EngineService : Service() {
         const val CHANNEL_ID = "engine"
         const val NOTIFY_ID = 1
         const val ACTION_STOP = "com.jianxiang.assistant.STOP_ENGINE"
+        private const val TAG = "JXEngine"
         const val BROADCAST_READY = "com.jianxiang.assistant.ENGINE_READY"
 
         /** 引擎数据根目录（config/data/技能全在这下面，随应用卸载清除）。 */
@@ -107,7 +109,9 @@ class EngineService : Service() {
             setWritable(true, false)
         }
         val lib = libPath(this)
+        Log.e(TAG, "engine lib=${lib.absolutePath} exists=${lib.exists()} canExec=${lib.canExecute()}")
         if (!lib.exists() || !lib.canExecute()) {
+            Log.e(TAG, "engine lib 不可执行，放弃")
             broadcastReady(false)
             return
         }
@@ -130,9 +134,10 @@ class EngineService : Service() {
             // 吞掉引擎 stdout（避免管道写满阻塞引擎），进程结束后触发守护重启
             val p = proc!!
             Thread {
-                try {
-                    p.inputStream.use { it.readBytes() }
-                } catch (_: Exception) {}
+                val out = try {
+                    p.inputStream.use { String(it.readBytes()) }
+                } catch (e: Exception) { "<读取失败: ${e.message}>" }
+                Log.e(TAG, "engine 退出 code=${p.exitValue()} 输出: ${out.take(800)}")
                 if (proc === p && p.isAlive.not()) {
                     // 非正常退出且服务仍在：1 秒后拉起
                     Thread.sleep(1000)
@@ -143,6 +148,7 @@ class EngineService : Service() {
                 }
             }.start()
         } catch (e: Exception) {
+            Log.e(TAG, "engine start 失败", e)
             broadcastReady(false)
             return
         }
@@ -167,6 +173,7 @@ class EngineService : Service() {
     }
 
     private fun stopEngine() {
+        Log.e(TAG, "stopEngine called")
         proc?.destroy()
         proc = null
     }
