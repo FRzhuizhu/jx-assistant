@@ -4694,12 +4694,18 @@ function tuckComposer(view, on) {
     if (askPending(view)) return;
     wrap.style.transform = 'translateY(100%)';
     wrap.classList.add('tucked');
+    syncComposerPad(view); // 收起即刻收走垫高：内容马上用上让出的高度
   } else {
     if (!wrap.classList.contains('tucked')) return;
     wrap.classList.remove('tucked');
     wrap.style.transform = '';
+    // 展开相反：垫高等滑入动画结束（.25s）再恢复——瞬间撑回 189px 的话，最后
+    // 一条消息与屏幕底之间会闪出一大块空背景（浅色主题下就是一条白边），卡片
+    // 要再过 250ms 才盖上来。动画期间卡从下方滑入、内容暂滚到它后面（悬浮卡
+    // 本来就允许）。syncComposerPad 读实时状态，期间若又收起会先按收起收口，
+    // 这个迟到的一次同样幂等
+    setTimeout(() => syncComposerPad(view), 270);
   }
-  syncComposerPad(view);
 }
 
 function setupScrollTuck() {

@@ -297,7 +297,9 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 
 #msg-zone { position: relative; flex: 1; min-height: 0; display: flex; }
-#messages { flex: 1; overflow-y: auto; }
+/* overscroll-behavior:contain——滚动到头不再把余量链给文档层（文档已被封死不可滚，
+   链过去在手机 WebView 上表现为整页拉伸/辉光，读起来就是「还在抽」） */
+#messages { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .msg-col {
   max-width: var(--content-w); margin: 0 auto; padding: 26px 24px 12px;
   font-size: var(--chat-fs); /* 对话区基础字号：内部字号一律用 em 相对此值，设置页只影响对话区 */
@@ -749,7 +751,7 @@ body.rp-open .w-handle { display: none; }
 #sub-dd .caret { width: 12px; height: 12px; color: var(--text-3); flex-shrink: 0; }
 .sub-dd-status { font-size: 11.5px; color: var(--amber); white-space: nowrap; }
 .sub-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
-#sub-messages { flex: 1; overflow-y: auto; }
+#sub-messages { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 /* 消息列与输入区（.msg-col / .composer-*）不在这里另写样式：子对话就是对话，
    直接沿用主对话区那套共用规则，两边逐像素一致。
    （因此右栏窄到底部控件放不下时也会像主对话区在同宽度下那样自动折行——
