@@ -124,15 +124,19 @@ if (narrowMq) {
   else if (narrowMq.addListener) narrowMq.addListener(onNarrowMq); // 旧 Safari
 }
 
-/* ---------- 侧栏滑动手势（方向×状态感知，触发即等效点击开合按钮） ----------
+/* ---------- 侧栏滑动手势（仅手机端／窄屏：方向×状态感知，触发即等效点击开合按钮） ----------
+   只在手机端页面（CSS 宽 <500px 的浮层布局）里检测手势——那正是它存在的场景：
+   手指滑动呼出/收起整屏浮层。宽屏（桌面布局）一律不检测：栏开在桌面上时，
+   「在右栏里用鼠标横向拖拽选择文字」本身就是一次满足条件的横向拖拽，会被
+   误判成收起手势把栏收掉（拖滚动条、别的横向拖拽同理）；宽屏开合走按钮/把手。
    定义（关键：栏开没开，手势含义不同）：
-   * 栏收着：从屏幕缘热区向中间滑 → 拉出该侧栏（窄屏下两栏都收着才拉得开，
-     手势绝不把两栏同时打开；桌面两栏本可并存，不设此限）。
+   * 栏收着：从屏幕缘热区向中间滑 → 拉出该侧栏（两栏都收着才拉得开，
+     手势绝不把两栏同时打开）。
    * 栏开着：在栏身上向屏幕外方向滑 → 收起该栏；向中间滑不动作。
    触发仍是单次位移 ≥44px 且横向主导，直接调用与按钮相同的 toggleSidebar /
    toggleRpanel——状态机、记忆、文案全走按钮那一条路。
    触摸走非被动 Touch 事件（横向确立即 preventDefault，阻断浏览器收编成滚动
-   ——真机拉不出来的根因）；鼠标/笔走 Pointer 事件。轻微上下漂移容忍。
+   ——真机拉不出来的根因）；窄窗口里的鼠标/笔走 Pointer 事件。轻微上下漂移容忍。
    收起手势的起点豁免：拖宽把手（#rp-resize 等）、输入框——它们有自己的交互。 */
 (function () {
   const EDGE = 24;    // 屏幕左右缘热区（px），拉出手势的起点
@@ -141,14 +145,15 @@ if (narrowMq) {
   let g = null;
 
   const modalOpen = () => [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
-  const leftOpen = () => isNarrow() ? document.body.classList.contains('sb-show') : !document.body.classList.contains('sb-collapsed');
+  const leftOpen = () => document.body.classList.contains('sb-show'); // 仅窄屏语义：整屏浮层开着
   const rightOpen = () => !document.getElementById('rpanel').classList.contains('hidden');
   const verticalIntent = (dx, dy) => Math.abs(dy) > Math.abs(dx) * 1.5 + 12;
   const fire = (side) => { if (side === 'left') toggleSidebar(); else toggleRpanel(); };
 
   // 按起点与两侧栏状态定手势：先看是不是点在开着的栏身上（收起手势），
-  // 再看是不是屏幕缘热区（拉出手势，窄屏要求两栏都收着）
+  // 再看是不是屏幕缘热区（拉出手势，要求两栏都收着）；宽屏在 armAt 入口一票否决
   function armAt(target, x) {
+    if (!isNarrow()) return null; // 宽屏（桌面布局）：不检测任何滑动，指针交互全归浏览器
     if (target && target.closest) {
       if (target.closest('#rp-resize, [class*="handle"], [class*="resize"], [class*="drag"]')) return null;
       if (target.closest('input, textarea, select, [contenteditable]')) return null;
@@ -156,8 +161,8 @@ if (narrowMq) {
       if (target.closest('#rpanel') && rightOpen()) return { side: 'right', close: true };
     }
     const vw = window.innerWidth;
-    if (x <= EDGE && !leftOpen() && (!isNarrow() || !rightOpen())) return { side: 'left', close: false };
-    if (x >= vw - EDGE && !rightOpen() && (!isNarrow() || !leftOpen())) return { side: 'right', close: false };
+    if (x <= EDGE && !leftOpen() && !rightOpen()) return { side: 'left', close: false };
+    if (x >= vw - EDGE && !rightOpen() && !leftOpen()) return { side: 'right', close: false };
     return null;
   }
 
