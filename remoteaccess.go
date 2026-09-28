@@ -10,10 +10,11 @@
 //     「接回执行流」机制（GET /api/sessions/{id}/stream）会在流被掐后自动续上
 //
 // 帧协议（与 p2p.js / gate.html 保持逐字节兼容）：
-//   入：{t:'relay', rid, iv, ct} 解密后 {pk, ts, frame:{t:'req',id,method,path,headers,body(base64)}}
-//       {t:'abort', rid}
-//   出：{t:'register', id, key} → 期待 {t:'regok'}
-//       响应帧逐帧 seal 后以 {t:'res', rid, iv, ct} 发送，全部结束后发 {t:'done', rid}
+//
+//	入：{t:'relay', rid, iv, ct} 解密后 {pk, ts, frame:{t:'req',id,method,path,headers,body(base64)}}
+//	    {t:'abort', rid}
+//	出：{t:'register', id, key} → 期待 {t:'regok'}
+//	    响应帧逐帧 seal 后以 {t:'res', rid, iv, ct} 发送，全部结束后发 {t:'done', rid}
 package main
 
 import (
@@ -71,7 +72,7 @@ type remoteHubStatus struct {
 
 // hubCtx 一次 hub 连接的全部状态；断线即整体废弃重连。
 type hubCtx struct {
-	ctx    context.Context // 生命周期：取消即断开（设置页关闭开关/改配置触发的热重启）
+	ctx context.Context // 生命周期：取消即断开（设置页关闭开关/改配置触发的热重启）
 
 	app    *App
 	cfg    RemoteAccessCfg
@@ -133,15 +134,29 @@ func (a *App) syncRemoteAccess() {
 		log.Printf("[远程] 未启动：remoteAccess 缺 host/myId/pairKey")
 		return
 	}
+	// 同一设备号只让一个实例注册：别的活实例已经占着这个号时，重复注册只会被网关
+	// 互相踢下线（历史 bug：每秒 3-6 次重注册的热循环 + 手机入口反复闪断）
+	if pid, other := a.relayOwnedByOther(); other {
+		log.Printf("[远程] 中继已由另一个实例（pid %d）持有，同一设备号不重复注册：本实例不启用中继", pid)
+		return
+	}
+	a.claimRelay()
 	ctx, cancel := context.WithCancel(context.Background())
 	a.remoteCtlCancel = cancel
 	log.Printf("[远程] 正在连接网关 %s:%d（设备号 %s）", cfg.Host, cfg.Port, cfg.MyID)
 	go runRemoteAccess(ctx, a, a.listenPort, cfg)
 }
 
-// runRemoteAccess 顶层循环：连接 210 的 /hub，断线退避重连（5s 起步封顶 30s；
-// 拿到过 regok 的链路说明网关正常，退避立即归零）。ctx 取消即整体退出——
-// 设置页关闭开关或改配置时由 syncRemoteAccess 触发热停。
+// runRemoteAccess 顶层循环：连接 210 的 /hub 并守护这条通道。
+//
+// 注册只在这几种时刻发生：启动、配置变更（syncRemoteAccess 热重启）、**网络环境
+// 变化**（watchNetworkChange 通知后立即重连）、以及链路真的断了之后的退避重连。
+// 刻意不做周期性重新注册——通道本身有 20s ping + 僵死看门狗保活，「网络换了 /
+// 链路死了」这两件事由它们与变更通知覆盖，而代价小得多（本机与网关都省）。
+//
+// 退避规则：稳定跑过 relayStableAfter 再断 → 快速重连；从未注册成功 → 退避递增；
+// **注册成功但很快被断** → 同样按退避递增（那是被网关踢/网关异常的形态，立刻
+// 重连就会变成每秒数次的热循环——正是历史 bug）。
 func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCfg) {
 	if cfg.Host == "" || cfg.PairKey == "" || cfg.MyID == "" {
 		log.Printf("[远程] 未启动：config.json remoteAccess 缺 host/myId/pairKey")
@@ -149,9 +164,22 @@ func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCf
 	}
 	defer func() {
 		remoteConnected.Store(false)
+		app.releaseRelay()
 		log.Printf("[远程] 中继通道已停止（开关关闭或配置变更）")
 	}()
-	delay := 5 * time.Second
+
+	// 网络环境变化 → 立即重新注册（零轮询：没变化时请求挂在系统里，不占资源）
+	netChanged := make(chan struct{}, 1)
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	watchNetworkChange(stopWatch, func() {
+		select {
+		case netChanged <- struct{}{}:
+		default:
+		}
+	})
+
+	delay := relayRetryMin
 	for {
 		if ctx.Err() != nil {
 			return
@@ -162,6 +190,7 @@ func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCf
 			cancels: map[string]context.CancelFunc{},
 		}
 		// 兜底 recover：远程通道属增值能力，任何内部错误都不许拖垮主服务
+		startedAt := time.Now()
 		wasRegistered := func() (reg bool) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -172,18 +201,26 @@ func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCf
 			}()
 			return h.run()
 		}()
+		up := time.Since(startedAt)
 		remoteConnected.Store(false)
-		if wasRegistered {
-			delay = 5 * time.Second // 网关正常（拿到过 regok）：立即重连
-			continue
+		switch {
+		case wasRegistered && up >= relayStableAfter:
+			delay = relayRetryMin // 稳定链路正常断线：快速重连
+		case wasRegistered:
+			// 注册成功却很快被断：按退避递增（被踢/网关异常的形态，别热循环）
+			delay = min(max(delay, relayRetryMin)*2, relayRetryMax)
+		default:
+			delay = min(delay*2, relayRetryMax)
 		}
-		log.Printf("[远程] 中继通道断开，%s 后重连", delay)
+		log.Printf("[远程] 中继通道断开（本次存活 %s），%s 后重连", up.Round(time.Second), delay)
 		select {
 		case <-ctx.Done():
 			return
+		case <-netChanged:
+			log.Printf("[远程] 检测到网络环境变化，立即重新注册中继")
+			delay = relayRetryMin
 		case <-time.After(delay):
 		}
-		delay = min(delay*2, 30*time.Second)
 	}
 }
 
@@ -311,12 +348,17 @@ func (h *hubCtx) run() bool {
 		}
 		switch f.T {
 		case "regok":
+			first := !h.registered
 			h.registered = true
 			remoteConnected.Store(true)
 			remoteLastError.Store("")
-			log.Printf("[远程] 中继通道已注册 %s:%d/hub id=%s（手机入口 %s）",
-				h.cfg.Host, h.cfg.Port, h.cfg.MyID,
-				fmt.Sprintf("http://%s:%d/a/%s", h.cfg.Host, h.cfg.Port, h.cfg.MyID))
+			// 日志节流：重连风暴时按分钟记一次，别把日志刷爆（历史上一夜两万行）
+			if first || time.Since(time.UnixMilli(relayRegLoggedAt.Load())) > relayRegLogEvery {
+				relayRegLoggedAt.Store(time.Now().UnixMilli())
+				log.Printf("[远程] 中继通道已注册 %s:%d/hub id=%s（手机入口 %s）",
+					h.cfg.Host, h.cfg.Port, h.cfg.MyID,
+					fmt.Sprintf("http://%s:%d/a/%s", h.cfg.Host, h.cfg.Port, h.cfg.MyID))
+			}
 		case "relay":
 			if f.Rid != "" && f.Iv != "" && f.Ct != "" {
 				rid, iv, ct := f.Rid, f.Iv, f.Ct
@@ -697,7 +739,7 @@ func (a *App) p2pShell() (string, error) {
 }
 
 // handleP2PShell 供 210 配对页拉取应用外壳；?enc=gzip 返回整体压缩体
-//（中继按流量走，700KB 外壳压到 ~150KB）。
+// （中继按流量走，700KB 外壳压到 ~150KB）。
 func (a *App) handleP2PShell(w http.ResponseWriter, r *http.Request) {
 	html, err := a.p2pShell()
 	if err != nil {
