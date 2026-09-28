@@ -24,7 +24,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const appVersion = "0.1.8"
+const appVersion = "0.1.9"
 
 // App 持有配置与会话存储，是所有 HTTP 处理器的宿主。
 type App struct {
