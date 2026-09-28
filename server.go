@@ -173,6 +173,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/p2p-shell", a.handleP2PShell)
+	mux.HandleFunc("GET /api/shell-hash", a.handleShellHash)
 	mux.HandleFunc("POST /api/feedback", a.handleFeedbackCreate)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)

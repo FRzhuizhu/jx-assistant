@@ -692,6 +692,7 @@ func validRemoteHost(h string) bool {
 var (
 	p2pShellOnce sync.Once
 	p2pShellHTML string
+	p2pShellHash string // 外壳内容 SHA-256（十六进制）：注入 window.JX_SHELL_HASH 并经 /api/shell-hash 下发，远程引导开机比对、不一致即清手机端外壳缓存（配对页把整页缓存 12 小时，家端前端更新后 TTL 内手机一直跑旧样式）
 	p2pShellErr  error
 )
 
@@ -733,6 +734,12 @@ func (a *App) p2pShell() (string, error) {
 			return
 		}
 		s = strings.Replace(s, "<head>", "<head>\n<script>\n"+string(boot)+"\n</script>", 1)
+		// 内容哈希随外壳一起注入与保存：注入的哈希也是外壳内容的一部分，
+		// 故先算哈希再注入（否则哈希含自身、无法稳定计算）
+		sum := sha256.Sum256([]byte(s))
+		p2pShellHash = fmt.Sprintf("%x", sum)
+		s = strings.Replace(s, "<head>",
+			"<head>\n<script>window.JX_SHELL_HASH="+fmt.Sprintf("%q", p2pShellHash)+";</script>", 1)
 		p2pShellHTML = s
 	})
 	return p2pShellHTML, p2pShellErr
@@ -756,4 +763,15 @@ func (a *App) handleP2PShell(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(html))
+}
+
+// handleShellHash 下发当前外壳内容哈希（几十字节）：远程引导开机比对，不一致即
+// 清手机端外壳缓存并重拉——把配对页 12 小时缓存的前端更新延迟压到「下一次打开」。
+func (a *App) handleShellHash(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.p2pShell(); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"hash": p2pShellHash})
 }

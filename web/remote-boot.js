@@ -503,4 +503,29 @@
       return window.JX_REMOTE.assetURL(path).then(function (u) { window.open(u, '_blank'); });
     },
   };
+
+  /* ---------- 外壳缓存自愈 ----------
+     210 配对页（gate.html）为省首开流量把整个外壳（内联全部 CSS/JS）缓存在
+     localStorage['p2p_shell_cache_v3_<设备号>']，有效期 12 小时——TTL 内不问家里
+     直接用缓存。家端前端更新后，手机最长 12 小时跑旧样式（远程「样式和电脑上
+     不一样」的根源）。这里开机用 /api/shell-hash（几十字节，走中继）对一下本
+     外壳的内容哈希：不一致 = 家端外壳已变，清掉配对页的缓存并整页刷新——
+     配对页发现缓存没了会重新连家拉新外壳。稳态（哈希一致）零额外流量；
+     sessionStorage 旗标保证一次会话最多自动刷新一回，不会循环。 */
+  if (window.JX_SHELL_HASH) {
+    var shellRefreshed = false;
+    try { shellRefreshed = !!sessionStorage.getItem('jx_shell_refreshed'); } catch (e) {}
+    if (!shellRefreshed) {
+      window.fetch('/api/shell-hash')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.hash && d.hash !== window.JX_SHELL_HASH) {
+            try { localStorage.removeItem('p2p_shell_cache_v3' + (APP_ID ? '_' + APP_ID : '')); } catch (e) {}
+            try { sessionStorage.setItem('jx_shell_refreshed', '1'); } catch (e) {}
+            location.reload();
+          }
+        })
+        .catch(function () { /* 比对失败（通道未就绪/离线）：留给下一次打开 */ });
+    }
+  }
 })();
