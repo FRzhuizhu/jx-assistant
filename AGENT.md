@@ -108,6 +108,14 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   `r.Context()`。
 - **`Store.SaveMeta` 刻意不写 `status` 列**：这一列只由 `UpdateStatus`
   维护；要改状态就调 `UpdateStatus`，别往 `SaveMeta` 里加回去。
+- **`sessions.updated_at` 只认两个时刻**：用户最后一次输入、模型最后一次最终输出
+  （无 tool_calls 的 assistant 行）。侧栏/会话列表的「最近更新」排序只看这一列，
+  判定收在 `StoredMessage.touchesActivity()` 一处（`store.go` 落库层与 `agent.go`
+  的 `appendMessage/appendRow/appendMessageThinking` 都调它）。工具结果、带
+  tool_calls 的中间步、env/prompt/summary/report 等注入行一律不刷新——它们在一轮
+  任务里成串出现，会把会话反复顶到最前，几个任务并行时侧栏来回跳、点谁错谁。
+  系统通知真要刷新时间，由调用方显式写 `UpdatedAt` 再 `SaveMeta`（上传/回退/交付
+  /网页查看现在就是这么做的），别去改 `touchesActivity` 的口径。
 - **异常收尾必须让用户看见，但不要往对话里塞话**：真实失败走输入框上方的
   报错条（`showRunError`，带重试）并在服务端记 `runError`；对话区只放真实
   对话，别写「（本轮…）」这类系统交代——但也不能什么都不报。

@@ -550,7 +550,11 @@ func suspendedInPlan(mode, name string) bool {
 func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
 	sm := &StoredMessage{Message: m, Kind: kindChat, CreatedAt: now()}
 	_ = a.Store.AppendRow(sess.ID, sm)
-	sess.UpdatedAt = now()
+	// 只有用户输入与模型最终输出刷新「最近更新」时间（口径见 StoredMessage.touchesActivity）：
+	// 工具结果、中间步、注入行都不算，否则几个并行的会话会在侧栏来回跳
+	if sm.touchesActivity() {
+		sess.UpdatedAt = now()
+	}
 	_ = a.Store.SaveMeta(sess)
 	return sm
 }
@@ -558,7 +562,11 @@ func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
 // appendRow 落库一条自定义 kind 的消息（env 快照 / prompt 快照）。
 func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
 	_ = a.Store.AppendRow(sess.ID, &sm)
-	sess.UpdatedAt = now()
+	// 只有用户输入与模型最终输出刷新「最近更新」时间（口径见 StoredMessage.touchesActivity）：
+	// 工具结果、中间步、注入行都不算，否则几个并行的会话会在侧栏来回跳
+	if sm.touchesActivity() {
+		sess.UpdatedAt = now()
+	}
 	_ = a.Store.SaveMeta(sess)
 	return &sm
 }
@@ -567,7 +575,11 @@ func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
 func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking string) *StoredMessage {
 	sm := &StoredMessage{Message: m, Kind: kindChat, Thinking: thinking, CreatedAt: now()}
 	_ = a.Store.AppendRow(sess.ID, sm)
-	sess.UpdatedAt = now()
+	// 只有用户输入与模型最终输出刷新「最近更新」时间（口径见 StoredMessage.touchesActivity）：
+	// 工具结果、中间步、注入行都不算，否则几个并行的会话会在侧栏来回跳
+	if sm.touchesActivity() {
+		sess.UpdatedAt = now()
+	}
 	_ = a.Store.SaveMeta(sess)
 	return sm
 }

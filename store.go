@@ -719,6 +719,28 @@ func (s *Store) RecentRequestRows(id string, n int) ([]*StoredMessage, error) {
 	return out, nil
 }
 
+// touchesActivity 判断一条刚落库的消息算不算「会话活动」，即是否刷新
+// sessions.updated_at。这一列只服务侧栏/会话列表的「最近更新」排序，
+// 语义只认两个时刻：**用户最后一次输入**、**模型最后一次最终输出**
+// （无工具调用的 assistant 行——与逐字搜索的口径一致，见 handleSearchContent）。
+// 工具结果、带 tool_calls 的中间步、env/prompt/summary/report 等注入行一律
+// 不算：一轮长任务里它们成串出现，会把会话反复顶到列表最前，几个工作任务
+// 同时跑时侧栏来回跳、点谁错谁。
+// 系统通知类（上传/回退/交付/网页查看）若确实要刷新，由调用方显式写
+// UpdatedAt 并 SaveMeta，不走这里。
+func (sm *StoredMessage) touchesActivity() bool {
+	if sm.Kind != kindChat {
+		return false
+	}
+	switch sm.Role {
+	case "user":
+		return true
+	case "assistant":
+		return len(sm.ToolCalls) == 0
+	}
+	return false
+}
+
 func (s *Store) appendRowLocked(id string, sm *StoredMessage) error {
 	if sm.Seq == 0 {
 		if err := s.db.QueryRow(`SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=?`, id).Scan(&sm.Seq); err != nil {
@@ -749,7 +771,10 @@ func (s *Store) appendRowLocked(id string, sm *StoredMessage) error {
 	if err != nil {
 		return err
 	}
-	_, _ = s.db.Exec(`UPDATE sessions SET updated_at=? WHERE id=?`, now(), id)
+	// 只有用户输入与模型最终输出刷新「最近更新」时间（口径见 touchesActivity）
+	if sm.touchesActivity() {
+		_, _ = s.db.Exec(`UPDATE sessions SET updated_at=? WHERE id=?`, now(), id)
+	}
 	return nil
 }
 
