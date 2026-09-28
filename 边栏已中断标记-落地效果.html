@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>左侧栏「⚠ 已中断」标记 · 落地效果</title>
+<style>
+/* 样式取自本项目 web/style.css 的最终取值（运行中与已中断共用同一套位置/悬停规则） */
+:root{
+  --bg:#ffffff; --side-bg:#ffffff; --border:#e6e8eb; --border-2:#eceef1;
+  --text:#1f2328; --text-2:#57606a; --text-3:#8b949e;
+  --hover:#f5f6f8; --active:#eef1f5; --accent:#4d6bfe;
+  --amber:#9a6700; --danger:#c0392b;
+}
+:root[data-theme='dark']{
+  --bg:#15171c; --side-bg:#191c21; --border:#2a2e36; --border-2:#343945;
+  --text:#e6e8eb; --text-2:#b3b9c2; --text-3:#7f8792;
+  --hover:#22262d; --active:#262b33; --accent:#4d6bfe;
+  --amber:#e3b341; --danger:#ff9d8f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
+  background:#fafbfc;color:#1f2328;font-size:13px;padding:20px 22px 40px}
+h1{font-size:17px;margin-bottom:6px}
+h2{font-size:13.5px;margin:22px 0 8px}
+.sub{color:#57606a;font-size:12.5px;line-height:1.8;margin-bottom:16px;max-width:1180px}
+.sub code{background:#f2f3f5;border-radius:4px;padding:1px 5px;font-size:12px}
+.cols{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+.frame{border:1px solid #e6e8eb;border-radius:12px;overflow:hidden;background:#fff}
+.frame .cap{font-size:11.5px;color:#57606a;padding:7px 12px;border-bottom:1px solid #eceef1;background:#fafbfc}
+.frame.dark{background:#191c21;border-color:#2a2e36}
+.frame.dark .cap{background:#15171c;border-color:#2a2e36;color:#b3b9c2}
+#sidebar{width:272px;background:var(--side-bg);color:var(--text)}
+#sidebar.wide{width:360px}
+#sidebar.narrow{width:210px}
+.side-section{padding:12px 18px 6px;font-size:11.5px;color:var(--text-3);display:flex;align-items:center;justify-content:space-between}
+#session-list{padding:0 8px 10px}
+.session-item{position:relative;display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;margin-bottom:1px}
+.session-item:hover{background:var(--hover)}
+.session-item.active{background:var(--active)}
+.dot{width:7px;height:7px;border-radius:50%;background:#c6cbd2;flex:none;display:none}
+.dot.ap{display:inline-block;background:#e08a00}
+.dot.done{display:inline-block;background:#2ea043}
+.dot.unread{display:inline-block;background:#d33}
+.s-title{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-time{font-size:11.5px;color:var(--text-3);flex:none}
+.s-time.running{color:var(--accent);font-weight:600}
+.s-time.stop{color:var(--danger);font-weight:600}
+/* 行内按钮（真实取值）：平时不显示，悬停整组浮出 */
+.row-acts{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:none;gap:2px;
+  background:linear-gradient(90deg,transparent,var(--bg) 22%);padding-left:18px}
+.session-item:hover .row-acts{display:flex}
+.row-acts button{width:24px;height:24px;border:none;background:none;color:var(--text-3);border-radius:6px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center}
+.row-acts button svg{width:13px;height:13px}
+.session-item:hover .s-time{visibility:hidden}
+.s-ws{flex:none;width:38px;height:19px;padding:0 2px;display:inline-flex;align-items:center;
+  border:1px solid var(--border-2);border-radius:5px;font-size:10.5px;line-height:1;color:var(--text-3);
+  white-space:nowrap;overflow:hidden}
+table{border-collapse:collapse;font-size:12.5px;background:#fff;border:1px solid #e6e8eb;border-radius:10px;overflow:hidden;max-width:1180px}
+th,td{border-bottom:1px solid #eceef1;padding:7px 12px;text-align:left;vertical-align:top;line-height:1.6}
+th{background:#fafbfc;font-weight:600;color:#57606a;font-size:12px}
+tr:last-child td{border-bottom:none}
+code{background:#f2f3f5;border-radius:4px;padding:1px 5px;font-size:12px}
+.hint{font-size:12px;color:#8b949e;margin-top:8px}
+</style>
+</head>
+<body>
+
+<h1>左侧栏「⚠ 已中断」标记 · 落地效果</h1>
+<div class="sub">
+定稿：异常停止的会话在左侧栏把<b>时间位</b>换成红字 <code>⚠ 已中断</code>，与「⟳ 运行中」同槽、天然互斥；
+左边的圆点维持原样（橙=待审批 / 绿=完成未查看 / 红=标为未读），不再塞第四种含义。<br>
+下面是按 <code>web/style.css</code>、<code>web/app-left.js</code> 最终取值渲染的真实效果——<b>把鼠标移到行上试试悬停</b>：
+两个状态标记（<code>⟳ 运行中</code> / <code>⚠ 已中断</code>）走同一个函数 <code>sessionStatusCell()</code>、同一套 class 与同一条位置规则，
+所以悬停行为与位置和「运行中」完全一致：状态字让位、右侧的复制/更多两个按钮始终钉在最右，不会把按钮顶到中间。
+</div>
+
+<div class="cols">
+  <div class="frame">
+    <div class="cap">亮色 · 272px（默认宽度）</div>
+    <div id="sidebar">
+      <div class="side-section"><span>工作区</span><span>今天</span></div>
+      <div id="session-list"></div>
+    </div>
+  </div>
+  <div class="frame dark">
+    <div class="cap">暗色 · 272px</div>
+    <div id="sidebar">
+      <div class="side-section"><span>工作区</span><span>今天</span></div>
+      <div id="session-list"></div>
+    </div>
+  </div>
+  <div class="frame">
+    <div class="cap">亮色 · 210px（拖窄的最坏情况）</div>
+    <div id="sidebar" class="narrow">
+      <div class="side-section"><span>工作区</span></div>
+      <div id="session-list"></div>
+    </div>
+  </div>
+  <div class="frame">
+    <div class="cap">亮色 · 360px + 时间线分组（行首工作区胶囊）</div>
+    <div id="sidebar" class="wide">
+      <div class="side-section"><span>工作区</span><span>按时间</span></div>
+      <div id="session-list"></div>
+    </div>
+  </div>
+</div>
+
+<h2>三种状态与来源</h2>
+<table>
+  <tr><th style="width:150px">时间位显示</th><th style="width:200px">触发条件</th><th>悬停文案（前端 <code>STATUS_CELLS</code>）</th></tr>
+  <tr><td><span style="color:#4d6bfe;font-weight:600">⟳ 运行中</span></td><td>会话正在执行（含切走后仍在后台跑）</td><td>正在执行（切走不影响，切回来会接上）</td></tr>
+  <tr><td><span style="color:#c0392b;font-weight:600">⚠ 已中断</span></td><td><code>lastStop=step</code>：达到步数上限自动停止</td><td>已达最大步数自动停止（可在设置里调大「最大步数」），可点开重试</td></tr>
+  <tr><td><span style="color:#c0392b;font-weight:600">⚠ 已中断</span></td><td><code>lastStop=error</code>：本轮执行失败（模型/网络/网关等）</td><td>本轮执行出错中断（模型／网络／网关等），点开可看原因并重试</td></tr>
+  <tr><td><span style="color:#c0392b;font-weight:600">⚠ 已中断</span></td><td><code>lastStop=restart</code>：服务在执行期间重启</td><td>服务重启导致本轮中断，可发「继续」接续</td></tr>
+  <tr><td><span style="color:#8b949e">2 分钟前</span></td><td>正常收口，或用户主动停止（不算异常）</td><td>—</td></tr>
+</table>
+<div class="hint">清除时机：<b>打开会话不清</b>（「最近一轮没跑完」这个事实没变），重跑一轮、重试成功即自动消失——标记值存在 meta 表（<code>laststop:&lt;会话id&gt;</code>），重启后仍在。</div>
+
+<script>
+const ROWS = [
+  // [标题, 右侧内容, 右侧类名, 圆点类名, 悬停文案, 工作区胶囊]
+  ['把左侧栏排序算法改成按工作区分组', '⟳ 运行中', 'running', '', '正在执行（切走不影响，切回来会接上）', ''],
+  ['把左侧栏排序算法改成按工作区分组', '⚠ 已中断', 'stop', '', '已达最大步数自动停止（可在设置里调大「最大步数」），可点开重试', ''],
+  ['我们因为步数上限之类的问题停掉的对话', '⚠ 已中断', 'stop', '', '本轮执行出错中断（模型／网络／网关等），点开可看原因并重试', ''],
+  ['整理 2026 年第三季度销售数据并出一份带图表的汇总表', '⚠ 已中断', 'stop', '', '服务重启导致本轮中断，可发「继续」接续', ''],
+  ['整理 2026 年第三季度销售数据并出一份带图表的汇总表', '2 分钟前', '', 'done', '', ''],
+  ['把左侧栏排序算法改成按工作区分组', '昨天 21:04', '', 'unread', '', ''],
+  ['校对产品说明书里的中英文术语一致性', '昨天 18:12', '', '', '', '办公'],
+];
+const ICONS = {
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>',
+};
+document.querySelectorAll('#sidebar').forEach((sb) => {
+  const list = sb.querySelector('#session-list');
+  ROWS.forEach(([title, right, cls, dot, tip, ws]) => {
+    const el = document.createElement('div');
+    el.className = 'session-item';
+    el.innerHTML =
+      (ws ? '<span class="s-ws">' + ws + '</span>' : '') +
+      '<span class="dot' + (dot ? ' ' + dot : '') + '"></span>' +
+      '<span class="s-title">' + title + '</span>' +
+      '<span class="s-time' + (cls ? ' ' + cls : '') + '"' + (tip ? ' title="' + tip + '"' : '') + '>' + right + '</span>' +
+      '<span class="row-acts"><button title="复制标题">' + ICONS.copy + '</button><button title="更多">' + ICONS.more + '</button></span>';
+    list.appendChild(el);
+  });
+});
+</script>
+</body>
+</html>
