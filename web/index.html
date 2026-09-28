@@ -21,7 +21,7 @@
         新工作任务
       </button>
       <button id="btn-new-assistant" class="side-btn">
-        <svg id="da-face" width="20" height="20" width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g><style>
+        <svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g><style>
 [data-state] .da-eye,[data-state] .da-eyes{transform-box:fill-box;transform-origin:center}
 .da-smile{opacity:0}
 [data-state="idle"] .da-eye{animation:da-blink 4.5s ease-in-out infinite}
@@ -33,12 +33,15 @@
 @keyframes da-scan{0%,100%{transform:translateX(0)}30%{transform:translateX(1.8px)}50%{transform:translateX(0)}80%{transform:translateX(-1.8px)}}
 @keyframes da-squish{0%,7%{transform:scaleY(1)}12%{transform:scaleY(.06)}86%{transform:scaleY(.06)}91%,100%{transform:scaleY(1)}}
 @keyframes da-pop{0%,11.5%{opacity:0}15%,85%{opacity:1}88.5%,100%{opacity:0}}
+/* 悬停不再把脸扭向右边——原「向右扭头」就是下面被删掉的那两行 hover 规则
+   （transform:rotate(11deg) 固定朝右 + 眼睛 da-hover 无限左右摆），已按要求去掉。
+   现在悬停的轻微随机扭动由 style.css 的 side-btn-wig 统一提供（三个入口按钮共用，
+   见 app-left.js 的 bindSideBtnWiggle），图标静止时保持直立。
+   另：viewBox 已收紧为「4 4 40 40」——同一个 16px 盒子里，外圈圆（半径 15.5 + 描边 2.6）
+   由 ~11.2px 放大到 ~13.4px，与另两个按钮的图标（加号 ~10.7px、时钟 ~13.3px）更协调；
+   viewBox 仍以 24,24 为中心，人脸水平/竖直居中不变，下面旋转轴心也不变。 */
 [data-da-face]{transform-box:fill-box;transform-origin:center;transition:transform .22s ease}
-[data-da-face]:hover,button:hover [data-da-face]{transform:rotate(11deg)}
-[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:da-hover 1s ease-in-out infinite}
-[data-da-face][data-state="done"]:hover .da-eyes,button:hover [data-da-face][data-state="done"] .da-eyes{animation:none}
-@keyframes da-hover{0%,100%{transform:translateX(0)}25%{transform:translateX(1.4px)}50%{transform:translateX(0)}75%{transform:translateX(-1.4px)}}
-@media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face],[data-da-face]:hover,button:hover [data-da-face]{transform:none;transition:none}[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:none!important}}
+@media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face]{transform:none;transition:none}}
 </style></svg>
         数字助理主对话
       </button>
@@ -79,10 +82,17 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         回收站
       </button>
-      <!-- 连接状态胶囊嵌在设置行右侧（同一行的中间对齐，见 .pill 的 margin-left:auto） -->
+      <!-- 连接状态胶囊/反馈胶囊/手机图标都嵌在设置行右侧（同一行的中间对齐，
+           行内右对齐的锚点是 .foot-feedback 的 margin-left:auto） -->
       <button id="btn-settings" class="foot-btn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
         设置
+        <!-- 反馈胶囊：紧挨手机图标左侧，点击直达设置面板的「问题反馈」页
+             （不冒泡到外层设置按钮，见 app-left.js；用 role=button 避免按钮套按钮） -->
+        <span id="btn-feedback" class="foot-feedback" role="button" tabindex="0" title="问题反馈：直达设置 · 问题反馈">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.7 8.7 0 0 1-3.9-.92L3 21l1.95-5.29A8.5 8.5 0 1 1 21 11.5z"/><path d="M12 8.5v3M12 14.5h.01"/></svg>
+          反馈
+        </span>
         <span id="status-phone" class="foot-phone hidden" title="手机远程访问：点击查看扫码入口"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span>
         <span id="status-text" class="pill gray">连接中…</span>
       </button>
@@ -564,7 +574,7 @@
             <div class="hero" style="justify-content:flex-start">
               <img class="logo-img" src="/logo.png" alt="坚祥数字助理">
               <div>
-                <b>坚祥数字助理（软著版）</b>
+                <b>坚祥数字助理（GO版）</b>
                 <div class="tip-inline" id="about-version" style="margin:0">版本 0.1.0</div>
               </div>
             </div>

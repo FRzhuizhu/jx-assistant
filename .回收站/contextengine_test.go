@@ -14,7 +14,8 @@ import (
 )
 
 // 引擎契约 1：组装是确定性的——同样的会话状态重复组装，请求材料逐字节一致
-// （前缀缓存命中的根基；这里的环境快照含分钟级时间戳，同一分钟内可比）。
+// （前缀缓存命中的根基；环境快照首行是「用户最近发消息时间」，取自存储而非挂钟，
+// 同一状态重复组装逐字节一致——见 agent.go 的 envPrompt 与 Store.LastUserMessageAt）。
 func TestContextEngineDeterministic(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	sess := &SessionMeta{ID: "s1", Mode: "task", Workspace: "ws", CreatedAt: now(), UpdatedAt: now()}

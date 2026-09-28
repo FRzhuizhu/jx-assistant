@@ -1,4 +1,4 @@
-/* 坚祥数字助理（软著版）—— 亮色主题，风格对齐 DSH Web UI。 */
+/* 坚祥数字助理（GO版）—— 亮色主题，风格对齐 DSH Web UI。 */
 
 :root {
   --bg: #ffffff;
@@ -93,6 +93,26 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
 }
 .side-btn:hover { background: var(--hover); }
+/* 左上角三个入口按钮（新工作任务 / 数字助理主对话 / 待办与定时任务）的图标互动：
+   鼠标进入按钮时，图标朝随机一侧轻扭一下再回正（幅度与方向由 JS 每次独立随机写在
+   按钮的 --wig-deg 上，逻辑见 app-left.js 的 bindSideBtnWiggle），动画结束即回到直立。
+   作用域收在 #sidebar .actions 里的 .side-btn 直接子 svg——页面别处的同类图标不受影响；
+   只加一条动画，按钮自身的尺寸、点击、tooltip、hover 背景都不动。 */
+#sidebar .actions .side-btn > svg {
+  transform-box: fill-box; transform-origin: center;   /* 以图标自身盒中心为轴心，扭动不跑偏 */
+}
+#sidebar .actions .side-btn.wig > svg {
+  animation: side-btn-wig .42s cubic-bezier(.34, 1.4, .5, 1);
+}
+@keyframes side-btn-wig {
+  0% { transform: rotate(0); }
+  45% { transform: rotate(var(--wig-deg, 6deg)); }                /* 扭到随机那一侧 */
+  74% { transform: rotate(calc(var(--wig-deg, 6deg) * -.24)); }   /* 回位时反向过一点点：回弹感 */
+  100% { transform: rotate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #sidebar .actions .side-btn.wig > svg { animation: none; }
+}
 
 .side-section {
   padding: 12px 18px 6px; font-size: 11.5px; color: var(--text-3);
@@ -131,9 +151,9 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   display: flex; flex-direction: column; gap: 3px;
   padding: 4px 10px 12px;
 }
-/* 连接状态胶囊：嵌在设置行右侧，行内居中（flex 的 align-items:center 管上下，
-   margin-left:auto 把它推到最右） */
-.foot-btn .pill { margin-left: auto; flex: none; }
+/* 连接状态胶囊：嵌在设置行右侧、紧跟反馈胶囊（行内居中由 flex 的 align-items:center
+   保证；右对齐交给 .foot-feedback 的 margin-left:auto 这一个锚点） */
+.foot-btn .pill { margin-left: 0; flex: none; }
 /* 底部整行按钮（回收站/设置）：无边框，悬停/选中整行落一层胶囊底（仿参考站） */
 .foot-btn {
   display: flex; align-items: center; gap: 8px;
@@ -152,19 +172,51 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .pill.warn { color: var(--amber); background: var(--amber-bg); }
 .pill.gray { color: var(--text-2); background: var(--gray-bg); }
 
-/* 手机远程访问图标（正常态顶替绿色胶囊）：强调色小图标，点击直达网络访问分区。
-   .half=已开启但网关未连上；.off=未开启（灰淡，悬停点亮引导去设置） */
+/* 手机远程访问图标（正常态顶替绿色胶囊）：强调色小图标，点击直达网络访问分区；
+   与左侧「反馈」胶囊同高（26px）、同全圆角，凑成一排右对齐的控件组。
+   .half=已开启但网关未连上；.off=未开启（线条仍走主题强调色，只用不透明度区分状态） */
 .foot-phone {
-  margin-left: auto; flex: none;
+  flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 8px;
-  color: var(--accent); background: var(--accent-bg, rgba(77, 107, 254, .12));
+  width: 26px; height: 26px; border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-bg, rgba(77, 107, 254, .12));      /* 兼容老内核的兜底 */
+  background: color-mix(in srgb, var(--accent) 14%, transparent); /* 跟着主题色走 */
   cursor: pointer;
 }
+/* 描边跟定主题强调色：.foot-btn svg 的灰色（--text-2）是给「回收站/设置」定的，
+   这里按元素把颜色继承回来——否则手机图标与反馈图标都会被刷成灰线 */
+.foot-phone svg, .foot-feedback svg { color: inherit; }
 .foot-phone svg { width: 14px; height: 14px; }
-.foot-phone:hover { filter: brightness(1.08); }
-.foot-phone.half { opacity: .55; }
-.foot-phone.off { color: var(--text-2); background: var(--gray-bg); opacity: .6; }
+.foot-phone.half { opacity: .55; }   /* 已开启但网关未连上：压暗 */
+.foot-phone.off { opacity: .8; }     /* 未开启：仍看得清，悬停点亮引导去设置 */
+.foot-phone:hover {
+  color: #fff; opacity: 1;
+  background: var(--accent); background: var(--accent-hover, var(--accent));
+}
+.foot-phone:active { filter: brightness(.94); }
+.foot-phone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 反馈胶囊（设置行内、手机图标左侧）：小胶囊，点击直达设置→问题反馈（见 app-left.js）。
+   全圆角、26px 高与手机图标齐平，间距沿用行的 8px；灰底灰字不抢眼，悬停转强调色。
+   margin-left:auto 是本行的右对齐锚点——它把「反馈 / 手机图标 / 状态胶囊」这一串
+   一起推到最右，手机图标与胶囊因此始终紧邻。 */
+.foot-feedback {
+  margin-left: auto; flex: none;
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 26px; padding: 0 10px; border-radius: 999px;
+  color: var(--text-2); background: var(--gray-bg);
+  border: 1px solid transparent;
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+.foot-feedback svg { width: 13px; height: 13px; }
+.foot-feedback:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.foot-feedback:active { filter: brightness(.96); }
+.foot-feedback:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* 远程访问二维码卡片：白底圆角，深浅主题下都保证扫码对比度 */
 .remote-qr {
@@ -279,10 +331,36 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   max-width: 72%; color: var(--text);
   background: #e1e7ff;
   background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  --fold-bg: #e1e7ff;
+  --fold-bg: color-mix(in srgb, var(--accent) 18%, var(--bg));
   padding: 10px 15px; border-radius: 14px 14px 4px 14px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
   margin-bottom: 2px;
 }
+
+/* 长消息折叠（只作用于数字助理主对话：用户气泡、数字助理正文，以及作为
+   「用户消息变体」的派发通知气泡，见 app-chat.js 的 applyFolds）。判定用
+   **实际渲染高度**（行高 × 6）而不是字符数——对话区宽度、字号一变每行能放多少
+   字就变。折叠态：按 6 行高度裁剪 + 底部渐隐到气泡自身底色 + 居中「展开」小按钮；
+   展开态：不再裁剪，按钮落到正文下方变成「收起」。
+   --fold-bg 是渐隐终点色：气泡里等于气泡底色，数字助理正文里等于页面底色。 */
+.fold-box { position: relative; }
+.fold-box.folded { max-height: var(--fold-h); overflow: hidden; }
+.fold-fade {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2.6em;
+  pointer-events: none; display: none;
+  background-image: linear-gradient(to bottom, transparent, var(--fold-bg, var(--bg)));
+}
+.folded > .fold-fade { display: block; }
+.fold-btn {
+  display: table; margin: 8px auto 0;
+  font: inherit; font-size: .84em; line-height: 1.6; color: var(--text-2);
+  background: var(--bg); border: none; border-radius: 999px;
+  padding: 0 12px; cursor: pointer; white-space: nowrap;
+}
+.fold-btn:hover { color: var(--text); }
+.fold-btn:focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; }
+.folded > .fold-btn { display: block; position: absolute; left: 50%; bottom: 5px; transform: translateX(-50%); margin: 0; }
 .msg.user:has(> .msg-actions) { margin-bottom: 0; }
 .msg.user .msg-actions { margin: 0 0 18px; }
 .msg.user:hover .msg-actions { opacity: 1; }
@@ -434,6 +512,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   font-size: .86em; cursor: pointer; padding: 4px 6px; border-radius: 6px;
 }
 .act-copy:hover { background: var(--hover); color: var(--text-2); }
+/* 操作行上的消息时间：用户消息里排在「复制」左边，模型最终输出里靠最右
+   （act-time-end 用 margin-left:auto 顶到行尾）；字号与颜色跟行动作按钮同级，
+   保持克制。跟随操作行的悬停显隐，不额外常驻。 */
+.act-time { align-self: center; font-size: .82em; color: var(--text-3); white-space: nowrap; }
+.act-time-end { margin-left: auto; }
 
 /* Markdown 元素（字号相对 .msg-col 的 --chat-fs） */
 .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 8px; line-height: 1.4; }
@@ -1064,6 +1147,25 @@ body.rp-open .w-handle { display: none; }
 .empty { text-align: center; color: var(--text-3); margin-top: 16vh; }
 .empty h2 { color: var(--text); font-size: 1.29em; margin-bottom: 10px; }
 .empty code { background: var(--chip); padding: 1px 6px; border-radius: 4px; font-size: .89em; }
+
+/* 会话切换加载态：乐观切换先把壳（标题/侧栏高亮/输入框）换到目标会话，整包数据
+   （含全部历史）到达前消息区居中转圈——不出空态、不残留旧会话内容；远程访问慢时
+   用户知道「已经切过去了，在等数据」。失败态同款布局换成原因 + 重试按钮 */
+.chat-loading {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin-top: 16vh; color: var(--text-3); font-size: 13px;
+}
+.chat-loading .cl-spin {
+  flex: none; width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: st-spin .9s linear infinite;
+}
+.chat-loading .cl-retry {
+  flex: none; padding: 4px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px;
+  cursor: pointer;
+}
+.chat-loading .cl-retry:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ---------- 设置弹窗 ---------- */
 .modal {

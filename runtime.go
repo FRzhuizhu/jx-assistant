@@ -63,7 +63,6 @@ func (a *App) initRuntime() {
 	a.pendingSteer = map[string][]*PendingMsg{}
 	a.pendingQueue = map[string][]*PendingMsg{}
 	a.runErrors = map[string]string{}
-	a.envAnchors = map[string]time.Time{}
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
 	// 工作区就是程序目录，整目录保护会让开箱即用的会话什么都写不了。
@@ -92,10 +91,6 @@ func (a *App) beginRun(id string) (*sessionRun, bool) {
 	_ = a.Store.UpdateStatus(id, "running")
 	a.markRunOwner(id)     // 记下「本实例在跑它」：别的实例启动时不会把它误判成中断
 	a.ensureRunHeartbeat() // 有在跑的会话时才起心跳，空闲时零唤醒（见 runowner.go）
-	// 本轮环境时间的兜底取时点：正常路径紧随其后的用户消息落库会再刷一次（取到
-	// 更准的「用户按下发送」时刻），重试/回报续跑等没有新用户消息的入口就用这里。
-	// 这一轮收口之前，环境快照的「当前时间」保持此值，不随挂钟翻页重发
-	a.anchorEnvClock(id)
 	return r, true
 }
 
@@ -120,9 +115,6 @@ func (a *App) finishRun(id string) {
 	r.cancel()
 	_ = a.Store.UpdateStatus(id, "idle")
 	a.clearRunOwner(id) // 归属随本轮收口一起清掉（下一轮的归属由下一次 beginRun 写）
-	// 释放本轮环境时间锚点：下一条用户消息（或下一次重试）重新取时，
-	// 「当前时间」只在这两个时刻被刷新
-	a.releaseEnvClock(id)
 	// 本轮结束（正常/停止/报错收口都走这里）：执行已登记的会话后交付。
 	// 异步执行避免大文件搬运拖住收口；认领机制保证与启动恢复不重不漏。
 	go a.flushDeliveries(id)
@@ -300,6 +292,18 @@ func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *de
 	}
 	a.landUserSide(m, content, kind, origin, nil)
 	return &delivery{Started: true, Run: run}
+}
+
+// subQueueNote 组织「目标会话正在执行，派发需求已进队列」时回给模型的文案：
+// 插话（steer）下一步注入，排队（queue）本轮结束后作为独立一轮发送。
+func subQueueNote(sub *SessionMeta, mode, note string) string {
+	how := "已排队：目标会话正在执行，这条需求排进队列，等本轮结束后作为独立一轮自动执行"
+	if mode == "steer" {
+		how = "已插话：目标会话正在执行，这条需求会在它下一次调用模型前注入生效"
+	}
+	return fmt.Sprintf("%s（会话 %s「%s」）。%s本工具立即返回，不要等待；"+
+		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。",
+		how, sub.ID, sub.Title, note)
 }
 
 // landUserSide 是「用户侧消息落库」的唯一收口：chat（真实用户发言）走

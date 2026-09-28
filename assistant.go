@@ -120,18 +120,18 @@ func dispatchTaskTool() Tool {
 	}
 }
 
-// launchSub 把子会话登记为后台执行并立刻返回；执行体见 runtime.go 的 runSubAgent。
-// note 是附在返回文案里的补充说明（如「已继承主对话上下文 N 条」）。
-func (t *toolContext) launchSub(sub *SessionMeta, note string) (string, error) {
-	run, ok := t.app.beginRun(sub.ID)
-	if !ok {
-		return "", fmt.Errorf("目标会话 %s 正在执行其它任务，请稍后再试", sub.ID)
+// deliverSub 把派发需求投递进目标会话——走与用户发消息同一套投递（见 runtime.go
+// 的 deliverToSession）：目标空闲=落库并起 runSubAgent；正在执行=按 jx.midrun 偏好排队/插话。
+func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
+	d := t.app.deliverToSession(sub, text, kindReport, "task")
+	if !d.Started {
+		return subQueueNote(sub, d.Mode, note)
 	}
 	// 当前主对话的 SSE 若还连着，先给它推一条派发确认
 	t.emit(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
-	go t.app.runSubAgent(t.sess, sub, run)
+	go t.app.runSubAgent(t.sess, sub, d.Run)
 	return fmt.Sprintf("已派发后台执行：会话 %s「%s」。%s本工具立即返回，不要等待；"+
-		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。", sub.ID, sub.Title, note), nil
+		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。", sub.ID, sub.Title, note)
 }
 
 // dispatchExtras 应用派发工具的可选项：可选模型（providerId/modelId 或纯
@@ -253,7 +253,7 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		}
 		inherited = n
 	}
-	t.app.appendRow(sub, StoredMessage{Message: TextMessage("user", "【派发子对话】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
+	// 需求正文（【派发子对话】+ task）由 deliverSub 走统一投递落库——与用户发消息同路
 	var hints []string
 	if strings.TrimSpace(ex.Prompt) != "" {
 		hints = append(hints, fmt.Sprintf("已按专家预设「%s」派发，追加提示词已生效", sub.Expert))
@@ -267,7 +267,7 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	if len(hints) > 0 {
 		note = "（" + strings.Join(hints, "；") + "）"
 	}
-	return t.launchSub(sub, note)
+	return t.deliverSub(sub, "【派发子对话】\n\n"+p.Task, note), nil
 }
 
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
@@ -312,8 +312,8 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	// 工作任务永远不带上下文：像用户发消息一样，只收到一段自足的任务描述，
 	// 与派发方的聊天记录完全隔离（要上下文的场景用 dispatch_sub 的继承模式）
-	t.app.appendRow(sub, StoredMessage{Message: TextMessage("user", "【数字助理派发】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
-	return t.launchSub(sub, "")
+	// 需求正文（【数字助理派发】+ task）由 deliverSub 走统一投递落库
+	return t.deliverSub(sub, "【数字助理派发】\n\n"+p.Task, ""), nil
 }
 
 func sendToSessionTool() Tool {
@@ -349,8 +349,8 @@ func runSendToSession(t *toolContext, args json.RawMessage) (string, error) {
 	if m.Mode == "assistant" {
 		return "", fmt.Errorf("目标会话是另一个总控会话，不能作为派发目标")
 	}
-	t.app.appendRow(m, StoredMessage{Message: TextMessage("user", "【数字助理转达】\n\n"+p.Task), Kind: kindReport, Origin: "task", CreatedAt: now()})
-	return t.launchSub(m, "")
+	// 需求正文（【数字助理转达】+ task）由 deliverSub 走统一投递落库
+	return t.deliverSub(m, "【数字助理转达】\n\n"+p.Task, ""), nil
 }
 
 // ---------- 压缩摘要（设计对齐 DSH 版 summary.ts，只留本栈有的字段） ----------

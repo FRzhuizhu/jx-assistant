@@ -197,15 +197,19 @@ func promptHash(s string) string {
 // 新快照（见 maybeAppendEnvSnapshot 的 diff 逻辑）；组装时首条整份进历史、
 // 后续按行差分为短「环境更新」（见 buildContext），已发送的前缀绝不改写。
 //
-// 「当前时间」取的是**本轮环境时间锚点**（a.envClock）：用户发消息那一刻取一次，
-// 整个执行轮（工具调用之间的每一步、目标模式续跑）都用同一个值——模型自己执行
-// 时不会因为挂钟翻页而刷出新的「环境更新」；锚点随执行体收口释放（见下方
-// anchorEnvClock/releaseEnvClock）。其余条目都是真实状态（工作区/权限/能力/
-// 技能/模式），变化由 diff 驱动一条「环境更新」，与时间无关。
+// 首行的「用户最近发消息时间」= 会话里最新一条**真人用户消息**的落库时刻
+// （Store.LastUserMessageAt）：用户在哪一刻说的话，就记哪一刻。它不是挂钟——
+// 模型自己执行期间（工具调用之间、目标模式续跑、各种系统注入回合）不会随时间
+// 流逝变化，所以环境快照不会再凭空多发「环境更新」；用户真发了新消息，这一行
+// 才随新快照更新一次。会话里还没有用户消息（纯派发/待办驱动的会话）时不出这一行。
+// 其余条目都是真实状态（工作区/权限/能力/技能/模式），变化时照旧发一条只带
+// 变化行的「环境更新」——重发由变化驱动，不由时间驱动。
 func (a *App) envPrompt(sess *SessionMeta) string {
 	b := &strings.Builder{}
 	b.WriteString("# 运行环境快照（最新，取代更早的快照）\n")
-	b.WriteString("- 当前时间：" + a.envClock(sess.ID).Format("2006-01-02 15:04") + "\n")
+	if t, ok := a.Store.LastUserMessageAt(sess.ID); ok {
+		b.WriteString("- 用户最近发消息时间：" + t.Format("2006-01-02 15:04") + "\n")
+	}
 	if sess.Remote != nil {
 		r := sess.Remote
 		b.WriteString("- 运行环境：SSH 远程工作区 " + r.Display() + "（类 Unix；命令经远程 shell 执行，run_command 的 shell 参数忽略，路径为 POSIX 格式）\n")
@@ -285,59 +289,6 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		}
 	}
 	return b.String()
-}
-
-// ---------- 本轮环境时间锚点（环境快照「当前时间」的唯一来源） ----------
-//
-// 「当前时间」是环境快照里唯一的挂钟项（其余条目都是真实状态）。若每次组装都取
-// time.Now()，模型自己执行的过程中（工具调用之间的每一步、目标模式续跑）只要跨过
-// 分钟边界，快照文本就变了 → maybeAppendEnvSnapshot 判定「环境变了」落一条新快照
-// → 上下文里凭空多出一条带新时间的「环境更新」，而用户什么都没发。所以时间按
-// **执行轮**锚定：
-//   - 锚点值：用户发消息那一刻（appendMessage 落用户消息时刷新；插话/排队消息同理），
-//     本轮执行起点兜底刷新（beginRun，覆盖重试/回报续跑等没有新用户消息的入口）；
-//   - 作用域：内存里按会话 ID 存一份（App.envClock），只服务「本轮注入」，不落库；
-//   - 生命周期：本轮起点 → 执行体收口（finishRun 释放）；进程重启自然重新取时；
-//   - 释放后下一条用户消息重新锚定，所以同一条用户消息在同一轮里不会被反复计时。
-//
-// 快照里真正易变的仍是状态类条目（EXE 版本/工作区/权限模式/能力开关/技能清单/
-// 计划与目标模式），它们变化时照旧发一条「环境更新」，且只带变化的那几行
-// （行级 diff，见 envUpdateMessage）——重发由变化驱动，不由时间驱动。
-
-// anchorEnvClock 把会话的环境时间锚点刷成现在（用户发消息、本轮执行起点）。
-func (a *App) anchorEnvClock(id string) { a.anchorEnvClockAt(id, time.Now()) }
-
-// anchorEnvClockAt 以指定时刻锚定（自检/回放用）。
-func (a *App) anchorEnvClockAt(id string, at time.Time) {
-	a.envClockMu.Lock()
-	defer a.envClockMu.Unlock()
-	if a.envAnchors == nil {
-		a.envAnchors = map[string]time.Time{}
-	}
-	a.envAnchors[id] = at
-}
-
-// envClock 取会话本轮的环境时间锚点；没有锚点（进程刚起、直接跑 RunAgent 的入口）
-// 就地锚定一次——同一轮里每次组装都拿到同一个值，快照因此逐字节稳定。
-func (a *App) envClock(id string) time.Time {
-	a.envClockMu.Lock()
-	defer a.envClockMu.Unlock()
-	if at, ok := a.envAnchors[id]; ok {
-		return at
-	}
-	at := time.Now()
-	if a.envAnchors == nil {
-		a.envAnchors = map[string]time.Time{}
-	}
-	a.envAnchors[id] = at
-	return at
-}
-
-// releaseEnvClock 释放会话的环境时间锚点（执行体收口时调用）：下一轮重新取时。
-func (a *App) releaseEnvClock(id string) {
-	a.envClockMu.Lock()
-	defer a.envClockMu.Unlock()
-	delete(a.envAnchors, id)
 }
 
 // buildLLMMessages 已废弃删除：真正的组装只走 buildContext。
@@ -611,11 +562,6 @@ func suspendedInPlan(mode, name string) bool {
 
 // appendMessage 落库并返回带 seq 的记录（seq 供 SSE message 事件回传前端定位用）
 func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
-	// 用户消息 = 本轮环境时间的取时点：环境快照里的「当前时间」就是这一刻
-	// （见环境时间锚点一节：此后本轮的每一步组装都用同一个值，不再随挂钟刷新）
-	if m.Role == "user" {
-		a.anchorEnvClock(sess.ID)
-	}
 	sm := &StoredMessage{Message: m, Kind: kindChat, CreatedAt: now()}
 	_ = a.Store.AppendRow(sess.ID, sm)
 	// 只有用户输入与模型最终输出刷新「最近更新」时间（口径见 StoredMessage.touchesActivity）：

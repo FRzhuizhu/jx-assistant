@@ -67,8 +67,6 @@ type App struct {
 	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
 	osOnce          sync.Once
 	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
-	envClockMu      sync.Mutex
-	envAnchors      map[string]time.Time // 本轮环境时间锚点：会话 ID → 取时时刻（用户消息/执行起点，收口释放；见 agent.go）
 	browserMu       sync.Mutex
 	browserEmbedded *BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
 	browserHeaded   *BrowserHost  // 有头独立窗口宿主（旧版行为，惰性创建）

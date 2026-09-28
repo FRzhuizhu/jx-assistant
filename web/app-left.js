@@ -37,6 +37,21 @@ $('status-phone').addEventListener('click', (e) => {
   openSettings('network');
 });
 
+// 反馈胶囊：同样拦住外层设置按钮，改直达设置面板「关于」页——问题反馈表单就挂在
+// 这个分区里（#set-pane-about > #feedback-section），省去用户自己翻菜单找路径。
+// 打开后把表单滚进视野（关于页比弹窗长时不用再往下找）；Enter / Space 等价点击。
+async function openFeedbackPane(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  await openSettings('about');
+  const sec = document.getElementById('feedback-section');
+  if (sec) sec.scrollIntoView({ block: 'nearest' });
+}
+$('btn-feedback').addEventListener('click', openFeedbackPane);
+$('btn-feedback').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') openFeedbackPane(e);
+});
+
 
 // 侧栏视图设置：分组方式（ws=按工作区 flat=单列表）与排序方式
 const viewCfg = Object.assign({ group: 'ws', sort: 'updated' }, lsGet('jx.view', {}));
@@ -687,6 +702,13 @@ function renderBin(box) {
 async function loadSessionsNow() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
+  renderSessionList();
+}
+
+// renderSessionList：侧栏纯本地重渲（不 发请求）。loadSessionsNow 拉到列表后调；
+// 切换会话的乐观阶段（app-chat.js 的 applySessionChrome）也直接调它——高亮跟手，
+// 不用等（也不该为一次高亮去打一轮列表请求）
+function renderSessionList() {
   const box = $('session-list');
   box.innerHTML = '';
   if (binView) { renderBin(box); return; } // 回收站视图：整个列表换成回收站内容
@@ -870,6 +892,41 @@ $('btn-new-assistant').onclick = () => {
   openAssistant();
 };
 $('btn-recycle').onclick = () => setBinView(!binView);
+
+/* ---------- 左上角入口按钮：图标 hover 随机轻扭（三个按钮共用一套） ----------
+   鼠标进入任一入口按钮（新工作任务 / 数字助理主对话 / 待办与定时任务）时，图标朝随机
+   一侧轻扭一下再回正（幅度 5°~7°，末尾带一点反向回弹），动画结束自动回到直立；再次
+   hover 能再扭一次，方向和幅度都重新随机。动画本身在 style.css 的 side-btn-wig。
+   用事件委托挂在 .actions 上而不是逐个按钮绑：第三个按钮「待办与定时任务」是组件
+   （组件/todo-scheduler/client.js）注册时才插进来的，静态绑会漏掉它；委托也顺带覆盖
+   以后往这一组里加的新入口。 */
+const WIG_DEG = 5, WIG_JITTER = 2; // 扭动幅度 5° + 随机 0~2°：轻微、不夸张
+function wiggleSideBtn(btn) {
+  const dir = Math.random() < .5 ? -1 : 1; // 方向每次独立随机（左/右）
+  const deg = dir * (WIG_DEG + Math.random() * WIG_JITTER);
+  btn.style.setProperty('--wig-deg', deg.toFixed(2) + 'deg');
+  btn.classList.remove('wig');
+  void btn.offsetWidth; // 强制重排：连续 hover 时重新挂 .wig，动画才会从头再播一遍
+  btn.classList.add('wig');
+}
+function bindSideBtnWiggle() {
+  const acts = document.querySelector('#sidebar .actions');
+  if (!acts) return;
+  acts.addEventListener('mouseover', (e) => {
+    const btn = e.target.closest('.side-btn');
+    if (!btn || !acts.contains(btn)) return;
+    // 在同一个按钮内部从图标挪到文字（relatedTarget 还在按钮里）不算重新进入，不重播
+    if (e.relatedTarget && btn.contains(e.relatedTarget)) return;
+    wiggleSideBtn(btn);
+  });
+  // 播完摘掉 .wig，图标停在直立态（prefers-reduced-motion 下没有动画、摘不掉也无妨：
+  // 下次 hover 照旧「先 remove、再强制重排、再 add」）
+  acts.addEventListener('animationend', (e) => {
+    if (e.animationName !== 'side-btn-wig') return;
+    if (e.target.parentElement) e.target.parentElement.classList.remove('wig');
+  });
+}
+bindSideBtnWiggle();
 
 /* ---------- 左侧栏拖拽调宽：272~560，记忆落本机（jx.sbw，经 --sb-w 生效） ----------
    桌面专属：窄屏浮层恒为整屏宽（把手 CSS 禁指针 + JS 双保险，不写不落盘防污染

@@ -57,14 +57,18 @@ func TestSystemPromptStable(t *testing.T) {
 	}
 }
 
-// 环境快照：包含易变信息；计划/目标模式有公告行。
+// 环境快照：首行是「用户最近发消息时间」（取自用户消息的落库时刻，不是挂钟）；计划/目标模式有公告行。
 func TestEnvPromptContainsModes(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
 	sess := &SessionMeta{ID: "sp2", Mode: "task", CreatedAt: now(), UpdatedAt: now()}
 	_ = a.Store.Create(sess)
 	env := a.envPrompt(sess)
-	if !strings.Contains(env, "当前时间") || !strings.Contains(env, "取代更早的快照") {
-		t.Fatal("环境快照应含时间与取代声明")
+	if !strings.Contains(env, "取代更早的快照") || strings.Contains(env, "当前时间") || strings.Contains(env, "用户最近发消息时间") {
+		t.Fatal("环境快照应含取代声明；还没有用户消息时不应出现时间行，更不能有挂钟项")
+	}
+	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", "你好"), Kind: kindChat, CreatedAt: "2026-01-02 15:04:05"})
+	if e := a.envPrompt(sess); !strings.Contains(e, "- 用户最近发消息时间：2026-01-02 15:04") {
+		t.Fatal("有用户消息后应带「用户最近发消息时间」，值为该消息的落库时刻")
 	}
 	sess.PlanMode = true
 	if e := a.envPrompt(sess); !strings.Contains(e, "计划模式") || !strings.Contains(e, "exit_plan_mode") {

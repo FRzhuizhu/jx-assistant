@@ -67,6 +67,7 @@ function goHomeNewTask() {
   navTok.main++;          // 作废在途的会话加载（回首页是同步完成的导航）
   navBusy.main = false;
   state._pfxSid = null;   // 消息区的增量渲染缓存随之失效
+  state._loading = false; // 在途加载态一并作废（回首页是同步完成的导航）
   state.cur = null;
   loadProgress();
   state.msgs = [];
@@ -84,30 +85,68 @@ async function openSession(id) {
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
   const tok = ++navTok.main;
   navBusy.main = true;
+  // 乐观切换：整包会话数据（含全部历史）在远程访问下要几秒，等待期间界面一步不动，
+  // 看起来就是「没切过去」，失败时更是静默留在旧会话——像「跳回」。这里先用列表项
+  // （与详情 meta 同型，只可能稍旧）当临时 meta：标题/侧栏高亮/输入框立即换到目标
+  // 会话，消息区先进加载态；state.cur 此刻就是目标，期间一切「刷新当前会话」的兜底
+  // （refreshCurrent 等）都以目标为准，旧会话的晚到事件不可能再把界面顶回去
+  const brief = (state.sessions || []).find((s) => s.id === id);
+  if (brief && (!state.cur || state.cur.id !== id)) optimisticSwitch(mainView, brief);
   try {
     await loadSessionInto(id, tok);
+  } catch (e) {
+    // 加载失败：留在目标会话的壳里，给原因与「重试」，绝不静默退回旧会话
+    if (tok === navTok.main) showChatLoadError(mainView, e.message, () => openSession(id));
   } finally {
     // 只有仍是最新一次导航才解禁（被更新的导航顶掉时，由它自己负责收尾）
     if (tok === navTok.main) navBusy.main = false;
   }
 }
 
-async function loadSessionInto(id, tok) {
-  const data = await api('/api/sessions/' + id);
-  // 已被更新的导航（切换/回首页）取代：晚到的旧响应不落地，否则会把界面顶回旧会话
-  if (tok !== navTok.main) return;
-  state.cur = data.meta;
-  state.msgs = data.messages || [];
-  state.pendingSteer = (data.pending && data.pending.steer) || [];
-  state.pendingQueue = (data.pending && data.pending.queue) || [];
-  state.checkpoints = data.checkpoints || [];
-  state.deliveries = data.deliveries || [];
-  if (data.error) showRunError(mainView, data.error); else hideRunError(mainView);
-  // 计划/目标二选一：旧数据可能两个都开着，收敛为只留计划并落库
-  if (state.cur.planMode && state.cur.goalMode) {
-    state.cur.goalMode = false;
-    api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ goalMode: false }) }).catch(() => {});
+// 乐观切换的落地：壳（标题/徽标/输入区/草稿/侧栏高亮）立即换到目标会话，消息区置为
+// 加载态；数据到达后 loadSessionInto / openSubSession 整体接管。列表项当临时 cur，
+// 消息与派生数据清空，_pfxSid 失效（渲染缓存随会话作废）
+function optimisticSwitch(view, brief) {
+  const st = view.state;
+  st.cur = { ...brief };
+  st.msgs = [];
+  st.pendingSteer = [];
+  st.pendingQueue = [];
+  st.checkpoints = [];
+  st.deliveries = [];
+  st.streamText = '';
+  st.streamThinking = '';
+  st._pfxSid = null;
+  st._loading = true; // renderMessages / reloadMessages 见此标记让路，别冲掉加载态
+  applySessionChrome(view);
+  showChatLoading(view);
+}
+
+// 会话壳的即时更新（本地纯渲染）：主对话换顶栏标题/模式徽标与侧栏高亮，子对话换
+// 下拉头部；输入区控件与草稿、待决定浮窗跟着走。加载完成后的完整收尾（抽屉/进度/
+// 计划视图/接流）仍在各加载函数里
+function applySessionChrome(view) {
+  const st = view.state;
+  if (view === mainView) {
+    applyTopbar();
+    renderSessionList();
+    placeComposer();
+  } else {
+    subRenderHeader();
+    syncComposerPad(view);
   }
+  syncComposer(view);
+  renderPanels(); // 待决定的浮窗跟着会话归属走
+  try {
+    viewEl(view, 'input').value = localStorage.getItem(
+      view === mainView ? sessionDraftKey(st.cur.id) : subDraftKey(st.cur.id)
+    ) || '';
+  } catch (e) { viewEl(view, 'input').value = ''; }
+  autoGrow(viewEl(view, 'input'));
+}
+
+// 顶栏标题与模式徽标（主对话区；乐观阶段与数据落地共用）
+function applyTopbar() {
   $('sess-title').textContent = state.cur.title || '(未命名)';
   const badge = $('mode-badge');
   // 模式徽标；挂在主对话下的子对话再标出来历（它可能是 task/office/aux 任一模式）
@@ -121,13 +160,53 @@ async function loadSessionInto(id, tok) {
   } else {
     badge.classList.add('hidden');
   }
+}
+
+// 会话加载态：消息区居中转圈（样式 .chat-loading）；数据落地后 renderMessages 全量接管
+function showChatLoading(view) {
+  view.col.innerHTML = '<div class="chat-loading"><span class="cl-spin"></span>正在加载对话…</div>';
+  view.scroll.scrollTop = 0;
+}
+
+// 加载失败：留在目标会话的壳里，给原因与「重试」（重试即重新走一次切换加载）
+function showChatLoadError(view, msg, retry) {
+  view.state._loading = false;
+  const box = document.createElement('div');
+  box.className = 'chat-loading';
+  const txt = document.createElement('span');
+  txt.textContent = '对话加载失败：' + (msg || '网络异常');
+  const btn = document.createElement('button');
+  btn.className = 'cl-retry';
+  btn.type = 'button';
+  btn.textContent = '重试';
+  btn.onclick = retry;
+  box.appendChild(txt);
+  box.appendChild(btn);
+  view.col.innerHTML = '';
+  view.col.appendChild(box);
+}
+
+async function loadSessionInto(id, tok) {
+  const data = await api('/api/sessions/' + id);
+  // 已被更新的导航（切换/回首页）取代：晚到的旧响应不落地，否则会把界面顶回旧会话
+  if (tok !== navTok.main) return;
+  state.cur = data.meta;
+  state._loading = false; // 数据落地：退出加载态（必须在 renderMessages 之前）
+  state.msgs = data.messages || [];
+  state.pendingSteer = (data.pending && data.pending.steer) || [];
+  state.pendingQueue = (data.pending && data.pending.queue) || [];
+  state.checkpoints = data.checkpoints || [];
+  state.deliveries = data.deliveries || [];
+  if (data.error) showRunError(mainView, data.error); else hideRunError(mainView);
+  // 计划/目标二选一：旧数据可能两个都开着，收敛为只留计划并落库
+  if (state.cur.planMode && state.cur.goalMode) {
+    state.cur.goalMode = false;
+    api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ goalMode: false }) }).catch(() => {});
+  }
+  applySessionChrome(mainView); // 壳与乐观阶段同一套：标题/徽标/侧栏高亮/输入区/草稿/浮窗
   refreshDrawer();
   refreshCtxChip();
-  placeComposer();
-  syncComposer();
   loadProgress();
-  // 待决定的浮窗跟着会话归属走（本对话的卡去掉来源行，别的对话的卡补上）；计划视图换绑这个会话
-  renderPanels();
   planSid = id;
   if (rpActive === 'plan') loadPlanView();
   maybeAutoOpenPlan();
@@ -139,11 +218,6 @@ async function loadSessionInto(id, tok) {
     state.cur.unread = false;
     api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ unread: false }) }).catch(() => {});
   }
-  // 输入框整体替换为该会话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个对话的字）
-  try {
-    $('input').value = localStorage.getItem(sessionDraftKey(id)) || '';
-  } catch (e) { $('input').value = ''; }
-  autoGrow();
   // 会话正在执行（含刷新页面后重新打开）：接上它的流，继续实时显示
   if (!state.streaming && (data.running || state.cur.status === 'running')) attachRun(mainView);
   loadSessions();
@@ -293,8 +367,8 @@ function toolsChangeRow(prevTools, tools, seq) {
 }
 
 // 运行环境更新行：轮内权限提升/模式切换/能力开关/技能增减等真实变化导致环境
-// 变化时，在发生位置展示变化内容（diff）与新快照全文；「当前时间」只在用户
-// 发消息时取一次，不会随时间流逝自己冒出一条
+// 变化时，在发生位置展示变化内容（diff）与新快照全文；首行的「用户最近发消息
+// 时间」只在用户真发消息时变——模型自己执行不会随时间流逝冒出这条行
 function envNoteRow(text, prev, seq) {
   return procTextRow('运行环境更新', '随下次请求尾部发送 · ' + fmtCount(String(text).length) + ' 字',
     prev == null ? String(text) : diffBody(prev, text), seq);
@@ -559,8 +633,8 @@ const ROW_ITEM_BUILDERS = {
     st.cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
   },
   // 运行环境快照：与最近一次已知环境相同则跳过；有真实变化（权限提升、
-  // 模式切换、能力开关、技能增减等——时间只在用户发消息时取一次，不算
-  // 变化源）才在发生位置显示「运行环境更新」折叠行
+  // 模式切换、能力开关、技能增减、用户新发了一条消息等）才在发生位置显示
+  // 「运行环境更新」折叠行
   env(m, st) {
     const txt = String(m.content ?? '');
     if (txt === st.lastEnv) return;
@@ -620,7 +694,29 @@ function groupTurns(msgs, resultOf) {
   return st.turns;
 }
 
-// 用户消息气泡：右下悬停操作（复制 / 编辑重发）。编辑只对真实用户消息开放
+// 消息时间戳文案：优先 18:45（同一天），跨天补日期 09-28 18:45；时间缺失返回空串。
+// 消息行自带的 createdAt 由后端落库时写入（见 StoredMessage.CreatedAt）。
+function msgTimeLabel(iso) {
+  if (!iso) return '';
+  const d = new Date(String(iso).replace(' ', 'T'));
+  if (isNaN(d.getTime())) return '';
+  const p2 = (n) => String(n).padStart(2, '0');
+  const hm = p2(d.getHours()) + ':' + p2(d.getMinutes());
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hm : p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + hm;
+}
+
+// 时间标签节点（放进操作行：用户消息在复制左侧，模型最终输出在最右）
+function actTime(iso, side) {
+  const el = document.createElement('span');
+  el.className = 'act-time' + (side ? ' ' + side : '');
+  el.textContent = msgTimeLabel(iso);
+  el.title = iso ? String(iso).replace('T', ' ') : '';
+  return el;
+}
+
+// 用户消息气泡：右下悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息开放
 // （kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。
 function userBubble(m, view) {
   const wrap = document.createElement('div');
@@ -633,6 +729,7 @@ function userBubble(m, view) {
   if (m.kind === 'chat' && view) {
     const acts = document.createElement('div');
     acts.className = 'msg-actions user-acts';
+    acts.appendChild(actTime(m.createdAt)); // 发送时间：排在复制按钮左边
     const cp = document.createElement('button');
     cp.className = 'act-copy';
     const cpOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制';
@@ -701,6 +798,7 @@ function msgActions(m, opts) {
     acts.appendChild(bk);
   }
   for (const fn of JX._msgActions) { try { fn(acts, m); } catch (e) { console.warn('[JX] action', e); } }
+  acts.appendChild(actTime(m.createdAt, 'act-time-end')); // 回复时间：排在最右
   return acts;
 }
 
@@ -833,6 +931,152 @@ function subTaskCard(tc, result) {
   if (openBtn) openBtn.onclick = () => openSession(sid);
   if (running) renderSubActs(sid);
   return d;
+}
+
+/* ---------- 长消息折叠（只作用于数字助理主对话：用户气泡、数字助理正文、
+   以及作为「用户消息变体」的派发通知气泡，见 app-chat.js 的 applyFolds） ----------
+   需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
+   短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区宽度、
+   字号一变，同一段文字换行出的行数就变，所以：
+     - 阈值 = 运行时读到的行高（line-height）× 6，与元素内容高度（scrollHeight 去掉
+       内边距）比较；裁剪用 max-height + overflow: hidden，scrollHeight 始终是完整
+       内容高度，所以一个阈值同时管折叠态与展开态，不必先解开裁剪再量（判定不受
+       自己上一次裁剪的影响，也就不会自激）；
+     - 会话渲染完、对话区尺寸变化（拖宽/缩窗口）、字号变化时都重算（ResizeObserver +
+       window resize，合到一帧）；所以不会出现「该折叠的没折叠」或「明明很短却折叠了」；
+     - 用户手动展开过的（data-fold-open=1）重算后保持展开，只是按钮变成「收起」。
+   作用域：只在当前会话 mode=assistant（数字助理主对话）时生效；工作任务会话、
+   子对话（右栏抽屉）与流式输出中的那半句都不折叠。 */
+const FOLD_LINES = 6;   // 折叠阈值（行）
+const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取整误差误判
+
+let foldScheduled = false;
+let foldTimer = 0;
+
+// 是否需要折叠（只在数字助理主对话里做）
+function foldEnabled() {
+  return !!(state.cur && state.cur.mode === 'assistant');
+}
+
+// 折叠目标：主对话里已定稿的用户气泡、数字助理正文与派发通知气泡（后者是
+// 「用户消息的变体」，同样是长消息）。跳过流式中的那块（边流边折叠会一直遮住
+// 最新输出）与编辑态/排队态占位气泡（临时形态，带虚线边框）。
+function foldTargets() {
+  const col = mainView.col;
+  if (!col) return [];
+  const live = mainView.liveId ? document.getElementById(mainView.liveId) : null;
+  const out = [];
+  col.querySelectorAll('.msg.user > .bubble, .msg.assistant > .md, .msg.sysnote > .bubble').forEach((el) => {
+    const msg = el.parentElement;
+    if (!msg || msg.classList.contains('editing') || msg.classList.contains('queued') || msg.classList.contains('pending-steer')) return;
+    if (live && (msg === live || live.contains(msg))) return; // 流式实时块不折
+    out.push(el);
+  });
+  return out;
+}
+
+// 溢出判定：与「当前是否折叠」无关——裁剪用的是 max-height + overflow: hidden，
+// scrollHeight 始终是完整内容高度，所以一个阈值同时管折叠态与展开态，不需要先
+// 解开裁剪再量（也就不会因为切换类名反过来触发 ResizeObserver）。阈值取
+// 运行时读到行高 × 6 行，行高随字号设置变化，所以不写死像素值。
+function foldMeasure(el) {
+  const cs = getComputedStyle(el);
+  const lh = parseFloat(cs.lineHeight);
+  if (!lh) return null;
+  const pad = parseFloat(cs.paddingTop || 0) + parseFloat(cs.paddingBottom || 0);
+  const limit = lh * FOLD_LINES;
+  return { overflow: el.scrollHeight - pad > limit + FOLD_SLACK, maxH: pad + limit };
+}
+
+// 重算并应用折叠状态（幂等：判定只看内容高度，不受自己上一次的裁剪影响，
+// 所以结果稳定、不会自激）
+function applyFolds() {
+  const col = mainView.col;
+  if (!col) return;
+  const boxes = Array.from(col.querySelectorAll('.fold-box'));
+  const enabled = foldEnabled();
+  const seen = new Set();
+  foldTargets().forEach((el) => {
+    seen.add(el);
+    const m = enabled ? foldMeasure(el) : null;
+    const btn = el.querySelector(':scope > .fold-btn');
+    if (!m || !m.overflow) {
+      // 不超过 6 行（或已切走会话）：彻底恢复原样，不留按钮与遮罩
+      el.classList.remove('folded', 'fold-box');
+      el.style.removeProperty('--fold-h');
+      const fade = el.querySelector(':scope > .fold-fade');
+      if (fade) fade.remove();
+      if (btn) btn.remove();
+      el.removeAttribute('data-fold-open');
+      return;
+    }
+    if (!el.classList.contains('fold-box')) {
+      el.classList.add('fold-box');
+      const fade = document.createElement('div');
+      fade.className = 'fold-fade';
+      el.appendChild(fade);
+    }
+    el.style.setProperty('--fold-h', Math.ceil(m.maxH) + 'px');
+    if (!btn) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'fold-btn';
+      b.textContent = '展开';
+      b.onclick = () => toggleFold(el, b);
+      el.appendChild(b);
+      el.dataset.foldOpen = '0';
+      el.classList.add('folded'); // 默认折叠：只显示前 6 行
+    } else {
+      // 已经在折叠体系里：保留用户的展开意图，只同步按钮文案
+      const open = el.dataset.foldOpen === '1';
+      el.classList.toggle('folded', !open);
+      btn.textContent = open ? '收起' : '展开';
+    }
+    if (btn || el.querySelector(':scope > .fold-btn')) {
+      (el.querySelector(':scope > .fold-btn')).setAttribute('aria-expanded', el.dataset.foldOpen === '1' ? 'true' : 'false');
+    }
+  });
+  // 已经不在目标集合里的（重渲染后残留、切走会话）：清掉折叠痕迹
+  boxes.forEach((el) => {
+    if (seen.has(el)) return;
+    el.classList.remove('folded', 'fold-box');
+    el.style.removeProperty('--fold-h');
+    el.removeAttribute('data-fold-open');
+    el.querySelectorAll(':scope > .fold-fade, :scope > .fold-btn').forEach((n) => n.remove());
+  });
+}
+
+// 展开/收起：折叠态只放开高度上限（按钮留在底部），展开态按钮落到正文下方
+function toggleFold(el, btn) {
+  const folded = el.classList.toggle('folded');
+  el.dataset.foldOpen = folded ? '0' : '1';
+  btn.textContent = folded ? '展开' : '收起';
+  btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+  if (folded) followScroll(mainView, false);
+}
+
+// 一帧内合并多次请求（ResizeObserver 会在同一帧连发）
+function scheduleFolds() {
+  if (foldScheduled) return;
+  foldScheduled = true;
+  requestAnimationFrame(() => {
+    foldScheduled = false;
+    try { applyFolds(); } catch (e) { console.warn('[JX] fold', e); }
+  });
+}
+
+// 尺寸/字号变化都要重算：观察对话列本身（宽度变了每行字数变，字号变了行高变，
+// 两种都会让它的盒子尺寸变化），另挂一个窗口 resize 兜底。
+function setupFolds() {
+  if (setupFolds.done) return;
+  setupFolds.done = true;
+  if (typeof ResizeObserver === 'function' && mainView.col) {
+    new ResizeObserver(() => scheduleFolds()).observe(mainView.col);
+  }
+  window.addEventListener('resize', () => {
+    clearTimeout(foldTimer);
+    foldTimer = setTimeout(scheduleFolds, 120); // 拖窗口时别每像素都量一遍
+  });
 }
 
 /* ---------- 文件改动面板与交付成果卡片（文件快照子系统的前端半边） ---------- */
@@ -1301,6 +1545,9 @@ function renderMessages(msgs, view, opts) {
   view = view || mainView;
   const st = view.state;
   const box = view.col;
+  // 会话正在乐观加载：转圈占位不被空列表渲染冲掉（事件触发的就地翻新拿到的
+  // 还是清空后的 msgs）；真实数据落地时加载方先清 _loading 再来渲染
+  if (st._loading && !msgs.length) return;
   if (!msgs.length) {
     st._pfxSid = null;
     box.innerHTML = view.emptyHTML;
@@ -1364,8 +1611,21 @@ function renderMessages(msgs, view, opts) {
     appendTurn(tail, last, sid + ':' + (last.userMsg ? last.userMsg.seq : 'head' + (turns.length - 1)), view, true);
   }
   // 已插话、等下一次调用模型生效的消息：直接落在对话最底下（与已发送的用户消息
-  // 同一套气泡外观，只多一个「插话中」角标），落库后由 message 事件替换成正常气泡
+  // 同一套气泡外观，只多一个「插话中」角标），落库后由 message 事件替换成正常气泡。
+  // 数字助理派发注入的插话（kind=report，比如派发到正在执行的会话）例外：它是
+  // 「数字助理说的话」，按 sysnote 那套左对齐通知渲染，落库后形态一致。
   (st.pendingSteer || []).forEach((pm) => {
+    if (pm.kind === 'report') {
+      const nw = document.createElement('div');
+      nw.className = 'msg sysnote';
+      nw.dataset.pendingSteer = pm.id;
+      const nb = document.createElement('div');
+      nb.className = 'bubble';
+      nb.textContent = pm.content;
+      nw.appendChild(nb);
+      tail.appendChild(nw);
+      return;
+    }
     const wrap = document.createElement('div');
     wrap.className = 'msg user pending-steer';
     wrap.dataset.pendingSteer = pm.id;
@@ -1384,6 +1644,7 @@ function renderMessages(msgs, view, opts) {
   if (ps) tail.appendChild(pendingSendBubble(ps.content));
   box.appendChild(tail);
   followScroll(view, jump);
+  if (view === mainView) scheduleFolds(); // 长消息折叠：渲染完按实际高度重算（只主对话）
 }
 
 // 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与系统通知也常显；
@@ -3052,7 +3313,7 @@ async function sendMidrun(content, viaInput, view) {
   const mode = lsGet('jx.midrun', 'queue') === 'interject' ? 'steer' : 'queue';
   try {
     const d = await api('/api/sessions/' + view.state.cur.id + '/interject', {
-      method: 'POST', body: JSON.stringify({ content, mode }),
+      method: 'POST', body: JSON.stringify({ content, mode, midrun: lsGet('jx.midrun', 'queue') }),
     });
     if (!d.accepted) { pendingHint(view, '发送失败：该会话当前不接受消息'); return; }
     // 本地立即出效果（插话贴到对话末尾，排队进坞）；服务端的 pending 广播可能
@@ -3168,7 +3429,7 @@ async function send(forceContent, view) {
     const res = await fetch(`/api/sessions/${sid}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, midrun: lsGet('jx.midrun', 'queue') }),
       signal: view.state.abort.signal,
     });
     if (!res.ok) {
@@ -3412,6 +3673,7 @@ async function refreshIfDangling(view) {
 async function reloadMessages(view) {
   view = view || mainView;
   if (!view.state.cur) return;
+  if (view.state._loading) return; // 会话正在整包加载：由 loadSessionInto 收口，不并发重取
   try {
     const d = await api('/api/sessions/' + view.state.cur.id);
     view.state.cur = d.meta;

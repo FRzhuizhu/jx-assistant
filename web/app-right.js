@@ -268,10 +268,15 @@ async function openSubSession(id) {
   if (subState.streaming && (!subState.cur || subState.cur.id !== id)) detachStream(subView);
   const tok = ++navTok.sub;
   navBusy.sub = true;
+  // 乐观切换（与主对话 openSession 同款）：壳先到位、消息区转圈；失败留在目标子对话
+  // 给原因与重试，不再静默保持旧子对话（远程访问整包慢时尤其明显）
+  const brief = (state.sessions || []).find((s) => s.id === id);
+  if (brief && (!subState.cur || subState.cur.id !== id)) optimisticSwitch(subView, brief);
   try {
     const data = await api('/api/sessions/' + id);
     if (tok !== navTok.sub) return; // 已被更新的导航取代：晚到的旧响应不落地
     subState.cur = data.meta;
+    subState._loading = false; // 数据落地：退出加载态（必须在 renderMessages 之前）
     subState.msgs = data.messages || [];
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
     subState.pendingQueue = (data.pending && data.pending.queue) || [];
@@ -286,14 +291,17 @@ async function openSubSession(id) {
     syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
     syncComposerPad(subView); // 悬浮输入区：重算子对话消息列的垫高与按钮锚点
     renderPanels(); // 待决定的浮窗：这个子对话自己的卡落在右栏输入区上方，主对话区那份随之撤掉
-    // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有就是空，不残留上一个子对话的字）
+    // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个子对话的字）
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
     autoGrow($('sub-input'));
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
     if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
-  } catch (e) { /* 打不开就保持原状 */ } finally {
+  } catch (e) {
+    // 加载失败：留在目标子对话的壳里给原因与重试（openSession 同款语义）
+    if (tok === navTok.sub) showChatLoadError(subView, e.message, () => openSubSession(id));
+  } finally {
     if (tok === navTok.sub) navBusy.sub = false;
   }
 }

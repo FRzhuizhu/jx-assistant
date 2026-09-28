@@ -1,4 +1,4 @@
-// 坚祥数字助理（软著版）—— 单进程本地智能助手服务。
+// 坚祥数字助理（GO版）—— 单进程本地智能助手服务。
 //
 // 架构：Go 后端（LLM 主循环 + 工具集 + 会话存储）+ 原生 JS 前端，
 // 前后端仅通过 HTTP / SSE 通信，不共享任何运行时模块。
@@ -189,7 +189,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	log.Printf("坚祥数字助理（软著版）已启动: %s", url)
+	log.Printf("坚祥数字助理（GO版）已启动: %s", url)
 	log.Printf("模型: %s @ %s（baseURL 填 mock 时为离线演示模式）", cfg.Model, cfg.BaseURL)
 	if *webDir != "" {
 		log.Printf("开发模式：前端从 %s 读取，修改后刷新浏览器即生效", *webDir)
