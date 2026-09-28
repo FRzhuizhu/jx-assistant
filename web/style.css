@@ -1083,15 +1083,12 @@ body.rp-open .w-handle { display: none; }
    子对话区共用同一套规则——子对话就是对话，两边长得一模一样，只是挂点不同。
    悬浮布局：外壳脱离文档流铺在消息区底部（消息滚动到卡后面，内容列由 JS 垫等高
    内边距兜底，见 app-chat.js 的 syncComposerPad），容器自身不接收指针（透明区域
-   手势可划过）、子元素各自恢复；顶部一道到背景色的渐变让滚过卡后的内容淡出。 */
+   手势可划过）、子元素各自恢复。不做任何「发光/投影/渐隐」装饰：浅色主题下
+   曾用卡上方 30px 到背景色的渐变带 + 卡片投影，在手机端被读成一圈白边——
+   收起动画时渐变带随卡下滑，白边与卡之间还露出一段更透明的区域，更显眼。 */
 .composer-wrap {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
   padding: 0 24px 14px;
-  pointer-events: none;
-}
-.composer-wrap::before {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 100%;
-  height: 30px; background: linear-gradient(180deg, transparent, var(--bg));
   pointer-events: none;
 }
 .composer-wrap > * { pointer-events: auto; }
@@ -1109,7 +1106,8 @@ body.rp-open .w-handle { display: none; }
   max-width: var(--content-w); margin: 0 auto;
   border: 1px solid var(--border); border-radius: 16px;
   background: var(--bg); padding: 10px 12px 8px;
-  box-shadow: 0 6px 20px rgba(16, 20, 26, .10); /* 悬浮卡：投影托起 */
+  /* 不加投影：浅色主题下卡片四周的柔和投影被读成「一圈白边」（见上方输入区注释），
+     卡片自带边框已足够与内容区分 */
 }
 .composer-card:focus-within { border-color: #c9cfda; }
 .composer-input {
