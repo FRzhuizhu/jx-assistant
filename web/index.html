@@ -128,7 +128,10 @@
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
           </div>
         </div>
-        <div id="composer" class="composer-card">
+        <!-- 附件区：本轮要带进对话的文件（选择/粘贴/拖拽先暂存在这里，点发送才写入工作区）。
+             没有附件时带 hidden，整块不参与布局（零占位、不留白条）；渲染见 app-chat.js 的 renderAttachments -->
+        <div id="attachments" class="attach-rail hidden"></div>
+        <div id="composer" class="composer-card"><!-- composer-card -->
         <textarea id="input" class="composer-input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
         <div class="composer-bar">
           <div class="composer-left">
@@ -201,7 +204,9 @@
             <div id="sub-hint" class="composer-hint"></div>
             <div id="sub-queue-dock" class="queue-dock hidden" data-queue-dock></div>
             <div id="sub-run-error" class="run-error hidden" role="alert"></div>
-            <div class="sub-composer-card composer-card">
+            <!-- 附件区：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
+            <div id="sub-attachments" class="attach-rail hidden"></div>
+            <div id="sub-composer" class="sub-composer-card composer-card">
               <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
               <div class="composer-bar">

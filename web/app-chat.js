@@ -2396,8 +2396,19 @@ async function send(forceContent, view) {
   const input = view.input;
   const fromInput = typeof forceContent !== 'string';
   const content = (fromInput ? input.value : forceContent).trim();
-  if (!content) return;
-  if (view.state.streaming) { await sendMidrun(content, fromInput, view); return; }
+  const staged = attachmentsOf(view);
+  if (!content) {
+    // 只挂了附件、没写字：不替用户编消息，提示补齐再发（附件留在输入框上方）
+    if (staged.length) attachHint(view, '写一句要让数字助理做什么，' + staged.length + ' 个附件会随这条消息一起上传');
+    return;
+  }
+  if (view._attachFlush) return; // 附件正在落盘：忽略重复点发送
+  if (view.state.streaming) {
+    // 执行中插话/排队：附件先在当前会话落盘（通知照旧），再按原路插话或排队
+    if (staged.length && !(await flushAttachments(view))) return;
+    await sendMidrun(content, fromInput, view);
+    return;
+  }
   // 这条消息是不是从首页（新对话）发出的：决定了发送后清哪份草稿
   const fromHome = view === mainView && !view.state.cur;
   if (!view.state.cur) {
@@ -2433,6 +2444,13 @@ async function send(forceContent, view) {
       return;
     }
   }
+  // 附件落盘：暂存的文件先写进工作区（后端照旧注入【文件上传】通知，排在用户消息
+  // 之前）；有失败就中止本轮——输入内容与失败项都留着，让用户重试或移除
+  if (attachmentsOf(view).length) {
+    view.state.attachSid = view.state.cur.id;
+    if (!(await flushAttachments(view))) return;
+  }
+
   if (fromInput) {
     input.value = '';
     autoGrow(input);
@@ -3130,6 +3148,7 @@ function syncComposer(view) {
   viewEl(view, 'mode-flags').classList.toggle('hidden', !s.planMode && !s.goalMode);
   if (vcur) viewEl(view, 'input').placeholder = sendKeyHint(); // 占位跟随发送快捷键设置
   refreshCtxChip(view);
+  renderAttachments(view); // 附件区跟随视图/会话（换会话时放掉上一轮的附件）
   // 以下只属于主对话区（首页草稿 / 顶栏徽标 / 目录胶囊）
   if (view !== mainView) return;
   syncPlusChecks(view);
@@ -3239,74 +3258,319 @@ function renderWsPop() {
 
 /* ---------- 加号菜单动作（按视图：作用于发起操作的那个输入区） ---------- */
 
-let uploadTarget = mainView; // 文件选择框是单例：记住这次上传属于哪个视图
+let uploadTarget = mainView; // 文件选择框是单例：记住这次选择属于哪个视图
 
+/* ---------- 附件区（输入框上方那条"本轮带进来的文件"轨道） ----------
+   选择 / 粘贴 / 拖拽进来的文件先在这里暂存，点发送才真正写进工作区（写入后由后端
+   照旧注入【文件上传】通知，通知文案与触发行为都不变）。没有附件时整块带 hidden：
+   不占高度、不留白条、也没有空状态提示——有且只有"真有附件"时才出现。
+   交互与布局对齐数字助理2 的 ui-attachment（ComposerAttachments / AttachmentRail：
+   横向卡片轨道 + 图片缩略图 + 逐项移除 + 拖拽投放）。
+
+   两种载荷与既有上传路径一一对应：桌面壳（本地会话）采集本机真实路径，发送时走
+   JSON {path}（登记 uploads 表，该路径可作 deliver_file 交付目标）；其余（浏览器 /
+   手机 / 远程 / 粘贴 / 拖拽）暂存 File 对象，发送时走 multipart。 */
+
+const ATTACH_MAX_BYTES = 32 * 1024 * 1024; // 与后端 multipart 上限一致：超了入列时就提示
+const ATTACH_MAX_COUNT = 20;               // 一条消息最多带 20 个附件
+
+let attachSeq = 0; // 附件 id 序号（本次页面生命周期内递增，DOM 定位与移除用）
+
+// 附件挂在视图状态上：主对话与右栏子对话各一份，互不相干
+function attachmentsOf(view) {
+  const st = (view || mainView).state;
+  if (!st.attachments) st.attachments = [];
+  return st.attachments;
+}
+
+// 输入框上方的提示条（附件相关提示都走它，到点自清）
+function attachHint(view, text, ms) {
+  view.hint.textContent = text;
+  if (view._attachHintTimer) clearTimeout(view._attachHintTimer);
+  view._attachHintTimer = setTimeout(() => { view.hint.textContent = ''; }, ms || 3200);
+}
+
+// 剪贴板来的图片没有文件名，按 MIME 给一个带时间戳的默认名
+function pasteImageName(f) {
+  const ext = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp', 'image/bmp': '.bmp' }[f.type] || '.png';
+  const d = new Date(), p = (n) => String(n).padStart(2, '0');
+  return '粘贴图片-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' +
+    p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + ext;
+}
+
+// 桌面壳原生选择框：本机真实路径入列（发送时走 JSON {path}，不受 32MB 限制）
+function stagePaths(paths, view) {
+  view = view || popView || mainView;
+  const list = attachmentsOf(view);
+  let dropped = 0;
+  for (const p of paths) {
+    if (list.length >= ATTACH_MAX_COUNT) { dropped++; continue; }
+    const name = String(p).split(/[\\/]/).pop() || String(p);
+    list.push({
+      id: 'a' + (++attachSeq), kind: 'file', name, size: null, mime: '',
+      file: null, path: p, previewUrl: '', status: 'staged',
+    });
+  }
+  if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
+  renderAttachments(view);
+  if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
+}
+
+// 浏览器采集到的文件入列（File/Blob：发送时走 multipart）；粘贴与拖拽也走这里
+function stageFiles(files, view) {
+  view = view || uploadTarget || mainView;
+  const list = attachmentsOf(view);
+  let dropped = 0, tooBig = 0;
+  for (const f of files) {
+    if (list.length >= ATTACH_MAX_COUNT) { dropped++; continue; }
+    if (f.size > ATTACH_MAX_BYTES) { tooBig++; continue; }
+    const isImage = /^image\//.test(f.type || '');
+    list.push({
+      id: 'a' + (++attachSeq), kind: isImage ? 'image' : 'file',
+      name: f.name || pasteImageName(f), size: f.size, mime: f.type || '',
+      file: f, path: '', previewUrl: isImage ? URL.createObjectURL(f) : '', status: 'staged',
+    });
+  }
+  if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
+  renderAttachments(view);
+  if (tooBig) attachHint(view, tooBig + ' 个文件超过 ' + fmtBytes(ATTACH_MAX_BYTES) + '，没有加入');
+  else if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
+}
+
+// 清空附件（换会话 / 发送完毕）：缩略图的 objectURL 一并释放
+function clearAttachments(view) {
+  const list = attachmentsOf(view);
+  for (const a of list) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  list.length = 0;
+  view.state.attachSid = null;
+  const box = viewEl(view, 'attachments');
+  if (box) { box._sig = null; box.innerHTML = ''; box.classList.add('hidden'); }
+  syncComposerPad(view);
+}
+
+// 单张附件卡：图片给缩略图，其余给文件卡（图标 + 文件名 + 大小 + ✕）
+function attachCard(view, a) {
+  const card = document.createElement('div');
+  card.className = 'attach-item' + (a.kind === 'image' ? ' image' : '') +
+    (a.status === 'error' ? ' error' : (a.status === 'uploading' ? ' uploading' : ''));
+  card.title = (a.path || a.name) + (a.size != null ? '（' + fmtBytes(a.size) + '）' : '') +
+    (a.status === 'error' ? '\n上传失败：' + (a.error || '') : '');
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'attach-x';
+  rm.title = '移除（这条消息不会带上它）';
+  rm.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  rm.onclick = (e) => { e.stopPropagation(); removeAttachment(view, a.id); };
+  if (a.kind === 'image' && a.previewUrl) {
+    const img = document.createElement('img');
+    img.className = 'attach-thumb';
+    img.src = a.previewUrl;
+    img.alt = a.name;
+    card.appendChild(img);
+    card.appendChild(rm);
+    return card;
+  }
+  const icon = document.createElement('span');
+  icon.className = 'attach-icon';
+  icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
+  const name = document.createElement('b');
+  name.className = 'attach-name';
+  name.textContent = a.name;
+  const size = document.createElement('span');
+  size.className = 'attach-size';
+  size.textContent = a.status === 'uploading' ? '上传中…' : (a.status === 'error' ? '未上传' : (a.size != null ? fmtBytes(a.size) : ''));
+  card.appendChild(icon);
+  card.appendChild(name);
+  card.appendChild(size);
+  card.appendChild(rm);
+  return card;
+}
+
+function removeAttachment(view, id) {
+  const list = attachmentsOf(view);
+  const i = list.findIndex((a) => a.id === id);
+  if (i < 0) return;
+  const a = list[i];
+  if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  list.splice(i, 1);
+  const box = viewEl(view, 'attachments');
+  if (box) box._sig = null; // 强制重画（删到空时立刻回到零占位）
+  renderAttachments(view);
+}
+
+// 附件区渲染：0 个附件 → 带 hidden（零占位、不参与布局）；有附件才上屏。
+// 内容签名没变就不重建 DOM（syncComposer 会被频繁调用）。
+function renderAttachments(view) {
+  view = view || mainView;
+  const box = viewEl(view, 'attachments');
+  if (!box) return;
+  const list = attachmentsOf(view);
+  // 换了会话：这一轮的附件不跟过去（首页还没会话时 attachSid 为空，建会话不算换）
+  const sid = view.state.cur ? view.state.cur.id : null;
+  if (view.state.attachSid && view.state.attachSid !== sid) clearAttachments(view);
+  const sig = list.map((a) => [a.id, a.name, a.size, a.status].join(':')).join('|');
+  if (box._sig === sig) return;
+  box._sig = sig;
+  box.innerHTML = '';
+  box.classList.toggle('hidden', !list.length);
+  for (const a of list) box.appendChild(attachCard(view, a));
+  syncComposerPad(view); // 出现/消失即时重算悬浮垫高（ResizeObserver 之外再兜一次，防首帧抖动）
+}
+
+/* 粘贴与拖拽投放：都只入附件区，不碰工作区。
+   粘贴只吃剪贴板里的文件对象（截图、网页复制的图片），纯文本粘贴原样放行；
+   从资源管理器复制文件再粘贴时 Chromium 只给路径文本、拿不到文件对象，本轮不做。 */
+function setupAttachDrop(view) {
+  // 投放目标是输入卡本身，不是 composer-wrap：首页时输入卡被搬进页面中央的问候区
+  // （wrap 里根本没有它），绑在 wrap 上会漏掉首页那次投放
+  const card = viewEl(view, 'composer');
+  const input = view.input;
+  if (card) {
+    let depth = 0; // dragenter/leave 会在子元素上反复触发，用深度计数防闪
+    const hasFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+    card.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth++;
+      card.classList.add('drop-hot');
+    });
+    card.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    card.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) card.classList.remove('drop-hot');
+    });
+    card.addEventListener('drop', (e) => {
+      depth = 0;
+      card.classList.remove('drop-hot');
+      const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+      if (!files.length) return;
+      e.preventDefault();
+      stageFiles(files, view);
+    });
+  }
+  const rail = viewEl(view, 'attachments');
+  if (rail) {
+    // 附件区横向排卡：竖向滚轮平移成横向（否则会去滚后面的对话区）
+    rail.addEventListener('wheel', (e) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      rail.scrollLeft += (e.deltaY > 0 ? 1 : -1) * Math.min(Math.abs(e.deltaY), 60);
+    }, { passive: false });
+  }
+  if (input) {
+    input.addEventListener('paste', (e) => {
+      const cd = e.clipboardData;
+      if (!cd) return;
+      const files = [];
+      for (const it of (cd.items || [])) {
+        if (it.kind !== 'file') continue;
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+      if (!files.length && cd.files) files.push(...cd.files);
+      if (!files.length) return; // 纯文本：交给默认粘贴
+      e.preventDefault();
+      stageFiles(files, view);
+    });
+  }
+}
+
+// 上传失败时取后端那句可读的 error（writeErr 的响应体是 {"error":"…"}），
+// 别把 JSON 原样甩到提示条上
+async function uploadErrText(r) {
+  let t = '';
+  try { t = await r.text(); } catch (e) { /* 读不到就用状态码 */ }
+  try {
+    const d = JSON.parse(t);
+    if (d && d.error) return String(d.error);
+  } catch (e) { /* 不是 JSON：原样用 */ }
+  return t.trim() || ('HTTP ' + r.status);
+}
+
+/* 发送时落盘：把暂存的附件逐个写进工作区（后端照旧注入【文件上传】通知，顺序在
+   用户消息之前）。有失败就中止本轮发送——不留"文件没带进去、消息却发出去了"的
+   糊涂账：成功的那几个已经在工作区里（后端已发通知），失败的留在附件区可重试或移除。 */
+async function flushAttachments(view) {
+  const list = attachmentsOf(view);
+  const sid = view.state.cur && view.state.cur.id;
+  if (!list.length || !sid) return true;
+  view._attachFlush = true; // 上传期间忽略重复点发送（见 send 的入口守卫）
+  const box = viewEl(view, 'attachments');
+  if (box) box.classList.add('busy');
+  let failed = 0, firstErr = '';
+  try {
+    for (const a of list) {
+      a.status = 'uploading';
+      renderAttachments(view);
+      try {
+        const url = '/api/sessions/' + sid + '/upload';
+        let r;
+        if (a.path) {
+          r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: a.path }) });
+        } else {
+          const fd = new FormData();
+          fd.append('file', a.file, a.name);
+          r = await fetch(url, { method: 'POST', body: fd });
+        }
+        if (!r.ok) throw new Error(await uploadErrText(r));
+        a.status = 'staged';
+      } catch (e) {
+        a.status = 'error';
+        a.error = String((e && e.message) || e);
+        if (!firstErr) firstErr = a.error;
+        failed++;
+      }
+    }
+  } finally {
+    view._attachFlush = false;
+    if (box) box.classList.remove('busy');
+  }
+  if (failed) {
+    const keep = list.filter((a) => a.status === 'error');
+    for (const a of list) if (a.status !== 'error' && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+    list.length = 0;
+    for (const a of keep) list.push(a);
+    const bx = viewEl(view, 'attachments');
+    if (bx) bx._sig = null;
+    renderAttachments(view);
+    attachHint(view, failed + ' 个附件上传失败，本轮没有发送（点 ✕ 移除后可重发）：' + firstErr.slice(0, 80), 8000);
+    return false;
+  }
+  clearAttachments(view);
+  return true;
+}
+
+// 加号菜单「上传文件」：只把文件加进附件区（不再立刻写工作区），落盘交给发送那一步
 async function doUpload(view) {
   view = view || popView || mainView;
   closePopovers();
-  if (!view.state.cur) {
-    view.hint.textContent = '先发送第一条消息创建对话，再上传文件';
-    setTimeout(() => { view.hint.textContent = ''; }, 3000);
+  if (view.state.streaming) {
+    attachHint(view, '本轮执行中：加进来的文件会随下一条消息一起上传');
     return;
   }
-  if (view.state.streaming) return;
   // 桌面壳（shell=desktop）的本地会话：走系统原生文件选择框采集本机真实路径
   // （它同时是 deliver_file 的交付目标来源）；用户取消则静默结束，接口不可用
   // 回退浏览器文件选择。手机/远程（JX_REMOTE）与局域网浏览器（非桌面壳，
   // 弹了也是弹在宿主机上、路径对用户那台机器无意义）走 multipart 原路径。
-  if (document.documentElement.classList.contains('desktop-shell') && !view.state.cur.remote) {
+  if (document.documentElement.classList.contains('desktop-shell') &&
+      !(view.state.cur && view.state.cur.remote)) {
     try {
-      const r = await fetch('/api/pick-file?filter=all&multi=1&title=' + encodeURIComponent('选择要上传的文件'));
+      const r = await fetch('/api/pick-file?filter=all&multi=1&title=' + encodeURIComponent('选择要加入的文件'));
       if (r.ok) {
         const d = await r.json();
         const paths = d.paths || (d.path ? [d.path] : []);
-        if (paths.length) { await uploadByPaths(paths, view); }
-        return; // 选到了就传完收工，取消就什么都不做
+        if (paths.length) stagePaths(paths, view);
+        return; // 选到了就入列收工，取消就什么都不做
       }
     } catch (e) { /* 原生选择框不可用：走下面的浏览器回退 */ }
   }
   uploadTarget = view;
   $('file-input').value = '';
   $('file-input').click();
-}
-
-// 按本机真实路径上传（桌面端原生选择框路径）：登记原件路径进 uploads 表，
-// 后端会向模型注入注记说明该路径可用作交付目标。
-async function uploadByPaths(paths, view) {
-  const cur = view.state.cur;
-  if (!cur) return;
-  let ok = 0, last = '';
-  for (const p of paths) {
-    try {
-      const r = await fetch('/api/sessions/' + cur.id + '/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: p })
-      });
-      if (r.ok) { ok++; last = p; } else { last = await r.text(); }
-    } catch (e) { last = String(e); }
-  }
-  if (view === mainView) await openSession(cur.id); // 主对话：就地刷新；子对话：刷新右栏
-  else await openSubSession(cur.id);
-  view.hint.textContent = ok ? ('已上传 ' + ok + ' 个文件（原件路径已登记）') : ('上传失败：' + (last || '未知原因'));
-  setTimeout(() => { view.hint.textContent = ''; }, 3000);
-}
-
-async function uploadFiles(files, view) {
-  view = view || uploadTarget || mainView;
-  const cur = view.state.cur;
-  if (!cur) return;
-  for (const f of files) {
-    const fd = new FormData();
-    fd.append('file', f);
-    try {
-      await fetch('/api/sessions/' + cur.id + '/upload', { method: 'POST', body: fd });
-    } catch (e) { alert('上传失败：' + f.name); }
-  }
-  if (view === mainView) await openSession(cur.id); // 主对话：就地刷新；子对话：刷新右栏
-  else await openSubSession(cur.id);
-  view.hint.textContent = '文件已上传到工作区';
-  setTimeout(() => { view.hint.textContent = ''; }, 3000);
 }
 
 function doExport(format, view) {
@@ -3455,6 +3719,7 @@ function tuckComposer(view, on) {
 
 function setupScrollTuck() {
   for (const view of [mainView, subView]) {
+    setupAttachDrop(view); // 附件区：粘贴图片与拖拽投放（两个视图各挂一套）
     let lastY = view.scroll.scrollTop;
     // 跟随钉住的手势入口：滚轮上翻/触摸上滑立即钉住（无论离底多近——否则
     // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底
@@ -3590,7 +3855,7 @@ $('rm-dir-list').addEventListener('dblclick', (e) => {
   if (!row || row.classList.contains('file')) return;
   browseRemote(row.dataset.path);
 });
-$('file-input').addEventListener('change', (e) => { if (e.target.files.length) uploadFiles([...e.target.files], uploadTarget); });
+$('file-input').addEventListener('change', (e) => { if (e.target.files.length) stageFiles([...e.target.files], uploadTarget); });
 // 窄屏（手机远程访问）不支持新增工作目录：原生选择框弹在宿主机屏幕上，手机端
 // 永远等不到——点了就地展开一行告知（文案与侧栏那颗按钮的提示卡同源，见
 // app-core.js 的 NARROW_WS_ADD_NOTICE），不把请求发出去白等。

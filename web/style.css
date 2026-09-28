@@ -763,6 +763,55 @@ body.rp-open .w-handle { display: none; }
 #composer-area { max-width: var(--content-w); margin: 0 auto; }
 /* 新建对话的两枚胶囊（工作目录 + 工作模式）并排 */
 #draft-chips { display: flex; align-items: center; gap: 8px; margin: 0 0 7px 2px; }
+
+/* ---------- 附件区（输入框上方那条"本轮带进来的文件"轨道） ---------- */
+/* 没有附件时整块带 .hidden（= display:none，全局规则）——不占高度、不留白条，
+   也没有空状态提示；有附件才上屏。横向排卡片、溢出把竖向滚轮平移成横向滚动
+   （滚动条隐藏，滚轮处理见 app-chat.js 的 setupAttachDrop）。 */
+.attach-rail {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 7px 2px;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.attach-rail::-webkit-scrollbar { height: 0; display: none; }
+.attach-rail.busy { opacity: .75; } /* 落盘中：整条略淡，卡片自己再标「上传中…」 */
+.attach-item {
+  flex: 0 0 auto; position: relative;
+  display: flex; align-items: center; gap: 7px;
+  max-width: 260px; padding: 5px 6px 5px 9px;
+  border: 1px solid var(--border); background: var(--bg);
+  border-radius: 10px; box-shadow: 0 1px 3px rgba(16, 20, 26, .05);
+}
+.attach-item .attach-icon { display: flex; color: var(--accent); flex-shrink: 0; }
+.attach-item .attach-icon svg { width: 15px; height: 15px; }
+.attach-name {
+  font-size: 12.5px; font-weight: 500; color: var(--text);
+  max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.attach-size { font-size: 11.5px; color: var(--text-3); flex-shrink: 0; }
+.attach-item.uploading { opacity: .6; }
+.attach-item.error { border-color: var(--danger); }
+.attach-item.error .attach-size { color: var(--danger); }
+/* 图片附件只给一枚缩略图（# 号角标浮在右上角外沿） */
+.attach-item.image { padding: 0; border: none; background: none; box-shadow: none; }
+.attach-thumb {
+  display: block; width: 46px; height: 46px; object-fit: cover;
+  border-radius: 10px; border: 1px solid var(--border); background: var(--chip);
+}
+.attach-x {
+  width: 17px; height: 17px; padding: 0; border-radius: 50%; cursor: pointer; flex-shrink: 0;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-3);
+  display: flex; align-items: center; justify-content: center;
+}
+.attach-x svg { width: 10px; height: 10px; }
+.attach-x:hover { background: var(--hover); color: var(--danger); border-color: var(--danger); }
+.attach-item.image .attach-x { position: absolute; top: -5px; right: -5px; box-shadow: 0 1px 3px rgba(16, 20, 26, .18); }
+/* 拖拽投放：只在拖拽悬停期间把输入卡高亮，松手/移出即收（不常驻，不算空状态） */
+.composer-card.drop-hot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(77, 107, 254, .14), 0 6px 20px rgba(16, 20, 26, .10);
+}
 #ws-row, #mode-row {
   display: flex; align-items: center; gap: 7px; width: fit-content;
   padding: 5px 13px;
@@ -1386,6 +1435,37 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .cbtn.voice:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
 @keyframes voice-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(77,107,254,.35); } 50% { box-shadow: 0 0 0 6px rgba(77,107,254,0); } }
 
+/* ---------- 语音输入：灰字暂定层 / 倒计时徽标 / 一次性轻提示 ----------
+   灰字层叠在输入框之上：已定稿正文用透明占位参与排版（保证换行位置一致），
+   未定稿的转写文字用 --text-3 灰显示。pointer-events:none 保证它不吃点击、
+   不可选中；它也不进输入框的值，所以天然不可编辑。 */
+.voice-shadow {
+  position: absolute; pointer-events: none; overflow: hidden; z-index: 1;
+  white-space: pre-wrap; word-break: break-word;
+}
+.voice-shadow.hidden { display: none; }
+.voice-shadow-head { color: transparent; }
+.voice-shadow-tail { color: var(--text-3); }
+/* 时长倒计时徽标：最后 9 秒挂在麦克风按钮右上角，换数字弹一下 */
+.voice-count {
+  position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px;
+  line-height: 16px; text-align: center; font-size: 11px; font-weight: 700;
+  padding: 0 3px; box-sizing: border-box; border-radius: 8px;
+  background: #e5484d; color: #fff;
+}
+.voice-count.pop { animation: voice-count-pop .5s ease-out both; }
+@keyframes voice-count-pop { 0% { transform: scale(1.55); } 100% { transform: scale(1); } }
+/* 轻提示：语音重连失败等一次性告知，浮在输入区上方 */
+.voice-toast {
+  position: fixed; left: 50%; bottom: 108px; transform: translate(-50%, 8px);
+  max-width: min(520px, 86vw); padding: 9px 14px; border-radius: 10px;
+  background: #2b2f36; color: #fff; font-size: 12.5px; line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(16, 20, 26, .28);
+  opacity: 0; pointer-events: none; z-index: 9999;
+  transition: opacity .25s ease, transform .25s ease;
+}
+.voice-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
 /* ---------- 会话圆点：平时隐藏；橙=待审批 绿=完成未看 红=未读 ---------- */
 .session-item .dot { display: none; }
 .session-item .dot.ap { display: inline-block; background: #e08a00; }
@@ -1918,6 +1998,10 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   .w-handle { display: none; } /* 对话区已占满全宽 */
   /* 悬浮输入卡贴边留缝（含 iPhone 底部手势条安全区） */
   .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  /* 附件区：窄屏再收紧一点（一行仍放得下两三枚卡片） */
+  .attach-rail { margin-left: 0; }
+  .attach-name { max-width: 118px; }
+  .attach-thumb { width: 40px; height: 40px; }
   /* 回收站红边（桌面规则 body.bin-mode #sidebar{position:relative}）特异性更高，
      会把浮层定位压回流式布局——窄屏显式压回 fixed，红边与动画照常复用 */
   body.bin-mode #sidebar { position: fixed; }
