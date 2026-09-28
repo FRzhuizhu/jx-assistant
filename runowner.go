@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -81,22 +82,118 @@ func (a *App) runningIDs() []string {
 	return out
 }
 
-// StartRunHeartbeat 起后台心跳：每 20s 把本实例在跑的会话的归属时间戳刷新一遍，
-// 让别的实例（以及重启后的自己）能分辨「有活实例在跑」与「崩溃残留」。
-// 在 main.go 启动时调用一次即可，随进程退出。
-func StartRunHeartbeat(a *App) {
+// 心跳循环的启停状态（进程内唯一，一个进程一个 App，故不挂 App 字段）。
+var (
+	hbMu sync.Mutex
+	hbOn bool
+)
+
+// ensureRunHeartbeat 保证「有会话在跑」期间有一个心跳在刷新归属；空闲时零唤醒。
+// 由 beginRun 调用：起一轮就确保心跳在跑，连续两拍发现没有在跑的会话就自己收工
+// —— 用户啥也不干的时候，不该有任何周期性动作。
+func (a *App) ensureRunHeartbeat() {
+	hbMu.Lock()
+	if hbOn {
+		hbMu.Unlock()
+		return
+	}
+	hbOn = true
+	hbMu.Unlock()
 	go func() {
+		defer func() {
+			hbMu.Lock()
+			hbOn = false
+			hbMu.Unlock()
+		}()
 		t := time.NewTicker(runHeartbeatEvery)
 		defer t.Stop()
+		idleBeats := 0
 		for range t.C {
 			ids := a.runningIDs()
 			if len(ids) == 0 {
+				if idleBeats++; idleBeats >= 2 {
+					return // 连续两拍没有在跑的会话：收工（此后零唤醒）
+				}
 				continue
 			}
+			idleBeats = 0
 			for _, id := range ids {
-				a.markRunOwner(id)
+				a.markRunOwner(id) // 刷新归属：别的实例据此分辨「活实例在跑」与「崩溃残账」
 			}
-			log.Printf("[心跳] 已刷新 %d 个在跑会话的执行归属", len(ids))
 		}
 	}()
+}
+
+// runSweepDelay 是启动后补扫「孤儿会话」的延迟：跑完 recoverInterrupted 再等一会儿，
+// 让上一个实例（可能还在退出中）彻底消失。
+const runSweepDelay = 30 * time.Second
+
+// StartRunSweepOnce 启动后 30s 补扫一次孤儿会话，**只扫这一次**，不做持续轮询。
+//
+// 为什么要有它：recoverInterrupted 只判启动那一刻，而「上一个实例还没死透」这种
+// 竞态会让它把会话误判成「另一个实例正在跑」而跳过——那样悬空工具调用不会被补上
+// 结尾、也少一条中断交代。30s 后再看，那个进程已经没了，漏掉的就能补上。
+// 之后不再扫：正常情况要么有活实例（它自己的心跳一直在刷），要么是残账（由下次
+// 启动的恢复兜底）；持续轮询没有额外收益，只是白白唤醒。
+func StartRunSweepOnce(a *App) {
+	go func() {
+		time.Sleep(runSweepDelay)
+		a.sweepOrphanSessions()
+	}()
+}
+
+// sweepOrphanSessions 扫一遍：status=running 但本实例没在跑、且归属不可达（pid 已死
+// 或心跳过期）的会话，补中断收口。刻意只认「有归属行且不可达」——没有归属行的
+// 会话留给启动恢复处理，免得把还在跑的老实例的会话误判成孤儿。
+func (a *App) sweepOrphanSessions() {
+	sessions, err := a.Store.RunningSessions()
+	if err != nil || len(sessions) == 0 {
+		return
+	}
+	for _, s := range sessions {
+		if a.runOf(s.ID) != nil {
+			continue // 本实例正在跑它（还没收口），不动
+		}
+		pid, live := a.otherInstanceRunning(s.ID)
+		if live {
+			continue
+		}
+		if strings.TrimSpace(a.Store.GetSessionData(s.ID, runOwnerKey)) == "" {
+			continue // 没有归属行：不是本套机制管的会话，交给启动恢复
+		}
+		log.Printf("[清扫] 会话 %s 无人执行（归属 pid=%d 已不可达），补中断收口", s.ID, pid)
+		a.reapInterruptedSession(s)
+	}
+}
+
+// reapInterruptedSession 给一个「没人跑、但状态还是 running」的会话补中断收口：
+// 先补悬空工具调用的合成结尾（历史配对完整），再补系统中断报告、置空闲、留
+// 「⚠ 已中断」标记，并给派发方补一条派发回报。
+// 启动恢复与 30s 补扫共用这一处，避免两套收口逻辑漂移。
+func (a *App) reapInterruptedSession(s *SessionMeta) {
+	// 先把上一进程崩溃时留下的悬空工具调用补上合成结尾（历史配对完整），
+	// 再补系统中断报告——顺序反了的话报告会插在悬空调用与补行之间
+	a.repairDanglingToolCalls(s, nil)
+	_ = a.Store.AppendRow(s.ID, &StoredMessage{
+		Message: TextMessage("user", "【系统中断】服务在执行期间重启，本会话当时被中断。可发「继续」接续执行。"),
+		Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
+	})
+	_ = a.Store.UpdateStatus(s.ID, "idle")
+	// 重启中断也是「异常收尾」：侧栏留「⚠ 已中断」标记（内存里的 runError
+	// 重启就没了，标记落库才不会漏掉这一类）
+	_ = a.Store.SetLastStop(s.ID, stopRestart)
+	// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
+	// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
+	owner := s.DispatchedBy
+	if owner == "" {
+		owner = s.ParentID
+	}
+	if owner != "" {
+		if _, perr := a.Store.Get(owner); perr == nil {
+			_ = a.Store.AppendRow(owner, &StoredMessage{
+				Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
+				Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
+			})
+		}
+	}
 }

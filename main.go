@@ -171,6 +171,7 @@ func main() {
 	app.syncRemoteAccess()
 	// 更新检查：轮询发布源（默认 Gitea releases），新版本经事件流推给客户端
 	StartUpdateChecker(app)
+	StartRunSweepOnce(app) // 启动 30s 后补扫一次孤儿会话（只扫一次，不做持续轮询）
 
 	if wantDesktop && !*browser {
 		// 服务跑在后台 goroutine；窗口关闭即整体退出
