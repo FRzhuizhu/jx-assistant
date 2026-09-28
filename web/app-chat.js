@@ -1737,19 +1737,37 @@ function renderQuestionsInto(bar) {
   }
 }
 
-/* ---------- 进度面板（progress_write）：可折叠 · 宽屏自动展开 / 窄屏右上角胶囊 ---------- */
-// 进度清单常驻在顶栏下方会一直占掉对话区的高度（手机上尤其致命），所以面板分两态：
-// 收起＝右上角一枚「进度」小胶囊（点它展开），展开＝完整清单（点头部收起）。
-// 用户没点过时按「对话区有没有富余宽度」自动定：宽屏（≥500，与 CSS 的窄屏浮层断点
-// 同源）自动展开；窄屏（手机）没有富余宽度，一律折叠成胶囊，不再顶掉那块高度。
-// 用户点过之后按用户的选择来（本次页面有效，刷新复位）；切换折叠只在本地重画。
-let pgItems = [];       // 最近一次取到的进度项（空 = 没有进度，面板整体隐藏）
-let pgFold = null;      // 用户显式选择：null=自动；true=展开；false=收起
-let pgDrawnOpen = null; // 上次画出来的展开状态（窗口缩放只在状态翻转时重画）
+/* ---------- 进度面板（progress_write）：对话区右上角的一枚浮窗，可折叠 ---------- */
+// 定位只有一个锚点：对话区（#main）的右上角。折叠＝一枚「进度」胶囊，展开＝从同一个
+// 右上角往左下长出来的卡片——右缘与顶边都不动，所以点开是「原地展开」不跳位。
+// 宽度按对话区右侧的留白算（见 pgMetrics）：留白放得下就塞进留白里，不遮正文；留白
+// 不够说明是窄屏/中等窗口，那就用一张舒适宽度的卡（用户自己点开的，遮一点也能接受）。
+// 用户没点过时（pgFold=null）只在留白够的时候自动展开，否则一律折叠成胶囊；点过之后
+// 按用户的选择来（本次页面有效，刷新复位）。面板永远是浮层：不占对话区高度，出现与
+// 折叠切换都不触发对话区重排。
+const PG_W = 340;    // 卡片最大宽度（也是窄屏下舒适阅读宽度）
+const PG_MIN = 220;  // 自动展开的门槛：右侧留白至少放得下这么宽
+const PG_GAP = 10;   // 面板与对话区右缘的间距（胶囊与卡片共用，保证同一锚点）
+const PG_PAD = 24;   // 内容列自身的内边距：留白不够时可以借它，不算遮正文
 
-// 有富余宽度才自动展开：高度也要够（手机横屏高度不足，展开清单会顶掉半屏对话）
-function pgAutoExpand() { return innerWidth >= 500 && innerHeight >= 480; }
-function pgExpanded() { return pgFold === null ? pgAutoExpand() : pgFold; }
+let pgItems = [];    // 最近一次取到的进度项（空 = 没有进度，面板整体隐藏）
+let pgFold = null;   // 用户显式选择：null=自动；true=展开；false=收起
+let pgDrawn = null;  // 上次画出来的展开态（留白变化时只在翻转时才重画）
+
+// 右侧留白 → 卡片宽度与「够不够自动展开」。按 #main 与消息列的实际矩形算，
+// 开关左右栏、拖拽调宽对话列都会自然反映进来（它们都会改变这个留白）。
+function pgMetrics() {
+  const main = $('main'), col = document.querySelector('#messages .msg-col');
+  if (!main || !col) return null;
+  const mainRect = main.getBoundingClientRect();
+  const room = Math.max(0, mainRect.right - col.getBoundingClientRect().right);
+  const fit = room + PG_PAD - PG_GAP; // 塞进留白，顺手借用内容列自己的右内边距
+  return {
+    width: Math.round(Math.min(PG_W, fit >= PG_MIN ? fit : mainRect.width - 2 * PG_GAP)),
+    auto: fit >= PG_MIN,
+  };
+}
+function pgExpanded(mt) { return pgFold === null ? mt.auto : pgFold; }
 
 async function loadProgress() {
   const panel = $('progress-panel');
@@ -1762,16 +1780,19 @@ async function loadProgress() {
   drawProgress();
 }
 
-// 按当前折叠状态重画面板：收起＝胶囊，展开＝头部（整行是收起按钮）+ 清单
+// 按当前折叠状态重画面板：折叠＝胶囊，展开＝头部（整行是收起按钮）+ 清单。
+// 两态共用同一个右上角锚点，宽度写进 --pg-w 交给 CSS，所以展开就是在原地长出来。
 function drawProgress() {
   const panel = $('progress-panel');
   if (!panel) return;
   const items = pgItems;
-  if (!items.length) { panel.classList.add('hidden'); panel.innerHTML = ''; pgDrawnOpen = null; return; }
-  const open = pgExpanded();
-  pgDrawnOpen = open;
+  if (!items.length) { panel.classList.add('hidden'); panel.innerHTML = ''; pgDrawn = null; return; }
+  const mt = pgMetrics() || { width: PG_W, auto: false };
+  const open = pgExpanded(mt);
+  pgDrawn = open;
+  panel.style.setProperty('--pg-w', mt.width + 'px');
   panel.classList.remove('hidden');
-  panel.classList.toggle('pg-folded', !open); // 收起态：胶囊（宽/窄屏各有定位规则）
+  panel.classList.toggle('pg-folded', !open);
   if (!open) {
     panel.innerHTML = '<button type="button" class="pg-pill" title="展开进度清单">进度' + chev('pg-chev') + '</button>';
     panel.querySelector('.pg-pill').onclick = () => { pgFold = true; drawProgress(); };
@@ -1791,10 +1812,22 @@ function drawProgress() {
   panel.querySelector('.progress-head').onclick = () => { pgFold = false; drawProgress(); };
 }
 
-// 窗口缩放/转屏：自动模式下展开与否由宽度决定，翻转了才重画（拖拽缩放过程不重画）
-window.addEventListener('resize', () => {
-  if (pgItems.length && pgExpanded() !== pgDrawnOpen) drawProgress();
-});
+// 留白变了（缩放窗口、开关左右栏、拖拽调宽对话列）：宽度跟着变；自动档下展开态翻转
+// 才重画，其余情况只改宽度不动 DOM
+function syncProgress() {
+  if (!pgItems.length) return;
+  const mt = pgMetrics();
+  if (!mt) return;
+  const panel = $('progress-panel');
+  if (panel && !panel.classList.contains('hidden')) panel.style.setProperty('--pg-w', mt.width + 'px');
+  if (pgExpanded(mt) !== pgDrawn) drawProgress();
+}
+window.addEventListener('resize', syncProgress);
+// 对话列宽度会单独变（拖把手、右栏开合），盯它的尺寸就够了
+if (window.ResizeObserver) {
+  const pgCol = document.querySelector('#messages .msg-col');
+  if (pgCol) new ResizeObserver(syncProgress).observe(pgCol);
+}
 
 /* ---------- SSH 远程工作区（两步式：连接配置 → 保存 → 浏览目录 → 使用） ---------- */
 
