@@ -36,26 +36,14 @@ type sandboxRun struct {
 	Policy    string       // read-only | workspace-write（full 不进沙箱）
 	Workspace string       // 写授权目录（工作区）
 	Remote    *SessionMeta // 非nil = SSH 远程执行（取 Remote 连接信息）
-}
 
-// runConfined 按 policy 与会话环境选择沙箱后端执行命令。
-// policy 为 full 时不应调用本函数（调用方直接走不受限路径）。
-func (t *toolContext) runConfined(r sandboxRun) (string, error) {
-	if r.Policy == permFull {
-		return "", fmt.Errorf("沙箱内部错误：full 策略不应进入 runConfined")
-	}
-	if t.isRemote() {
-		rc, err := t.app.getRemoteClient(t.sess)
-		if err != nil {
-			return "", fmt.Errorf("sandbox unavailable: %w", err)
-		}
-		out, err := t.app.runRemoteConfined(t.ctx, rc, r)
-		if err != nil {
-			return "", err
-		}
-		return out + "\n[远程执行于 " + t.sess.Remote.Display() + "｜沙箱 " + r.Policy + "]", nil
-	}
-	return spawnConfinedLocal(t.ctx, r)
+	// —— 「子进程统一入口」的声明面（见 child.go）：工具/技能/探测只声明跑什么、
+	// 在哪跑、超时多少；压窗、沙箱分派、环境白名单、捕获与截断、运行中登记全在
+	// 执行层一处做掉（以前散在各调用点，漏一处就漏一种行为差异）。
+	Visible bool     // true = 用户要看得见这个窗口（不压窗）；默认 false = 压窗、后台悄悄跑
+	Label   string   // 用途标签（进度面板/审计显示）：run_command｜skill:pdf｜py-probe…
+	Argv    []string // argv 形态：直接 exec 不过 shell（打开文件/起浏览器这类），与 Command 二选一
+	Model   bool     // true = 输出回给模型（附沙箱拒绝/升级 marker）
 }
 
 // spawnConfinedLocal 本地沙箱分派：Windows 受限令牌 / Linux Landlock。

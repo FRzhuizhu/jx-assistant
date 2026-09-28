@@ -839,6 +839,7 @@ func runCommandTool() Tool {
 				"cwd":                 strProp("工作目录（可选，默认会话工作区；是否可写由沙箱决定，cwd 本身不受限）"),
 				"timeout_sec":         intProp("超时秒数，默认 60，上限 600；后台作业忽略"),
 				"run_in_background":   boolProp("true 时后台执行并立即返回作业 id（仅本地）"),
+				"visible":             boolProp("一般别用：只有确实需要用户盯着这个命令窗口时才置 true（默认 false = 后台悄悄跑，不弹任何窗口）"),
 				"sandbox_permissions": strProp("仅用于被沙箱拒绝后的同轮重试：请求的更宽档位（workspace-write 或 danger-full-access），必须搭配 justification；会弹审批由用户决定"),
 				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户解释为什么这条命令需要更宽权限"),
 			}, "command")),
@@ -853,6 +854,7 @@ func runCommand(t *toolContext, args json.RawMessage) (string, error) {
 		Cwd                string `json:"cwd"`
 		TimeoutSec         int    `json:"timeout_sec"`
 		RunInBackground    bool   `json:"run_in_background"`
+		Visible            bool   `json:"visible"`
 		SandboxPermissions string `json:"sandbox_permissions"`
 		Justification      string `json:"justification"`
 	}
@@ -896,33 +898,14 @@ func runCommand(t *toolContext, args json.RawMessage) (string, error) {
 		timeout = time.Duration(min(p.TimeoutSec, 600)) * time.Second
 	}
 
-	run := sandboxRun{
+	// 子进程统一入口（child.go）：沙箱分派、环境白名单、超时、输出捕获/截断/解码、
+	// 压窗、沙箱拒绝 marker、运行中程序登记全在那一处。这里只声明「跑什么、在哪跑、
+	// 超时多少」——不再自己拼执行细节（以前各工具各写一套，漏一处就漏一个黑窗）。
+	out, err := t.app.runChild(t.ctx, sandboxRun{
 		Dir: cwd, Command: p.Command, Shell: strings.ToLower(strings.TrimSpace(p.Shell)),
 		Timeout: timeout, Policy: policy, Workspace: t.workspace(),
-	}
-
-	var out string
-	switch policy {
-	case permFull:
-		// danger-full-access：不受限（官方语义：消费者绕过 confine）
-		if t.isRemote() {
-			rc, rerr := t.app.getRemoteClient(t.sess)
-			if rerr != nil {
-				return "", rerr
-			}
-			out, err = rc.run(t.ctx, cwd, p.Command, timeout)
-			if err == nil {
-				out += "\n[远程执行于 " + t.sess.Remote.Display() + "｜不受限]"
-			}
-		} else {
-			out, err = runUnconfinedLocal(t.ctx, run)
-		}
-	default:
-		out, err = t.runConfined(run)
-		if err == nil {
-			out += runDeniedMarker(policy, out, t.isRemote())
-		}
-	}
+		Remote: t.sess, Visible: p.Visible, Label: "run_command", Model: true,
+	})
 	if err != nil {
 		return "", sandboxErrHint(err)
 	}
@@ -977,7 +960,9 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd / sh）", r.Shell)
 	}
 	cmd.Dir = r.Dir
-	hideConsoleWindow(cmd) // 桌面形态没有控制台可复用，不压就是一个个黑窗
+	if !r.Visible {
+		hideConsoleWindow(cmd) // 默认压窗：桌面形态没有控制台可复用，不压就是一个个黑窗
+	}
 	cmd.Env = sandboxEnv(true)
 	out, err := cmd.CombinedOutput()
 	note := ""

@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -114,49 +113,23 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 
 	ctx, cancel := context.WithCancel(context.Background())
 	j.cancel = cancel
-	if policy != permFull {
-		// 沙箱后台作业：与前台同一后端（Windows 受限令牌 / Linux Landlock），
-		// 不限时；终止只经 ctx（job_kill）。
-		run := sandboxRun{Dir: cwd, Command: command, Shell: shell, Policy: policy, Workspace: t.workspace()}
-		wait, err := startConfinedAsync(ctx, run, j.buf)
-		if err != nil {
-			a.jobsMu.Lock()
-			delete(a.jobs, j.ID)
-			a.jobsMu.Unlock()
-			cancel()
-			return nil, err
-		}
-		go func() {
-			wait()
-			if ctx.Err() != nil {
-				j.setExit("被 job_kill 终止")
-				return
-			}
-			j.setExit("exit ?（沙箱作业）")
-		}()
-		return j, nil
+	// 后台作业同样走「子进程统一入口」（child.go）：沙箱分派、压窗、输出捕获、
+	// 「运行中的程序」登记都在那一处；不限时，终止只经 ctx（job_kill）。
+	spec := sandboxRun{Dir: cwd, Command: command, Shell: shell, Policy: policy,
+		Workspace: t.workspace(), Remote: t.sess, Label: "job:run_in_background"}
+	wait, err := a.startChild(ctx, spec, j.buf)
+	if err != nil {
+		a.jobsMu.Lock()
+		delete(a.jobs, j.ID)
+		a.jobsMu.Unlock()
+		cancel()
+		return nil, err
 	}
-	var cmd *exec.Cmd
-	switch strings.ToLower(strings.TrimSpace(shell)) {
-	case "cmd":
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	default:
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
-	}
-	cmd.Dir = cwd
-	hideConsoleWindow(cmd) // 后台作业同样悄悄跑（桌面形态没有控制台可复用）
-	cmd.Env = sandboxEnv(true)
-	cmd.Stdout = j.buf
-	cmd.Stderr = j.buf
 	go func() {
 		defer cancel()
-		err := cmd.Run()
+		wait()
 		if ctx.Err() != nil {
 			j.setExit("被 job_kill 终止")
-			return
-		}
-		if err != nil {
-			j.setExit(fmt.Sprintf("%v", err))
 			return
 		}
 		j.setExit("exit 0")

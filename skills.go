@@ -21,7 +21,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -222,9 +221,9 @@ func (a *App) ensureSkillRuntime(t *toolContext, modules, wheels []string) (*pyt
 }
 
 const (
-	pythonEmbedURL = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip"
-	getPipURL      = "https://bootstrap.pypa.io/get-pip.py"
-	pipMirror      = "https://pypi.tuna.tsinghua.edu.cn/simple"
+	pythonEmbedURL   = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip"
+	getPipURL        = "https://bootstrap.pypa.io/get-pip.py"
+	pipMirror        = "https://pypi.tuna.tsinghua.edu.cn/simple"
 	provisionTimeout = 20 * time.Minute
 )
 
@@ -295,14 +294,8 @@ func provisionPythonRuntime(rtDir string, modules, wheels []string, emit func(st
 
 // runCommandCapture 在指定目录运行命令并捕获合并输出（供运行时装配用）。
 func runCommandCapture(ctx context.Context, exe string, args []string, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, exe, args...)
-	hideConsoleWindow(cmd) // 技能脚本（python 等）同样悄悄跑
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return decodeCmdOutput(out), err
-	}
-	return decodeCmdOutput(out), nil
+	// 统一入口（child.go）：压窗 + 捕获 + 解码
+	return runToolChild(ctx, exe, args, dir, 0)
 }
 
 func tailRunes(s string, n int) string {

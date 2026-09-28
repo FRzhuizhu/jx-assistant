@@ -814,9 +814,14 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	// 一次就在桌面上闪一个控制台窗口（读写句柄照走管道，取输出不受影响）。
 	// 分配进 Job 后再恢复初始线程——保证不会出现「已跑起来但不在 Job 里」
 	// 的逃逸窗口。所需主令牌特权来自源句柄的 TOKEN_ASSIGN_PRIMARY。
+	// 创建标志：默认压掉子进程的控制台窗口（桌面形态自身没有控制台可复用，不压
+	// 就是一个个黑窗）；Visible=true 时不压——调用方明确要用户看见这个窗口。
+	flags := uint32(windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
+	if !r.Visible {
+		flags |= windows.CREATE_NO_WINDOW
+	}
 	err = windows.CreateProcessAsUser(restricted, appPtr, cmdPtr, nil, nil, true,
-		windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_SUSPENDED|windows.CREATE_NO_WINDOW,
-		envBlock, dirPtr, si, &pi)
+		flags, envBlock, dirPtr, si, &pi)
 	// 父进程侧的写端立即关闭，避免读不完
 	stdoutW.Close()
 	stderrW.Close()

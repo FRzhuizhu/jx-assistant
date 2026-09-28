@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +21,8 @@ type pythonRuntime struct {
 }
 
 var (
-	pyMu           sync.Mutex
-	pyModuleCache  = map[string]bool{}
+	pyMu          sync.Mutex
+	pyModuleCache = map[string]bool{}
 )
 
 // hasModule 检查该解释器是否能 import 指定模块（结果缓存）。
@@ -35,9 +34,7 @@ func (p *pythonRuntime) hasModule(module string) bool {
 		return ok
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	probe := exec.CommandContext(ctx, p.Exe, append(p.Prefix, "-c", "import " + module)...)
-	hideConsoleWindow(probe) // 运行时探测不该在桌面上闪窗
-	err := probe.Run()
+	_, err := runToolChild(ctx, p.Exe, append(p.Prefix, "-c", "import "+module), "", 0)
 	cancel()
 	ok := err == nil
 	pyModuleCache[key] = ok
@@ -61,20 +58,19 @@ func (p *pythonRuntime) clearModuleCache() {
 func (p *pythonRuntime) run(args []string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, p.Exe, append(append([]string{}, p.Prefix...), args...)...)
-	hideConsoleWindow(cmd) // 脚本执行同样悄悄跑
-	out, err := cmd.CombinedOutput()
+	// 统一入口（child.go）：压窗 + 超时 + 捕获 + 解码
+	out, err := runToolChild(ctx, p.Exe, append(append([]string{}, p.Prefix...), args...), "", timeout)
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("脚本执行超时（%v）", timeout)
 	}
 	if err != nil {
-		tail := decodeCmdOutput(out)
+		tail := out
 		if len(tail) > 1500 {
 			tail = tail[:1500] + "…"
 		}
 		return "", fmt.Errorf("脚本执行失败: %v\n%s", err, tail)
 	}
-	return decodeCmdOutput(out), nil
+	return out, nil
 }
 
 // pyMissingFromStderr 从脚本报错里识别 ModuleNotFoundError：便携运行时
