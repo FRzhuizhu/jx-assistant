@@ -180,7 +180,8 @@ async function openSettings(pane) {
   selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
   syncThemeCards();
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
-  selRefs.midrun.set(lsGet('jx.midrun', 'interject'));
+  // 默认「等待排队」：未设置过（新装）时下拉选框显示等待，用户选过就按用户存的显示
+  selRefs.midrun.set(lsGet('jx.midrun', 'queue'));
   renderPluginList();
   mountPluginSections();
   renderComponentList();
@@ -1168,9 +1169,12 @@ makeSelect('sel-sendkey', 'sendkey', [
   { v: 'enter', label: 'Enter 发送，Shift+Enter / Ctrl+Enter 换行' },
   { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter / Shift+Enter 换行' },
 ], (v) => { lsSet('jx.sendkey', v); updateSendKeyHint(); }); // 输入框占位文案同步跟随
+// 默认值 = 等待排队：故「等待」放第一项（makeSelect 以第一项为初始值，与
+// openSettings 里 lsGet('jx.midrun','queue') 的兜底默认一致）；用户手选后由
+// onChange 的 lsSet('jx.midrun', v) 记住，选过「插话」的照旧保持插话。
 makeSelect('sel-midrun', 'midrun', [
-  { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
+  { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
 ], (v) => lsSet('jx.midrun', v));
 makeSelect('sel-compact-mode', 'compactMode', [
   { v: 'rule', label: '规则压缩（零成本，默认）' },

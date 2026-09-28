@@ -63,7 +63,9 @@ function rpApply() { // 重算并应用右栏宽度（仅打开时有效）
 function rpRenderTabs() {
   const box = $('rp-tabs');
   box.innerHTML = '';
-  for (const [id, def] of Object.entries(rpViews)) {
+  // 标签顺序按注册表里的 order（没写的排最后）：子对话 / 计划 / 浏览器，与注册顺序无关
+  const ordered = Object.entries(rpViews).sort((a, b) => (a[1].order || 99) - (b[1].order || 99));
+  for (const [id, def] of ordered) {
     const b = document.createElement('button');
     b.className = 'rp-tab' + (id === rpActive ? ' active' : '');
     b.textContent = def.title;
@@ -103,6 +105,7 @@ function rpOpen(view) {
   }
   setRpanelBtn(true);
   if (rpViews[view].onOpen) rpViews[view].onOpen();
+  if (typeof renderPanels === 'function') renderPanels(); // 浮窗归属随「右栏正显示哪个子对话」变
 }
 
 function rpClose() {
@@ -111,6 +114,7 @@ function rpClose() {
   document.body.classList.remove('rp-open');
   rpActive = null;
   setRpanelBtn(false);
+  if (typeof renderPanels === 'function') renderPanels(); // 右栏收起：它的子对话待办转回主对话区
   if (isNarrow()) {
     // 浮层模式：transform 过渡回藏侧，结束（或 460ms 兜底）再加回 hidden；
     // 代数作废机制与 slidePane 同口径，防快速开关时旧回调抢先定版
@@ -281,6 +285,7 @@ async function openSubSession(id) {
     renderQueueDock(subView);
     syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
     syncComposerPad(subView); // 悬浮输入区：重算子对话消息列的垫高与按钮锚点
+    renderPanels(); // 待决定的浮窗：这个子对话自己的卡落在右栏输入区上方，主对话区那份随之撤掉
     // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有就是空，不残留上一个子对话的字）
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
@@ -318,7 +323,7 @@ $('sub-send').onclick = () => send(null, subView);
 $('sub-stop').onclick = () => stopRun(subView);
 $('sub-input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => send(null, subView)));
 $('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
-rpRegister('subs', { title: '子对话', onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
+rpRegister('subs', { title: '子对话', order: 1, onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
 
 /* ---------- 浏览器视图（桌面=原生 WebView2 面板 / 网页=占位提示） ---------- */
 /* 工具栏与状态条由本界面渲染；网页区域是 #bpw-stage 占位 div，桌面模式下
@@ -401,6 +406,7 @@ function bpwApplyViewport(w) {
 
 rpRegister('browser', {
   title: '浏览器',
+  order: 3,
   onOpen: () => {
     bpwSyncState();
     bpwReport(true); // 打开即上报矩形：宿主据此显示并定位原生控件

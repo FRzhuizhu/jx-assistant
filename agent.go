@@ -196,10 +196,16 @@ func promptHash(s string) string {
 // envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿。内容有变化才落库
 // 新快照（见 maybeAppendEnvSnapshot 的 diff 逻辑）；组装时首条整份进历史、
 // 后续按行差分为短「环境更新」（见 buildContext），已发送的前缀绝不改写。
+//
+// 「当前时间」取的是**本轮环境时间锚点**（a.envClock）：用户发消息那一刻取一次，
+// 整个执行轮（工具调用之间的每一步、目标模式续跑）都用同一个值——模型自己执行
+// 时不会因为挂钟翻页而刷出新的「环境更新」；锚点随执行体收口释放（见下方
+// anchorEnvClock/releaseEnvClock）。其余条目都是真实状态（工作区/权限/能力/
+// 技能/模式），变化由 diff 驱动一条「环境更新」，与时间无关。
 func (a *App) envPrompt(sess *SessionMeta) string {
 	b := &strings.Builder{}
 	b.WriteString("# 运行环境快照（最新，取代更早的快照）\n")
-	b.WriteString("- 当前时间：" + time.Now().Format("2006-01-02 15:04") + "\n")
+	b.WriteString("- 当前时间：" + a.envClock(sess.ID).Format("2006-01-02 15:04") + "\n")
 	if sess.Remote != nil {
 		r := sess.Remote
 		b.WriteString("- 运行环境：SSH 远程工作区 " + r.Display() + "（类 Unix；命令经远程 shell 执行，run_command 的 shell 参数忽略，路径为 POSIX 格式）\n")
@@ -281,6 +287,59 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	return b.String()
 }
 
+// ---------- 本轮环境时间锚点（环境快照「当前时间」的唯一来源） ----------
+//
+// 「当前时间」是环境快照里唯一的挂钟项（其余条目都是真实状态）。若每次组装都取
+// time.Now()，模型自己执行的过程中（工具调用之间的每一步、目标模式续跑）只要跨过
+// 分钟边界，快照文本就变了 → maybeAppendEnvSnapshot 判定「环境变了」落一条新快照
+// → 上下文里凭空多出一条带新时间的「环境更新」，而用户什么都没发。所以时间按
+// **执行轮**锚定：
+//   - 锚点值：用户发消息那一刻（appendMessage 落用户消息时刷新；插话/排队消息同理），
+//     本轮执行起点兜底刷新（beginRun，覆盖重试/回报续跑等没有新用户消息的入口）；
+//   - 作用域：内存里按会话 ID 存一份（App.envClock），只服务「本轮注入」，不落库；
+//   - 生命周期：本轮起点 → 执行体收口（finishRun 释放）；进程重启自然重新取时；
+//   - 释放后下一条用户消息重新锚定，所以同一条用户消息在同一轮里不会被反复计时。
+//
+// 快照里真正易变的仍是状态类条目（EXE 版本/工作区/权限模式/能力开关/技能清单/
+// 计划与目标模式），它们变化时照旧发一条「环境更新」，且只带变化的那几行
+// （行级 diff，见 envUpdateMessage）——重发由变化驱动，不由时间驱动。
+
+// anchorEnvClock 把会话的环境时间锚点刷成现在（用户发消息、本轮执行起点）。
+func (a *App) anchorEnvClock(id string) { a.anchorEnvClockAt(id, time.Now()) }
+
+// anchorEnvClockAt 以指定时刻锚定（自检/回放用）。
+func (a *App) anchorEnvClockAt(id string, at time.Time) {
+	a.envClockMu.Lock()
+	defer a.envClockMu.Unlock()
+	if a.envAnchors == nil {
+		a.envAnchors = map[string]time.Time{}
+	}
+	a.envAnchors[id] = at
+}
+
+// envClock 取会话本轮的环境时间锚点；没有锚点（进程刚起、直接跑 RunAgent 的入口）
+// 就地锚定一次——同一轮里每次组装都拿到同一个值，快照因此逐字节稳定。
+func (a *App) envClock(id string) time.Time {
+	a.envClockMu.Lock()
+	defer a.envClockMu.Unlock()
+	if at, ok := a.envAnchors[id]; ok {
+		return at
+	}
+	at := time.Now()
+	if a.envAnchors == nil {
+		a.envAnchors = map[string]time.Time{}
+	}
+	a.envAnchors[id] = at
+	return at
+}
+
+// releaseEnvClock 释放会话的环境时间锚点（执行体收口时调用）：下一轮重新取时。
+func (a *App) releaseEnvClock(id string) {
+	a.envClockMu.Lock()
+	defer a.envClockMu.Unlock()
+	delete(a.envAnchors, id)
+}
+
 // buildLLMMessages 已废弃删除：真正的组装只走 buildContext。
 
 // osDescription 探测并缓存本机系统描述（Windows 版本 + PowerShell 版本）。
@@ -314,7 +373,9 @@ func detectOSDesc() string {
 // 文件一律 UTF-8 无 BOM）。
 func detectOSDescWindows() string {
 	desc := "Windows"
-	if out, err := exec.Command("cmd", "/c", "ver").Output(); err == nil {
+	verCmd := exec.Command("cmd", "/c", "ver")
+	hideConsoleWindow(verCmd) // 桌面形态没有控制台可复用，探测也别弹窗
+	if out, err := verCmd.Output(); err == nil {
 		s := strings.TrimSpace(string(out))
 		if i := strings.Index(s, "Version "); i >= 0 {
 			desc = "Windows " + strings.TrimSpace(strings.TrimRight(s[i+len("Version "):], "]"))
@@ -323,7 +384,9 @@ func detectOSDescWindows() string {
 	ps := "PowerShell（版本未知）"
 	for _, name := range []string{"pwsh", "powershell"} {
 		cctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		out, err := exec.CommandContext(cctx, name, "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()").Output()
+		psCmd := exec.CommandContext(cctx, name, "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()")
+		hideConsoleWindow(psCmd)
+		out, err := psCmd.Output()
 		cancel()
 		if err == nil && strings.TrimSpace(string(out)) != "" {
 			ps = "PowerShell " + strings.TrimSpace(string(out))
@@ -548,6 +611,11 @@ func suspendedInPlan(mode, name string) bool {
 
 // appendMessage 落库并返回带 seq 的记录（seq 供 SSE message 事件回传前端定位用）
 func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
+	// 用户消息 = 本轮环境时间的取时点：环境快照里的「当前时间」就是这一刻
+	// （见环境时间锚点一节：此后本轮的每一步组装都用同一个值，不再随挂钟刷新）
+	if m.Role == "user" {
+		a.anchorEnvClock(sess.ID)
+	}
 	sm := &StoredMessage{Message: m, Kind: kindChat, CreatedAt: now()}
 	_ = a.Store.AppendRow(sess.ID, sm)
 	// 只有用户输入与模型最终输出刷新「最近更新」时间（口径见 StoredMessage.touchesActivity）：
@@ -602,6 +670,15 @@ const (
 	interruptNoteAborted = "（会话被中断，工具执行被中止）"
 )
 
+// errMaxSteps 是「达到步数上限自动停止」的专用错误：上层据此把这一轮记成
+// 步数上限中断（左侧栏「⚠ 已中断」的悬停文案与真正的执行失败不同），
+// 而不是普通报错。Error 文案与原先的 fmt.Errorf 逐字一致。
+type errMaxSteps struct{ n int }
+
+func (e errMaxSteps) Error() string {
+	return fmt.Sprintf("连续 %d 步仍未完成，已自动停止（可在设置中调大最大步数），可点重试", e.n)
+}
+
 // RunAgent 是核心主循环：向上下文引擎取包 → 流式请求模型 → 执行工具 → 回填结果，
 // 循环直到模型不再发起工具调用、用户中断或达到步数上限。
 // 发给模型的内容一律来自引擎的 Assembly（组装、开轮留痕、测量口径全归引擎），
@@ -618,12 +695,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 
 	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
+	// 落库身份取待生效项自带的 kind/origin（用户插话=chat，派发注入=report）。
 	interjectsBefore := func(emit func(Event)) bool {
 		got := false
 		for _, pm := range a.drainSteer(sess.ID) {
-			um := TextMessage("user", pm.Content)
-			sm := a.appendMessage(sess, um)
-			emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat})
+			a.landUserSide(sess, pm.Content, pm.Kind, pm.Origin, emit)
 			got = true
 		}
 		return got
@@ -849,5 +925,5 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			return context.Canceled
 		}
 	}
-	return fmt.Errorf("连续 %d 步仍未完成，已自动停止（可在设置中调大最大步数），可点重试", a.Cfg.MaxSteps)
+	return errMaxSteps{n: a.Cfg.MaxSteps}
 }

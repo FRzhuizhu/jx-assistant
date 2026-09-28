@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -35,10 +36,15 @@ type sessionRun struct {
 
 // PendingMsg 是执行中的一条待生效用户消息：插话（下一步调用模型前注入）
 // 或排队（本轮结束后作为独立一轮发送）。放在服务端，刷新页面不丢。
+// Kind/Origin 是它落库时的类型与来源（空 = chat，即用户自己发的）；
+// 数字助理派发注入的需求带 report/task——排队或插话后排到落库，
+// 界面照旧按「数字助理说的」渲染成左对齐通知，不会变成用户气泡。
 type PendingMsg struct {
 	ID        string `json:"id"`
 	Content   string `json:"content"`
 	CreatedAt string `json:"createdAt"`
+	Kind      string `json:"kind,omitempty"`
+	Origin    string `json:"origin,omitempty"`
 }
 
 // PendingState 是某个会话当前的待生效消息快照（随会话详情与事件下发）。
@@ -57,6 +63,7 @@ func (a *App) initRuntime() {
 	a.pendingSteer = map[string][]*PendingMsg{}
 	a.pendingQueue = map[string][]*PendingMsg{}
 	a.runErrors = map[string]string{}
+	a.envAnchors = map[string]time.Time{}
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
 	// 工作区就是程序目录，整目录保护会让开箱即用的会话什么都写不了。
@@ -80,8 +87,15 @@ func (a *App) beginRun(id string) (*sessionRun, bool) {
 	r := &sessionRun{ctx: ctx, cancel: cancel, startedAt: time.Now(), done: make(chan struct{}),
 		subs: map[int]chan Event{}}
 	a.runners[id] = r
-	a.clearRunError(id) // 新一轮开始：上一次的报错条自动消失
+	a.clearRunError(id)             // 新一轮开始：上一次的报错条自动消失
+	_ = a.Store.SetLastStop(id, "") // 侧栏「⚠ 已中断」随之收掉（这一轮正在跑）
 	_ = a.Store.UpdateStatus(id, "running")
+	a.markRunOwner(id)     // 记下「本实例在跑它」：别的实例启动时不会把它误判成中断
+	a.ensureRunHeartbeat() // 有在跑的会话时才起心跳，空闲时零唤醒（见 runowner.go）
+	// 本轮环境时间的兜底取时点：正常路径紧随其后的用户消息落库会再刷一次（取到
+	// 更准的「用户按下发送」时刻），重试/回报续跑等没有新用户消息的入口就用这里。
+	// 这一轮收口之前，环境快照的「当前时间」保持此值，不随挂钟翻页重发
+	a.anchorEnvClock(id)
 	return r, true
 }
 
@@ -105,6 +119,10 @@ func (a *App) finishRun(id string) {
 	close(r.done)
 	r.cancel()
 	_ = a.Store.UpdateStatus(id, "idle")
+	a.clearRunOwner(id) // 归属随本轮收口一起清掉（下一轮的归属由下一次 beginRun 写）
+	// 释放本轮环境时间锚点：下一条用户消息（或下一次重试）重新取时，
+	// 「当前时间」只在这两个时刻被刷新
+	a.releaseEnvClock(id)
 	// 本轮结束（正常/停止/报错收口都走这里）：执行已登记的会话后交付。
 	// 异步执行避免大文件搬运拖住收口；认领机制保证与启动恢复不重不漏。
 	go a.flushDeliveries(id)
@@ -201,9 +219,10 @@ func (a *App) broadcast(ev Event) {
 }
 
 // pushPending 记下一条待生效消息：mode=steer 插话（下一步调用模型前注入），
-// 其他按排队（本轮结束后作为独立一轮发送）。
-func (a *App) pushPending(sessionID, mode, content string) *PendingMsg {
-	pm := &PendingMsg{ID: newID(), Content: content, CreatedAt: now()}
+// 其他按排队（本轮结束后作为独立一轮发送）。kind/origin 决定它落库后的身份
+// （空 = chat，即用户自己发的；数字助理派发注入的传 report/task）。
+func (a *App) pushPending(sessionID, mode, content, kind, origin string) *PendingMsg {
+	pm := &PendingMsg{ID: newID(), Content: content, CreatedAt: now(), Kind: kind, Origin: origin}
 	a.pendMu.Lock()
 	if mode == "steer" {
 		a.pendingSteer[sessionID] = append(a.pendingSteer[sessionID], pm)
@@ -213,6 +232,100 @@ func (a *App) pushPending(sessionID, mode, content string) *PendingMsg {
 	a.pendMu.Unlock()
 	a.broadcastPending(sessionID)
 	return pm
+}
+
+// noteMidrunPref 收下前端上报的设置项 jx.midrun 原值：queue=等待排队，
+// interject=插话（另容一个 steer 别名便于接口直测）。未知值不改动已记住的偏好。
+func (a *App) noteMidrunPref(v string) {
+	switch strings.TrimSpace(v) {
+	case "queue":
+		a.setMidrunMode("queue")
+	case "interject", "steer":
+		a.setMidrunMode("steer")
+	}
+}
+
+// setMidrunMode / midrunMode 是「执行中发消息」的偏好（设置项 jx.midrun：
+// 排队 queue / 插话 steer）。这个设置存在浏览器 localStorage 里，随每条消息
+// 上报；服务端记住最近一次的取值，供派发注入使用——数字助理往目标会话塞需求
+// 时，若目标会话正在执行，要按同一个偏好处理，否则两条通道行为不一致。
+func (a *App) setMidrunMode(mode string) {
+	if mode != "steer" && mode != "queue" {
+		return
+	}
+	a.pendMu.Lock()
+	a.midrunPref = mode
+	a.pendMu.Unlock()
+}
+
+// midrunMode 取当前偏好；没收到过上报时按「排队」——与新装默认一致。
+func (a *App) midrunMode() string {
+	a.pendMu.Lock()
+	defer a.pendMu.Unlock()
+	if a.midrunPref == "steer" {
+		return "steer"
+	}
+	return "queue"
+}
+
+// delivery 是一次投递的结果：Started=true 表示消息已落库并已占住执行权
+// （Run 是执行权句柄，由调用方接上自己的执行体）；Started=false 表示目标会话
+// 正在执行、消息已进待生效队列，Mode 是排队还是插话。
+type delivery struct {
+	Started bool
+	Run     *sessionRun
+	Mode    string
+}
+
+// deliverToSession 是「往会话里投递一条用户侧消息」的统一收口：前端发消息
+// （handleChat / handleInterject）与数字助理派发注入共用同一套语义——
+// 空闲就落库并占住执行权，执行中就走同一套排队/插话队列（按 jx.midrun 偏好），
+// 不再另开一条特殊通道。kind/origin 决定消息身份（chat=用户气泡，
+// report=数字助理通知），语义上的差异只体现在这里，投递行为完全一致。
+func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *delivery {
+	lock := a.sessLock(m.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	// 执行中：按偏好排队/插话（与 handleInterject 同一套队列与落库时机）
+	if a.IsRunning(m.ID) {
+		mode := a.midrunMode()
+		a.pushPending(m.ID, mode, content, kind, origin)
+		return &delivery{Mode: mode}
+	}
+	run, ok := a.beginRun(m.ID)
+	if !ok { // 极小概率竞态：刚被别的入口占住，同样按排队处理
+		mode := a.midrunMode()
+		a.pushPending(m.ID, mode, content, kind, origin)
+		return &delivery{Mode: mode}
+	}
+	a.landUserSide(m, content, kind, origin, nil)
+	return &delivery{Started: true, Run: run}
+}
+
+// landUserSide 是「用户侧消息落库」的唯一收口：chat（真实用户发言）走
+// appendMessage——锚定本轮环境时间、刷新会话活动时间，与用户自己发完全一致；
+// 注入类（report 等）走 appendRow，并按 AGENT.md 的约定显式刷新会话时间
+// （touchesActivity 的口径不含注入行，不能去改它）。落库后广播同型 message
+// 事件：emit 非空时走本轮订阅通道（执行体内部），否则走全局广播。
+func (a *App) landUserSide(m *SessionMeta, content, kind, origin string, emit func(Event)) *StoredMessage {
+	if kind == "" {
+		kind = kindChat
+	}
+	var sm *StoredMessage
+	if kind == kindChat {
+		sm = a.appendMessage(m, TextMessage("user", content))
+	} else {
+		sm = a.appendRow(m, StoredMessage{Message: TextMessage("user", content), Kind: kind, Origin: origin, CreatedAt: now()})
+		m.UpdatedAt = now()
+		_ = a.Store.SaveMeta(m)
+	}
+	ev := Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kind, Origin: origin}
+	if emit != nil {
+		emit(ev)
+	} else {
+		a.broadcast(ev)
+	}
+	return sm
 }
 
 // drainSteer 取走并清空会话的插话队列（agent 循环步间排水）。
@@ -405,8 +518,7 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 			break
 		}
 		a.broadcastPending(m.ID)
-		sm := a.appendMessage(m, TextMessage("user", pm.Content))
-		emit(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat})
+		a.landUserSide(m, pm.Content, pm.Kind, pm.Origin, emit)
 		err = a.runGoalRounds(run.ctx, m, emit)
 		a.requeueSteer(m.ID)
 	}
@@ -414,18 +526,23 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 
 	// 终态：正常完成与用户停止都不往界面塞话（对话里只有真实对话）；
 	// 只有真实的失败（模型/网络/费用等）才进前端的报错区，并带重试按钮。
-	// 三种终态都在审计日志留痕（导出日志时间线可见，不发给模型）。
+	// 三种终态都在审计日志留痕（导出日志时间线可见，不发给模型）；
+	// 失败同时给会话打上「异常中断」标记——左侧栏把时间位换成「⚠ 已中断」，
+	// 用户没看着这个会话也能一眼发现这轮没跑完（打开会话不清，重跑一轮即清）。
 	switch {
 	case err == nil:
+		_ = a.Store.SetLastStop(m.ID, "")
 		emit(Event{Type: "done"})
 	case a.isStopped(run) || run.ctx.Err() != nil:
 		log.Printf("[对话] 会话 %s 已被用户停止", m.ID)
 		a.clearRunError(m.ID)
+		_ = a.Store.SetLastStop(m.ID, "") // 用户主动停止不算异常，不留标记
 		a.auditWrite(m, map[string]any{"type": "stop"})
 		emit(Event{Type: "stopped"})
 	default:
 		log.Printf("[对话] 会话 %s 本轮结束于错误: %v", m.ID, err)
 		a.setRunError(m.ID, err.Error())
+		_ = a.Store.SetLastStop(m.ID, stopKindOf(err))
 		a.auditWrite(m, map[string]any{"type": "error", "error": err.Error()})
 		emit(Event{Type: "error", Error: err.Error()})
 	}
@@ -451,6 +568,17 @@ func (a *App) runError(id string) string {
 	a.errMu.Lock()
 	defer a.errMu.Unlock()
 	return a.runErrors[id]
+}
+
+// stopKindOf 把本轮失败归类成侧栏标记用的类型码（见 Store.SetLastStop）：
+// 达到步数上限是「按规则自动收手」，与真正的执行失败（网关/网络/费用等）文案不同，
+// 所以在这里分辨一次，前端只管按码取话术。
+func stopKindOf(err error) string {
+	var mse errMaxSteps
+	if errors.As(err, &mse) {
+		return stopMaxStep
+	}
+	return stopError
 }
 
 // isStopped 判断本次执行是否由用户显式停止。
@@ -563,27 +691,13 @@ func (a *App) recoverInterrupted() {
 		return
 	}
 	for _, s := range sessions {
-		// 先把上一进程崩溃时留下的悬空工具调用补上合成结尾（历史配对完整），
-		// 再补系统中断报告——顺序反了的话报告会插在悬空调用与补行之间
-		a.repairDanglingToolCalls(s, nil)
-		_ = a.Store.AppendRow(s.ID, &StoredMessage{
-			Message: TextMessage("user", "【系统中断】服务在执行期间重启，本会话当时被中断。可发「继续」接续执行。"),
-			Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
-		})
-		_ = a.Store.UpdateStatus(s.ID, "idle")
-		// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
-		// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
-		owner := s.DispatchedBy
-		if owner == "" {
-			owner = s.ParentID
+		// 会话可能正被「另一个活着的实例」执行（桌面版与控制台版共用同一 data
+		// 目录是常态，单实例互斥体只挡桌面形态）：那种情况绝不能补中断——
+		// 归属里记的 pid 还活着且心跳新鲜，就是别人正在跑，跳过
+		if pid, live := a.otherInstanceRunning(s.ID); live {
+			log.Printf("[恢复] 会话 %s 正由另一实例（pid %d）执行，跳过中断恢复", s.ID, pid)
+			continue
 		}
-		if owner != "" {
-			if _, perr := a.Store.Get(owner); perr == nil {
-				_ = a.Store.AppendRow(owner, &StoredMessage{
-					Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
-					Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
-				})
-			}
-		}
+		a.reapInterruptedSession(s) // 收口逻辑收在 runowner.go，30s 补扫共用
 	}
 }

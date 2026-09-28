@@ -116,6 +116,10 @@
       <!-- 报错区：模型/网络等真实失败显示在这里（不属于对话区），带重试按钮 -->
       <div id="run-error" class="run-error hidden" role="alert"></div>
       <div id="composer-area">
+        <!-- 待用户决定的浮窗（审批 / 提问 / 计划审批）：落在输入卡之上、附件区之上，
+             宽度与输入卡一致。别的对话的卡在顶部标「来自「某对话」」并可点击跳过去；
+             重绘只重建内容变了的卡，不会打断输入。渲染见 app-chat.js 的「待用户决定的浮窗」 -->
+        <div id="ask-bar" class="ask-bar hidden"></div>
         <div id="draft-chips">
           <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -204,6 +208,8 @@
             <div id="sub-hint" class="composer-hint"></div>
             <div id="sub-queue-dock" class="queue-dock hidden" data-queue-dock></div>
             <div id="sub-run-error" class="run-error hidden" role="alert"></div>
+            <!-- 待决定的浮窗：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
+            <div id="sub-ask-bar" class="ask-bar hidden"></div>
             <!-- 附件区：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
             <div id="sub-attachments" class="attach-rail hidden"></div>
             <div id="sub-composer" class="sub-composer-card composer-card">
@@ -258,6 +264,30 @@
            该矩形（app-right.js 上报 /api/browser/panel-rect），网页本身不进
            HTML，交互全是原生（滚动/输入法/右键菜单）。网页模式没有原生控件，
            链接一律新标签页打开，此视图仅作占位提示。 -->
+      <!-- 计划视图：本对话提交过的计划按 Markdown 渲染（正文来自 /api/sessions/{id}/plans
+           ——从会话日志里读回 exit_plan_mode 的调用参数，与对话同寿命，刷新/切走/重启都在）；
+           待审批的那份在底部就地批准/驳回。交互见 app-chat.js 的「右栏「计划」视图」 -->
+      <div class="rp-view" id="rp-view-plan">
+        <div class="plan-bar">
+          <select id="plan-pick" class="plan-pick" title="切换本对话提交过的计划"></select>
+          <span id="plan-status" class="plan-status"></span>
+          <button id="plan-export" class="plan-ico" title="把这份计划导出成工作区里的 .md 文件（同名自动加序号，不覆盖）">导出</button>
+          <button id="plan-copy" class="plan-ico" title="复制计划全文">复制</button>
+          <button id="plan-reload" class="plan-ico" title="重新读取">⟳</button>
+        </div>
+        <div id="plan-note" class="plan-note hidden">
+          <span id="plan-note-text" class="plan-note-text"></span>
+          <button id="plan-note-open" class="plan-ico hidden">打开所在文件夹</button>
+        </div>
+        <div id="plan-doc" class="plan-doc"></div>
+        <div id="plan-act" class="plan-act hidden">
+          <div class="q-free">
+            <input id="plan-feedback" type="text" placeholder="反馈修改意见（可留空）">
+            <button id="plan-reject" class="ghost">驳回</button>
+          </div>
+          <div class="ap-actions"><button id="plan-approve" class="ok">批准并开始执行</button></div>
+        </div>
+      </div>
       <div class="rp-view" id="rp-view-browser">
         <div class="bpw-bar">
           <button id="bpw-back" title="后退">◀</button>
@@ -728,8 +758,22 @@
   </div>
 </div>
 
-<!-- 审批卡片（右下角堆叠：沙箱外执行等越权动作等用户决定） -->
-<div id="approval-bar" class="hidden"></div>
+<!-- 跨对话待办（不属于当前对话的审批/提问）：右下角一叠，可整块缩成一枚胶囊。
+     与输入区上方那块的分工见 app-chat.js「待用户决定的浮窗」一节 -->
+<div id="ask-dock" class="ask-dock hidden">
+  <div class="ask-dock-head">
+    <b>别的对话在等</b>
+    <span id="ask-dock-count" class="ask-dock-count"></span>
+    <button id="ask-dock-min" class="ask-dock-btn" title="缩小到角落（之后从胶囊点开，或回那个对话里处理）">—</button>
+  </div>
+  <div id="ask-dock-cards" class="ask-dock-cards"></div>
+</div>
+<button id="ask-dock-pill" class="ask-dock-pill hidden" title="展开：别的对话的审批 / 提问">
+  <span>待处理</span><b id="ask-dock-pill-num">0</b>
+</button>
+
+<!-- 审批/提问浮窗：本对话的卡在输入框上方（主：#ask-bar / 右栏子对话：#sub-ask-bar，
+     见 app-chat.js 的「待用户决定的浮窗」一节）；计划全文另见右侧边栏「计划」视图 -->
 
 <!-- 对话区选中文字的浮窗：复制 / 引用到下方输入框 / 在右侧辅助问答（不影响当前对话） -->
 <div id="sel-pop" class="hidden">

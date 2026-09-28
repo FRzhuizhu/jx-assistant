@@ -19,5 +19,10 @@ loadModels();
 connectEvents();
 loadApprovals();
 loadQuestions();
-setInterval(loadApprovals, 20000); // 审批轮询兜底（SSE 断连时也能拿到）
-setInterval(loadQuestions, 20000);
+// 审批 / 提问的兜底轮询：只在事件流没连上时才真的去拉（SSE 正常时它就是多余的）。
+// 前端渲染本身也已经是增量的——数据没变就不动 DOM，用户打进卡片的字不会被冲掉。
+setInterval(() => {
+  if (eventStream && eventStream.readyState === 1) return; // 1 = OPEN：事件流活着，不必轮询
+  loadApprovals();
+  loadQuestions();
+}, 20000);

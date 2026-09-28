@@ -475,6 +475,50 @@ func (s *Store) GetSessionData(sessionID, key string) string {
 	return v
 }
 
+// ---------- 会话异常中断标记（左侧栏时间位的「⚠ 已中断」） ----------
+
+// 异常中断的类型码（存 meta 表，前端按码给悬停文案）。
+const (
+	stopError   = "error"   // 执行失败：模型/网关/网络/费用等
+	stopMaxStep = "step"    // 达到步数上限自动停止
+	stopRestart = "restart" // 服务在执行期间重启，本轮被中断
+)
+
+// SetLastStop 记下会话最近一轮的异常中断类型；kind 为空串即清掉标记（正常收口、
+// 用户主动停止都算「没异常」）。服务重启导致的中断由 recoverInterrupted 在启动时
+// 标记，所以这个标记必须落库——内存里的 runError 一重启就没了。
+//
+// 刻意存 meta 表而不是 sessions 的列：它是纯展示的提醒，不进 sessionCols，也就
+// 不可能被 SaveMeta 拿着陈旧内存对象回写（status 列踩过的那个坑），顺带免一次
+// 结构迁移。
+func (s *Store) SetLastStop(id, kind string) error {
+	if kind == "" {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		_, err := s.db.Exec(`DELETE FROM meta WHERE k=?`, "laststop:"+id)
+		return err
+	}
+	return s.setMeta("laststop:"+id, kind)
+}
+
+// LastStops 一次取齐所有带异常中断标记的会话（会话列表接口用，无标记的不在结果里）。
+// 出错就当没有标记：少一个提醒，不该把整个列表带崩。
+func (s *Store) LastStops() map[string]string {
+	out := map[string]string{}
+	rows, err := s.db.Query(`SELECT k, v FROM meta WHERE k LIKE 'laststop:%' AND v<>''`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if rows.Scan(&k, &v) == nil {
+			out[strings.TrimPrefix(k, "laststop:")] = v
+		}
+	}
+	return out
+}
+
 // ---------- 会话 ----------
 
 const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert`
@@ -613,6 +657,7 @@ func (s *Store) Delete(id string) error {
 	if _, err := s.db.Exec(`DELETE FROM messages WHERE session_id=?`, id); err != nil {
 		return err
 	}
+	_, _ = s.db.Exec(`DELETE FROM meta WHERE k=?`, "laststop:"+id) // 顺带清掉异常中断标记
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
 	return err
 }
@@ -697,7 +742,7 @@ func (s *Store) AppendRequestRow(id string, sm *StoredMessage) error {
 func (s *Store) RecentRequestRows(id string, n int) ([]*StoredMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT ` + messageCols + ` FROM messages WHERE session_id=? AND kind='request' ORDER BY seq DESC LIMIT ?`, id, n)
+	rows, err := s.db.Query(`SELECT `+messageCols+` FROM messages WHERE session_id=? AND kind='request' ORDER BY seq DESC LIMIT ?`, id, n)
 	if err != nil {
 		return nil, err
 	}
@@ -1612,14 +1657,23 @@ func snippetAround(s, query string, radius int) string {
 		r := []rune(s)
 		return string(r[:radius]) + "…"
 	}
+	// idx / len(query) 是【字节】下标，而 r 是【字符】下标：先把命中位置换算成
+	// 字符下标再切。以前两者混用——中文内容下 start（字节）会越过被 len(r) 夹住
+	// 的 end（字符），切片直接 panic（slice bounds out of range [14690:12686]），
+	// 把正在执行的一轮打成「执行体异常」、工具调用断在半截。
 	r := []rune(s)
-	start := idx - radius
+	hit := len([]rune(s[:idx]))
+	hitLen := len([]rune(query))
+	start := hit - radius
 	if start < 0 {
 		start = 0
 	}
-	end := idx + len(query) + radius
+	end := hit + hitLen + radius
 	if end > len(r) {
 		end = len(r)
+	}
+	if start > end {
+		start = end
 	}
 	out := ""
 	if start > 0 {

@@ -32,17 +32,20 @@ const questionTTL = 5 * time.Minute // 提问等待上限
 
 // UserQuestion 是一次等待用户输入的请求（提问或计划批准）。
 type UserQuestion struct {
-	ID        string   `json:"id"`
-	SessionID string   `json:"sessionId"`
-	Kind      string   `json:"kind"` // ask=普通提问 plan=计划批准
-	Question  string   `json:"question"`
-	Plan      string   `json:"plan,omitempty"` // kind=plan 时的计划正文
-	Options   []string `json:"options,omitempty"`
-	AllowFree bool     `json:"allowFree"`
-	CreatedAt string   `json:"createdAt"`
-	expiresAt time.Time
-	decided   bool
-	ch        chan string
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	// SessionTitle 是发起提问的会话标题：提问卡可能弹在别的对话里（卡片顶部
+	// 标「来自「某对话」」并可点击跳过去），标题随请求下发，前端不必再查。
+	SessionTitle string   `json:"sessionTitle,omitempty"`
+	Kind         string   `json:"kind"` // ask=普通提问 plan=计划批准
+	Question     string   `json:"question"`
+	Plan         string   `json:"plan,omitempty"` // kind=plan 时的计划正文
+	Options      []string `json:"options,omitempty"`
+	AllowFree    bool     `json:"allowFree"`
+	CreatedAt    string   `json:"createdAt"`
+	expiresAt    time.Time
+	decided      bool
+	ch           chan string
 }
 
 // requestUserAnswer 广播提问并阻塞等待用户回答；返回用户的回答文本，
@@ -50,13 +53,14 @@ type UserQuestion struct {
 func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQuestion) (string, bool) {
 	q.ID = "q-" + newID()
 	q.SessionID = sess.ID
+	q.SessionTitle = sess.Title
 	q.CreatedAt = now()
 	q.expiresAt = time.Now().Add(questionTTL)
 	q.ch = make(chan string, 1)
 	a.permMu.Lock()
 	a.questions[q.ID] = q
 	a.permMu.Unlock()
-	ev := Event{Type: "question_required", QuestionID: q.ID, SessionID: sess.ID,
+	ev := Event{Type: "question_required", QuestionID: q.ID, SessionID: sess.ID, Title: sess.Title,
 		Kind: q.Kind, Summary: q.Question, Plan: q.Plan, Options: q.Options, Reason: q.Question}
 	a.broadcast(ev)
 	defer func() {

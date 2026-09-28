@@ -28,7 +28,13 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+/* 文档级永不滚动：整个界面是定高壳（#app 占 100vh/dvh），一切滚动都发生在
+   内层容器（#messages / #session-list / 各面板）。文档一旦可滚——典型如手机端
+   输入区收起时 translateY(100%) 把变换盒顶出 #main 底缘（overflow 沿 #main →
+   #app → body 一路可见，未被裁剪）——就会在 #messages 滚动条内侧再冒出一条
+   文档滚动条（双层滚动条），且它的出现/消失挤压视口宽度，引发整页回流抖动。
+   overflow:hidden 把这类溢出一律裁掉。 */
+html, body { height: 100%; overflow: hidden; }
 body {
   font-family: -apple-system, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
   background: var(--bg); color: var(--text); font-size: 14px;
@@ -261,12 +267,18 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
 }
 
-/* 用户消息：右侧浅灰气泡；悬停时气泡下方露出复制/编辑操作条。
+/* 用户消息（自己发的）：右侧浅蓝气泡，参照微信「自己发的」观感。
+   底色由主题色 --accent 调淡得出（设置里换主题色时自动跟随，不硬编码蓝）；
+   第一行是不支持 color-mix 的旧内核兜底值。文字仍是 --text（亮色主题下即
+   近黑色），浅蓝底上对比度约 12:1，远高于 WCAG AA 的 4.5:1。
+   悬停时气泡下方露出复制/编辑操作条。
    间距拆两半放：气泡底部 2px + 容器底部 18px；带操作条时容器收零，
    由操作条自己的 18px 接管（排队/插话/系统注入行没有操作条，走容器那份） */
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 18px; }
 .msg.user .bubble {
-  max-width: 72%; background: var(--chip); color: var(--text);
+  max-width: 72%; color: var(--text);
+  background: #e1e7ff;
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
   padding: 10px 15px; border-radius: 14px 14px 4px 14px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
   margin-bottom: 2px;
@@ -396,12 +408,16 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 .dc-btn:hover { background: var(--hover); }
 
-/* 系统注入的回报/中断记录：左侧细边框通知样式 */
+/* 系统注入的回报/中断/派发通知（含派发到目标任务会话里的那条需求消息）：
+   它是数字助理说的话，不是用户说的——所以做成「用户气泡的变体」：
+   沿用用户气泡原来那套灰底（--chip）、同款内边距/圆角/字号，但左对齐
+   （像微信里「别人发的」），尾巴朝左下；右侧浅蓝的自发消息一眼就能分清。
+   右侧紧跟的用户气泡是浅蓝底，两者不会混淆。 */
 .msg.sysnote { display: flex; margin-bottom: 14px; }
 .msg.sysnote .bubble {
-  max-width: 86%; background: var(--bg); color: var(--text-2);
-  border: 1px dashed var(--border); border-radius: 4px 12px 12px 12px;
-  padding: 8px 13px; font-size: .9em;
+  max-width: 86%; background: var(--chip); color: var(--text);
+  border-radius: 14px 14px 14px 4px;
+  padding: 10px 15px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
 }
 
@@ -1350,12 +1366,79 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .badge.remote { cursor: pointer; border: none; font: inherit; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.remote:hover { background: rgba(77, 107, 254, .16); }
 
-/* 审批卡片：右下角堆叠，等待用户对越权动作的决定。
-   z-index 压过窄屏整屏浮层（同 .popover 的理由）：手机端左/右栏浮层开着时
-   审批卡弹在浮层背后等于永远等不到用户决定 */
-#approval-bar {
-  position: fixed; right: 16px; bottom: 16px; z-index: 240;
-  display: flex; flex-direction: column; gap: 10px; max-width: 380px;
+/* 待决定的浮窗（审批 / 提问 / 计划审批）的落点：输入卡上方、附件区之上的一块。
+   宽度与输入卡同宽（--content-w），跟着输入区一起在首页/对话页间搬移；没有待办时
+   整块 display:none（零占位，不留白条）。卡片本身沿用 .ap-card 系列样式。 */
+.ask-bar {
+  max-width: var(--content-w); margin: 0 auto 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  /* 待办多时整块卡内滚动：不把对话区整个盖住（单卡自身也各自有高度上限） */
+  max-height: min(62vh, 560px); overflow-y: auto; overscroll-behavior: contain;
+}
+.ask-bar.hidden { display: none; }
+/* 卡片来源行：不属于本对话的请求在卡片靠上的位置标出「来自「某对话」」，
+   点一下切到那个对话；不想跳也能就地处理。 */
+.ap-src {
+  display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box;
+  margin: -2px 0 8px; padding: 5px 8px; border: none; border-radius: 8px;
+  background: rgba(224, 138, 0, .10); color: #8a5a00;
+  font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.ap-src:hover { background: rgba(224, 138, 0, .18); }
+.ap-src svg { width: 12px; height: 12px; flex: none; }
+.ap-src .ap-src-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-src .ap-src-go { margin-left: auto; flex: none; font-weight: 600; }
+/* 别的对话的卡：与本对话的卡同一条主题色左边条（靠上面那行来源区分是哪个对话；
+   原来用琥珀色标「别的对话」，用户要求统一成主题色） */
+.ap-card.from-other { border-left-color: var(--accent); }
+:root[data-theme='dark'] .ap-src { background: rgba(224, 138, 0, .16); color: #f0b95f; }
+:root[data-theme='dark'] .ap-src:hover { background: rgba(224, 138, 0, .26); }
+/* 跨对话待办（不属于当前对话的审批 / 提问）：右下角一叠，整块可缩成一枚胶囊。
+   z-index 压过窄屏整屏浮层（同 .popover 的理由）：手机端左/右栏浮层开着时，
+   角标堆不能被浮层挡在后面，否则永远等不到用户决定。 */
+.ask-dock {
+  position: fixed; right: 12px; bottom: 12px; z-index: 240; /* 右/宽由 JS 按对话区右侧留白算（dockMetrics） */
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .18);
+  animation: ap-in .18s ease;
+}
+.ask-dock.hidden { display: none; }
+.ask-dock-head {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px 8px 12px; background: var(--hover); border-bottom: 1px solid var(--border-2);
+}
+.ask-dock-head b { font-size: 12.5px; }
+.ask-dock-count { font-size: 11.5px; color: var(--text-3); }
+.ask-dock-btn {
+  margin-left: auto; flex: none; cursor: pointer; font: inherit; font-size: 13px; line-height: 1;
+  padding: 3px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text-2);
+}
+.ask-dock-btn:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
+.ask-dock-cards {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px; overflow-y: auto; overscroll-behavior: contain;
+}
+.ask-dock-cards .ap-card { box-shadow: none; } /* 一叠卡片不各自带阴影，免得堆里发脏 */
+.ask-dock-cards .ap-card:last-child { margin-bottom: 0; }
+
+/* 收起后的胶囊：只报条数，点它再展开（用户也可以回那个对话里处理） */
+.ask-dock-pill {
+  position: fixed; right: 12px; bottom: 12px; z-index: 240; /* 锚点与角标堆同一处（JS 写 right） */
+  display: flex; align-items: center; gap: 6px; cursor: pointer; font: inherit; font-size: 12.5px;
+  padding: 8px 13px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
+}
+.ask-dock-pill.hidden { display: none; }
+.ask-dock-pill:hover { border-color: rgba(77, 107, 254, .45); color: var(--accent); }
+.ask-dock-pill b {
+  min-width: 18px; text-align: center; font-size: 11.5px; padding: 1px 5px; border-radius: 999px;
+  background: rgba(214, 158, 46, .16); color: var(--amber); border: 1px solid rgba(214, 158, 46, .35);
+}
+.ask-dock-pill.has-new { animation: ask-pill-pulse 1.6s ease-in-out 3; }
+@keyframes ask-pill-pulse {
+  0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, .16); }
+  50% { box-shadow: 0 8px 26px rgba(214, 158, 46, .55); }
 }
 .ap-card {
   background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--accent);
@@ -1446,6 +1529,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .voice-shadow.hidden { display: none; }
 .voice-shadow-head { color: transparent; }
 .voice-shadow-tail { color: var(--text-3); }
+/* 灰字在场时隐掉输入框 placeholder（否则两层字会叠在一起） */
+.composer-input.voice-dictating::placeholder { color: transparent; }
 /* 时长倒计时徽标：最后 9 秒挂在麦克风按钮右上角，换数字弹一下 */
 .voice-count {
   position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px;
@@ -1454,6 +1539,16 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   background: #e5484d; color: #fff;
 }
 .voice-count.pop { animation: voice-count-pop .5s ease-out both; }
+/* 连接中：按钮转圈（连上了才变蓝） */
+.cbtn.connecting { color: var(--accent); border-color: rgba(77, 107, 254, .45); }
+.cbtn.connecting svg { opacity: 0; }
+.voice-spinner {
+  position: absolute; top: 50%; left: 50%; margin: -7px 0 0 -7px;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgba(77, 107, 254, .3); border-top-color: var(--accent);
+  animation: voice-spin .8s linear infinite;
+}
+@keyframes voice-spin { to { transform: rotate(360deg); } }
 @keyframes voice-count-pop { 0% { transform: scale(1.55); } 100% { transform: scale(1); } }
 /* 轻提示：语音重连失败等一次性告知，浮在输入区上方 */
 .voice-toast {
@@ -1681,11 +1776,67 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   font-size: 12px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }
-.q-card.plan .q-plan {
-  margin: 6px 0 0; font-size: 12px; line-height: 1.5; background: var(--hover);
-  border-radius: 8px; padding: 8px 10px; max-height: 220px; overflow: auto;
-  white-space: pre-wrap; word-break: break-word; font-family: inherit;
+/* 计划卡（输入区上方那张摘要卡）：长文不在这里铺，只给标题 + 首段 + 去向提示；
+   全文在右栏「计划」视图里按 Markdown 渲染（见下方「右栏计划视图」一节）。 */
+.q-card.plan .q-plan-title {
+  margin: 0; font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.q-card.plan .q-plan-desc {
+  margin: 5px 0 0; font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.q-card.plan .q-plan-hint { margin: 6px 0 0; font-size: 11.5px; color: var(--text-3); }
+.q-card.plan .ap-actions button.ghost { flex: 0 0 auto; }
+
+/* ---------- 右栏「计划」视图：提交过的计划（Markdown 全文，可反复打开） ---------- */
+.plan-bar {
+  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--border-2);
+}
+.plan-pick {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--text);
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); outline: none; cursor: pointer;
+}
+.plan-pick.hidden { display: none; }
+.plan-pick:focus { border-color: rgba(77, 107, 254, .45); }
+.plan-status { flex: none; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.plan-ico {
+  flex: none; font-size: 11.5px; color: var(--text-2); cursor: pointer;
+  padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.plan-ico:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
+.plan-ico:disabled { opacity: .5; cursor: default; }
+/* 导出结果提示（成功给路径 + 打开所在文件夹；失败给后端错误） */
+.plan-note {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-bottom: 1px solid var(--border-2);
+  background: var(--hover); font-size: 11.5px; color: var(--text-2);
+}
+.plan-note.hidden { display: none; }
+.plan-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-note.bad { color: #c0392b; }
+.plan-doc { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 16px; font-size: 13px; }
+.plan-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.plan-meta b { font-size: 13px; }
+.plan-meta span { font-size: 11.5px; color: var(--text-3); }
+.plan-badge {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  color: var(--amber); background: rgba(214, 158, 46, .12); border: 1px solid rgba(214, 158, 46, .35);
+}
+.plan-badge.gray { color: var(--text-3); background: var(--chip); border-color: var(--border); }
+.plan-md { line-height: 1.7; word-break: break-word; }
+.plan-md > :first-child { margin-top: 0; }
+.plan-empty { font-size: 12.5px; color: var(--text-3); line-height: 1.8; padding: 6px 2px; }
+/* 待审批操作区：钉在视图底部，全文再长也够得着 */
+.plan-act {
+  flex-shrink: 0; padding: 10px 14px 12px; border-top: 1px solid var(--border-2);
+  background: var(--bg);
+}
+.plan-act.hidden { display: none; }
+.plan-act .q-free { margin-top: 0; }
+.plan-act .ap-actions { margin-top: 8px; }
 
 /* 进度面板（progress_write 的渲染）：对话区右上角的一枚浮窗。
    折叠＝「进度」胶囊；展开＝从同一个右上角往左下长出的卡片——右缘与顶边都不动，
@@ -1732,6 +1883,27 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 #progress-panel li.pg-completed { color: var(--text-3); text-decoration: line-through; }
 #progress-panel li.pg-completed .pg-mark { color: #1e8e4e; }
 #progress-panel li.pg-in_progress .pg-mark { color: var(--accent); }
+/* 分隔横线：上面是进度清单，下面专放「运行中的程序」（本会话在跑的子进程） */
+.pg-sep { height: 1px; margin: 8px 0 6px; background: var(--border); }
+.pg-runs-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text-2); font-size: 11px; }
+.pg-runs-head .pg-runs-n { margin-left: auto; color: var(--text-3); font-size: 11px; }
+#progress-panel ul.pg-runs { max-height: min(26vh, 160px); }
+#progress-panel .pg-run { display: flex; align-items: baseline; gap: 6px; line-height: 1.5; color: var(--text-2); }
+.pg-run .pg-run-label {
+  flex: none; padding: 0 5px; border-radius: 5px; font-size: 10px;
+  background: var(--hover); color: var(--text-2);
+}
+.pg-run .pg-run-cmd {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 11px; color: var(--text-3);
+}
+.pg-run .pg-run-time { flex: none; color: var(--text-3); font-size: 11px; }
+.pg-run.live .pg-run-time { color: var(--accent); }
+.pg-run-dot {
+  display: inline-block; width: 6px; height: 6px; margin-right: 4px;
+  border-radius: 50%; background: var(--accent); animation: pgPulse 1.4s ease-in-out infinite;
+}
+@keyframes pgPulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 
 /* ---------- 自定义下拉（设置页统一外观） ---------- */
 .jx-select { position: relative; }
@@ -1871,8 +2043,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 :root[data-theme='dark'] .run-error .re-btn:hover { background: rgba(255, 130, 115, .16); }
 :root[data-theme='dark'] .run-error .re-retry { border-color: rgba(255, 130, 115, .45); }
 
-/* 执行中的会话：侧栏时间位显示运行标记，切走也能一眼看出还在跑 */
+/* 执行中 / 异常中断的会话：侧栏时间位显示状态标记，切走也能一眼看出还在跑、
+   或者这一轮停在了半路。两个状态走同一套结构（sessionStatusCell）与同一条位置/
+   悬停规则——只有颜色不同，别给某一个单独写位置规则，否则两者就对不齐了 */
 .session-item .s-time.running { color: var(--accent); font-weight: 600; }
+.session-item .s-time.stop { color: var(--danger); font-weight: 600; }
 
 /* 技能面板：行样式复用「内置组件/插件」的 plugin-row + pr-toggle，仅补本页专属组件 */
 /* 分组标题的弱化后缀（自带技能 · 常开 等） */

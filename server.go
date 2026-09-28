@@ -62,10 +62,13 @@ type App struct {
 	pendMu          sync.Mutex
 	pendingSteer    map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
 	pendingQueue    map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
+	midrunPref      string                   // 执行中发消息的偏好（queue/steer）：前端设置项 jx.midrun 随消息上报，派发注入按它处理（见 runtime.go）
 	errMu           sync.Mutex
 	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
 	osOnce          sync.Once
 	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
+	envClockMu      sync.Mutex
+	envAnchors      map[string]time.Time // 本轮环境时间锚点：会话 ID → 取时时刻（用户消息/执行起点，收口释放；见 agent.go）
 	browserMu       sync.Mutex
 	browserEmbedded *BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
 	browserHeaded   *BrowserHost  // 有头独立窗口宿主（旧版行为，惰性创建）
@@ -165,6 +168,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/pending", a.handlePending)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
 	mux.HandleFunc("GET /api/sessions/{id}/progress", a.handleGetProgress)
+	mux.HandleFunc("GET /api/sessions/{id}/plans", a.handleListPlans)
+	mux.HandleFunc("POST /api/sessions/{id}/plans/export", a.handleExportPlan)
 	mux.HandleFunc("GET /api/sessions/{id}/context", a.handleContextStats)
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.handleExport)
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
@@ -872,12 +877,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Model           *string `json:"model"`
 		Workspace       *string `json:"workspace"`
 		BindHost        *string `json:"bindHost"`
-		RemoteEnabled   *bool   `json:"remoteEnabled"`   // 远程接入（公网中继）总开关，即时生效（保存即热启停）
-		RemoteMyID      *string `json:"remoteMyId"`      // 远程接入设备号（手机入口 /a/<设备号>）
-		RemotePairKey   *string `json:"remotePairKey"`   // 远程接入配对密钥（端到端加密密钥的种子）
-		RemoteHost      *string `json:"remoteHost"`      // 中继网关地址（域名或 IP，不带协议与端口）
-		RemotePort      *int    `json:"remotePort"`      // 中继网关端口
-		UpdateURL       *string `json:"updateURL"`       // 更新检查发布源（"off"/空串关闭）
+		RemoteEnabled   *bool   `json:"remoteEnabled"` // 远程接入（公网中继）总开关，即时生效（保存即热启停）
+		RemoteMyID      *string `json:"remoteMyId"`    // 远程接入设备号（手机入口 /a/<设备号>）
+		RemotePairKey   *string `json:"remotePairKey"` // 远程接入配对密钥（端到端加密密钥的种子）
+		RemoteHost      *string `json:"remoteHost"`    // 中继网关地址（域名或 IP，不带协议与端口）
+		RemotePort      *int    `json:"remotePort"`    // 中继网关端口
+		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
 		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
@@ -1033,7 +1038,9 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+		stops := a.Store.LastStops() // 异常中断标记（空=正常收口，见 Store.SetLastStop）
 		for _, m := range list {
+			m.LastStop = stops[m.ID]
 			if a.IsRunning(m.ID) {
 				m.Status = "running"
 			}
@@ -1046,8 +1053,11 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	// 执行状态以内存注册表为准：数据库那列只用于服务重启后的中断恢复
+	// 执行状态以内存注册表为准：数据库那列只用于服务重启后的中断恢复；
+	// 异常中断标记（侧栏「⚠ 已中断」）同理不读会话表，一次取齐后按 id 分发
+	stops := a.Store.LastStops()
 	for _, m := range list {
+		m.LastStop = stops[m.ID]
 		if m.Status != "running" && a.IsRunning(m.ID) {
 			m.Status = "running"
 		}
@@ -1750,16 +1760,18 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 		Mode    string `json:"mode"`
+		Midrun  string `json:"midrun"` // 前端设置项 jx.midrun（queue/interject）的原值，记下来供派发注入按同一偏好处理
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
+	a.noteMidrunPref(body.Midrun)
 	mode := "queue"
 	if body.Mode == "steer" && a.IsRunning(m.ID) {
 		mode = "steer"
 	}
-	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content))
+	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content), kindChat, "")
 	if !a.IsRunning(m.ID) {
 		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次
 	}
@@ -2368,7 +2380,10 @@ func (a *App) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 	if m == nil {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"progress": progressListOf(a, m.ID)})
+	writeJSON(w, 200, map[string]any{
+		"progress": progressListOf(a, m.ID),
+		"running":  runningChildrenOf(a, m.ID), // 「运行中的程序」：本会话在跑的子进程（child.go）
+	})
 }
 
 // handleContextStats 返回会话下一次请求的上下文占用分解与缓存命中率
@@ -2547,11 +2562,13 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Content string `json:"content"`
+		Midrun  string `json:"midrun"` // 前端设置项 jx.midrun 的原值（queue/interject）：记下来供派发注入按同一偏好处理
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
+	a.noteMidrunPref(body.Midrun)
 	if _, ok := w.(http.Flusher); !ok {
 		writeErr(w, 500, "当前连接不支持流式响应")
 		return

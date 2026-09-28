@@ -225,9 +225,12 @@ type Approval struct {
 	Summary   string `json:"summary"`
 	Reason    string `json:"reason"`
 	CreatedAt string `json:"createdAt"`
-	expiresAt time.Time
-	decided   bool
-	ch        chan approvalResult
+	// SessionTitle 是发起这条请求的会话标题：前端在别的对话里也弹这张卡
+	// （卡片顶部标「来自「某对话」」并可点击跳过去），标题随请求下发，前端不必再查。
+	SessionTitle string `json:"sessionTitle,omitempty"`
+	expiresAt    time.Time
+	decided      bool
+	ch           chan approvalResult
 }
 
 // requestApproval 广播审批请求并阻塞等待用户决定（超时/取消视为拒绝）。
@@ -235,12 +238,13 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 	ap := &Approval{
 		ID: "ap-" + newID(), SessionID: sess.ID, Tool: tool,
 		Summary: summary, Reason: reason, CreatedAt: now(),
-		expiresAt: time.Now().Add(approvalTTL), ch: make(chan approvalResult, 1),
+		SessionTitle: sess.Title,
+		expiresAt:    time.Now().Add(approvalTTL), ch: make(chan approvalResult, 1),
 	}
 	a.permMu.Lock()
 	a.approvals[ap.ID] = ap
 	a.permMu.Unlock()
-	a.broadcast(Event{Type: "approval_required", ApprovalID: ap.ID, SessionID: sess.ID,
+	a.broadcast(Event{Type: "approval_required", ApprovalID: ap.ID, SessionID: sess.ID, Title: sess.Title,
 		Name: tool, Summary: summary, Reason: reason})
 	defer func() {
 		a.permMu.Lock()
@@ -280,7 +284,7 @@ func (a *App) resolveApproval(id string, approved, always bool) error {
 	return nil
 }
 
-// pendingApprovals 返回全部待决定审批（前端轮询兜底用）。
+// pendingApprovals 返回全部待决定审批（前端轮询兜底用；每张卡带会话标题）。
 func (a *App) pendingApprovals() []*Approval {
 	a.permMu.Lock()
 	defer a.permMu.Unlock()

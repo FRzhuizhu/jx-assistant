@@ -71,6 +71,7 @@ function goHomeNewTask() {
   loadProgress();
   state.msgs = [];
   resetEmpty();
+  renderPanels(); // 回到首页：待决定的浮窗整体转为「来自「某对话」」（本对话已不存在）
   loadSessions();
   refreshCtxChip();
   $('input').focus();
@@ -125,6 +126,11 @@ async function loadSessionInto(id, tok) {
   placeComposer();
   syncComposer();
   loadProgress();
+  // 待决定的浮窗跟着会话归属走（本对话的卡去掉来源行，别的对话的卡补上）；计划视图换绑这个会话
+  renderPanels();
+  planSid = id;
+  if (rpActive === 'plan') loadPlanView();
+  maybeAutoOpenPlan();
   renderMessages(state.msgs, mainView, { jump: true });
   renderQueueDock(mainView);
   // 打开即视为已读：清红点与绿点
@@ -286,8 +292,9 @@ function toolsChangeRow(prevTools, tools, seq) {
   return row;
 }
 
-// 运行环境更新行：轮内权限提升/模式切换/时间翻页等导致环境变化时，
-// 在发生位置展示变化内容（diff）与新快照全文
+// 运行环境更新行：轮内权限提升/模式切换/能力开关/技能增减等真实变化导致环境
+// 变化时，在发生位置展示变化内容（diff）与新快照全文；「当前时间」只在用户
+// 发消息时取一次，不会随时间流逝自己冒出一条
 function envNoteRow(text, prev, seq) {
   return procTextRow('运行环境更新', '随下次请求尾部发送 · ' + fmtCount(String(text).length) + ' 字',
     prev == null ? String(text) : diffBody(prev, text), seq);
@@ -551,8 +558,9 @@ const ROW_ITEM_BUILDERS = {
     st.ensure();
     st.cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
   },
-  // 运行环境快照：与最近一次已知环境相同则跳过；有变化（时间翻页、权限
-  // 提升、模式切换等）才在发生位置显示「运行环境更新」折叠行
+  // 运行环境快照：与最近一次已知环境相同则跳过；有真实变化（权限提升、
+  // 模式切换、能力开关、技能增减等——时间只在用户发消息时取一次，不算
+  // 变化源）才在发生位置显示「运行环境更新」折叠行
   env(m, st) {
     const txt = String(m.content ?? '');
     if (txt === st.lastEnv) return;
@@ -1242,6 +1250,34 @@ function followScroll(view, jump) {
   el.scrollTop = el.scrollHeight;
 }
 
+// 「发送中」占位气泡：点发送到服务端 message 事件回显之间（本机后端极快，
+// 但经网关/手机网络远程访问时可达数秒）用户消息处于「输入框已清、对话区没影」
+// 的空窗，看起来像没发出去。先按插话同款虚线气泡立显，回显落地即被正常气泡
+// 替换；整轮失败则连内容一起退回输入框（见 send 的 catch）。
+function pendingSendBubble(content) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg user pending-steer';
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  const badge = document.createElement('span');
+  badge.className = 'q-badge q-badge-steer';
+  badge.textContent = '发送中';
+  b.appendChild(badge);
+  b.appendChild(document.createTextNode(content));
+  wrap.appendChild(b);
+  return wrap;
+}
+
+// 当前视图是否有待回显的发送占位：带会话 id 自校验（切走后旧条自失效），
+// 且服务端历史末尾已是同文用户消息时不再画（attached 模式整体重取后防重）
+function pendingSendOf(st, msgs, sid) {
+  const ps = st.pendingSend;
+  if (!ps || ps.sid !== sid) return null;
+  const lastM = msgs[msgs.length - 1];
+  if (lastM && lastM.role === 'user' && String(lastM.content ?? '') === ps.content) return null;
+  return ps;
+}
+
 // 渲染单个回合（用户气泡 + 过程折叠 + 完成态收尾件）；isLast 决定是否走流式尾部窗口
 function appendTurn(target, turn, key, view, isLast) {
   if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
@@ -1268,6 +1304,9 @@ function renderMessages(msgs, view, opts) {
   if (!msgs.length) {
     st._pfxSid = null;
     box.innerHTML = view.emptyHTML;
+    // 首条消息已发出、还没回显：空态（首页问候）下面也立显「发送中」占位
+    const ps0 = pendingSendOf(st, msgs, (st.cur && st.cur.id) || '');
+    if (ps0) box.appendChild(pendingSendBubble(ps0.content));
     view._pinned = false; // 空会话没有可钉住的阅读位置
     view.scroll.scrollTop = view.scroll.scrollHeight;
     return;
@@ -1340,6 +1379,9 @@ function renderMessages(msgs, view, opts) {
     wrap.appendChild(b);
     tail.appendChild(wrap);
   });
+  // 刚发出、等回显的「发送中」占位（最末位，晚于插话）
+  const ps = pendingSendOf(st, msgs, sid);
+  if (ps) tail.appendChild(pendingSendBubble(ps.content));
   box.appendChild(tail);
   followScroll(view, jump);
 }
@@ -1564,6 +1606,10 @@ function handleGlobalEvent(ev) {
     case 'question_resolved':
       removeQuestion(ev.questionId);
       break;
+    case 'children':
+      // 本会话有子进程起/停：刷新进度面板底部的「运行中的程序」
+      loadProgress();
+      break;
     case 'progress':
       loadProgress();
       break;
@@ -1588,28 +1634,150 @@ function handleGlobalEvent(ev) {
   }
 }
 
-/* ---------- 审批卡片（沙箱升级等越权动作：允许 / 始终允许 / 拒绝） ---------- */
+/* ---------- 待用户决定的浮窗（审批 / 提问 / 计划审批）：两个落点 ----------
+   按「这张卡属于谁」分两处落，各司其职：
+
+   1) 本对话的卡 → 输入框上方（`#ask-bar` 主对话 / `#sub-ask-bar` 右栏子对话）：
+      位置在输入卡之上、附件区之上，宽度与输入卡一致（max-width: --content-w），
+      就地处理最顺手；手机端有待办时输入区不收起（否则卡跟着滑出屏）。
+   2) 别的对话的卡 → 右下角角标堆（`#ask-dock`）：卡片顶部多一行「来自「某对话」」
+      （点一下切到那个对话），一叠攒在角落互不打扰当前对话；顶部「—」按钮把它整块
+      缩成一枚胶囊（只显示条数，点胶囊再展开），用户回头再处理。左侧栏的橙点
+      照旧提示哪个会话在等。
+
+   另外两条（两处共用）：
+   · 重绘不动的字：轮询/事件重画按「卡片签名」比对——签名没变的卡片一个节点都不碰，
+     内容真的变了才重建那一张；自由输入框的文字按请求 id 存草稿并回填。这正是
+     「隔十几秒清空用户输入」的根治点（原来的实现每次都把容器 innerHTML 清空重画）。
+   · 计划（kind=plan）不在这里铺长文：卡片只给标题 + 首段 + 三个动作，全文在右侧
+     边栏的「计划」视图里按 Markdown 渲染，且那份文档与对话历史同寿命（见下节）。 */
+
+const askCards = { main: new Map(), sub: new Map(), dock: new Map() }; // 落点 → (卡片 key → {sig, el})
+const planAutoOpened = {}; // 计划提问 id → 已自动打开过右栏计划视图（用户手动关掉后不再自动弹）
+
+// 自由输入框草稿：按请求 id 存（sessionStorage：刷新页面也还在，关标签页即清）
+function askDraftKey(id) { return 'jx.ask.' + id; }
+function askDraftGet(id) {
+  try { return sessionStorage.getItem(askDraftKey(id)) || ''; } catch (e) { return ''; }
+}
+function askDraftSet(id, v) {
+  try { if (v) sessionStorage.setItem(askDraftKey(id), v); else sessionStorage.removeItem(askDraftKey(id)); } catch (e) {}
+}
+function askDraftClear(id) { try { sessionStorage.removeItem(askDraftKey(id)); } catch (e) {} }
+
+// 字符串指纹：卡片签名的正文部分（计划全文不进签名的明文，只进哈希）
+function askHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+// 会话标题：后端随请求下发的最准（会话可能已归档、不在当前清单里），再退到会话清单
+function sessionTitleOf(sid, hint) {
+  if (hint) return hint;
+  const s = (state.sessions || []).find((x) => x.id === sid);
+  if (s && s.title) return s.title;
+  if (state.cur && state.cur.id === sid && state.cur.title) return state.cur.title;
+  if (subState.cur && subState.cur.id === sid && subState.cur.title) return subState.cur.title;
+  return '另一个对话';
+}
+
+// 「来自「某对话」」：别的对话的卡靠上位置的一行来源，点一下切到那个对话
+// 样式约定（用户口径）：卡片左边条与本对话的卡同色（主题蓝），来源行里
+// 「来自「…」」不加粗、右侧「点击跳转 ›」加粗——见 style.css 的 .ap-src 一段
+function askSrcStrip(sid, hint) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'ap-src';
+  b.title = '这条请求属于另一个对话：点一下切过去（不点也能就地处理）';
+  b.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.4-.6L4 21l1.4-4a8.2 8.2 0 0 1-1.4-4.5A8.4 8.4 0 0 1 12.5 4 8.4 8.4 0 0 1 21 11.5z"/></svg>' +
+    '<span class="ap-src-title">来自「' + esc(sessionTitleOf(sid, hint)) + '」</span>' +
+    '<span class="ap-src-go">点击跳转 ›</span>';
+  b.onclick = () => askJumpTo(sid);
+  return b;
+}
+
+// 切到那条请求所属的对话（就在本对话时只是把焦点还给输入框）
+function askJumpTo(sid) {
+  if (!sid) return;
+  if (state.cur && state.cur.id === sid) { $('input').focus(); return; }
+  openSession(sid);
+}
+
+// 自由输入行：值存草稿、重建后回填（卡片的「发送/驳回/拒绝」都走它）
+function askFreeRow(id, placeholder, btnText, onSend) {
+  const row = document.createElement('div');
+  row.className = 'q-free';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = placeholder;
+  input.value = askDraftGet(id);
+  input.dataset.draftkey = id;
+  input.addEventListener('input', () => askDraftSet(id, input.value));
+  const send = () => {
+    const v = input.value.trim();
+    askDraftSet(id, input.value);
+    onSend(v);
+  };
+  const btn = document.createElement('button');
+  btn.className = 'ghost';
+  btn.textContent = btnText;
+  btn.onclick = send;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  row.appendChild(input);
+  row.appendChild(btn);
+  return row;
+}
+
+// 计划摘要（输入区那张卡只显示这一段，全文去右栏看）
+function planTitleOf(md) {
+  const m = /^#{1,6}\s+(\S.*)$/m.exec(String(md || '').trim());
+  if (m) return m[1].trim().slice(0, 80);
+  const first = String(md || '').trim().split(/\r?\n/)[0] || '';
+  return first.replace(/[#*`>\s]+$/, '').slice(0, 80) || '计划';
+}
+function planSummaryOf(md) {
+  const lines = String(md || '').split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length && (lines[i].trim() === '' || /^#{1,6}\s/.test(lines[i]))) i++; // 跳过标题
+  const para = [];
+  while (i < lines.length && lines[i].trim() !== '' && !/^#{1,6}\s/.test(lines[i])) { para.push(lines[i].trim()); i++; }
+  const desc = para.join(' ').replace(/\s+/g, ' ')
+    .replace(/^[-*+]\s+/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+  return { title: planTitleOf(md), desc: desc.length > 180 ? desc.slice(0, 180) + '…' : desc };
+}
+
+/* ---------- 事件 → 状态 ---------- */
 
 function pushApproval(ev) {
   if (!ev.approvalId || state.approvals.some((a) => a.id === ev.approvalId)) return;
   state.approvals.push({
-    id: ev.approvalId, sessionId: ev.sessionId || '',
+    id: ev.approvalId, sessionId: ev.sessionId || '', sessionTitle: ev.title || '',
     tool: ev.name || '', summary: ev.summary || '', reason: ev.reason || '',
     createdAt: ev.createdAt || '',
   });
-  renderApprovals();
+  renderPanels();
 }
 
 function removeApproval(id) {
   state.approvals = state.approvals.filter((a) => a.id !== id);
-  renderApprovals();
+  askDraftClear(id);
+  renderPanels();
 }
 
 async function loadApprovals() {
   try {
     const d = await api('/api/approvals');
-    state.approvals = d.approvals || [];
-    renderApprovals();
+    state.approvals = (d.approvals || []).map((a) => ({
+      id: a.id, sessionId: a.sessionId || '', sessionTitle: a.sessionTitle || '',
+      tool: a.tool || '', summary: a.summary || '', reason: a.reason || '',
+      createdAt: a.createdAt || '',
+    }));
+    renderPanels();
   } catch (e) { /* 服务离线时忽略 */ }
 }
 
@@ -1623,67 +1791,42 @@ async function decideApproval(id, approved, always) {
   }
 }
 
-function renderApprovals() {
-  const bar = $('approval-bar');
-  if (!bar) return;
-  bar.innerHTML = '';
-  if (!state.approvals.length && !state.questions.length) { bar.classList.add('hidden'); return; }
-  bar.classList.remove('hidden');
-  renderQuestionsInto(bar);
-  for (const ap of state.approvals) {
-    const card = document.createElement('div');
-    card.className = 'ap-card';
-    const sessTitle = (state.cur && state.cur.id === ap.sessionId)
-      ? (state.cur.title || '')
-      : ((state.sessions.find((s) => s.id === ap.sessionId) || {}).title || '');
-    card.innerHTML =
-      '<div class="ap-head"><b>需要批准</b>' + (sessTitle ? '<span>' + esc(sessTitle) + '</span>' : '') + '</div>' +
-      '<div class="ap-body"><code>' + esc(ap.summary || '') + '</code>' +
-      (ap.reason ? '<p>' + esc(ap.reason) + '</p>' : '') + '</div>' +
-      '<div class="ap-actions">' +
-      '<button class="ok" data-act="ok">允许</button>' +
-      '<button class="ok always" data-act="always" title="常设授权：命令升级点亮对应能力开关；工作区外写入会把会话切到「完全访问」（三项能力捆绑点亮），此后不再逐次审批">始终允许</button>' +
-      '<button class="deny" data-act="deny">拒绝</button>' +
-      '</div>';
-    card.querySelectorAll('button').forEach((b) => {
-      b.onclick = () => {
-        const act = b.dataset.act;
-        decideApproval(ap.id, act !== 'deny', act === 'always');
-      };
-    });
-    bar.appendChild(card);
-  }
-}
-
-/* ---------- 提问 / 计划审批卡片（ask_user_question / exit_plan_mode） ---------- */
+/* ---------- 提问 / 计划审批 ---------- */
 
 function pushQuestion(ev) {
   if (!ev.questionId || state.questions.some((q) => q.id === ev.questionId)) return;
   state.questions.push({
-    id: ev.questionId, sessionId: ev.sessionId || '', kind: ev.kind || 'ask',
-    question: ev.summary || '', plan: ev.plan || '',
+    id: ev.questionId, sessionId: ev.sessionId || '', sessionTitle: ev.title || '',
+    kind: ev.kind || 'ask', question: ev.summary || '', plan: ev.plan || '',
     options: ev.options || [],
   });
-  renderApprovals(); // 复用同一容器统一重画
+  renderPanels();
+  maybeAutoOpenPlan(); // 计划：右栏「计划」视图自动打开（本对话的才自动开）
 }
 
 function removeQuestion(id) {
-  state.questions = state.questions.filter((q) => q.id !== id);
-  renderApprovals();
+  const q = state.questions.find((x) => x.id === id);
+  if (q && q.kind === 'plan') stashPlanDoc(q); // 提问没了，计划本身要留在右栏（持久化）
+  state.questions = state.questions.filter((x) => x.id !== id);
+  askDraftClear(id);
+  renderPanels();
 }
 
 async function loadQuestions() {
   try {
     const d = await api('/api/questions');
     state.questions = (d.questions || []).map((q) => ({
-      id: q.id, sessionId: q.sessionId, kind: q.kind || 'ask',
-      question: q.question || '', plan: q.plan || '', options: q.options || [],
+      id: q.id, sessionId: q.sessionId, sessionTitle: q.sessionTitle || '',
+      kind: q.kind || 'ask', question: q.question || '', plan: q.plan || '', options: q.options || [],
     }));
-    renderApprovals();
+    renderPanels();
+    maybeAutoOpenPlan();
   } catch (e) { /* 服务离线时忽略 */ }
 }
 
 async function decideQuestion(id, answer) {
+  const q = state.questions.find((x) => x.id === id);
+  if (q && q.kind === 'plan') stashPlanDoc(q); // 先留一份副本，批/驳之后右栏仍看得到
   removeQuestion(id); // 先乐观移除，避免双击
   try {
     await api('/api/questions/' + id, { method: 'POST', body: JSON.stringify({ answer }) });
@@ -1691,51 +1834,543 @@ async function decideQuestion(id, answer) {
     $('hint').textContent = '提交失败：' + e.message;
     setTimeout(() => { $('hint').textContent = ''; }, 3000);
   }
+  if (q && q.kind === 'plan') loadPlanView(); // 历史里落的正文接上来（替换临时副本）
 }
 
-function renderQuestionsInto(bar) {
+/* ---------- 卡片与重绘 ---------- */
+
+// 右栏正显示着的子对话（右栏开着、且停在子对话视图）：它自己的待办卡在右栏输入区
+// 上方显示，主对话区那份就不再重复；右栏一关/切走，主对话区立刻接过来显示。
+function subVisibleSid() {
+  const panel = $('rpanel');
+  if (!panel || panel.classList.contains('hidden')) return '';
+  if (rpActive !== 'subs') return '';
+  return (subState.cur && subState.cur.id) || '';
+}
+
+// 本视图要显示的待办（只有「本对话自己的」）：
+// · 主对话区＝当前会话的卡；右栏子对话＝它自己的卡。
+// 别的对话的卡一律进右下角的角标堆（renderAskDock），不再混进输入框上方——
+// 本对话的卡贴在输入区上方「就地处理」，别的对话的卡攒在角落「回头处理」。
+function ownAskItems(view) {
+  const own = ((view.state.cur || {}).id) || '';
+  if (!own) return { own, list: [] };
+  const list = [];
+  for (const ap of state.approvals) if (ap.sessionId === own) list.push({ type: 'approval', id: ap.id, it: ap });
+  for (const q of state.questions) if (q.sessionId === own) list.push({ type: 'question', id: q.id, it: q });
+  return { own, list };
+}
+
+// 不属于任何「正开着的对话」的待办：主对话与右栏子对话都占着的那两个会话要排除，
+// 免得同一张卡在两处出现。
+function otherAskItems() {
+  const mainSid = (state.cur && state.cur.id) || '';
+  const subSid = subVisibleSid();
+  const list = [];
+  for (const ap of state.approvals) {
+    if (ap.sessionId !== mainSid && ap.sessionId !== subSid) list.push({ type: 'approval', id: ap.id, it: ap });
+  }
   for (const q of state.questions) {
-    const card = document.createElement('div');
-    card.className = 'ap-card q-card' + (q.kind === 'plan' ? ' plan' : '');
-    const isPlan = q.kind === 'plan';
-    const isEnter = q.kind === 'enter-plan';
-    let body = '';
-    if (isPlan) {
-      body = '<pre class="q-plan">' + esc(q.plan || '') + '</pre>' +
-        '<div class="q-free"><input type="text" placeholder="反馈修改意见后点「驳回」，或直接批准"><button class="ghost" data-free>驳回</button></div>' +
-        '<div class="ap-actions"><button class="ok" data-opt="__approve__">批准并开始执行</button></div>';
-    } else if (isEnter) {
-      body = '<div class="ap-body"><p>' + esc(q.question || '') + '</p></div>' +
-        '<div class="q-free"><input type="text" placeholder="可填写不同意见，留空直接拒绝"><button class="ghost" data-free>拒绝</button></div>' +
-        '<div class="ap-actions"><button class="ok" data-opt="__approve__">同意，进入计划模式</button></div>';
-    } else {
-      const opts = (q.options || []).map((o, i) =>
-        '<button class="opt" data-i="' + i + '">' + esc(o) + '</button>').join('');
-      body = '<div class="ap-body"><p>' + esc(q.question || '') + '</p></div>' +
-        (opts ? '<div class="q-opts">' + opts + '</div>' : '') +
-        '<div class="q-free"><input type="text" placeholder="' + (opts ? '或输入自定义回答' : '输入你的回答') + '"><button class="ghost" data-free>发送</button></div>';
-    }
-    card.innerHTML = '<div class="ap-head"><b>' + (isPlan ? '计划审批' : (isEnter ? '进入计划模式？' : '助手提问')) + '</b></div>' + body;
-    card.querySelectorAll('button[data-opt]').forEach((b) => {
-      b.onclick = () => decideQuestion(q.id, b.dataset.opt);
+    if (q.sessionId !== mainSid && q.sessionId !== subSid) list.push({ type: 'question', id: q.id, it: q });
+  }
+  return list;
+}
+
+function askCardKey(e) { return (e.type === 'approval' ? 'a:' : 'q:') + e.id; }
+
+// 卡片签名：只跟「渲染出来的内容」有关。签名一致 → 原节点原样留着，输入/焦点/滚动都不动
+function askSigOf(e, own) {
+  const it = e.it;
+  const src = it.sessionId === own ? '' : sessionTitleOf(it.sessionId, it.sessionTitle);
+  return [
+    e.type, e.id, src, it.kind || '', it.tool || '',
+    it.summary || '', it.reason || '', it.question || '',
+    it.plan ? it.plan.length + '.' + askHash(it.plan) : '',
+    (it.options || []).join('\u0001'),
+  ].join('\u0002');
+}
+
+function askPending(view) {
+  const bar = viewEl(view, 'ask-bar');
+  return !!bar && !bar.classList.contains('hidden');
+}
+
+function buildApprovalCard(e, own) {
+  const ap = e.it;
+  const card = document.createElement('div');
+  card.className = 'ap-card' + (ap.sessionId === own ? '' : ' from-other');
+  if (ap.sessionId !== own) card.appendChild(askSrcStrip(ap.sessionId, ap.sessionTitle));
+  const head = document.createElement('div');
+  head.className = 'ap-head';
+  head.innerHTML = '<b>需要批准</b>' + (ap.tool ? '<span>' + esc(ap.tool) + '</span>' : '');
+  card.appendChild(head);
+  const body = document.createElement('div');
+  body.className = 'ap-body';
+  body.innerHTML = '<code>' + esc(ap.summary || '') + '</code>' +
+    (ap.reason ? '<p>' + esc(ap.reason) + '</p>' : '');
+  card.appendChild(body);
+  const acts = document.createElement('div');
+  acts.className = 'ap-actions';
+  acts.innerHTML =
+    '<button class="ok" data-act="ok">允许</button>' +
+    '<button class="ok always" data-act="always" title="常设授权：命令升级点亮对应能力开关；工作区外写入会把会话切到「完全访问」（三项能力捆绑点亮），此后不再逐次审批">始终允许</button>' +
+    '<button class="deny" data-act="deny">拒绝</button>';
+  acts.querySelectorAll('button').forEach((b) => {
+    b.onclick = () => decideApproval(ap.id, b.dataset.act !== 'deny', b.dataset.act === 'always');
+  });
+  card.appendChild(acts);
+  return card;
+}
+
+function buildQuestionCard(e, own) {
+  const q = e.it;
+  const isPlan = q.kind === 'plan';
+  const isEnter = q.kind === 'enter-plan';
+  const card = document.createElement('div');
+  card.className = 'ap-card q-card' + (isPlan ? ' plan' : '') + (q.sessionId === own ? '' : ' from-other');
+  if (q.sessionId !== own) card.appendChild(askSrcStrip(q.sessionId, q.sessionTitle));
+  const head = document.createElement('div');
+  head.className = 'ap-head';
+  head.innerHTML = '<b>' + (isPlan ? '计划审批' : (isEnter ? '进入计划模式？' : '助手提问')) + '</b>';
+  card.appendChild(head);
+
+  if (isPlan) {
+    // 计划：这里只给摘要，全文在右栏「计划」视图（Markdown 渲染，可反复打开）
+    const info = planSummaryOf(q.plan || '');
+    const body = document.createElement('div');
+    body.className = 'ap-body';
+    body.innerHTML = '<p class="q-plan-title">' + esc(info.title) + '</p>' +
+      (info.desc ? '<p class="q-plan-desc">' + esc(info.desc) + '</p>' : '') +
+      '<p class="q-plan-hint">计划全文在右侧边栏「计划」里按 Markdown 查看（随时可再打开）</p>';
+    card.appendChild(body);
+    card.appendChild(askFreeRow(q.id, '反馈修改意见后点「驳回」，或直接批准', '驳回',
+      (v) => decideQuestion(q.id, v || '（未填写具体意见）')));
+    const acts = document.createElement('div');
+    acts.className = 'ap-actions';
+    const view = document.createElement('button');
+    view.className = 'ghost';
+    view.textContent = '查看计划';
+    view.onclick = () => openPlanView(q.sessionId);
+    const ok = document.createElement('button');
+    ok.className = 'ok';
+    ok.textContent = '批准并开始执行';
+    ok.onclick = () => decideQuestion(q.id, '__approve__');
+    acts.appendChild(view);
+    acts.appendChild(ok);
+    card.appendChild(acts);
+    return card;
+  }
+
+  const body = document.createElement('div');
+  body.className = 'ap-body';
+  body.innerHTML = '<p>' + esc(q.question || '') + '</p>';
+  card.appendChild(body);
+  const opts = q.options || [];
+  if (!isEnter && opts.length) {
+    const box = document.createElement('div');
+    box.className = 'q-opts';
+    opts.forEach((o) => {
+      const b = document.createElement('button');
+      b.className = 'opt';
+      b.textContent = o;
+      b.onclick = () => decideQuestion(q.id, o);
+      box.appendChild(b);
     });
-    card.querySelectorAll('button.opt').forEach((b) => {
-      b.onclick = () => decideQuestion(q.id, q.options[parseInt(b.dataset.i, 10)]);
-    });
-    const free = card.querySelector('.q-free');
-    if (free) {
-      const send = () => {
-        const v = free.querySelector('input').value.trim();
-        if (isEnter) { decideQuestion(q.id, v || '用户不同意进入计划模式。'); return; }
-        if (!v) return;
-        decideQuestion(q.id, v);
-      };
-      free.querySelector('button').onclick = send;
-      free.querySelector('input').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+    card.appendChild(box);
+  }
+  card.appendChild(askFreeRow(
+    q.id,
+    isEnter ? '可填写不同意见，留空直接拒绝' : (opts.length ? '或输入自定义回答' : '输入你的回答'),
+    isEnter ? '拒绝' : '发送',
+    (v) => {
+      if (isEnter) { decideQuestion(q.id, v || '（未填写具体意见）'); return; }
+      if (!v) return;
+      decideQuestion(q.id, v);
+    },
+  ));
+  if (isEnter) {
+    const acts = document.createElement('div');
+    acts.className = 'ap-actions';
+    const ok = document.createElement('button');
+    ok.className = 'ok';
+    ok.textContent = '同意，进入计划模式';
+    ok.onclick = () => decideQuestion(q.id, '__approve__');
+    acts.appendChild(ok);
+    card.appendChild(acts);
+  }
+  return card;
+}
+
+// 一个视图的浮窗渲染：增/删/改都只动该动的那张卡，其余节点一个都不碰
+function renderAskBar(view) {
+  const bar = viewEl(view, 'ask-bar');
+  if (!bar) return;
+  const { own, list } = ownAskItems(view);
+  const cards = askCards[view.key];
+  const keep = new Set();
+  const els = [];
+  for (const e of list) {
+    const key = askCardKey(e);
+    keep.add(key);
+    const sig = askSigOf(e, own);
+    let cur = cards.get(key);
+    if (!cur) {
+      cur = { sig, el: e.type === 'approval' ? buildApprovalCard(e, own) : buildQuestionCard(e, own) };
+      cards.set(key, cur);
+    } else if (cur.sig !== sig) {
+      const el = e.type === 'approval' ? buildApprovalCard(e, own) : buildQuestionCard(e, own);
+      el.dataset.fresh = '1'; // 重建的卡：草稿在 askFreeRow 里回填，值不会丢
+      cur.el.replaceWith(el);
+      cur = { sig, el };
+      cards.set(key, cur);
     }
-    bar.appendChild(card);
+    els.push(cur.el);
+  }
+  for (const [key, cur] of [...cards]) {
+    if (keep.has(key)) continue;
+    cur.el.remove();
+    cards.delete(key);
+  }
+  els.forEach((el, i) => { if (bar.children[i] !== el) bar.insertBefore(el, bar.children[i] || null); });
+  bar.classList.toggle('hidden', !els.length);
+  if (els.length) tuckComposer(view, false); // 有待办时手机端不收起输入区（否则连卡一起滑出屏）
+}
+
+/* ---------- 右下角角标堆（别的对话的待办：攒在对话区右侧的留白里） ----------
+   与输入区上方那块的分工：本对话的卡贴输入区「就地处理」，别的对话的卡一律攒到这里。
+
+   尺寸与生灭都由「对话区右侧还剩多少留白」决定（对齐进度面板 pgMetrics 的 auto 模型）：
+   · 留白够宽（≥240px）且纵向够高（≥220px）→ 自动展开，宽度取 min(300, 留白)，高度取
+     min(560, 可用高度)，绝不吃到正文列或右侧栏；
+   · 展开后内容本身塞不下（卡片总高超过可用高度）→ 自动缩成胶囊（点胶囊仍可展开看，
+     展开态在堆内滚动）；用户手动点开过就不再自动收，直到卡片增删或他再次收起；
+   · 留白不够展开 → 只留胶囊；连胶囊都放不下（右侧栏占光、留白 <96px）→ 整块不显示
+     （左侧栏的橙点照旧标出哪个会话在等）。
+   窄屏（手机）没有「右侧留白」可用，退回窗口右下角、按视口宽度收窄。 */
+
+const DOCK_W = 300;    // 角标堆最大宽度（比对话区浮窗窄一档）
+const DOCK_MIN = 240;  // 自动展开的门槛：右侧留白至少放得下这么宽
+const DOCK_HMIN = 220; // 纵向可用高度低于它也不展开（缩成胶囊）
+const DOCK_HMAX = 560; // 展开态高度上限（再多就在堆内滚动）
+const DOCK_GAP = 12;   // 与对话区右缘、窗口底缘的间距（展开与胶囊共用同一锚点）
+
+const askDock = { min: false, seen: 0, force: false }; // min=用户收了；seen=上次条数；force=用户手动点开过
+
+// 角标堆能用多少空间：按 #main 与消息列的实际矩形算，右栏开合、拖把手改宽、
+// 窗口缩放都会自然反映进来（它们都会改这两个矩形）。
+function dockMetrics() {
+  const main = $('main'), col = document.querySelector('#messages .msg-col');
+  if (!main || !col) return null;
+  const mainRect = main.getBoundingClientRect();
+  if (isNarrow()) {
+    // 手机端左右栏是整屏浮层：浮层开着时不铺开（免得盖在浮层上抢空间）
+    const overlay = document.body.classList.contains('sb-show') || document.body.classList.contains('rp-open');
+    const fitW = window.innerWidth - 2 * DOCK_GAP;
+    const fitH = Math.max(0, window.innerHeight - mainRect.top - 2 * DOCK_GAP);
+    return { right: DOCK_GAP, fitW, fitH, width: Math.round(Math.min(DOCK_W, fitW)),
+      height: Math.round(Math.min(DOCK_HMAX, fitH)),
+      auto: !overlay && fitW >= DOCK_MIN && fitH >= DOCK_HMIN, pill: !overlay && fitW >= 96 && fitH >= 36 };
+  }
+  const room = Math.max(0, mainRect.right - col.getBoundingClientRect().right); // 对话区右侧留白
+  const fitW = room - DOCK_GAP;
+  const fitH = Math.max(0, window.innerHeight - mainRect.top - DOCK_GAP * 2);
+  return {
+    right: Math.round(window.innerWidth - mainRect.right + DOCK_GAP),
+    fitW: Math.round(fitW), fitH: Math.round(fitH),
+    width: Math.round(Math.min(DOCK_W, fitW)), height: Math.round(Math.min(DOCK_HMAX, fitH)),
+    auto: fitW >= DOCK_MIN && fitH >= DOCK_HMIN, pill: fitW >= 96 && fitH >= 36,
+  };
+}
+
+function renderAskDock(list) {
+  const dock = $('ask-dock');
+  if (!dock) return;
+  const box = $('ask-dock-cards');
+  const pill = $('ask-dock-pill');
+  const cards = askCards.dock;
+  const keep = new Set();
+  const els = [];
+  for (const e of list) {
+    const key = askCardKey(e);
+    keep.add(key);
+    const sig = askSigOf(e, ''); // 角标堆里的卡一律带「来自「某对话」」来源行
+    let cur = cards.get(key);
+    if (!cur) {
+      cur = { sig, el: e.type === 'approval' ? buildApprovalCard(e, '') : buildQuestionCard(e, '') };
+      cards.set(key, cur);
+    } else if (cur.sig !== sig) {
+      const el = e.type === 'approval' ? buildApprovalCard(e, '') : buildQuestionCard(e, '');
+      cur.el.replaceWith(el);
+      cur = { sig, el };
+      cards.set(key, cur);
+    }
+    els.push(cur.el);
+  }
+  for (const [key, cur] of [...cards]) {
+    if (keep.has(key)) continue;
+    cur.el.remove();
+    cards.delete(key);
+  }
+  els.forEach((el, i) => { if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null); });
+
+  // 卡片增删（seen 变化）= 情况变了：不再沿用「用户手动点开」的意愿，重新按空间自动定
+  if (askDock.seen !== els.length) askDock.force = false;
+
+  const mt = dockMetrics() || { right: DOCK_GAP, width: DOCK_W, height: DOCK_HMAX, auto: false, pill: false };
+  dock.style.right = mt.right + 'px';
+  pill.style.right = mt.right + 'px';
+  dock.style.width = mt.width + 'px';
+  dock.style.height = '';          // 交给内容撑，上限用 maxHeight
+  dock.style.maxHeight = mt.height + 'px';
+  // 内容本身塞不下 → 自动缩成胶囊（用户手动点开过就尊重他，展开态在堆内滚动）
+  const tooTall = !askDock.force && mt.auto && box.scrollHeight > mt.height + 2;
+  const noRoom = !mt.auto;                        // 留白根本放不下：任何情况下都不铺开
+  const folded = els.length > 0 && (askDock.min || noRoom || tooTall);
+  const showPill = els.length > 0 && folded && mt.pill;
+  dock.classList.toggle('hidden', !els.length || folded);
+  pill.classList.toggle('hidden', !showPill);
+  $('ask-dock-count').textContent = els.length ? els.length + ' 项' : '';
+  $('ask-dock-pill-num').textContent = String(els.length);
+  // 缩着的时候来了新的：胶囊上点一下「有新」的提示（不自动展开，别打断当前对话）
+  if (askDock.seen < els.length && folded) pill.classList.add('has-new');
+  if (!folded) pill.classList.remove('has-new');
+  askDock.seen = els.length;
+  askDock.lastW = mt.width;
+  askDock.lastAuto = mt.auto;
+  askDock.lastPill = mt.pill;
+}
+
+// 收起 / 展开（收起是用户的显式选择，记在内存里；展开则标记「手动点开过」）
+function setAskDockMin(min) {
+  askDock.min = !!min;
+  askDock.force = !min;
+  renderPanels();
+}
+
+// 三处一起重画（主对话区 / 右栏子对话 / 右下角角标堆，加右栏「计划」视图联动）；
+// 所有入口统一走它
+function renderPanels() {
+  renderAskBar(mainView);
+  renderAskBar(subView);
+  renderAskDock(otherAskItems());
+  if (rpActive === 'plan') drawPlanView();
+}
+
+// 角标堆的两个交互：整块收起成胶囊 / 胶囊点开（点开＝用户显式要展开）
+$('ask-dock-min').onclick = () => setAskDockMin(true);
+$('ask-dock-pill').onclick = () => { askDock.seen = 0; setAskDockMin(false); };
+
+// 可展空间随「对话列宽度 / 右栏开合 / 窗口缩放」变。右栏开合是有过渡动画的，过渡
+// 途中算出来的留白是中间值（会误判成「放不下」），所以这里做防抖：等布局落定再算，
+// 只有真正跨过门槛（能展开 ↔ 只能给胶囊 ↔ 放不下）或宽度变了才重画。
+let dockSyncTimer = 0;
+function syncAskDock() {
+  clearTimeout(dockSyncTimer);
+  dockSyncTimer = setTimeout(() => {
+    const mt = dockMetrics();
+    if (!mt) return;
+    if (mt.width === askDock.lastW && mt.auto === askDock.lastAuto && mt.pill === askDock.lastPill) return;
+    renderAskDock(otherAskItems());
+  }, 150);
+}
+window.addEventListener('resize', syncAskDock);
+if (window.ResizeObserver) {
+  // 两个信号都要：#main 的宽度＝留白的来源（右栏开合/拖把手都会改它），
+  // 消息列宽度＝内容列自己的宽度（拖把手改 --content-w 时只动它）
+  const obs = new ResizeObserver(syncAskDock);
+  obs.observe($('main'));
+  const dockCol = document.querySelector('#messages .msg-col');
+  if (dockCol) obs.observe(dockCol);
+}
+
+/* ---------- 右栏「计划」视图（exit_plan_mode 的正文：Markdown + 可反复打开） ----------
+   文档来源两路合一：
+   · 历史：GET /api/sessions/{id}/plans（后端从会话日志里读回 exit_plan_mode 的调用
+     参数——计划与对话同寿命，刷新页面、切走再回来、重启进程后都还在）；
+   · 待审批：/api/questions 里该会话 kind=plan 的提问，正文在这里就地批准/驳回。
+   计划全文不进输入区（那边只留摘要卡），所以表格/清单/代码块都能在右栏正常展开。 */
+
+let planSid = '';      // 视图绑定的会话（默认跟随主对话；从别的对话的卡点进来则绑那个会话）
+let planDocs = [];     // 历史文档（新的在后）
+let planSel = '';      // 当前展示的文档 key
+let planCur = null;    // 当前展示的文档（复制按钮用）
+let planFetching = false;
+const planTried = {};  // 计划提问 id → 已补拉过历史（只补一次）
+
+function planKeyOf(d) { return d.pendingId ? 'q:' + d.pendingId : 'h:' + d.seq; }
+
+// 打开计划视图（sid 省略 = 跟随主对话）
+function openPlanView(sid) {
+  if (sid) planSid = sid;
+  if (!planSid && state.cur) planSid = state.cur.id;
+  rpOpen('plan');
+}
+
+// 计划提问到达/本对话切换时自动打开一次（用户手动关掉后不再自动弹）
+function maybeAutoOpenPlan() {
+  const sid = (state.cur && state.cur.id) || '';
+  if (!sid) return;
+  if (isNarrow()) return; // 手机端右栏是整屏浮层：不自动铺开，卡上的「查看计划」随时可点
+  const q = state.questions.find((x) => x.kind === 'plan' && x.sessionId === sid);
+  if (!q || planAutoOpened[q.id]) return;
+  planAutoOpened[q.id] = true;
+  openPlanView(sid);
+}
+
+// 提问/回答离场前先留一份正文副本：历史那边还没接上时右栏不会突然空掉
+function stashPlanDoc(q) {
+  const plan = q.plan || '';
+  if (!plan) return;
+  const head = plan.replace(/…$/, '');
+  if (planDocs.some((d) => d.markdown === plan || d.markdown.startsWith(head))) return;
+  planDocs.push({ seq: 0, title: planTitleOf(plan), markdown: plan, createdAt: '', truncated: true });
+}
+
+async function loadPlanView() {
+  const sid = planSid || (state.cur && state.cur.id) || '';
+  planSid = sid;
+  if (!sid) { planDocs = []; drawPlanView(); return; }
+  planFetching = true;
+  try {
+    const d = await api('/api/sessions/' + sid + '/plans');
+    planDocs = (d.plans || []).map((p) => ({
+      seq: p.seq, title: p.title || planTitleOf(p.markdown),
+      markdown: p.markdown, createdAt: p.createdAt || '',
+    }));
+  } catch (e) {
+    /* 服务离线/会话不存在：保留上次的清单（空清单时下面会给提示） */
+  } finally { planFetching = false; }
+  drawPlanView();
+}
+
+// 历史文档 + 待审批提问（同一份按正文前缀配对，配不上就以提问自带正文兜底）
+function planDocsWithPending() {
+  const sid = planSid || (state.cur && state.cur.id) || '';
+  const out = planDocs.map((d) => ({ ...d }));
+  for (const q of state.questions) {
+    if (q.kind !== 'plan' || q.sessionId !== sid) continue;
+    const head = (q.plan || '').replace(/…$/, '');
+    const hit = out.find((d) => d.markdown === q.plan || d.markdown.startsWith(head));
+    if (hit) hit.pendingId = q.id;
+    else out.push({ seq: 0, title: planTitleOf(q.plan || ''), markdown: q.plan || '', pendingId: q.id, createdAt: '', truncated: true });
+  }
+  return out;
+}
+
+function drawPlanView() {
+  const docEl = $('plan-doc');
+  if (!docEl) return;
+  const list = planDocsWithPending();
+  let cur = list.find((d) => planKeyOf(d) === planSel);
+  if (!cur) cur = list.find((d) => d.pendingId) || list[list.length - 1];
+  planSel = cur ? planKeyOf(cur) : '';
+  planCur = cur || null;
+
+  const pick = $('plan-pick');
+  pick.innerHTML = '';
+  list.forEach((d) => {
+    const o = document.createElement('option');
+    o.value = planKeyOf(d);
+    o.textContent = (d.pendingId ? '待审批 · ' : '') + d.title +
+      (d.createdAt ? '（' + String(d.createdAt).slice(5, 16) + '）' : '');
+    pick.appendChild(o);
+  });
+  pick.value = planSel;
+  pick.classList.toggle('hidden', list.length < 2);
+
+  const pendingCount = list.filter((d) => d.pendingId).length;
+  $('plan-status').textContent = !list.length ? ''
+    : (pendingCount ? '待审批 ' + pendingCount + ' 份 · 共 ' + list.length + ' 份' : '共 ' + list.length + ' 份');
+
+  if (!cur) {
+    docEl.innerHTML = '<div class="plan-empty">本对话还没有提交过计划。<br>' +
+      '计划模式下模型完成调研、调用 exit_plan_mode 提交后，计划正文就会出现在这里；' +
+      '可以随时关掉再打开，刷新页面也还在。</div>';
+  } else {
+    docEl.innerHTML =
+      '<div class="plan-meta"><b>' + esc(cur.title) + '</b>' +
+      (cur.createdAt ? '<span>' + esc(cur.createdAt) + '</span>' : '') +
+      (cur.pendingId ? '<span class="plan-badge">待审批</span>' : '') +
+      (cur.truncated ? '<span class="plan-badge gray">摘要</span>' : '') +
+      '</div><div class="md plan-md">' + md(cur.markdown) + '</div>';
+  }
+
+  const act = $('plan-act');
+  if (cur && cur.pendingId) {
+    act.classList.remove('hidden');
+    $('plan-feedback').value = askDraftGet(cur.pendingId);
+  } else {
+    act.classList.add('hidden');
+  }
+  // 待审批的正文在历史里还没配对上（工具调用刚落库）：拉一次清单补齐全文，
+  // 每份提问只补拉一次（planTried），免得历史里确实没有时来回打转
+  const missing = list.find((d) => d.pendingId && d.truncated);
+  if (missing && !planFetching && !planTried[missing.pendingId]) {
+    planTried[missing.pendingId] = true;
+    loadPlanView();
   }
 }
+
+// 右栏「计划」视图的控件（只绑一次；展示对象从 planCur 取）
+$('plan-pick').addEventListener('change', (e) => { planSel = e.target.value; planNoteHide(); drawPlanView(); });
+$('plan-copy').onclick = () => {
+  if (!planCur) return;
+  navigator.clipboard.writeText(planCur.markdown).catch(() => {});
+  $('plan-status').textContent = '已复制计划全文';
+};
+$('plan-reload').onclick = () => loadPlanView();
+
+// 导出：把当前这份计划写成工作区里的 .md（后端不覆盖同名，自动加 -2、-3）
+function planNoteShow(text, dir, bad) {
+  const note = $('plan-note');
+  $('plan-note-text').textContent = text;
+  note.dataset.dir = dir || '';
+  $('plan-note-open').classList.toggle('hidden', !dir);
+  note.classList.toggle('bad', !!bad);
+  note.classList.remove('hidden');
+}
+function planNoteHide() {
+  const note = $('plan-note');
+  if (!note) return;
+  note.classList.add('hidden');
+  note.dataset.dir = '';
+}
+$('plan-export').onclick = async () => {
+  if (!planCur) return;
+  const btn = $('plan-export');
+  const sid = planSid || (state.cur && state.cur.id) || '';
+  if (!sid) return;
+  btn.disabled = true;
+  try {
+    const d = await api('/api/sessions/' + sid + '/plans/export',
+      { method: 'POST', body: JSON.stringify({ seq: planCur.seq || 0 }) });
+    planNoteShow('已导出：' + (d.path || d.name || ''), d.dir || '', false);
+  } catch (e) {
+    planNoteShow('导出失败：' + e.message, '', true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+$('plan-note-open').onclick = async () => {
+  const dir = $('plan-note').dataset.dir || '';
+  if (!dir) return;
+  try {
+    await api('/api/open-folder', { method: 'POST', body: JSON.stringify({ path: dir }) });
+  } catch (e) {
+    planNoteShow('打开文件夹失败：' + e.message, dir, true);
+  }
+};
+
+$('plan-feedback').addEventListener('input', (e) => {
+  if (planCur && planCur.pendingId) askDraftSet(planCur.pendingId, e.target.value);
+});
+$('plan-approve').onclick = () => { if (planCur && planCur.pendingId) decideQuestion(planCur.pendingId, '__approve__'); };
+$('plan-reject').onclick = () => {
+  if (!planCur || !planCur.pendingId) return;
+  const v = $('plan-feedback').value.trim();
+  decideQuestion(planCur.pendingId, v || '（未填写具体意见）');
+};
+rpRegister('plan', { title: '计划', order: 2, onOpen: () => { if (!planSid && state.cur) planSid = state.cur.id; loadPlanView(); } });
 
 /* ---------- 进度面板（progress_write）：对话区右上角的一枚浮窗，可折叠 ---------- */
 // 定位只有一个锚点：对话区（#main）的右上角。折叠＝一枚「进度」胶囊，展开＝从同一个
@@ -1750,7 +2385,8 @@ const PG_MIN = 220;  // 自动展开的门槛：右侧留白至少放得下这�
 const PG_GAP = 10;   // 面板与对话区右缘的间距（胶囊与卡片共用，保证同一锚点）
 const PG_PAD = 24;   // 内容列自身的内边距：留白不够时可以借它，不算遮正文
 
-let pgItems = [];    // 最近一次取到的进度项（空 = 没有进度，面板整体隐藏）
+let pgItems = [];    // 最近一次取到的进度项（空 = 没有进度项）
+let pgRuns = [];     // 本会话「运行中的程序」（在跑的子进程）；两者都空才整体隐藏
 let pgFold = null;   // 用户显式选择：null=自动；true=展开；false=收起
 let pgDrawn = null;  // 上次画出来的展开态（留白变化时只在翻转时才重画）
 
@@ -1772,12 +2408,31 @@ function pgExpanded(mt) { return pgFold === null ? mt.auto : pgFold; }
 async function loadProgress() {
   const panel = $('progress-panel');
   if (!panel) return;
-  if (!state.cur) { pgItems = []; pgFold = null; drawProgress(); return; }
+  if (!state.cur) { pgItems = []; pgRuns = []; pgFold = null; drawProgress(); return; }
   try {
     const d = await api('/api/sessions/' + state.cur.id + '/progress');
     pgItems = d.progress || [];
+    pgRuns = d.running || [];
   } catch (e) { /* 会话不存在/服务离线：维持上一次的样子 */ }
   drawProgress();
+}
+
+// 运行时长文案：88s / 3m20s / 1h02m
+function fmtElapsed(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + 'm' + (s < 10 ? '0' + s : s) + 's';
+  return Math.floor(m / 60) + 'h' + (m % 60 < 10 ? '0' + (m % 60) : m % 60) + 'm';
+}
+
+// 还有在跑的程序时每 5s 刷一次时长（起/停由 SSE 的 children 事件即时刷）
+let pgRunTick = null;
+function scheduleRunTick() {
+  if (pgRunTick) { clearTimeout(pgRunTick); pgRunTick = null; }
+  // 只要有登记项（在跑，或刚结束还没被服务端清掉的）就继续刷，直到列表空掉为止
+  if (!state.cur || !pgRuns.length) return;
+  pgRunTick = setTimeout(() => { pgRunTick = null; loadProgress(); }, 5000);
 }
 
 // 按当前折叠状态重画面板：折叠＝胶囊，展开＝头部（整行是收起按钮）+ 清单。
@@ -1785,16 +2440,19 @@ async function loadProgress() {
 function drawProgress() {
   const panel = $('progress-panel');
   if (!panel) return;
-  const items = pgItems;
-  if (!items.length) { panel.classList.add('hidden'); panel.innerHTML = ''; pgDrawn = null; return; }
+  const items = pgItems, runs = pgRuns;
+  if (!items.length && !runs.length) { panel.classList.add('hidden'); panel.innerHTML = ''; pgDrawn = null; return; }
   const mt = pgMetrics() || { width: PG_W, auto: false };
   const open = pgExpanded(mt);
   pgDrawn = open;
   panel.style.setProperty('--pg-w', mt.width + 'px');
   panel.classList.remove('hidden');
   panel.classList.toggle('pg-folded', !open);
+  const running = runs.filter((r) => r.state === 'running').length;
   if (!open) {
-    panel.innerHTML = '<button type="button" class="pg-pill" title="展开进度清单">进度' + chev('pg-chev') + '</button>';
+    panel.innerHTML = '<button type="button" class="pg-pill" title="展开进度清单">进度'
+      + (running ? '<span class="pg-run-dot"></span>' + running + ' 个在跑' : '')
+      + chev('pg-chev') + '</button>';
     panel.querySelector('.pg-pill').onclick = () => { pgFold = true; drawProgress(); };
     return;
   }
@@ -1802,20 +2460,41 @@ function drawProgress() {
   let html = '<button type="button" class="progress-head" title="收起进度清单">'
     + '<b>进度</b><span class="pg-count">' + done + '/' + items.length + '</span>'
     + '<svg class="pg-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>'
-    + '</button><ul>';
-  for (const t of items) {
-    const mark = t.status === 'completed' ? '✔' : (t.status === 'in_progress' ? '▶' : '·');
-    html += '<li class="pg-' + (t.status || 'pending') + '"><span class="pg-mark">' + mark + '</span>' + esc(t.content) + '</li>';
+    + '</button>';
+  if (items.length) {
+    html += '<ul>';
+    for (const t of items) {
+      const mark = t.status === 'completed' ? '✔' : (t.status === 'in_progress' ? '▶' : '·');
+      html += '<li class="pg-' + (t.status || 'pending') + '"><span class="pg-mark">' + mark + '</span>' + esc(t.content) + '</li>';
+    }
+    html += '</ul>';
   }
-  html += '</ul>';
+  if (runs.length) {
+    // 横线隔开：上面是进度清单，下面专放本会话「运行中的程序」——短命令会一闪而过，
+    // 一直后台跑的（后台作业、长命令）会一直留在这里，看得见它在跑多久。
+    html += '<div class="pg-sep"></div>'
+      + '<div class="pg-runs-head">运行中的程序<span class="pg-runs-n">' + (running ? running + ' 个在跑' : '刚结束') + '</span></div>'
+      + '<ul class="pg-runs">';
+    for (const r of runs) {
+      const live = r.state === 'running';
+      const cmd = String(r.command || '');
+      html += '<li class="pg-run' + (live ? ' live' : '') + '">'
+        + '<span class="pg-run-label">' + esc(r.label || '子进程') + '</span>'
+        + '<span class="pg-run-cmd" title="' + esc(cmd) + '">' + esc(cmd.length > 70 ? cmd.slice(0, 70) + '…' : cmd) + '</span>'
+        + '<span class="pg-run-time">' + (live ? '已跑 ' + fmtElapsed(r.elapsed) : esc(r.exit || '已结束')) + '</span>'
+        + '</li>';
+    }
+    html += '</ul>';
+  }
   panel.innerHTML = html;
   panel.querySelector('.progress-head').onclick = () => { pgFold = false; drawProgress(); };
+  scheduleRunTick();
 }
 
 // 留白变了（缩放窗口、开关左右栏、拖拽调宽对话列）：宽度跟着变；自动档下展开态翻转
 // 才重画，其余情况只改宽度不动 DOM
 function syncProgress() {
-  if (!pgItems.length) return;
+  if (!pgItems.length && !pgRuns.length) return;
   const mt = pgMetrics();
   if (!mt) return;
   const panel = $('progress-panel');
@@ -2038,6 +2717,10 @@ function handleEvent(ev, view) {
       view.state.streamText = '';
       view.state.streamThinking = '';
       removeLive(view);
+      // 用户消息回显落地：「发送中」占位功成身退（助手/工具事件不会先于它到达）
+      if (view.state.pendingSend && ev.message && ev.message.role === 'user') {
+        view.state.pendingSend = null;
+      }
       if (view.state.attached) {
         // 跟随别的连接发起的执行：以服务端为准整体重取，避免与已落库内容重复
         reloadMessages(view);
@@ -2266,6 +2949,7 @@ async function endTurn(view, aborted, stream) {
   removeLive(view);
   view.state.streaming = false;
   view.state.attached = false;
+  view.state.pendingSend = null; // 收尾兜底：占位气泡不越过本轮（正常路径早已被回显替换）
   if (aborted) {
     await reloadMessages(view); // 本地被动断流：整体对一次
   } else {
@@ -2361,9 +3045,11 @@ function applyPending(view, pending) {
 }
 
 // 执行中发出的消息：按「对话中途发送行为」插话或排队（两种模式都在服务端排队）
+// 默认值=等待排队：新装/没设置过 jx.midrun 时排队；只有用户在设置里显式选过
+// 「插话」（localStorage 里存了 interject）才走 steer。手动切换照旧存同一个键。
 async function sendMidrun(content, viaInput, view) {
   view = view || mainView;
-  const mode = lsGet('jx.midrun', 'interject') === 'queue' ? 'queue' : 'steer';
+  const mode = lsGet('jx.midrun', 'queue') === 'interject' ? 'steer' : 'queue';
   try {
     const d = await api('/api/sessions/' + view.state.cur.id + '/interject', {
       method: 'POST', body: JSON.stringify({ content, mode }),
@@ -2471,6 +3157,10 @@ async function send(forceContent, view) {
   view.state.streamText = '';
   view.state.streamThinking = '';
   hideRunError(view); // 新一轮开始：上一轮的报错条收掉
+  // 立显「发送中」占位：回显落地前（远程/慢网可数秒）消息不悬空；带 sid，
+  // 切走自失效，message 事件的用户回显落地即换正常气泡
+  view.state.pendingSend = { sid, content };
+  renderMessages(view.state.msgs, view);
   if (view === mainView) JX.emit('send', { content });
 
   let aborted = false;
@@ -2493,12 +3183,16 @@ async function send(forceContent, view) {
       // 流断了不等于执行结束：后端执行体独立于这条连接，先对一次状态再决定提示
       view.state.streamText = '';
       view.state.streamThinking = '';
+      view.state.pendingSend = null; // 这轮的去向马上有定论：占位气泡退场
       renderMessages(view.state.msgs, view);
       if (await backendRunning(view.state.cur.id, view)) {
         // 后端刚被别的路径拉起执行（自动汇报/排队排水/别的窗口在发），这条消息
         // 被拒了：降级为插话/排队（在服务端排队，不丢），endTurn 会接上那轮继续看
         await sendMidrun(content, false, view);
       } else {
+        // 整轮没发出去（请求根本没到服务端，消息没落库）：内容退回输入框不丢字，
+        // 报错条给出原因；用户改完重发即可（别用「重试」——库里没有这条消息）
+        if (fromInput && !input.value) { input.value = content; autoGrow(input); }
         showRunError(view, '请求失败：' + e.message);
       }
     }
@@ -2691,6 +3385,7 @@ function detachStream(view) {
   view.state.streaming = false;
   view.state.attached = false;
   view.state.abort = null;
+  view.state.pendingSend = null; // 切走即弃占位：回来时以服务端落库为准（endTurn 不会再跑）
   view.state.streamText = '';
   view.state.streamThinking = '';
   removeLive(view);
@@ -3700,6 +4395,7 @@ function syncComposerPad(view) {
   const h = wrap.classList.contains('tucked') ? 0 : wrap.offsetHeight;
   view.col.style.paddingBottom = (h + 14) + 'px';
   zone.style.setProperty('--cw-h', h + 'px');
+  view._cwH = h; // 未收起时的垫高：收起判定用它做距离阈值（见 setupScrollTuck）
 }
 
 function tuckComposer(view, on) {
@@ -3707,6 +4403,8 @@ function tuckComposer(view, on) {
   if (!wrap) return;
   if (on) {
     if (!isNarrow() || wrap.classList.contains('tucked')) return;
+    // 有待决定的浮窗（审批/提问/计划审批）时不收起：否则卡片跟着输入区一起滑出屏幕
+    if (askPending(view)) return;
     wrap.style.transform = 'translateY(100%)';
     wrap.classList.add('tucked');
   } else {
@@ -3757,11 +4455,15 @@ function setupScrollTuck() {
         view._jumpShow = now;
         view._jumpBtn.classList.toggle('show', now);
       }
-      // 输入区收起只作用于窄屏
+      // 输入区收起只作用于窄屏。收起会同步收走内容列底部垫高（syncComposerPad），
+      // scrollHeight 随之变矮 pad——若收时离底不足「垫高+余量」，浏览器会把
+      // scrollTop 钳到新底部并触发 scroll：近底判定翻转→立即展开→垫高长回→
+      // 惯性滚动再收……一来一回就是「文字图像不断抽搐」。收起因此要求离底
+      // 超过 pad+FOLLOW_RESUME：收完 dist 仍 >FOLLOW_RESUME，钳位不可能发生。
       if (!isNarrow()) return;
-      const nearBottom = y + el.clientHeight >= el.scrollHeight - 48;
+      const nearBottom = y + el.clientHeight >= el.scrollHeight - FOLLOW_RESUME;
       if (nearBottom) tuckComposer(view, false);
-      else if (dy < -8) tuckComposer(view, true);  // 往回翻历史：收起
+      else if (dy < -8 && y + el.clientHeight < el.scrollHeight - (view._cwH || 0) - FOLLOW_RESUME) tuckComposer(view, true); // 往回翻历史：收起
       else if (dy > 12) tuckComposer(view, false); // 向底部翻：展开
     }, { passive: true });
     view.input.addEventListener('focus', () => tuckComposer(view, false));
@@ -3923,43 +4625,364 @@ document.addEventListener('keydown', (e) => {
   if (sideSearchOpen()) { closeSideSearch(); return; } // 搜索开着：优先关搜索
   closePopovers();
 });
-// 语音输入：浏览器原生识别，边说边追加到输入框（两个输入区各一套，互不干扰）
+/**
+ * 把「上一段已有文字」与「新到文字」拼起来：中文之间不加空格（语音转写的中文
+ * 分段常常只是停顿，插空格会切碎句子），英文/数字单词之间保留一个空格。
+ */
+function voiceJoin(prev, next) {
+  if (prev === '') return next;
+  const tail = prev.charAt(prev.length - 1), head = next.charAt(0);
+  return (/[A-Za-z0-9]/.test(tail) && /[A-Za-z0-9]/.test(head)) ? prev + ' ' + next : prev + next;
+}
+
+/* ---------- 语音输入（两个输入区各一套，互不干扰） -------------------------------
+
+   四个层次：
+   1) 连接：点麦克风先进「连接中」——按钮转圈，不算开始说话。连上（onstart）才
+      变蓝进入录音态；VOICE_CONNECT_TIMEOUT 之内连不上就退避重试，重试 VOICE_MAX_RETRY
+      次仍连不上才弹报错。首次连接往往比后续慢（要跟云端服务建链），所以这里
+      的等待给得比"点了没反应"的看门狗宽，且**不打断正在建立的连接**。
+   2) 识别：浏览器原生 Web Speech（Edge/Chrome）。音频由浏览器直接发给云端识别
+      服务，链路抖动、静音收尾、引擎自行结束都很常见 → 录音态掉线同样退避重连。
+   3) 灰字：转写先落在叠层上显示为灰字——它不在输入框的值里，所以不可编辑、
+      不可选中；静置 VOICE_SETTLE_MS（2.5 秒）后落成黑色正文写进输入框，此后
+      与手打文字一样可编辑。断线收尾时把已有灰字立即落定，避免白说。
+   4) 节流：单次听写最长 VOICE_MAX_SEC，最后 9 秒在麦克风按钮上出倒计时徽标。   */
+
 const voiceOn = { main: false, sub: false };
-const voiceRecog = { main: null, sub: null };
+const voiceSess = { main: null, sub: null };
+const VOICE_MAX_RETRY = 3;          // 连续连不上/没结果的重试上限（任一次拿到文字即清零）
+const VOICE_RETRY_BASE = 400;       // 首次重试等待（毫秒），此后线性退避
+const VOICE_RETRY_STEP = 400;       // 每多一次重试多等这么久
+const VOICE_RETRY_MAX = 1600;       // 单次等待上限（毫秒）
+const VOICE_CONNECT_TIMEOUT = 5000; // 连接阶段等待上限（毫秒）：超时才判这次失败
+const VOICE_SETTLE_MS = 2500;       // 灰字静置多久落成正文
+const VOICE_SWEEP_MS = 400;         // 定稿巡检间隔
+const VOICE_MAX_SEC = 240;          // 单次听写时长上限（秒），最后 9 秒出倒计时
+const VOICE_STOP_GRACE = 1200;      // 用户按停后等引擎吐完最后一句的兜底时长（毫秒）
+
+/**
+ * 灰色暂定层：把还没定稿的转写文字叠在输入框上显示为灰字。
+ * 它 pointer-events:none 且不进输入框的值 → 不可编辑、不可选中、不吃点击；
+ * 已定稿正文用透明占位一起排版，保证灰字正好接在正文末尾（换行位置一致）。
+ */
+function voiceShadow(inp, tail) {
+  const card = inp.closest ? inp.closest('.composer-card') : null;
+  if (!card) return;
+  let sh = null;
+  for (const child of card.children) { if (child.classList.contains('voice-shadow')) { sh = child; break; } }
+  if (!sh) {
+    sh = document.createElement('div');
+    sh.classList.add('voice-shadow', 'hidden');
+    card.appendChild(sh);
+  }
+  if (!tail) {
+    sh.classList.add('hidden');
+    sh.textContent = '';
+    if (inp.classList) inp.classList.remove('voice-dictating');
+    return;
+  }
+  if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+  const cs = getComputedStyle(inp);
+  sh.style.left = inp.offsetLeft + 'px';
+  sh.style.top = inp.offsetTop + 'px';
+  sh.style.width = inp.offsetWidth + 'px';
+  sh.style.height = inp.offsetHeight + 'px';
+  ['font-size', 'font-family', 'font-weight', 'line-height', 'letter-spacing',
+    'padding', 'box-sizing', 'white-space', 'word-break', 'overflow-wrap', 'text-align']
+    .forEach((k) => { sh.style[k] = cs[k]; });
+  // 输入框内容超出可视高度而滚动时，灰字层跟着上移，保持对齐
+  sh.style.transform = 'translateY(-' + (inp.scrollTop || 0) + 'px)';
+  if (inp.classList) inp.classList.add('voice-dictating'); // 灰字在时隐掉 placeholder，避免两层字叠在一起
+  sh.textContent = '';
+  const head = document.createElement('span');
+  head.classList.add('voice-shadow-head');
+  head.textContent = inp.value;            // 透明占位：与正文同排版，灰字接在其后
+  const rest = document.createElement('span');
+  rest.classList.add('voice-shadow-tail');
+  rest.textContent = tail;
+  sh.append(head, rest);
+  sh.classList.remove('hidden');
+}
+
+/** 一次性轻提示（语音连不上等），浮在输入区上方，不打断输入。 */
+function voiceToast(text) {
+  const el = document.createElement('div');
+  el.classList.add('voice-toast');
+  el.textContent = text;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => { if (el.remove) el.remove(); }, 300);
+  }, 6000);
+}
+
 function bindVoiceButton(view) {
   const btn = viewEl(view, 'btn-voice');
   if (!btn) return;
-  btn.onclick = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const hint = view.hint;
-    if (!SR) { hint.textContent = '当前浏览器不支持语音识别'; setTimeout(() => { hint.textContent = ''; }, 2500); return; }
-    if (voiceOn[view.key]) { voiceRecog[view.key] && voiceRecog[view.key].stop(); return; }
-    const rec = new SR();
-    voiceRecog[view.key] = rec;
-    rec.lang = 'zh-CN';
-    rec.interimResults = false;
-    rec.continuous = true;
-    rec.onresult = (e) => {
-      let text = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) text += e.results[i][0].transcript;
-      if (!text) return;
+  const key = view.key;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // 一次听写的会话状态（重连全程复用同一份，只换识别实例）
+  const sess = voiceSess[key] = {
+    rec: null,          // 当前识别实例：每次重试换新实例（onend 之后不能可靠复用）
+    retries: 0,         // 本次听写内连续「没结果」的次数
+    active: false,      // 会话是否还在（true 期间按钮是连接中/录音态、灰字层工作）
+    live: false,        // 当前实例是否已连上（onstart 之后为 true）
+    done: false,        // 已收尾：用户点了停止、超时、或重试次数用尽
+    stopping: false,    // 用户已按停：等引擎吐完最后一句就收尾，不再重试
+    segs: new Map(),    // 未定稿的转写：槽位索引 → { text, final, changedAt }
+    committed: new Map(), // 已落进正文的槽位：索引 → 已落定文字（引擎重报时按前缀剥离）
+    maxIdx: -1,         // 引擎当前报到的槽位（比它小说明引擎重置了结果列表）
+    startedAt: 0,       // 本次听写开始时刻（时长上限与倒计时用）
+    count: null,        // 倒计时徽标元素
+    spin: null,         // 连接中转圈元素
+    restartTimer: null, // 退避重试定时器
+    connectTimer: null, // 连接阶段超时定时器
+    stopTimer: null,    // 按停后的兜底收尾定时器
+    hintTimer: null,    // 提示文案的清除定时器
+    sweepTimer: null,   // 定稿巡检定时器
+  };
+  let lastTail = null, lastHead = null; // 灰字层上次渲染的内容（避免每 400ms 重排）
+  if (getComputedStyle(btn).position === 'static') btn.style.position = 'relative';
+
+  const clearT = (name) => { if (sess[name]) { clearTimeout(sess[name]); sess[name] = null; } };
+  // 提示文案：同一时刻只留一条；ms 为空 = 常驻到下一次提示
+  const setHint = (text, ms) => {
+    clearT('hintTimer');
+    view.hint.textContent = text;
+    if (ms) sess.hintTimer = setTimeout(() => { if (view.hint.textContent === text) view.hint.textContent = ''; }, ms);
+  };
+  // 进度提示（连接中/重连中）：这类文案由我们写、也由我们清；用标记区分，
+  // 免得把别的提示（报错等）误清掉
+  const setProgressHint = (text) => { sess.progressHint = true; setHint(text); };
+  const clearProgressHint = () => { if (sess.progressHint) { sess.progressHint = false; setHint(''); } };
+  // 按钮三态：空闲（白）/ 连接中（转圈）/ 录音中（蓝色脉冲）
+  const setSpin = (on) => {
+    if (on && !sess.spin) {
+      sess.spin = document.createElement('span');
+      sess.spin.classList.add('voice-spinner');
+      btn.appendChild(sess.spin);
+      btn.classList.add('connecting');
+    } else if (!on && sess.spin) {
+      sess.spin.remove();
+      sess.spin = null;
+      btn.classList.remove('connecting');
+    }
+  };
+  // 倒计时徽标：最后 9 秒显示秒数，换数字时弹一下
+  const setCount = (n) => {
+    if (n === null) {
+      if (sess.count) sess.count.remove();
+      sess.count = null;
+      return;
+    }
+    if (!sess.count) {
+      sess.count = document.createElement('span');
+      sess.count.classList.add('voice-count');
+      btn.appendChild(sess.count);
+    }
+    if (sess.count.textContent !== String(n)) {
+      sess.count.textContent = String(n);
+      sess.count.classList.remove('pop');
+      void sess.count.offsetWidth; // 触发重排，让动画能重放
+      sess.count.classList.add('pop');
+    }
+  };
+  // 灰字层渲染（tail 为空即隐藏）
+  const renderShadow = () => {
+    const inp = view.input;
+    let tail = '';
+    for (const i of Array.from(sess.segs.keys()).sort((a, b) => a - b)) tail += sess.segs.get(i).text;
+    if (tail === lastTail && inp.value === lastHead) return;
+    lastTail = tail;
+    lastHead = inp.value;
+    voiceShadow(inp, tail);
+  };
+  // 把指定槽位定稿：写进输入框正文（黑字），从灰字层移除
+  const commitSegs = (idxs) => {
+    let text = '';
+    for (const i of idxs.slice().sort((a, b) => a - b)) {
+      const seg = sess.segs.get(i);
+      if (!seg) continue;
+      sess.segs.delete(i);
+      sess.committed.set(i, (sess.committed.get(i) || '') + seg.text);
+      text += seg.text;
+    }
+    if (text !== '') {
       const inp = view.input;
-      inp.value += (inp.value ? ' ' : '') + text;
+      inp.value = voiceJoin(inp.value, text);
       autoGrow(inp);
       // 语音是程序化写入，不触发 input 事件：手动落一次当前上下文的草稿
       if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    }
+    renderShadow();
+  };
+  // 全部定稿（断线收尾、用户按停、引擎重置结果列表时用：先说出来的先落定，不丢字）
+  const commitAll = () => {
+    if (sess.segs.size > 0) commitSegs(Array.from(sess.segs.keys()));
+    else renderShadow();
+  };
+  // 收尾：定稿残留灰字、停掉实例与定时器、按钮回空闲、灰字层收起
+  const finish = (msg, toast) => {
+    const rec = sess.rec;
+    sess.progressHint = false;
+    sess.active = false;
+    sess.live = false;
+    sess.done = true;
+    sess.stopping = false;
+    sess.rec = null;
+    clearT('restartTimer');
+    clearT('connectTimer');
+    clearT('stopTimer');
+    if (sess.sweepTimer) { clearInterval(sess.sweepTimer); sess.sweepTimer = null; }
+    commitAll();
+    voiceOn[key] = false;
+    btn.classList.remove('on');
+    setSpin(false);
+    setCount(null);
+    try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+    if (msg) setHint(msg, 4000); else clearT('hintTimer');
+    if (toast) voiceToast(toast);
+  };
+  // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾
+  const stopByUser = () => {
+    if (sess.stopping || sess.done) return;
+    sess.stopping = true;
+    clearT('restartTimer');
+    clearT('connectTimer');
+    const rec = sess.rec;
+    try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+    clearT('stopTimer');
+    sess.stopTimer = setTimeout(() => { finish(''); }, VOICE_STOP_GRACE);
+  };
+  // 退避重试；连续 VOICE_MAX_RETRY 次都没结果就放弃并弹报错。幂等——已有重试在
+  // 排队时直接忽略（同一轮故障常同时给 onerror 与 onend 两个回调）。
+  const scheduleRetry = () => {
+    if (!sess.active || sess.done || sess.stopping || sess.restartTimer) return;
+    if (sess.retries >= VOICE_MAX_RETRY) {
+      finish('语音识别已停止', '语音识别连接不稳定（网络），连续 ' + VOICE_MAX_RETRY + ' 次连不上，已停止听写');
+      return;
+    }
+    const wait = Math.min(VOICE_RETRY_BASE + sess.retries * VOICE_RETRY_STEP, VOICE_RETRY_MAX);
+    sess.retries += 1;
+    sess.live = false;
+    btn.classList.remove('on');
+    setSpin(true); // 等待重试期间也转圈：让用户看到「还在连」，不是又白了一下
+    setProgressHint('语音识别连接不上，正在重连（' + sess.retries + '/' + VOICE_MAX_RETRY + '）…');
+    sess.restartTimer = setTimeout(() => { sess.restartTimer = null; startOnce(); }, wait);
+  };
+  // 定稿巡检：说话中不落字（引擎持续在改），停下约 2.5 秒才落成正文；
+  // 顺带管倒计时与时长上限
+  const sweep = () => {
+    if (!sess.active) return;
+    const t = Date.now();
+    const ready = [];
+    for (const [i, seg] of sess.segs) {
+      if (t - seg.changedAt >= VOICE_SETTLE_MS) ready.push(i);
+    }
+    if (ready.length > 0) commitSegs(ready); else renderShadow();
+    const remain = VOICE_MAX_SEC * 1000 - (t - sess.startedAt);
+    if (remain <= 0) { stopByUser(); return; }
+    setCount(remain <= 9000 ? Math.ceil(remain / 1000) : null);
+  };
+  const startOnce = () => {
+    if (!sess.active || sess.done) return;
+    let rec;
+    try { rec = new SR(); } catch (e) { scheduleRetry(); return; }
+    sess.rec = rec;
+    sess.live = false;
+    sess.maxIdx = -1;        // 新实例的结果列表从 0 重新计
+    sess.committed.clear();  // 槽位索引跟着换了一套，清掉旧的落定记忆
+    rec.lang = 'zh-CN';
+    rec.interimResults = true; // 边说边出灰字
+    rec.continuous = true;
+    rec.onstart = () => {
+      // 连上了：撤掉连接超时、转圈换蓝色。**不在这里清零重试计数**——引擎连上
+      // 就断的「蓝一下就白」正是要重连的场景，清零会让它无限重连、麦克风一直
+      // 占着；真正的清零在 onresult（拿到文字 = 这条链路确实通）。
+      if (sess.rec !== rec) return;
+      clearT('connectTimer');
+      sess.live = true;
+      setSpin(false);
+      btn.classList.add('on');
+      clearProgressHint();
     };
-    rec.onend = () => { voiceOn[view.key] = false; btn.classList.remove('on'); };
+    rec.onresult = (e) => {
+      if (sess.rec !== rec || !sess.active || sess.done) return;
+      if (e.resultIndex < sess.maxIdx) commitAll(); // 引擎重置了结果列表：先落定已有的
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const item = e.results[i];
+        if (!item || item.length === 0) continue;
+        let text = item[0].transcript || '';
+        if (text === '') continue;
+        // 这个槽位已经落定过（引擎把整句重报一遍）：只取新增部分，避免重复落字
+        const done = sess.committed.get(i) || '';
+        if (done !== '') {
+          if (text === done) continue;
+          if (text.indexOf(done) === 0) text = text.slice(done.length);
+          if (text === '') continue;
+        }
+        const prev = sess.segs.get(i);
+        if (prev && prev.final) continue; // 已定稿的槽位不再被 interim 覆盖
+        const final = item[0].isFinal === true;
+        if (!prev || prev.text !== text) sess.segs.set(i, { text, final, changedAt: Date.now() });
+        sess.maxIdx = Math.max(sess.maxIdx, i);
+      }
+      sess.retries = 0; // 有转写进来 = 链路是通的，重试预算重新计
+      clearProgressHint();
+      renderShadow();
+    };
+    rec.onend = () => {
+      if (sess.rec !== rec || !sess.active || sess.done) return;
+      sess.rec = null;
+      if (sess.stopping) { finish(''); return; } // 用户已按停：正常收尾
+      commitAll(); // 断在半句上：先说出来的先落定，别白说
+      scheduleRetry();
+    };
     rec.onerror = (e) => {
-      voiceOn[view.key] = false;
-      btn.classList.remove('on');
-      if (e.error !== 'aborted') { hint.textContent = '语音识别失败：' + e.error; setTimeout(() => { hint.textContent = ''; }, 2500); }
+      if (sess.rec !== rec || !sess.active || sess.done) return;
+      const code = (e && e.error) || '';
+      // 只有重试也救不回来的错误直接收场；network / no-speech / aborted 等
+      // 一律按瞬时故障处理，交给重试机制自愈
+      if (code === 'not-allowed' || code === 'service-not-allowed') { finish('麦克风未授权：请在浏览器里允许麦克风权限'); return; }
+      if (code === 'audio-capture') { finish('没有可用的麦克风（可能被其他程序占用）'); return; }
+      commitAll();
+      scheduleRetry();
     };
     try {
       rec.start();
-      voiceOn[view.key] = true;
-      btn.classList.add('on');
-    } catch (e) { /* 重复启动等 */ }
+    } catch (e) { scheduleRetry(); return; }
+    // 连接阶段超时：到点还没 onstart 就按这次失败处理（重试期间按钮继续转圈）
+    clearT('connectTimer');
+    sess.connectTimer = setTimeout(() => {
+      if (sess.rec !== rec || !sess.active || sess.done || sess.live) return;
+      sess.rec = null;
+      try { rec.stop(); } catch (e) { /* 已结束 */ }
+      commitAll();
+      scheduleRetry();
+    }, VOICE_CONNECT_TIMEOUT);
+  };
+
+  btn.onclick = () => {
+    if (!SR) { setHint('当前浏览器不支持语音识别', 2500); return; }
+    if (sess.active) { stopByUser(); return; } // 再点一次 = 结束听写（连接中/录音中都一样）
+    sess.active = true;
+    sess.done = false;
+    sess.stopping = false;
+    sess.live = false;
+    sess.retries = 0;
+    sess.startedAt = Date.now();
+    sess.maxIdx = -1;
+    sess.segs.clear();
+    sess.committed.clear();
+    voiceOn[key] = true;
+    btn.classList.remove('on');
+    setSpin(true); // 先转圈：连上了再变蓝
+    setProgressHint('正在连接语音服务…');
+    if (sess.sweepTimer) clearInterval(sess.sweepTimer);
+    sess.sweepTimer = setInterval(sweep, VOICE_SWEEP_MS);
+    startOnce();
   };
 }
 bindVoiceButton(mainView);
