@@ -168,7 +168,7 @@ async function openSettings(pane) {
   syncSnapshotState(c.snapshotEnabled !== false);
   $('set-snapshot-days').value = c.snapshotDays != null ? c.snapshotDays : 7;
   // 常规页：任务最大步数（服务端配置，改动即时保存）
-  $('set-maxsteps').value = c.maxSteps || 30;
+  $('set-maxsteps').value = c.maxSteps || 100;
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
   $('set-lan-on').checked = c.bindHost === '0.0.0.0' || c.bindHost === '::';
   syncLanState(c);

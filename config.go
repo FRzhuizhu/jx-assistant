@@ -100,6 +100,15 @@ type RemoteAccessCfg struct {
 	RegKey  string `json:"regKey"`
 }
 
+// 步数上限（一条消息触发的任务里，模型调用＋工具执行的连续步数）的默认值：
+// 既是新装的默认，也是升级时「还是旧默认、没人手动改过」的配置被提到的新值。
+// 旧默认 30 太紧（稍复杂的任务跑满就自动停），故提到 100；手动设过其他值的
+// 配置一律保留原值（见 LoadConfig 的兼容分支）。
+const (
+	maxStepsDefault       = 100
+	maxStepsLegacyDefault = 30
+)
+
 func DefaultConfig() *Config {
 	wd, _ := os.Getwd()
 	return &Config{
@@ -109,7 +118,7 @@ func DefaultConfig() *Config {
 		APIKey:                "",
 		Model:                 "deepseek-chat",
 		Workspace:             wd,
-		MaxSteps:              30,
+		MaxSteps:              maxStepsDefault,
 		AllowShell: true,
 		DataDir:    "data",
 		CompactMode:           "rule",
@@ -161,6 +170,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Workspace == "" {
 		cfg.Workspace = def.Workspace
+	}
+	// 步数上限：老配置里还是旧默认 30 的（说明没人手动改过）随新默认提到 100，
+	// 并在下面落盘；手动设过其他值的配置原样保留。缺这一项/写成 0 仍按默认补齐。
+	maxStepsBumped := false
+	if cfg.MaxSteps == maxStepsLegacyDefault {
+		cfg.MaxSteps = maxStepsDefault
+		maxStepsBumped = true
 	}
 	if cfg.MaxSteps <= 0 {
 		cfg.MaxSteps = def.MaxSteps
@@ -227,6 +243,13 @@ func LoadConfig(path string) (*Config, error) {
 			p.Models = []ModelCfg{{ID: cfg.Model, ContextWindow: 1048576}}
 		}
 		cfg.Providers = []ProviderCfg{p}
+	}
+	// 步数上限从旧默认提升过：立即落盘，让设置页读数、配置文件与运行时三者
+	// 一致（免得用户看到配置文件里还是 30，以为没生效；其他补全都留给下一次保存）
+	if maxStepsBumped {
+		if err := cfg.Save(path); err != nil {
+			log.Printf("回写步数上限失败: %v", err)
+		}
 	}
 	cfg.syncLegacyFields()
 	return cfg, nil
