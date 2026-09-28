@@ -31,6 +31,7 @@ const (
 	// WebView2 Evergreen 的 EdgeUpdate 客户端键与官方引导器下载地址
 	webView2ClientKey       = `{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`
 	webView2BootstrapperURL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+	webView2ArgsEnv         = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
 )
 
 var (
@@ -269,6 +270,21 @@ func runDesktop(app *App, url string) error {
 		activateExistingWindow()
 		return nil
 	}
+	// 麦克风权限：桌面端应当「天生具备」，不能每次都弹审批。
+	// 绑定库建主控件时只显式放行了剪贴板（jchv/go-webview2 的
+	// SetPermission(ClipboardRead)），其余权限按「默认」交给 WebView2：桌面壳里
+	// 弹不出可靠的授权气泡，语音输入就会直接以 not-allowed 失败。这里在创建主
+	// 控件（＝主环境，只在这一次调用里建）之前，把 Chromium 的「自动接受媒体
+	// 权限」开关并进已有的附加参数，建完立刻还原：应用一启动就带着麦克风权限，
+	// 整个生命周期一次都不用问、也不用用户去点授权（下次启动同样如此）。
+	// 右栏浏览器面板用的是另一个环境、且是惰性创建的，不会被带上（不给面板里
+	// 的任意网站自动放行麦克风）；系统层面的麦克风开关（Windows 设置 → 隐私 →
+	// 麦克风）仍照旧生效，是唯一的最终闸门。
+	const autoGrantMic = "--use-fake-ui-for-media-stream"
+	prevArgs, hadArgs := os.LookupEnv(webView2ArgsEnv)
+	if !strings.Contains(prevArgs, autoGrantMic) {
+		_ = os.Setenv(webView2ArgsEnv, strings.TrimSpace(prevArgs+" "+autoGrantMic))
+	}
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus: true,
 		DataPath:  filepath.Join("data", "webview"),
@@ -280,6 +296,11 @@ func runDesktop(app *App, url string) error {
 			Center: true,
 		},
 	})
+	if hadArgs {
+		_ = os.Setenv(webView2ArgsEnv, prevArgs)
+	} else {
+		_ = os.Unsetenv(webView2ArgsEnv)
+	}
 	if w == nil {
 		return fmt.Errorf("创建桌面窗口失败")
 	}

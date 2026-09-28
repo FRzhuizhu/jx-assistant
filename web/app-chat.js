@@ -154,10 +154,10 @@ function applySessionChrome(view) {
 function applyTopbar() {
   $('sess-title').textContent = state.cur.title || '(未命名)';
   const badge = $('mode-badge');
-  // 模式徽标；挂在主对话下的子对话再标出来历（它可能是 task/office/aux 任一模式）
+  // 模式徽标；挂在主对话下的子对话再标出来历（它可能是 task/office/coding/aux 任一模式）
   const modeLabel = state.cur.mode === 'assistant' ? '数字助理'
     : state.cur.mode === 'aux' ? '辅助对话'
-    : state.cur.mode === 'office' ? chatModeOf('office').label : '';
+    : CHAT_MODES.some((m) => m.v === state.cur.mode) ? chatModeOf(state.cur.mode).label : '';
   const badgeLabel = state.cur.parentId ? (modeLabel ? modeLabel + ' · 子对话' : '子对话') : modeLabel;
   if (badgeLabel) {
     badge.textContent = badgeLabel;
@@ -957,6 +957,7 @@ const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取�
 
 let foldScheduled = false;
 let foldTimer = 0;
+let foldRetry = 0;      // 「当时还没排好版」的重试次数（最多 5 次）
 
 // 是否需要折叠（只在数字助理主对话里做）
 function foldEnabled() {
@@ -1001,8 +1002,16 @@ function applyFolds() {
   const boxes = Array.from(col.querySelectorAll('.fold-box'));
   const enabled = foldEnabled();
   const seen = new Set();
+  let unmeasurable = false; // 还没完成布局（高度 0）的元素：本轮跳过，稍后重算
   foldTargets().forEach((el) => {
     seen.add(el);
+    const r = el.getBoundingClientRect();
+    if (r.height === 0 || r.width === 0) {
+      // 元素被隐藏/还没排好版时 scrollHeight 不可信（会误判成「不折叠」），
+      // 所以这里不写结论，只标记需要重试。
+      unmeasurable = true;
+      return;
+    }
     const m = enabled ? foldMeasure(el) : null;
     const btn = el.querySelector(':scope > .fold-btn');
     if (!m || !m.overflow) {
@@ -1037,9 +1046,9 @@ function applyFolds() {
       el.classList.toggle('folded', !open);
       btn.textContent = open ? '收起' : '展开';
     }
-    if (btn || el.querySelector(':scope > .fold-btn')) {
-      (el.querySelector(':scope > .fold-btn')).setAttribute('aria-expanded', el.dataset.foldOpen === '1' ? 'true' : 'false');
-    }
+    const want = el.dataset.foldOpen === '1' ? 'true' : 'false';
+    const b2 = el.querySelector(':scope > .fold-btn');
+    if (b2 && b2.getAttribute('aria-expanded') !== want) b2.setAttribute('aria-expanded', want); // 同值不写，免得触发 MutationObserver 空转
   });
   // 已经不在目标集合里的（重渲染后残留、切走会话）：清掉折叠痕迹
   boxes.forEach((el) => {
@@ -1049,6 +1058,9 @@ function applyFolds() {
     el.removeAttribute('data-fold-open');
     el.querySelectorAll(':scope > .fold-fade, :scope > .fold-btn').forEach((n) => n.remove());
   });
+  // 有元素当时还没排好版：稍后再算一次（最多 5 次，避免空转）
+  if (unmeasurable && foldRetry < 5) { foldRetry++; setTimeout(scheduleFolds, 200); }
+  else if (!unmeasurable) foldRetry = 0;
 }
 
 // 展开/收起：折叠态只放开高度上限（按钮留在底部），展开态按钮落到正文下方
@@ -1071,13 +1083,20 @@ function scheduleFolds() {
 }
 
 // 尺寸/字号变化都要重算：观察对话列本身（宽度变了每行字数变，字号变了行高变，
-// 两种都会让它的盒子尺寸变化），另挂一个窗口 resize 兜底。
+// 两种都会让它的盒子尺寸变化）；消息 DOM 变化（流式重绘、尾部重建、后台刷新插入）
+// 同样要重算——否则「渲染顺序」会让某条长消息错过那一次重算，出现「该折没折」。
+// 另挂窗口 resize 兜底，字体就绪后再算一次（行高/字宽会变）。
 function setupFolds() {
   if (setupFolds.done) return;
   setupFolds.done = true;
   if (typeof ResizeObserver === 'function' && mainView.col) {
     new ResizeObserver(() => scheduleFolds()).observe(mainView.col);
   }
+  if (typeof MutationObserver === 'function' && mainView.col) {
+    // 只算状态是否变，不变就不写 DOM（见 applyFolds），所以不会自激空转
+    new MutationObserver(() => scheduleFolds()).observe(mainView.col, { childList: true, subtree: true });
+  }
+  try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => scheduleFolds()); } catch (e) {}
   window.addEventListener('resize', () => {
     clearTimeout(foldTimer);
     foldTimer = setTimeout(scheduleFolds, 120); // 拖窗口时别每像素都量一遍
@@ -3378,7 +3397,7 @@ async function send(forceContent, view) {
       const s = await api('/api/sessions', {
         method: 'POST',
         body: JSON.stringify({
-          mode: homeDraft.mode === 'office' ? 'office' : 'task',
+          mode: CHAT_MODES.some((m) => m.v === homeDraft.mode) ? homeDraft.mode : 'task',
           workspace: homeDraft.workspace || '',
           remote: homeDraft.remote || null,
           permission: homeDraft.permission,
@@ -4053,10 +4072,11 @@ function renderModelPop(view) {
 
 const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读写', 'full': '完全访问' };
 // 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
-// 扩展模式（设计人员/编程人员等）＝在这里加一项 + 后端加对应提示词分支，
+// 扩展模式（设计人员等）＝在这里加一项 + 后端加对应提示词分支，
 // 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
 const CHAT_MODES = [
   { v: 'office', label: '标准办公', desc: '面向日常办公：文档、资料、表格、沟通文案，成果落文件' },
+  { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件' },
 ];
 const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', label: '标准办公', desc: '' };
 

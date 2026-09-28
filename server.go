@@ -1081,7 +1081,7 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		InheritContext bool             `json:"inheritContext"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体
-	if body.Mode != "assistant" && body.Mode != "aux" && body.Mode != "office" {
+	if body.Mode != "assistant" && body.Mode != "aux" && body.Mode != "office" && body.Mode != "coding" {
 		body.Mode = "task"
 	}
 	if body.Permission == "" {

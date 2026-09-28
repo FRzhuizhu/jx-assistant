@@ -31,6 +31,8 @@ func modeLabelOf(mode string) string {
 		return "辅助对话"
 	case "office":
 		return "标准办公"
+	case "coding":
+		return "编程"
 	}
 	return mode
 }

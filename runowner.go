@@ -167,21 +167,63 @@ func (a *App) sweepOrphanSessions() {
 }
 
 // reapInterruptedSession 给一个「没人跑、但状态还是 running」的会话补中断收口：
-// 先补悬空工具调用的合成结尾（历史配对完整），再补系统中断报告、置空闲、留
-// 「⚠ 已中断」标记，并给派发方补一条派发回报。
+// 先补悬空工具调用的合成结尾（历史配对完整），再按**落库的停止原因**补交代、
+// 置空闲、留「⚠ 已中断」标记，并给派发方补一条派发回报。
 // 启动恢复与 30s 补扫共用这一处，避免两套收口逻辑漂移。
+//
+// 中断原因分两种口径（这就是本函数比「一律按服务重启」更准的地方）：
+//   - 用户此前点过停止、且这一轮尚未收口（StopRecord.Manual，落库读回）：
+//     按「用户手动停止」认。用户点了停止紧接着服务重启时，绝不能报成
+//     「因服务重启被中断」——那会让数字助理以为任务是意外打断的而重新派发。
+//   - 其余：系统异常中断（服务重启 / 进程崩溃），文案与原来一致，只补上
+//     中断时间、触发者与进度。
 func (a *App) reapInterruptedSession(s *SessionMeta) {
 	// 先把上一进程崩溃时留下的悬空工具调用补上合成结尾（历史配对完整），
 	// 再补系统中断报告——顺序反了的话报告会插在悬空调用与补行之间
 	a.repairDanglingToolCalls(s, nil)
+	// 停止原因只认落库的那一份：重启后内存里的状态全丢了，只有 meta 表里的
+	// StopRecord 还留着「用户点过停止」这件事（旧数据没有记录 = 未记录，
+	// 走下面的默认口径）
+	rec := a.Store.GetStopRecord(s.ID)
+	userStop := rec.Kind == stopByUser && rec.Manual
+	rounds, steps := a.sessionProgress(s.ID)
+	at := strings.TrimSpace(rec.At)
+	if at == "" {
+		at = now()
+	}
+	reasonText := "【系统中断】服务在执行期间重启，本会话当时被中断。可发「继续」接续执行。"
+	reportText := "【派发回报】任务会话「" + s.Title + "」（" + s.ID + "）因服务重启被中断，未完成（中断时间 " +
+		at + "｜触发者：系统（服务重启）｜进度：已完成 " + itoa(rounds) + " 轮 / " + itoa(steps) + " 步）。"
+	if userStop {
+		// 用户先点了停止、随后服务重启：以用户手动停止为准
+		log.Printf("[恢复] 会话 %s 的重启中断按「用户手动停止」收口（停止时间 %s，停止原因落库）", s.ID, at)
+		reasonText = "【系统中断】服务在执行期间重启，但本会话此前已由用户手动停止（" + at +
+			"）。按用户停止处理：未完成的部分不自动续跑，需要时发新消息继续。"
+		reportText = "【派发回报】任务会话「" + s.Title + "」（" + s.ID + "）已由用户手动停止（用户点击停止按钮，停止时间 " +
+			at + "｜触发者：用户｜进度：已完成 " + itoa(rounds) + " 轮 / " + itoa(steps) +
+			" 步）。这是用户主动叫停，不是异常中断：不要再自动重新派发、续跑或补做这个任务。"
+	} else {
+		log.Printf("[恢复] 会话 %s 按「系统异常中断（服务重启）」收口", s.ID)
+	}
 	_ = a.Store.AppendRow(s.ID, &StoredMessage{
-		Message: TextMessage("user", "【系统中断】服务在执行期间重启，本会话当时被中断。可发「继续」接续执行。"),
+		Message: TextMessage("user", reasonText),
 		Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
 	})
 	_ = a.Store.UpdateStatus(s.ID, "idle")
-	// 重启中断也是「异常收尾」：侧栏留「⚠ 已中断」标记（内存里的 runError
-	// 重启就没了，标记落库才不会漏掉这一类）
-	_ = a.Store.SetLastStop(s.ID, stopRestart)
+	if userStop {
+		// 用户主动停止不算异常，不留「⚠ 已中断」标记（与 executeRun 的停止分支一致）
+		_ = a.Store.SetLastStop(s.ID, "")
+	} else {
+		// 重启中断是「异常收尾」：侧栏留「⚠ 已中断」标记（内存里的 runError
+		// 重启就没了，标记落库才不会漏掉这一类）
+		_ = a.Store.SetLastStop(s.ID, stopRestart)
+		_ = a.Store.SetStopRecord(s.ID, StopRecord{
+			Kind: stopBySystem, Actor: "system", At: at, AtMs: time.Now().UnixMilli(),
+			Note: "服务在执行期间重启（或上一进程崩溃），本轮被中断",
+		})
+	}
+	// 这一轮已经收口：待收口标志作废（记录里的时间/次数保留，历史仍查得出来）
+	_ = a.Store.ClearStopPending(s.ID)
 	// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
 	// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
 	owner := s.DispatchedBy
@@ -191,9 +233,21 @@ func (a *App) reapInterruptedSession(s *SessionMeta) {
 	if owner != "" {
 		if _, perr := a.Store.Get(owner); perr == nil {
 			_ = a.Store.AppendRow(owner, &StoredMessage{
-				Message: TextMessage("user", "【派发回报】任务会话「"+s.Title+"」（"+s.ID+"）因服务重启被中断，未完成。"),
+				Message: TextMessage("user", reportText),
 				Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
 			})
 		}
 	}
+}
+
+// sessionProgress 取会话当前进度（已完成几轮 / 几步）：轮数 = 用户侧消息数、
+// 步数 = 带工具调用的助手消息数，口径与压缩摘要（renderSummary）完全一致，
+// 所以回报里的进度和摘要里那句「共 N 轮 / M 步」永远对得上。
+func (a *App) sessionProgress(id string) (int, int) {
+	msgs, err := a.Store.Messages(id)
+	if err != nil {
+		return 0, 0
+	}
+	rounds, steps, _, _, _, _ := summarizeSession(msgs)
+	return rounds, steps
 }

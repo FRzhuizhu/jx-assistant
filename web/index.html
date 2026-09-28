@@ -33,15 +33,21 @@
 @keyframes da-scan{0%,100%{transform:translateX(0)}30%{transform:translateX(1.8px)}50%{transform:translateX(0)}80%{transform:translateX(-1.8px)}}
 @keyframes da-squish{0%,7%{transform:scaleY(1)}12%{transform:scaleY(.06)}86%{transform:scaleY(.06)}91%,100%{transform:scaleY(1)}}
 @keyframes da-pop{0%,11.5%{opacity:0}15%,85%{opacity:1}88.5%,100%{opacity:0}}
-/* 悬停不再把脸扭向右边——原「向右扭头」就是下面被删掉的那两行 hover 规则
-   （transform:rotate(11deg) 固定朝右 + 眼睛 da-hover 无限左右摆），已按要求去掉。
-   现在悬停的轻微随机扭动由 style.css 的 side-btn-wig 统一提供（三个入口按钮共用，
-   见 app-left.js 的 bindSideBtnWiggle），图标静止时保持直立。
-   另：viewBox 已收紧为「4 4 40 40」——同一个 16px 盒子里，外圈圆（半径 15.5 + 描边 2.6）
-   由 ~11.2px 放大到 ~13.4px，与另两个按钮的图标（加号 ~10.7px、时钟 ~13.3px）更协调；
-   viewBox 仍以 24,24 为中心，人脸水平/竖直居中不变，下面旋转轴心也不变。 */
+/* 原设计的悬停效果保留，只去掉了「脸固定朝右扭」那一条：
+   - 已去掉：原 `[data-da-face]:hover,button:hover [data-da-face]{transform:rotate(11deg)}`
+     （悬停时头固定朝右转 11° 并保持）→ 改由三个入口按钮共用的随机左右轻扭取代
+     （style.css 的 side-btn-wig + app-left.js 的 bindSideBtnWiggle）。
+   - 原样保留：眼睛的左右晃动 da-hover（下面两条 + keyframes），以及各状态自带的眼睛
+     动画（idle 眨眼 da-blink / thinking 扫视 da-scan / done 挤压 da-squish、微笑 da-pop）。
+   两者作用在不同元素上、可同时发生：轻扭转的是整个 svg 元素，晃动转的是里面的 .da-eyes 分组，
+   互不覆盖。另：viewBox 已收紧为「4 4 40 40」（同一个 16px 盒子里人脸由 ~11.2px 放大到
+   ~13.4px），viewBox 仍以 24,24 为中心，居中与旋转轴心不变。
+   注意：本段注释里不要出现尖括号字面量（HTML 解析器会把 svg 内联样式块里的尖括号当标签），否则整块规则会被丢掉。 */
 [data-da-face]{transform-box:fill-box;transform-origin:center;transition:transform .22s ease}
-@media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face]{transform:none;transition:none}}
+[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:da-hover 1s ease-in-out infinite}
+[data-da-face][data-state="done"]:hover .da-eyes,button:hover [data-da-face][data-state="done"] .da-eyes{animation:none}
+@keyframes da-hover{0%,100%{transform:translateX(0)}22%{transform:translateX(3.2px)}45%{transform:translateX(-.6px)}70%{transform:translateX(-3.2px)}90%{transform:translateX(.6px)}}
+@media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face],[data-da-face]:hover,button:hover [data-da-face]{transform:none;transition:none}[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:none!important}}
 </style></svg>
         数字助理主对话
       </button>
@@ -131,14 +137,14 @@
              重绘只重建内容变了的卡，不会打断输入。渲染见 app-chat.js 的「待用户决定的浮窗」 -->
         <div id="ask-bar" class="ask-bar hidden"></div>
         <div id="draft-chips">
-          <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-            <b id="ws-row-name">工作目录</b>
-            <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
-          </div>
           <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；数字助理主对话有专属模式，不在此选择）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>
             <b id="mode-row-name">标准办公</b>
+            <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
+          <div id="ws-row" class="hidden" title="新对话的工作目录（文件读写范围）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <b id="ws-row-name">工作目录</b>
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
           </div>
         </div>

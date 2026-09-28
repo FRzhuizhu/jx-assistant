@@ -88,6 +88,9 @@ func (a *App) beginRun(id string) (*sessionRun, bool) {
 	a.runners[id] = r
 	a.clearRunError(id)             // 新一轮开始：上一次的报错条自动消失
 	_ = a.Store.SetLastStop(id, "") // 侧栏「⚠ 已中断」随之收掉（这一轮正在跑）
+	// 新一轮开始：上一轮遗留的「用户已请求停止」标志作废——那一次停止已经收口，
+	// 不能再拿来解释这一轮的中断（见 Store.ClearStopPending）
+	_ = a.Store.ClearStopPending(id)
 	_ = a.Store.UpdateStatus(id, "running")
 	a.markRunOwner(id)     // 记下「本实例在跑它」：别的实例启动时不会把它误判成中断
 	a.ensureRunHeartbeat() // 有在跑的会话时才起心跳，空闲时零唤醒（见 runowner.go）
@@ -115,6 +118,9 @@ func (a *App) finishRun(id string) {
 	r.cancel()
 	_ = a.Store.UpdateStatus(id, "idle")
 	a.clearRunOwner(id) // 归属随本轮收口一起清掉（下一轮的归属由下一次 beginRun 写）
+	// 这一轮已经收口（正常完成 / 用户停止 / 报错都走这里）：待收口的「用户已请求
+	// 停止」标志随之作废——停止记录本身保留，历史仍查得出来（Store.StopRecord）
+	_ = a.Store.ClearStopPending(id)
 	// 本轮结束（正常/停止/报错收口都走这里）：执行已登记的会话后交付。
 	// 异步执行避免大文件搬运拖住收口；认领机制保证与启动恢复不重不漏。
 	go a.flushDeliveries(id)
@@ -129,14 +135,27 @@ func (a *App) runOf(id string) *sessionRun {
 }
 
 // stopRun 请求停止会话执行（协作式取消：模型流、工具、等待都会收到 ctx 取消）。
+// 同时把「用户手动停止」这件事落库（见 store.go 的 StopRecord）：只记内存的话，
+// 服务一重启意图就丢了，启动恢复把「用户主动叫停」误报成「服务重启中断」，
+// 数字助理据此还会重新派发/续跑用户已经叫停的任务。
 func (a *App) stopRun(id string) bool {
 	r := a.runOf(id)
 	if r == nil {
 		return false
 	}
 	r.mu.Lock()
+	first := !r.stopped // 连点停止只记一次，不把计数打花
 	r.stopped = true
 	r.mu.Unlock()
+	if first {
+		nowMS := time.Now().UnixMilli()
+		_ = a.Store.SetStopRecord(id, StopRecord{
+			Kind: stopByUser, Actor: "user", At: now(), AtMs: nowMS,
+			Manual: true, // 这一轮还没收口：重启恢复按「用户停止」优先认它
+			Note:   "用户点击停止按钮",
+		})
+		log.Printf("[停止] 会话 %s 由用户请求停止（停止原因已落库，重启后仍可查）", id)
+	}
 	r.cancel()
 	return true
 }
@@ -605,12 +624,24 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 		run.observe(ev)
 		run.publish(ev)
 	})
+	// 用户手动停止（POST /stop → stopRun 取消 ctx）与真实的执行失败要分开交代：
+	// 停止不是异常——别把 "context canceled" 当错误抛给用户/模型，也别让数字助理
+	// 以为任务是被意外打断的（那正是它自作主张重新派发/续跑的来源）。
+	stopped := a.isStopped(run) || run.ctx.Err() != nil
 	if err != nil {
-		a.broadcast(Event{Type: "sub_end", SessionID: sub.ID, Error: err.Error()})
-		_ = a.Store.AppendRow(sub.ID, &StoredMessage{
-			Message: TextMessage("user", "【执行中断】上一轮执行中断："+err.Error()+"。可发「继续」接续。"),
-			Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
-		})
+		if stopped {
+			a.broadcast(Event{Type: "sub_end", SessionID: sub.ID, Error: "已由用户手动停止"})
+			_ = a.Store.AppendRow(sub.ID, &StoredMessage{
+				Message: TextMessage("user", "【执行中断】本轮已按用户要求停止（用户点击停止按钮）。未完成的部分不会自动续跑，需要时发新消息即可接着做。"),
+				Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
+			})
+		} else {
+			a.broadcast(Event{Type: "sub_end", SessionID: sub.ID, Error: err.Error()})
+			_ = a.Store.AppendRow(sub.ID, &StoredMessage{
+				Message: TextMessage("user", "【执行中断】上一轮执行中断："+err.Error()+"。可发「继续」接续。"),
+				Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
+			})
+		}
 	} else {
 		a.broadcast(Event{Type: "sub_end", SessionID: sub.ID})
 	}
@@ -619,17 +650,40 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 		return
 	}
 	msgs, _ := a.Store.Messages(sub.ID)
-	summary := renderSummary(a, sub, msgs)
+	summary := renderSummary(a, sub, msgs) // 压缩摘要格式与原先完全一致
 	// 回报指令按父会话形态分流：数字助理向用户汇报；工作任务带着结果继续推进
 	followUp := "请用用户听得懂的话汇报这件事的结果。"
 	if parent.Mode != "assistant" {
 		followUp = "请结合这个结果继续推进当前任务；若已全部完成，给出最终答复。"
 	}
+	// 回报首句 = 中断原因：用户停止与服务重启/故障中断必须一眼分得开（见
+	// runowner.go 的重启回报，两处口径对齐）
+	head := "【派发回报】任务会话「" + sub.Title + "」（" + sub.ID + "）本轮结束。"
+	if stopped {
+		rec := a.Store.GetStopRecord(sub.ID)
+		at := strings.TrimSpace(rec.At)
+		if at == "" {
+			at = now()
+		}
+		// 进度与下方摘要同口径（同一批消息算出来的），所以两处数字必然一致
+		rounds, steps := a.sessionProgress(sub.ID)
+		head = "【派发回报】任务会话「" + sub.Title + "」（" + sub.ID + "）已由用户手动停止（用户点击停止按钮，停止时间 " +
+			at + "｜触发者：用户｜进度：见下方摘要（共 " + itoa(rounds) + " 轮 / " + itoa(steps) + " 步））。" +
+			"这是用户主动叫停，不是异常中断、不是故障。"
+		followUp = "这是用户主动叫停，不是故障：不要再自动重新派发、续跑或补做这个任务，用一句话向用户确认已停止即可。"
+	}
 	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
-		Message: TextMessage("user", "【派发回报】任务会话「"+sub.Title+"」（"+sub.ID+"）本轮结束。\n\n"+summary+
-			"\n\n"+followUp),
+		Message: TextMessage("user", head+"\n\n"+summary+"\n\n"+followUp),
 		Kind: kindReport, Origin: "dispatch", CreatedAt: now(),
 	})
+	// 用户主动叫停的**不自动触发**父会话那一轮（那正是「助理自作主张」的来源）：
+	// 回报照旧落库、照旧广布 report_ready（前端可见），父会话下一轮自然带着这条
+	// 指令看到它。正常结束/失败仍按原样自动起汇报轮。
+	if stopped {
+		a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
+		a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
+		return
+	}
 	// 先登记消化回报的续跑轮再广播回报就绪：前端收到 report_ready 重查会话时
 	// 必见 running，能立刻接上这轮流、实时看输出。父会话空闲才续跑（助理＝
 	// 面向用户汇报，工作任务＝带着结果续推）；正被用户占用就等下轮对话自然带出

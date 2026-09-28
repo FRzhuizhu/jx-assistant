@@ -520,6 +520,86 @@ func (s *Store) LastStops() map[string]string {
 	return out
 }
 
+// ---------- 停止原因记录（谁停的 / 什么时候停的，重启后仍查得出来） ----------
+
+// 停止原因的两类触发者。
+const (
+	stopByUser   = "user"   // 用户点击停止按钮（POST /api/sessions/{id}/stop → App.stopRun）
+	stopBySystem = "system" // 服务在执行期间重启 / 进程崩溃等异常中断
+)
+
+// StopRecord 是「最近一次停止这件事」的落库记录，存 meta 表（键
+// sessdata:stoprec:<会话id>，见 SetStopRecord）。为什么要落库：用户点停止
+// 这件事原先只记在内存的 sessionRun.stopped 里，服务一重启就没了，启动恢复
+// 只能看到 sessions.status='running'，于是把「用户主动叫停」误报成「服务重启
+// 中断」，数字助理据此还会自作主张重新派发。落库后重启仍能查出是谁停的、
+// 什么时候停的，回报口径也就分得开。
+//
+// 兼容性：旧会话没有这条记录时 GetStopRecord 返回零值（Kind 为空串），
+// 一律按「未记录」处理——不参与任何判定，也不会让谁因为缺字段起不来。
+type StopRecord struct {
+	Kind   string `json:"kind,omitempty"`   // user=用户手动停止 / system=系统异常中断 / 空=未记录
+	Actor  string `json:"actor,omitempty"`  // 触发者：user=用户 / system=系统
+	At     string `json:"at,omitempty"`     // 停止时间（本地时间 YYYY-MM-DD HH:MM:SS）
+	AtMs   int64  `json:"atMs,omitempty"`   // 停止时间的毫秒值（精度要求高的场景用）
+	Manual bool   `json:"manual,omitempty"` // 用户已请求停止、但这一轮尚未收口：重启恢复按「用户停止」优先认它
+	Note   string `json:"note,omitempty"`   // 补充说明（「用户点击停止按钮」/「服务在执行期间重启」）
+	// 累计计数（跨重启保留，别被后来的记录覆盖）：用户此前手动停过这个会话几次、
+	// 最近一次是什么时候——「用户停过」这件事重启后仍要查得出来。
+	UserStops  int    `json:"userStops,omitempty"`
+	LastUserAt string `json:"lastUserAt,omitempty"`
+}
+
+const stopRecordKey = "stoprec"
+
+// SetStopRecord 落库一条停止记录（覆盖旧值，但累计计数与「最近一次用户停止
+// 时间」沿用旧记录，不会被后来的系统中断记录抹掉）。
+func (s *Store) SetStopRecord(id string, rec StopRecord) error {
+	old := s.GetStopRecord(id)
+	if rec.Kind == stopByUser {
+		rec.UserStops = old.UserStops + 1
+		rec.LastUserAt = rec.At
+	} else {
+		rec.UserStops = old.UserStops
+		rec.LastUserAt = old.LastUserAt
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.SetSessionData(id, stopRecordKey, string(b))
+}
+
+// GetStopRecord 读回停止记录；没有记录（旧数据）或解析失败时返回零值
+// （Kind 为空串 = 未记录），调用方据此走原有默认口径。
+func (s *Store) GetStopRecord(id string) StopRecord {
+	var rec StopRecord
+	raw := strings.TrimSpace(s.GetSessionData(id, stopRecordKey))
+	if raw == "" {
+		return rec
+	}
+	if json.Unmarshal([]byte(raw), &rec) != nil {
+		return StopRecord{}
+	}
+	return rec
+}
+
+// ClearStopPending 清掉「用户已请求停止、但这一轮尚未收口」的标志：这一轮已经
+// 收口了（正常完成 / 停止 / 报错都算），停止记录本身保留（历史仍可查），只是
+// 下一次中断不再按「用户停止」认——那已经是新的一轮了。
+func (s *Store) ClearStopPending(id string) error {
+	rec := s.GetStopRecord(id)
+	if !rec.Manual {
+		return nil
+	}
+	rec.Manual = false
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.SetSessionData(id, stopRecordKey, string(b))
+}
+
 // ---------- 会话 ----------
 
 const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert`

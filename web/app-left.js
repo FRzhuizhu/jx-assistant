@@ -702,7 +702,54 @@ function renderBin(box) {
 async function loadSessionsNow() {
   const data = await api('/api/sessions');
   state.sessions = data.sessions || [];
+  // 工作区分组顺序：本次启动只在这里算一次（快照语义见下方 wsOrderSnapshot 注释）
+  if (!wsOrderSnapshot) wsOrderSnapshot = snapshotWsOrder();
   renderSessionList();
+}
+
+/* ---------- 工作区分组顺序：本次启动只算一次，运行期不重排 ----------
+   分组（工作目录）之间的顺序按「该目录里最新的那一个会话的时间」降序——哪个目录里
+   有最新的会话，它就排得更上面。
+   只在软件启动时算一次：第一份全量会话列表（/api/sessions 一次返回全部会话）到达时
+   算出顺序快照 wsOrderSnapshot 存起来；此后 renderSessionList 每次只是照着这份快照
+   摆位——新建会话 / 发消息 / 归档 / 重跑等任何数据变化都不会再算，顺序在本次启动期间
+   固定不动；下次启动（重新加载界面）才会有新快照。 */
+
+// 目录排序键所看的会话时间：updatedAt（最后活动时间），缺失或异常时退回 createdAt，
+// 两者都不可用记 0。与左侧栏默认排序（后端 /api/sessions 按 updated_at DESC 出）和
+// 「时间线」视图分带用的是同一个字段——目录顺序与用户看到的「最新对话」同一把尺子。
+function sessionSortStamp(s) {
+  for (const raw of [s.updatedAt, s.createdAt]) {
+    const t = new Date(String(raw || '').replace(' ', 'T')).getTime();
+    if (!isNaN(t)) return t;
+  }
+  return 0;
+}
+
+// 计入排序键的会话：属于该目录的全部会话，含子对话 / 派生子任务——子会话创建时
+// 继承父会话的工作目录（assistant.go 的 dispatch_sub：ws := t.workspace()），它就是
+// 那个目录里真实发生过的活动，所以计。两类不计：数字助理主对话（全局总控会话，
+// workspace 为空会折进默认工作区，它不隶属任何分组，计它等于让默认工作区凭一个列表里
+// 看不见的会话长期占顶）；已归档会话（用户已把它移出视线，同理不计）。
+function sessionCountsForWsOrder(s) {
+  return s.mode !== 'assistant' && !s.archived;
+}
+
+let wsOrderSnapshot = null; // 目录顺序快照（ws 数组，最新会话降序）；null = 本次启动还没算出来
+
+function snapshotWsOrder() {
+  const newest = new Map(); // ws -> 该目录最新会话的时间戳（毫秒），0 = 这个目录还没有会话
+  // 先把已知目录按既有顺序铺一遍（0 键），再用会话的最新时间覆盖：没有会话的目录、
+  // 以及时间戳缺失/异常的目录都停在 0 这一档，它们彼此之间的相对顺序就严格等于
+  // 改动前的分组顺序（Array#sort 稳定，不会因为 NaN 或新目录把别的目录挤乱）。
+  for (const ws of knownWorkspaces()) newest.set(ws, 0);
+  (state.sessions || []).forEach((s) => {
+    if (!sessionCountsForWsOrder(s)) return;
+    const ws = wsOf(s);
+    const t = sessionSortStamp(s);
+    if (!newest.has(ws) || t > newest.get(ws)) newest.set(ws, t);
+  });
+  return [...newest.keys()].sort((a, b) => newest.get(b) - newest.get(a));
 }
 
 // renderSessionList：侧栏纯本地重渲（不 发请求）。loadSessionsNow 拉到列表后调；
@@ -760,6 +807,9 @@ function renderSessionList() {
     return;
   }
   box.classList.remove('flat');
+  // 本次启动的目录顺序快照还没算出来（第一份会话列表未到）：先什么都不画，
+  // 免得先按改动前的顺序摆一遍空分组，等数据到了再跳变。
+  if (!wsOrderSnapshot) return;
   // 按工作区分组；手动添加过的工作区即使没有会话也显示
   const groups = new Map();
   for (const ws of knownWorkspaces()) groups.set(ws, []);
@@ -768,7 +818,14 @@ function renderSessionList() {
     if (!groups.has(ws)) groups.set(ws, []);
     groups.get(ws).push(s);
   }
-  for (const [ws, raw] of groups) {
+  // 分组顺序 = 启动快照（该目录最新会话时间降序）：只照快照摆位，不重算。
+  // 快照里没有的目录（运行期间手动加进来的、会话落在新目录的）一律排在最后，
+  // 且保持它们本来的发现顺序（稳定），绝不动已有目录的先后。
+  const rankOf = new Map(wsOrderSnapshot.map((ws, i) => [ws, i]));
+  let tail = wsOrderSnapshot.length;
+  const rank = new Map();
+  for (const ws of groups.keys()) rank.set(ws, rankOf.has(ws) ? rankOf.get(ws) : tail++);
+  for (const [ws, raw] of [...groups].sort((a, b) => rank.get(a[0]) - rank.get(b[0]))) {
     let items = raw;
     if (recycled.has(ws)) {
       items = items.filter((s) => keep.has(s.id)); // 目录回收了：只显示被单独恢复的对话
@@ -900,7 +957,7 @@ $('btn-recycle').onclick = () => setBinView(!binView);
    用事件委托挂在 .actions 上而不是逐个按钮绑：第三个按钮「待办与定时任务」是组件
    （组件/todo-scheduler/client.js）注册时才插进来的，静态绑会漏掉它；委托也顺带覆盖
    以后往这一组里加的新入口。 */
-const WIG_DEG = 5, WIG_JITTER = 2; // 扭动幅度 5° + 随机 0~2°：轻微、不夸张
+const WIG_DEG = 7, WIG_JITTER = 3; // 扭动幅度 7° + 随机 0~3°（小人再乘 --wig-scale 1.3）：看得出来，但不夸张
 function wiggleSideBtn(btn) {
   const dir = Math.random() < .5 ? -1 : 1; // 方向每次独立随机（左/右）
   const deg = dir * (WIG_DEG + Math.random() * WIG_JITTER);

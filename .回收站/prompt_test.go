@@ -57,6 +57,49 @@ func TestSystemPromptStable(t *testing.T) {
 	}
 }
 
+// 模式分流：各模式基础提示词互不相同、身份文案不串；编程模式不带交付强调
+// （deliver_result 只出现在 task/office 的文件规范段），工具目录与能力公告
+// 与 office 同待遇。
+func TestSystemPromptPerMode(t *testing.T) {
+	a := newTestApp(t, "rule", 5, 5)
+	mk := func(id, mode string) string {
+		sess := &SessionMeta{ID: id, Mode: mode, CreatedAt: now(), UpdatedAt: now()}
+		if err := a.Store.Create(sess); err != nil {
+			t.Fatalf("建会话失败: %v", err)
+		}
+		return a.systemPrompt(sess)
+	}
+	pt, po, pc := mk("pm-task", "task"), mk("pm-office", "office"), mk("pm-coding", "coding")
+	if pt == po || pt == pc || po == pc {
+		t.Fatal("task / office / coding 的系统提示词应两两不同")
+	}
+	if !strings.Contains(po, "办公") || !strings.Contains(pc, "编程模式助手") || !strings.Contains(pt, "执行助手") {
+		t.Fatal("各模式提示词应含自己的定位文案")
+	}
+	if strings.Contains(pc, "办公") || strings.Contains(po, "执行助手") {
+		t.Fatal("身份文案不应串到别的模式")
+	}
+	// 交付强调只给 task / office；编程模式拼的是 codingFilePrompt（无交付段）
+	for _, s := range []string{pt, po} {
+		if !strings.Contains(s, "deliver_result") {
+			t.Fatal("task / office 的文件规范段应含 deliver_result 交付强调")
+		}
+	}
+	if strings.Contains(pc, "deliver_result") || strings.Contains(pc, "交付清单") {
+		t.Fatal("编程模式不应强调交付工具")
+	}
+	// 快照与目录约定、子对话派发准则三模式都有
+	for _, s := range []string{pt, po, pc} {
+		if !strings.Contains(s, "snapshot_file") || !strings.Contains(s, ".jxai") || !strings.Contains(s, "dispatch_sub") {
+			t.Fatal("执行类模式应共用快照/目录约定与子对话派发准则")
+		}
+	}
+	// 编程会话的工具目录与 office 同为全量实操（含交付工具：不强调≠不可用）
+	if len(a.toolsFor("coding")) != len(a.toolsFor("office")) {
+		t.Fatal("编程模式工具目录应与 office 一致（交付工具保留，只是不强调）")
+	}
+}
+
 // 环境快照：首行是「用户最近发消息时间」（取自用户消息的落库时刻，不是挂钟）；计划/目标模式有公告行。
 func TestEnvPromptContainsModes(t *testing.T) {
 	a := newTestApp(t, "rule", 5, 5)
