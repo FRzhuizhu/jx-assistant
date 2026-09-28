@@ -296,6 +296,7 @@ func provisionPythonRuntime(rtDir string, modules, wheels []string, emit func(st
 // runCommandCapture 在指定目录运行命令并捕获合并输出（供运行时装配用）。
 func runCommandCapture(ctx context.Context, exe string, args []string, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, exe, args...)
+	hideConsoleWindow(cmd) // 技能脚本（python 等）同样悄悄跑
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

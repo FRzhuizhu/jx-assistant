@@ -35,7 +35,9 @@ func (p *pythonRuntime) hasModule(module string) bool {
 		return ok
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	err := exec.CommandContext(ctx, p.Exe, append(p.Prefix, "-c", "import " + module)...).Run()
+	probe := exec.CommandContext(ctx, p.Exe, append(p.Prefix, "-c", "import " + module)...)
+	hideConsoleWindow(probe) // 运行时探测不该在桌面上闪窗
+	err := probe.Run()
 	cancel()
 	ok := err == nil
 	pyModuleCache[key] = ok
@@ -60,6 +62,7 @@ func (p *pythonRuntime) run(args []string, timeout time.Duration) (string, error
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, p.Exe, append(append([]string{}, p.Prefix...), args...)...)
+	hideConsoleWindow(cmd) // 脚本执行同样悄悄跑
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("脚本执行超时（%v）", timeout)

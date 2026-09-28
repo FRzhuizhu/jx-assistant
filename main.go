@@ -204,7 +204,9 @@ func main() {
 	if !*noOpen && (dialHost == "127.0.0.1" || dialHost == "localhost") {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
-			_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+			openBrowser := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+			hideConsoleWindow(openBrowser) // 借用系统外壳打开浏览器，别闪控制台窗
+			_ = openBrowser.Start()
 		}()
 	}
 

@@ -144,6 +144,7 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 	}
 	cmd.Dir = cwd
+	hideConsoleWindow(cmd) // 后台作业同样悄悄跑（桌面形态没有控制台可复用）
 	cmd.Env = sandboxEnv(true)
 	cmd.Stdout = j.buf
 	cmd.Stderr = j.buf

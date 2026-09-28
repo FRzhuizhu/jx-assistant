@@ -977,6 +977,7 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd / sh）", r.Shell)
 	}
 	cmd.Dir = r.Dir
+	hideConsoleWindow(cmd) // 桌面形态没有控制台可复用，不压就是一个个黑窗
 	cmd.Env = sandboxEnv(true)
 	out, err := cmd.CombinedOutput()
 	note := ""

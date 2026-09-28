@@ -810,10 +810,12 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	}
 
 	// 6) CreateProcessAsUser 以挂起态启动（官方 spawnJobProcess 同款），
+	// 带 CREATE_NO_WINDOW：桌面形态没有控制台可复用，否则 run_command 每执行
+	// 一次就在桌面上闪一个控制台窗口（读写句柄照走管道，取输出不受影响）。
 	// 分配进 Job 后再恢复初始线程——保证不会出现「已跑起来但不在 Job 里」
 	// 的逃逸窗口。所需主令牌特权来自源句柄的 TOKEN_ASSIGN_PRIMARY。
 	err = windows.CreateProcessAsUser(restricted, appPtr, cmdPtr, nil, nil, true,
-		windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_SUSPENDED,
+		windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_SUSPENDED|windows.CREATE_NO_WINDOW,
 		envBlock, dirPtr, si, &pi)
 	// 父进程侧的写端立即关闭，避免读不完
 	stdoutW.Close()

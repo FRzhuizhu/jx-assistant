@@ -111,9 +111,14 @@ func restoreStaleIntegrityLabels(roots []string) (int, error) {
 			continue
 		}
 		_, _ = grantWriteOwnerAce(abs, true) // 引导 ACE，尽力而为（失败仍尝试换标签）
-		_, flipErr := exec.Command("icacls", abs, "/setintegritylevel", "M").CombinedOutput()
-		_, sweepErr := exec.Command("icacls", abs,
-			"/setintegritylevel", "M", "/T", "/C", "/Q").CombinedOutput()
+		flip := exec.Command("icacls", abs, "/setintegritylevel", "M")
+		hideConsoleWindow(flip)
+		_, flipErr := flip.CombinedOutput()
+		sweep := exec.Command("icacls", abs, "/setintegritylevel", "M", "/T", "/C", "/Q")
+		hideConsoleWindow(sweep)
+		_, sweepErr := sweep.CombinedOutput()
+
+
 		_ = stripWriteOwnerAce(abs)
 		if flipErr != nil || sweepErr != nil {
 			if firstErr == nil {
