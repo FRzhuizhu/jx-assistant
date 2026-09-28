@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0",
+  "created": "2026-09-28",
+  "file": "runtime.tgz",
+  "size": 75657900,
+  "sha256": "856efeb1fe8fab2dce111499ca30148b93af1a3b9f64a3ba7d2cd456165e49f7",
+  "note": "Termux runtime snapshot v1: bootstrap-2026.09.27 + Python 3.14.6 + pip + lxml/pillow + Office wheels (python-docx/openpyxl/python-pptx/XlsxWriter/et-xmlfile/typing_extensions) + ca-certificates + proot; text-rewritten and relocated to prefix root; USTC mirrors baked in; pruned (no llvm/clang toolchain, no tkinter/xorg chain, no docs/man/test suites).",
+  "layout": "tar entries are relative to $PREFIX (top-level: bin/ lib/ etc/ ...); symlinks included as tar symlink entries, restored by the installer",
+  "mirror": {
+    "apt": "http://mirrors.ustc.edu.cn/termux/apt/termux-main",
+    "pypi": "https://mirrors.ustc.edu.cn/pypi/simple/"
+  },
+  "pruned": [
+    "llvm/clang toolchain (libLLVM*, libclang*, clang*, llvm-*, lld)",
+    "include/ headers, share/doc, share/man, share/info",
+    "python test, idlelib, tkinter, turtledemo, lib2to3"
+  ],
+  "built_by": "android-poc/tools/p1-runtime-build.ps1 (archived as android/runtime/make-runtime.ps1)"
+}

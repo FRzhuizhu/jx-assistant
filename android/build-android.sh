@@ -11,6 +11,12 @@ CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o android/app
 mkdir -p android/app/src/main/jniLibs/x86_64
 CGO_ENABLED=1 CC="$NDK_CC" GOOS=android GOARCH=amd64 go build -ldflags="-s -w" -o android/app/src/main/jniLibs/x86_64/libjx.so .
 
+echo "[1.5/4] 内置运行时快照入 assets（android/runtime/，不入库）"
+mkdir -p android/app/src/main/assets/runtime
+cp -f android/runtime/runtime.tgz android/app/src/main/assets/runtime/
+cp -f android/runtime/MANIFEST.json android/app/src/main/assets/runtime/runtime-MANIFEST.json
+ls -lh android/app/src/main/assets/runtime/
+
 echo "[2/4] 开发签名（首次生成，仅本机自用）"
 KS=android/app/debug.keystore
 if [ ! -f "$KS" ]; then

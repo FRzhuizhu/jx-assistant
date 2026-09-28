@@ -21,3 +21,9 @@ new-assistant.log
 android/.gradle/
 android/app/build/
 android/app/src/main/jniLibs/
+android/app/src/main/assets/
+android/local.properties
+android/app/debug.keystore
+# 运行时快照（72MB 构建产物，由 android/runtime/MANIFEST.json 校验、make-runtime.ps1 重建）
+android/runtime/*.tgz
+工作区/

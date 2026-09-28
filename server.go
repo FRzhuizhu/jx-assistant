@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -53,6 +54,9 @@ type App struct {
 	skillsDirOurs   string // 已解析的技能目录（App 级缓存，避免跨实例污染）
 	remoteMu        sync.Mutex
 	remotes         map[string]*remoteClient // SSH 远程连接池（remote.go）
+	listenPort      int                      // 本机监听端口（远程中继的桥接目标，热重启连接用）
+	remoteCtlMu     sync.Mutex
+	remoteCtlCancel context.CancelFunc // 中继连接存活句柄（nil=未运行，remoteaccess.go）
 	evtMu           sync.Mutex
 	subscribers     map[chan Event]bool // /api/events 的订阅者
 	pendMu          sync.Mutex
@@ -868,7 +872,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Model           *string `json:"model"`
 		Workspace       *string `json:"workspace"`
 		BindHost        *string `json:"bindHost"`
-		RemoteEnabled   *bool   `json:"remoteEnabled"`   // 远程接入（公网中继）总开关，重启生效
+		RemoteEnabled   *bool   `json:"remoteEnabled"`   // 远程接入（公网中继）总开关，即时生效（保存即热启停）
 		RemoteMyID      *string `json:"remoteMyId"`      // 远程接入设备号（手机入口 /a/<设备号>）
 		RemotePairKey   *string `json:"remotePairKey"`   // 远程接入配对密钥（端到端加密密钥的种子）
 		RemoteHost      *string `json:"remoteHost"`      // 中继网关地址（域名或 IP，不带协议与端口）
@@ -941,6 +945,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		a.Cfg.BindHost = bh
 	}
+	oldRA := a.Cfg.RemoteAccess // 保存后比对：远程接入字段有变则热生效
 	if body.RemoteEnabled != nil {
 		a.Cfg.RemoteAccess.Enabled = *body.RemoteEnabled
 	}
@@ -1013,6 +1018,10 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
 		writeErr(w, 500, "保存配置失败: "+err.Error())
 		return
+	}
+	// 远程接入字段有变（开关/设备号/密钥/网关）：立即热启停，无需重启进程
+	if a.Cfg.RemoteAccess != oldRA {
+		a.syncRemoteAccess()
 	}
 	a.handleGetConfig(w, r)
 }

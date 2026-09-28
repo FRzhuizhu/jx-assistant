@@ -53,6 +53,11 @@ func main() {
 		attachParentConsole()
 		os.Exit(runApkInfoCLI(os.Args[2:]))
 	}
+	// 内置运行时自检子命令（安卓故障诊断）：jx runtime-selftest [dataDir]
+	if len(os.Args) > 1 && os.Args[1] == "runtime-selftest" {
+		attachParentConsole()
+		os.Exit(runRuntimeSelftest(os.Args[2:]))
+	}
 
 	cfgPath := flag.String("config", "config.json", "配置文件路径")
 	port := flag.Int("port", 0, "覆盖配置中的监听端口")
@@ -108,6 +113,16 @@ func main() {
 		log.Fatalf("初始化失败: %v", err)
 	}
 
+	// 安卓：注册内置运行时（Termux 快照）并后台预热装配（不阻塞启动/服务就绪）
+	if isAndroidRuntime {
+		setTermuxProvider(func(emit func(string)) (string, error) { return termuxEnsureFor(app, emit) })
+		go func() {
+			if p := termuxPrefixOrEmpty(); p != "" {
+				log.Printf("[runtime] 内置运行时就绪: %s", p)
+			}
+		}()
+	}
+
 	// 历史密级沙箱残留还原：旧版给工作区打过常驻 Low 完整性标签（机制已
 	// 撤除），启动时自动还原为 Medium（异步；根级签名校验防误伤他人标签）。
 	go app.startupIntegrityLabelRestore(cfg.Workspace)
@@ -136,10 +151,10 @@ func main() {
 	url := "http://" + net.JoinHostPort(dialHost, strconv.Itoa(portNo))
 	srv := &http.Server{Handler: withCORS(app.Routes())}
 
-	// 远程接入（公网中继）：注册到 210 网关的 /hub，桥接目标就是本监听端口
-	if cfg.RemoteAccess.Enabled {
-		go runRemoteAccess(app, portNo, cfg.RemoteAccess)
-	}
+	// 远程接入（公网中继）：注册到 210 网关的 /hub，桥接目标就是本监听端口。
+	// 连接按配置即时启动；设置页的开关/身份/网关改动同样热生效。
+	app.listenPort = portNo
+	app.syncRemoteAccess()
 	// 更新检查：轮询发布源（默认 Gitea releases），新版本经事件流推给客户端
 	StartUpdateChecker(app)
 

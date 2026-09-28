@@ -172,7 +172,7 @@ async function openSettings(pane) {
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
   $('set-lan-on').checked = c.bindHost === '0.0.0.0' || c.bindHost === '::';
   syncLanState(c);
-  // 常规页：远程接入（服务端配置，写 remoteAccess.enabled，重启程序后生效）
+  // 常规页：远程接入（服务端配置，写 remoteAccess.enabled，即时生效）
   $('set-remote-on').checked = !!(c.remoteAccess && c.remoteAccess.enabled);
   syncRemoteState(c);
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
@@ -831,15 +831,16 @@ $('set-lan-on').onchange = async () => {
   }
 };
 
-/* ---------- 网络访问页：远程接入（开关 + 设备号/密钥/网关编辑，重启生效） ---------- */
+/* ---------- 网络访问页：远程接入（开关 + 设备号/密钥/网关编辑，即时生效） ---------- */
 
 let lastRemoteEntry = ''; // 入口链接快照：复制用 + 二维码按它增量重绘
+let remotePollTimer = 0; // 连接异步成立：未连上时短轮询刷新状态文案
 
 function syncRemoteState(c) {
   const ra = c.remoteAccess || {};
   $('set-remote-state').textContent = ra.connected
-    ? '已连接网关（重启程序后改动生效）'
-    : (ra.enabled ? '已开启（网关未连上：' + (ra.lastError || '等待重连') + '）' : '已关闭');
+    ? '已连接网关'
+    : (ra.enabled ? '已开启（正在连接网关：' + (ra.lastError || '稍候自动重试') + '）' : '已关闭');
   const entryEl = $('set-remote-entry');
   entryEl.innerHTML = ra.enabled && ra.entry
     ? '手机（外网可用）扫码或浏览器打开并收藏：<b>' + esc(ra.entry) + '</b>'
@@ -870,6 +871,15 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
   if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
+  // 开关一动连接就异步建立（一般一两秒）：未连上时定时重拉状态刷新文案；
+  // 连上或设置页收起即停，不做长轮询
+  clearTimeout(remotePollTimer);
+  if (ra.enabled && !ra.connected && !$('settings').classList.contains('hidden')) {
+    remotePollTimer = setTimeout(async () => {
+      const cur = await api('/api/config').catch(() => null);
+      if (cur) syncRemoteState(cur);
+    }, 2500);
+  }
 }
 
 // 入口链接点击复制（含配对密钥，复制成功给个轻提示）

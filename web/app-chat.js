@@ -3487,6 +3487,7 @@ $('ws-row').onclick = () => {
   $('ws-search').value = '';
   $('ws-search-clear').classList.add('hidden');
   renderWsPop();
+  $('ws-pop-notice').classList.add('hidden'); // 告知行跟随面板开合复位
   openPopover('ws-pop', $('ws-row'));
 };
 
@@ -3557,8 +3558,18 @@ $('rm-dir-list').addEventListener('dblclick', (e) => {
   browseRemote(row.dataset.path);
 });
 $('file-input').addEventListener('change', (e) => { if (e.target.files.length) uploadFiles([...e.target.files], uploadTarget); });
+// 窄屏（手机远程访问）不支持新增工作目录：原生选择框弹在宿主机屏幕上，手机端
+// 永远等不到——点了就地展开一行告知（文案与侧栏那颗按钮的提示卡同源，见
+// app-core.js 的 NARROW_WS_ADD_NOTICE），不把请求发出去白等。
+function toggleWsPopAddNotice() {
+  const el = $('ws-pop-notice');
+  if (el.classList.contains('hidden')) el.textContent = NARROW_WS_ADD_NOTICE;
+  el.classList.toggle('hidden'); // 再点一次 = 收起，与侧栏告知卡同一套切换语义
+}
+
 // 「添加工作目录」：弹系统选择框，选中即设为新对话的工作目录并登记
 $('ws-pop-add').onclick = async () => {
+  if (isNarrow()) { toggleWsPopAddNotice(); return; } // 手机端：只给提示，不调后端
   const p = await pickWorkFolder();
   if (!p) return;
   homeDraft.remote = null; // 选了本地目录，放弃远程挂载

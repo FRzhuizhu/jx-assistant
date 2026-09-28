@@ -71,6 +71,8 @@ type remoteHubStatus struct {
 
 // hubCtx 一次 hub 连接的全部状态；断线即整体废弃重连。
 type hubCtx struct {
+	ctx    context.Context // 生命周期：取消即断开（设置页关闭开关/改配置触发的热重启）
+
 	app    *App
 	cfg    RemoteAccessCfg
 	port   int // 本机回环桥接目标端口（实际监听端口，桌面模式回退后也正确）
@@ -110,17 +112,52 @@ func remoteStatus(cfg RemoteAccessCfg) remoteHubStatus {
 	return st
 }
 
+// syncRemoteAccess 按当前配置同步中继连接：关闭开关即断开、开启即连接，
+// 运行中改身份/网关则热重启连接——设置页改动即时生效，无需重启进程。
+// 由启动流程（main.go）与设置保存（handleSetConfig）调用。
+func (a *App) syncRemoteAccess() {
+	a.remoteCtlMu.Lock()
+	defer a.remoteCtlMu.Unlock()
+	if a.remoteCtlCancel != nil { // 先停旧连接（热重启场景）
+		a.remoteCtlCancel()
+		a.remoteCtlCancel = nil
+		remoteConnected.Store(false)
+		remoteLastError.Store("")
+	}
+	cfg := a.Cfg.RemoteAccess
+	if !cfg.Enabled {
+		log.Printf("[远程] 远程接入已关闭")
+		return
+	}
+	if cfg.Host == "" || cfg.MyID == "" || cfg.PairKey == "" {
+		log.Printf("[远程] 未启动：remoteAccess 缺 host/myId/pairKey")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.remoteCtlCancel = cancel
+	log.Printf("[远程] 正在连接网关 %s:%d（设备号 %s）", cfg.Host, cfg.Port, cfg.MyID)
+	go runRemoteAccess(ctx, a, a.listenPort, cfg)
+}
+
 // runRemoteAccess 顶层循环：连接 210 的 /hub，断线退避重连（5s 起步封顶 30s；
-// 拿到过 regok 的链路说明网关正常，退避立即归零）。
-func runRemoteAccess(app *App, port int, cfg RemoteAccessCfg) {
+// 拿到过 regok 的链路说明网关正常，退避立即归零）。ctx 取消即整体退出——
+// 设置页关闭开关或改配置时由 syncRemoteAccess 触发热停。
+func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCfg) {
 	if cfg.Host == "" || cfg.PairKey == "" || cfg.MyID == "" {
 		log.Printf("[远程] 未启动：config.json remoteAccess 缺 host/myId/pairKey")
 		return
 	}
+	defer func() {
+		remoteConnected.Store(false)
+		log.Printf("[远程] 中继通道已停止（开关关闭或配置变更）")
+	}()
 	delay := 5 * time.Second
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		h := &hubCtx{
-			app: app, cfg: cfg, port: port,
+			ctx: ctx, app: app, cfg: cfg, port: port,
 			client:  &http.Client{}, // 无总超时：长流式响应靠 abort 帧与请求 ctx 收口
 			cancels: map[string]context.CancelFunc{},
 		}
@@ -137,12 +174,16 @@ func runRemoteAccess(app *App, port int, cfg RemoteAccessCfg) {
 		}()
 		remoteConnected.Store(false)
 		if wasRegistered {
-			delay = 5 * time.Second
-		} else {
-			log.Printf("[远程] 中继通道断开，%s 后重连", delay)
-			time.Sleep(delay)
-			delay = min(delay*2, 30*time.Second)
+			delay = 5 * time.Second // 网关正常（拿到过 regok）：立即重连
+			continue
 		}
+		log.Printf("[远程] 中继通道断开，%s 后重连", delay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 30*time.Second)
 	}
 }
 
@@ -164,6 +205,21 @@ func (h *hubCtx) run() bool {
 		}
 		h.mu.Unlock()
 		_ = conn.Close()
+	}()
+
+	// 外部取消（关闭开关/改配置热重启）：立即关闭连接，打断读阻塞
+	watchCtx := h.ctx
+	if watchCtx == nil {
+		watchCtx = context.Background()
+	}
+	cancelWatch := make(chan struct{})
+	defer close(cancelWatch)
+	go func() {
+		select {
+		case <-watchCtx.Done():
+			_ = conn.Close()
+		case <-cancelWatch:
+		}
 	}()
 
 	// 注册并等 regok（15s 超时对齐 p2p.js 的 auth 窗口）

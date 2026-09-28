@@ -105,12 +105,57 @@ class EngineService : Service() {
      */
     private fun startEngineIfNeeded() {
         if (proc?.isAlive == true) return
-        killOrphanedEngines()
-        val root = engineRoot(this).apply {
-            mkdirs()
-            // 数据根只归本应用 uid，权限最小化
-            setWritable(true, false)
+        // 运行时快照（72MB 级）拷贝与进程启动放后台线程，避免主线程 IO
+        Thread {
+            val root = engineRoot(this).apply {
+                mkdirs()
+                // 数据根只归本应用 uid，权限最小化
+                setWritable(true, false)
+            }
+            try {
+                copyRuntimeAssets(root)
+            } catch (e: Exception) {
+                Log.e(TAG, "copyRuntimeAssets 失败（引擎将回落系统 sh）", e)
+            }
+            startProcess(root)
+        }.start()
+    }
+
+    /**
+     * 首启把内置运行时快照与清单从 APK assets 拷到引擎数据目录（幂等：
+     * 清单一致且快照在位时走快速路径，约 1KB 读取）。
+     */
+    private fun copyRuntimeAssets(root: File) {
+        val dataDir = File(root, "data").apply { mkdirs() }
+        val manifestName = "runtime-MANIFEST.json"
+        val assetManifest = try {
+            assets.open("runtime/$manifestName").bufferedReader().readText()
+        } catch (e: Exception) {
+            Log.w(TAG, "assets 无内置运行时（开发包？）", e)
+            return
         }
+        val dstManifest = File(dataDir, manifestName)
+        val dstTar = File(dataDir, "runtime.tgz")
+        if (dstManifest.isFile && dstManifest.readText() == assetManifest &&
+            dstTar.isFile && dstTar.length() > 1_000_000
+        ) {
+            return
+        }
+        for (name in listOf("runtime.tgz", manifestName)) {
+            val tmp = File(dataDir, "$name.tmp")
+            assets.open("runtime/$name").use { ins ->
+                tmp.outputStream().use { outs -> ins.copyTo(outs) }
+            }
+            val dst = File(dataDir, name)
+            dst.delete()
+            if (!tmp.renameTo(dst)) throw RuntimeException("运行时快照落位失败: $name")
+        }
+        Log.i(TAG, "内置运行时资产就绪: ${dstTar.length()} bytes")
+    }
+
+    /** 启动引擎进程与看护线程（原 startEngineIfNeeded 主体）。 */
+    private fun startProcess(root: File) {
+        killOrphanedEngines()
         val lib = libPath(this)
         Log.e(TAG, "engine lib=${lib.absolutePath} exists=${lib.exists()} canExec=${lib.canExecute()}")
         if (!lib.exists() || !lib.canExecute()) {

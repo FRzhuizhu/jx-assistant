@@ -331,7 +331,7 @@ function toggleWsAddNotice(anchor) {
     closePopovers(); // 已开着这张告知卡：再点一下工具 = 收起
     return;
   }
-  m.innerHTML = '<div class="pop-notice">手机端不支持新增工作目录，请到电脑宽屏上操作</div>';
+  m.innerHTML = '<div class="pop-notice">' + NARROW_WS_ADD_NOTICE + '</div>';
   m.querySelector('.pop-notice').onclick = () => closePopovers();
   closePopovers();
   m.classList.remove('hidden');

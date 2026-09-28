@@ -87,6 +87,9 @@ function esc(s) {
    不推导 --rp-w、不写 --content-w，避免手机宽度污染桌面记忆
    （jx.sb / jx.contentWidth）。断点跨越回宽屏时恢复桌面推导。 */
 const narrowMq = window.matchMedia ? window.matchMedia('(max-width: 499.98px)') : null;
+// 窄屏「添加工作目录」的统一文案：原生选择框由后端弹在宿主机屏幕上，手机端点了
+// 只会白等——侧栏工具按钮（app-left.js）与新对话页目录面板（app-chat.js）共用这句。
+const NARROW_WS_ADD_NOTICE = '手机端不支持新增工作目录，请到电脑宽屏上操作';
 function isNarrow() { return !!(narrowMq && narrowMq.matches); }
 
 // 窄屏下收起左栏浮层：选中/新建会话等入口调用（右栏浮层保持用户手开的状态）

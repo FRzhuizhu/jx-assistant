@@ -141,12 +141,20 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		go func() { _ = cmd.Wait(); os.RemoveAll(tempDir); close(waitDone) }()
 		return func() bool { <-waitDone; return true }, nil
 	case isAndroidRuntime:
-		// 安卓后台作业：同前台，无 OS 级沙箱，直接 sh 执行（见
-		// spawnConfinedLocal 的安卓分支注释）。
+		// 安卓后台作业：同前台，无 OS 级沙箱；内置运行时优先、未就绪回落系统 sh
+		// （见 spawnConfinedLocal 的安卓分支注释）。
 		wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
-		cmd := exec.CommandContext(ctx, "sh", "-c", wrapped)
-		cmd.Dir = r.Dir
-		cmd.Env = sandboxEnv(true)
+		var cmd *exec.Cmd
+		if prefix := termuxPrefixOrEmpty(); prefix != "" {
+			cmd = exec.CommandContext(ctx, prefix+"/bin/bash", "-lc", wrapped)
+			cmd.Dir = r.Dir
+			cmd.Env = termuxEnv(prefix)
+			applyTermuxProcAttr(cmd)
+		} else {
+			cmd = exec.CommandContext(ctx, "sh", "-c", wrapped)
+			cmd.Dir = r.Dir
+			cmd.Env = sandboxEnv(true)
+		}
 		cmd.Stdout = w
 		cmd.Stderr = w
 		if err := cmd.Start(); err != nil {

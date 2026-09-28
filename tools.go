@@ -945,6 +945,12 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 	if info, serr := os.Stat(r.Dir); serr != nil || !info.IsDir() {
 		return "", fmt.Errorf("工作目录不存在: %s", r.Dir)
 	}
+	// 安卓：内置 Termux 运行时优先（数据目录内的完整 Linux 环境；未就绪回落系统 sh）
+	if isAndroidRuntime {
+		if prefix := termuxPrefixOrEmpty(); prefix != "" {
+			return runTermuxBash(ctx, prefix, r)
+		}
+	}
 	shell := strings.TrimSpace(r.Shell)
 	if shell == "" {
 		if isWindowsRuntime {

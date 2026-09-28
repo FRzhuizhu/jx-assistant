@@ -83,10 +83,10 @@ const (
 	vtArrayGetItemAt = 6
 )
 
-// pickFolderNative 弹出选择框并阻塞到用户关闭；返回所选目录，
-// 用户取消返回空串。COM 的 STA 约定要求调用固定在一个 OS 线程上。
+// pickFolderNative 弹出系统原生「选择文件夹」对话框并阻塞到用户关闭；返回所选目录，
+// 用户取消返回空串。COM 的 STA 约定要求调用固定在一个 OS 线程上；pickFolder 必须为 true——传 false 会退化成选文件对话框（默认还挂 *.zip 过滤器），用户根本选不到文件夹。
 func pickFolderNative(startDir, title string) (string, error) {
-	paths, err := pickDialogNative(startDir, title, false, false, false)
+	paths, err := pickDialogNative(startDir, title, true, false, false)
 	if err != nil || len(paths) == 0 {
 		return "", err
 	}

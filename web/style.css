@@ -1269,6 +1269,9 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .pop-item.danger { color: #c0392b; }
 .pop-item.danger:hover { background: rgba(192, 57, 43, .08); }
 /* 弹出卡里的纯告知行（窄屏「添加工作目录」提示）：不可点的正文，点它自身也收起卡片 */
+/* 新对话页目录面板里的同款告知行：面板本身有 360px 宽，不必照侧栏窄卡的
+   230px 折行（同前缀选择器优先级更高，压在 .pop-notice 基础规则之上） */
+.ws-pop-actions .pop-notice { max-width: none; }
 .pop-notice {
   padding: 9px 12px; font-size: 13px; line-height: 1.6; color: var(--text-2);
   max-width: 230px; white-space: normal; cursor: default;

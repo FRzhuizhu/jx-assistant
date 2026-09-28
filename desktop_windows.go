@@ -159,9 +159,11 @@ func desktopMessageBox(text, caption string) {
 	procDesktopMessageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), 0x30) // MB_ICONWARNING
 }
 
-// desktopWorkspaceDefault 首启默认工作区不该落在安装目录：指到
-// 「文档\坚祥数字助理」。仅当当前值就是 exe 目录（默认生成的）时改写，
+// desktopWorkspaceDefault 默认工作区不落在安装目录本身：改写为安装目录下的
+// 「工作区」子文件夹——模型的工作区域与软件本体（exe/config/data/技能）分离，
+// 默认目录同时跟随安装位置。仅当当前值就是 exe 目录（默认生成的）时改写，
 // 返回是否发生了改写（调用方负责回写配置，避免设置页与实际不一致）。
+// 安装目录不可写时（系统级位置）回退「文档\坚祥数字助理」。
 func desktopWorkspaceDefault(cfg *Config) bool {
 	exe, err := os.Executable()
 	if err != nil {
@@ -172,12 +174,16 @@ func desktopWorkspaceDefault(cfg *Config) bool {
 	if err != nil || !stringsEqualFold(filepath.Clean(ws), exeDir) {
 		return false
 	}
-	docs := filepath.Join(os.Getenv("USERPROFILE"), "Documents")
-	if kf, err := windows.KnownFolderPath(windows.FOLDERID_Documents, 0); err == nil {
-		docs = kf
+	dir := filepath.Join(exeDir, "工作区")
+	if mkErr := os.MkdirAll(dir, 0755); mkErr != nil {
+		docs := filepath.Join(os.Getenv("USERPROFILE"), "Documents")
+		if kf, kerr := windows.KnownFolderPath(windows.FOLDERID_Documents, 0); kerr == nil {
+			docs = kf
+		}
+		dir = filepath.Join(docs, "坚祥数字助理")
+		_ = os.MkdirAll(dir, 0755)
 	}
-	cfg.Workspace = filepath.Join(docs, "坚祥数字助理")
-	_ = os.MkdirAll(cfg.Workspace, 0755)
+	cfg.Workspace = dir
 	return true
 }
 

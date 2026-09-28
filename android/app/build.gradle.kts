@@ -10,7 +10,9 @@ android {
     defaultConfig {
         applicationId = "com.jianxiang.assistant"
         minSdk = 26          // Android 8.0：前台服务起始；两台真机（三星/荣耀）均覆盖
-        targetSdk = 35
+        // Phase 0：降至 28 换 W^X 豁免（Termux 运行时需 exec 应用私有目录二进制；
+        // 与 Termux/dsh-mobile-apk 同构）。经模拟器 PoC 验证：exec/动态链接/rpath 全通
+        targetSdk = 28
         versionCode = 2
         versionName = "0.1.6"
         ndk {
@@ -57,6 +59,11 @@ android {
             // 可执行文件（nativeLibraryDir）；false 会留在 APK 内不落盘
             useLegacyPackaging = true
         }
+    }
+    androidResources {
+        // 运行时快照已是压缩格式：避免 APK 二次压缩。注意快照不用 .gz
+        // 后缀——AGP/aapt 会把 .gz 资产自动解包（文件名与体积都会变）
+        noCompress += "tgz"
     }
 }
 

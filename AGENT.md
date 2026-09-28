@@ -108,6 +108,11 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
 - **异常收尾必须让用户看见，但不要往对话里塞话**：真实失败走输入框上方的
   报错条（`showRunError`，带重试）并在服务端记 `runError`；对话区只放真实
   对话，别写「（本轮…）」这类系统交代——但也不能什么都不报。
+- **平台适配走「文件后缀」，不建子目录、不开分支**：平台实现一律
+  `<域>_<平台>.go`（windows / linux / android / other，`_other` 为必须可
+  编译的兜底桩）；平台判断用 `isWindowsRuntime / isLinuxRuntime /
+  isAndroidRuntime` 常量，禁止散落 `runtime.GOOS` 比较；差异文件索引与
+  新增平台 SOP 见《平台适配》节。
 
 ### 能不造轮子就不造轮子
 
@@ -119,6 +124,71 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
 没有可靠现成方案，或现成方案的集成成本明显更高。判断口诀——
 **先找轮子，再决定要不要造**；引入时连同许可文本一起入库
 （GPL 等强许可尤其要附全文）。
+
+## 平台适配（单包 + 文件后缀）
+
+多平台支持不开分支、也不拆目录：全部代码同属一个 `package main`，平台差异由
+**build tags 按文件名后缀在编译期选择**（`GOOS=android go build` 自动只挑
+android/other/无后缀文件），构建脚本零改动。拆包（建 android/、linux/ 子目录）
+意味着接口抽象层与全局状态重构，收益低于成本；仅当出现「可独立构建的平台
+子系统」才建独立子目录（先例：`sandboxhelper/`）。
+
+后缀与命名：
+
+| 形式 | 含义 |
+|---|---|
+| 无后缀 | 全平台通用（跨平台默认逻辑） |
+| `<域>_windows.go` / `_linux.go` / `_android.go` | 平台实现；写 `_linux.go` 记得排除 android（`runtime_linux.go` 的约束是 `linux && !android`） |
+| `<域>_other.go` | 兜底桩：必须可编译，不支持的能力返回明确报错（参考 `fileopen_other.go` / `pickfolder_other.go`），不得静默失败 |
+| `<域>_<平台>_stub.go` | 为其他平台构建保留符号（如 `sandbox_windows_stub.go`） |
+
+平台判断统一用 `isWindowsRuntime / isLinuxRuntime / isAndroidRuntime`
+（`runtime_{windows,linux,android,other}.go` 四件套）；**禁止**散落的
+`runtime.GOOS` 直接比较（`fileopen_other.go` 内的 darwin/linux 细分属于
+「非 Windows 世界内的细分」，可留在平台文件里）。短分叉（文案/单条件）可留在
+通用文件，成块逻辑下沉平台文件。
+
+### 差异文件索引（新增平台照此逐项过）
+
+| 能力域 | 文件组 | 备注 |
+|---|---|---|
+| 运行时判定 | `runtime_{windows,linux,android,other}.go` | 三常量，新平台起点 |
+| 桌面壳 | `desktop_windows.go` / `_other.go` | WebView2 壳仅 Windows，其余报错 |
+| 浏览器面板 | `browser_panel_windows.go` / `_other.go` | 原生面板仅 Windows；其余回退无头宿主 |
+| 密钥保护 | `dpapi_windows.go` / `_other.go` | 非 Windows 加密直通（明文落盘，如实文档） |
+| Git 面板 | `gitpanel_windows.go` / `_other.go` | 差异仅「窗口隐藏」细节 |
+| 打开文件 | `fileopen_windows.go` / `_other.go` | _other 内细分 darwin/linux，android 落明确报错 |
+| 选择框 | `pickfolder_windows.go` / `_other.go` | 非 Windows 报「仅支持 Windows」 |
+| 进程守护 | `processguard_windows.go` / `_other.go` | 顶层 kill-on-close Job 仅 Windows |
+| 原子文件/路径围栏 | `fsatomic_*` / `fspath_*` | 差异为 ACL 复制与 junction 规范化 |
+| 命令沙箱 | `sandbox_windows.go`(+`_stub`) / `sandbox_linux.go`(+`_stub`) + `sandbox.go` 分派 | android 分支：无 OS 沙箱、直接执行，隔离由应用沙箱承担 |
+| 沙箱审计 | `sandbox_audit_windows.go` / `_other.go` | 常驻 ACE/密级标签仅 Windows，其余恒空 |
+| 电脑操控 | `tool_computer_windows.go` / `_other.go` | 仅 Windows，其余注册时报错 |
+| 进程退出信号 | `pdeathsig_android.go` / `_other.go` | android 用 PR_SET_PDEATHSIG |
+| sqlite 兼容 | `sqlite_android_amd64.go` / `sqlite_android_stub.go` | 仅 android/amd64 打 seccomp 补丁 |
+
+通用文件中的平台分支共 4 文件 12 处（审计于 2026-09）：`sandbox.go`
+72/79/81/100/119/143/203（沙箱分派与拒绝方言）、`agent.go` 217/225（Android
+权限文案）、`perm.go` 398/472、`tools.go` 950——改造时逐处标注手机端语义，
+能下沉到平台文件的逐步下沉。
+
+### 新增平台接入 SOP
+
+1. 加 `runtime_<平台>.go`（三常量）并复核 `_other.go` 的排除约束；
+2. 按上表逐域过：需要实现的写 `<域>_<平台>.go`；不需要的确认 `_other.go`
+   兜底报错对用户可读（参考 `pickfolder_other.go` 风格）；
+3. 构建脚本加 `GOOS=<平台>` 目标（参考 `android/build-android.sh`）；
+4. 编译矩阵全绿：`GOOS=windows / linux / android` 全部构建通过；
+5. 真机/模拟器回归：本平台「不支持项」逐条确认报错文案。
+
+### 手机端改造的新增文件预置（2026-09 计划）
+
+| 新增 | 归属 |
+|---|---|
+| `termux_android.go` | Termux 快照装配、prefix 环境、进程组生命周期 |
+| `tool_device_android.go` + `tool_device_other.go` | 无线 ADB / 截屏 / 无障碍的引擎侧工具 |
+| Kotlin 桥（DeviceBridge、AccessibilityService 等） | `android/app/src/main/java/com/jianxiang/assistant/`（平台资产） |
+| 快照制作脚本与选包清单 | `android/` 子目录或 `打包/`（非 Go 编译单元，可建子目录） |
 
 ## 桌面版（WebView2 壳）与安装包
 
@@ -134,8 +204,10 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   产出 `坚祥数字助理GO.exe`（双击即窗口，数据照旧落仓库目录）。
 - 桌面模式行为：相对路径（config / data / 技能）锚到 exe 目录（开发目录
   有 go.mod 时不搬迁，避免扰动调试）；监听端口被占自动回退；命名互斥体
-  单实例，二次启动唤起已有窗口；首启默认工作区指到「文档\坚祥数字助理」
-  并回写配置；WebView2 运行时缺失时给官方下载指引。
+  单实例，二次启动唤起已有窗口；默认工作区不落在安装目录本身：改写为
+  安装目录下的「工作区」子文件夹（模型工作区域与软件本体/配置隔离；
+  目录不可写时回退「文档\坚祥数字助理」）并回写配置；WebView2 运行时缺失
+  时给官方下载指引。
 - **安装包**（Inno Setup，内置技能便携运行时，约 350MB 源经 LZMA2 压到
   约 103MB，装完离线全功能）：
 
