@@ -96,7 +96,12 @@ async function openSession(id) {
     await loadSessionInto(id, tok);
   } catch (e) {
     // 加载失败：留在目标会话的壳里，给原因与「重试」，绝不静默退回旧会话
-    if (tok === navTok.main) showChatLoadError(mainView, e.message, () => openSession(id));
+    if (tok === navTok.main) showChatLoadError(mainView, e.message, () => {
+      // 重试先手动补加载反馈：state.cur 已是目标会话，openSession 的乐观分支会跳过
+      mainView.state._loading = true;
+      showChatLoading(mainView);
+      openSession(id);
+    });
   } finally {
     // 只有仍是最新一次导航才解禁（被更新的导航顶掉时，由它自己负责收尾）
     if (tok === navTok.main) navBusy.main = false;
@@ -1549,6 +1554,9 @@ function renderMessages(msgs, view, opts) {
   // 还是清空后的 msgs）；真实数据落地时加载方先清 _loading 再来渲染
   if (st._loading && !msgs.length) return;
   if (!msgs.length) {
+    // 无会话（首页）时空列表是常态：问候区由 resetEmpty 铺好且里面挂着输入卡
+    // （#home-composer），这里绝不能拿 emptyHTML 顶掉它——销毁问候区等于销毁 #input
+    if (!st.cur) return;
     st._pfxSid = null;
     box.innerHTML = view.emptyHTML;
     // 首条消息已发出、还没回显：空态（首页问候）下面也立显「发送中」占位
@@ -3196,7 +3204,8 @@ async function retryRun(view) {
     await consumeStream(res, view, cur.id);
   } catch (e) {
     if (e.name === 'AbortError') aborted = true;
-    else showRunError(view, '重试失败：' + e.message);
+    // 慢网下请求失败可能晚于切走：报错条只落在仍停在这个会话的界面上
+    else if (view.state.cur && view.state.cur.id === cur.id) showRunError(view, '重试失败：' + e.message);
   }
   await endTurn(view, aborted, { sid: cur.id, abort: view.state.abort });
 }
@@ -3219,6 +3228,11 @@ async function endTurn(view, aborted, stream) {
     // 重开会话时才会拉到 deliveries/checkpoints，同页跑完的回合永远不显示）
     if (!view.state.streaming) await reloadMessages(view);
   }
+  // 中途的 await（backendRunning / reloadMessages 都取会话详情）在慢网下可达数秒，
+  // 期间用户可能已切走/回首页：收尾前复验这条流仍属于当前界面，否则整个尾巴不动。
+  // 晚到的旧续体曾把空消息盖到首页问候区上、连里面的输入卡一起销毁
+  if (stream && (view.state.abort !== stream.abort ||
+      !view.state.cur || view.state.cur.id !== stream.sid)) return;
   renderMessages(view.state.msgs, view);
   setStreamUI(false, view);
   if (view === mainView) {
@@ -3440,6 +3454,9 @@ async function send(forceContent, view) {
   } catch (e) {
     if (e.name === 'AbortError') {
       aborted = true; // 用户主动停止（已另行请求后端停止）：排队消息保留
+    } else if (!view.state.cur || view.state.cur.id !== sid) {
+      // 请求失败的信息晚于切走/回首页到达：界面归新导航管，本轮不作任何界面动作
+      // （旧代码这里会拿空 msgs 盖掉首页问候区、对空 cur 取 id 还会抛错）
     } else {
       // 流断了不等于执行结束：后端执行体独立于这条连接，先对一次状态再决定提示
       view.state.streamText = '';
@@ -3655,17 +3672,21 @@ function detachStream(view) {
 }
 
 async function backendRunning(sid, view) {
+  const v = view || mainView;
   try {
     const d = await api('/api/sessions/' + sid);
-    if (d.pending) applyPending(view || mainView, d.pending);
+    // 慢网下响应可能晚于导航：pending 属于被探测的会话，只对仍停在它上面的界面生效
+    if (d.pending && v.state.cur && v.state.cur.id === sid) applyPending(v, d.pending);
     return !!(d.running || (d.meta && d.meta.status === 'running'));
   } catch (e) { return false; }
 }
 
 // refreshIfDangling 流断开但后端仍在执行：重新接上那条流继续看（刷新/网络抖动都不再打断对话）
 async function refreshIfDangling(view) {
-  if (!view.state.cur) return;
-  if (!(await backendRunning(view.state.cur.id, view))) return;
+  const sid0 = view.state.cur && view.state.cur.id;
+  if (!sid0) return;
+  if (!(await backendRunning(sid0, view))) return;
+  if (!view.state.cur || view.state.cur.id !== sid0) return; // 探测期间已切走：不接流
   attachRun(view);
 }
 
@@ -3674,8 +3695,12 @@ async function reloadMessages(view) {
   view = view || mainView;
   if (!view.state.cur) return;
   if (view.state._loading) return; // 会话正在整包加载：由 loadSessionInto 收口，不并发重取
+  const nav = navTok[view.key]; // 导航令牌：慢网下响应可能晚于切走/回首页，落地前必须复验
   try {
     const d = await api('/api/sessions/' + view.state.cur.id);
+    // 已被更新的导航取代：晚到的旧会话数据不落地——否则 state.cur 被旧 meta 复活、
+    // 界面被旧消息顶回旧会话，正是远程访问时「切过去又被跳回来」的根源
+    if (nav !== navTok[view.key]) return;
     view.state.cur = d.meta;
     view.state.msgs = d.messages || [];
     view.state.pendingSteer = (d.pending && d.pending.steer) || [];

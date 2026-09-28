@@ -300,7 +300,12 @@ async function openSubSession(id) {
     if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
   } catch (e) {
     // 加载失败：留在目标子对话的壳里给原因与重试（openSession 同款语义）
-    if (tok === navTok.sub) showChatLoadError(subView, e.message, () => openSubSession(id));
+    if (tok === navTok.sub) showChatLoadError(subView, e.message, () => {
+      // 重试先手动补加载反馈：subState.cur 已是目标子对话，乐观分支会跳过
+      subView.state._loading = true;
+      showChatLoading(subView);
+      openSubSession(id);
+    });
   } finally {
     if (tok === navTok.sub) navBusy.sub = false;
   }
