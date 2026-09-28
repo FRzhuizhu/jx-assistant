@@ -624,6 +624,26 @@ func (s *Store) UpdateStatus(id, status string) error {
 	return err
 }
 
+// RepointWorkspace 把显式挂在 old 目录下的会话改指 new（默认工作区改名迁移用：
+// 旧版的默认工作区是「安装目录\工作区」，改名成「默认工作区」后，挂过旧路径的
+// 会话要跟着走，否则会指向一个已不存在的文件夹）。未单独设过工作目录的会话存
+// 的是空串、本来就跟随默认工作区，无需处理。返回改动的会话数。
+// 比较忽略大小写（Windows 盘符/目录名不敏感）。
+func (s *Store) RepointWorkspace(old, new string) (int, error) {
+	old, new = strings.TrimSpace(old), strings.TrimSpace(new)
+	if old == "" || new == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE sessions SET workspace=? WHERE workspace=? COLLATE NOCASE`, new, old)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // RunningSessions 返回状态为 running 的会话（服务启动时做中断恢复用）。
 func (s *Store) RunningSessions() ([]*SessionMeta, error) {
 	rows, err := s.db.Query(`SELECT ` + sessionCols + ` FROM sessions WHERE status='running'`)

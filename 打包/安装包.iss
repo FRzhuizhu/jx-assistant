@@ -59,6 +59,35 @@ Type: filesandordirs; Name: "{app}\data\webview"
 Type: filesandordirs; Name: "{app}\data\webview-browser"
 
 [Code]
+const
+  // 默认工作区目录名：新版「默认工作区」，旧版「工作区」（升级安装时原地改名，
+  // 用户已有文件一份不动；程序启动时还会再兜一次，见 desktop_windows.go）
+  LegacyWorkspaceDirName  = '工作区';
+  DefaultWorkspaceDirName = '默认工作区';
+
+// MigrateDefaultWorkspace 归置默认工作区目录：全新安装建好「默认工作区」；
+// 升级安装把旧版的「工作区」原地改名为「默认工作区」（保文件不丢）。
+procedure MigrateDefaultWorkspace();
+var
+  oldDir, newDir: String;
+begin
+  oldDir := AddBackslash(ExpandConstant('{app}')) + LegacyWorkspaceDirName;
+  newDir := AddBackslash(ExpandConstant('{app}')) + DefaultWorkspaceDirName;
+  if DirExists(oldDir) then begin
+    if not DirExists(newDir) then begin
+      if RenameFile(oldDir, newDir) then
+        Log('默认工作区迁移：' + oldDir + ' -> ' + newDir)
+      else
+        Log('默认工作区迁移失败（程序下次启动会自动重试）：' + oldDir);
+    end;
+    Exit;
+  end;
+  if not DirExists(newDir) then begin
+    if not CreateDir(newDir) then
+      Log('默认工作区目录创建失败（程序首次启动会自动创建）：' + newDir);
+  end;
+end;
+
 function WebView2Installed(): Boolean;
 var
   pv: String;
@@ -101,5 +130,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   TaskKillApp();
   Sleep(1500);
+  // 默认工作区归置放在复制文件之前：旧目录已改名，装完即用
+  MigrateDefaultWorkspace();
   Result := '';
 end;

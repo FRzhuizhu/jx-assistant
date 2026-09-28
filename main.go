@@ -93,9 +93,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
+	var legacyWS string // 被迁移掉的旧默认工作区目录（空串 = 没有迁移）
 	if wantDesktop && !*browser {
-		if desktopWorkspaceDefault(cfg) {
-			// 首启默认工作区改写后立即回写，设置页显示与实际保持一致
+		// 默认工作区规整：落在安装目录下的「默认工作区」，旧版的「工作区」
+		// 原地改名迁移过来；有改写就立即回写，设置页显示与实际保持一致
+		var wsChanged bool
+		legacyWS, wsChanged = desktopWorkspaceDefault(cfg)
+		if wsChanged {
 			if serr := cfg.Save(*cfgPath); serr != nil {
 				log.Printf("回写默认工作区失败: %v", serr)
 			}
@@ -111,6 +115,16 @@ func main() {
 	app, err := NewApp(cfg, *cfgPath, *webDir)
 	if err != nil {
 		log.Fatalf("初始化失败: %v", err)
+	}
+
+	// 默认工作区迁移的收尾：历史会话里显式挂过旧默认目录（安装目录\工作区）
+	// 的，一并改指新目录——升级后不会有会话悬空指向已改名的文件夹
+	if legacyWS != "" {
+		if n, merr := app.Store.RepointWorkspace(legacyWS, cfg.Workspace); merr != nil {
+			log.Printf("历史会话工作目录改指失败（%s）: %v", legacyWS, merr)
+		} else if n > 0 {
+			log.Printf("默认工作区迁移：%d 个会话的工作目录改指 %s", n, cfg.Workspace)
+		}
 	}
 
 	// 安卓：注册内置运行时（Termux 快照）并后台预热装配（不阻塞启动/服务就绪）

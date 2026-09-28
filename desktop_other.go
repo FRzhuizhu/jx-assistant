@@ -9,7 +9,7 @@ func runDesktop(app *App, url string) error {
 	return fmt.Errorf("桌面壳仅支持 Windows（本平台请用浏览器模式）")
 }
 
-func desktopWorkspaceDefault(cfg *Config) bool { return false }
+func desktopWorkspaceDefault(cfg *Config) (string, bool) { return "", false }
 
 func guiLogRedirect() {}
 

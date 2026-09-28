@@ -159,22 +159,65 @@ func desktopMessageBox(text, caption string) {
 	procDesktopMessageBoxW.Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(c)), 0x30) // MB_ICONWARNING
 }
 
-// desktopWorkspaceDefault 默认工作区不落在安装目录本身：改写为安装目录下的
-// 「工作区」子文件夹——模型的工作区域与软件本体（exe/config/data/技能）分离，
-// 默认目录同时跟随安装位置。仅当当前值就是 exe 目录（默认生成的）时改写，
-// 返回是否发生了改写（调用方负责回写配置，避免设置页与实际不一致）。
+// workspaceFolderName 是默认工作区目录名：安装目录下的「默认工作区」。
+// 旧版用的是「工作区」（legacyWorkspaceFolderName），启动时原地改名迁移
+// （见 desktopWorkspaceDefault），用户已有的文件一份不搬不丢。
+const (
+	workspaceFolderName       = "默认工作区"
+	legacyWorkspaceFolderName = "工作区"
+)
+
+// migrateLegacyWorkspaceDir 把旧默认工作区目录原地改名成新名（数据留在原处、
+// 不改路径引用之外的东西）。返回旧目录路径（空串 = 没有旧目录要处理）与是否已
+// 落到新目录（新目录本来就在，或改名成功）。旧目录在、改名失败时如实返回 false，
+// 由调用方决定是回退旧目录还是继续——不在这里替它做决定。
+func migrateLegacyWorkspaceDir(oldDir, newDir string) (legacy string, migrated bool) {
+	fi, err := os.Stat(oldDir)
+	if err != nil || !fi.IsDir() {
+		return "", false
+	}
+	if _, err := os.Stat(newDir); err == nil {
+		return oldDir, true // 新目录已在（装包建的或上次迁移留下的）：旧目录原样保留
+	}
+	if rerr := os.Rename(oldDir, newDir); rerr != nil {
+		log.Printf("默认工作区改名失败（%s → %s）: %v", oldDir, newDir, rerr)
+		return oldDir, false
+	}
+	return oldDir, true
+}
+
+// desktopWorkspaceDefault 归置桌面模式的默认工作区：默认工作区不落在安装目录
+// 本身，而是安装目录下的「默认工作区」子文件夹——模型的工作区域与软件本体
+// （exe/config/data/技能）分离，默认目录同时跟随安装位置。只认默认形态（当前值
+// 就是 exe 目录本身，或旧版默认目录「工作区」）；用户自己设过的工作目录一律不动。
+// 旧版的「工作区」原地改名为「默认工作区」；改名失败则保持原样、下次启动再试
+// （不把用户切到一个可能为空的新目录上）。
+// 返回 (legacy, changed)：changed = 是否改写了配置（调用方负责回写，避免设置页
+// 与实际不一致）；legacy = 被搬走的旧默认目录，仅 changed 为真时有效，调用方用
+// 它把显式挂在旧路径上的历史会话一并改指新目录。
 // 安装目录不可写时（系统级位置）回退「文档\坚祥数字助理」。
-func desktopWorkspaceDefault(cfg *Config) bool {
+func desktopWorkspaceDefault(cfg *Config) (legacy string, changed bool) {
 	exe, err := os.Executable()
 	if err != nil {
-		return false
+		return "", false
 	}
 	exeDir := filepath.Clean(filepath.Dir(exe))
 	ws, err := filepath.Abs(cfg.Workspace)
-	if err != nil || !stringsEqualFold(filepath.Clean(ws), exeDir) {
-		return false
+	if err != nil {
+		return "", false
 	}
-	dir := filepath.Join(exeDir, "工作区")
+	ws = filepath.Clean(ws)
+	oldDir := filepath.Join(exeDir, legacyWorkspaceFolderName)
+	dir := filepath.Join(exeDir, workspaceFolderName)
+	if !stringsEqualFold(ws, exeDir) && !stringsEqualFold(ws, oldDir) {
+		return "", false // 用户自选的工作目录：不碰
+	}
+	if lg, migrated := migrateLegacyWorkspaceDir(oldDir, dir); lg != "" {
+		if !migrated && stringsEqualFold(ws, oldDir) {
+			return "", false // 旧目录仍是当前工作区：保持原样，下次启动再试
+		}
+		legacy = lg
+	}
 	if mkErr := os.MkdirAll(dir, 0755); mkErr != nil {
 		docs := filepath.Join(os.Getenv("USERPROFILE"), "Documents")
 		if kf, kerr := windows.KnownFolderPath(windows.FOLDERID_Documents, 0); kerr == nil {
@@ -184,7 +227,7 @@ func desktopWorkspaceDefault(cfg *Config) bool {
 		_ = os.MkdirAll(dir, 0755)
 	}
 	cfg.Workspace = dir
-	return true
+	return legacy, true
 }
 
 func stringsEqualFold(a, b string) bool {

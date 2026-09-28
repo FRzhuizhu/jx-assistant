@@ -369,7 +369,7 @@ function relTime(s) {
 }
 
 function baseName(p) {
-  if (!p) return '工作区';
+  if (!p) return '默认工作区';
   const seg = String(p).split(/[\\/]/).filter(Boolean);
   return seg.length ? seg[seg.length - 1] : p;
 }
