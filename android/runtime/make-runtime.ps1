@@ -1,10 +1,15 @@
-# Phase 1.1 FINAL pipeline: build the complete runtime snapshot in one shot.
+# 设备侧快照制作（PoC app 在真机/模拟器上跑装配流水线）。
 # rewrite -> apt(USTC) update -> apt -d download -> relocate nested deb trees ->
 # rewrite -> pip(USTC) -> rewrite -> verify -> clean -> prune -> tar.gz
-# ASCII-only. Run: powershell -NoProfile -ExecutionPolicy Bypass -File android-poc\tools\p1-runtime-build.ps1
+# 注意：制作机的 ABI 就是快照的 ABI——x86_64 模拟器做出来的快照进不了 arm64
+# 真机（引擎装配期有 ELF 架构防呆）。arm64 快照现在优先用 PC 侧组装：
+# WSL Ubuntu 里跑 android/runtime/pc-build/build-runtime-pc.sh（不依赖设备）。
+# 本脚本保留为设备路径（在 arm64 真机上制作时用）：
+#   powershell -NoProfile -ExecutionPolicy Bypass -File android\runtime\make-runtime.ps1 -Serial <设备串号>
+param([string]$Serial = 'emulator-5554')
 $ErrorActionPreference = 'Continue'
 $adb = 'D:\Android\Sdk\platform-tools\adb.exe'
-$dev = 'emulator-5554'
+$dev = $Serial
 
 $P = '/data/user/0/com.jianxiang.poc/files/t'
 $O = '/data/data/com.termux/files/usr'
@@ -54,7 +59,7 @@ $cmd = "P=$P; export P; export APT_CONFIG=`$P/etc/apt/apt.conf; export DPKG_ROOT
   "echo $b2 | base64 -d > `$P/etc/apt/sources.list; " +
   "mkdir -p `$P/etc/apt/preferences.d `$P/etc/apt/trusted.gpg.d `$P/var/log/apt `$P/var/lib/apt/lists/partial `$P/var/cache/apt/archives/partial `$P/tmp; " +
   "echo ===UPDATE===; apt update 2>&1 | tail -3; " +
-  "echo ===DOWNLOAD===; apt install -y -d python python-pip python-lxml python-pillow ca-certificates proot 2>&1 | tail -3; " +
+  "echo ===DOWNLOAD===; apt install -y -d python python-pip python-lxml python-pillow python-cryptography ca-certificates proot openssh 2>&1 | tail -3; " +
   "echo ===UNPACK===; for f in `$P/var/cache/apt/archives/*.deb; do dpkg-deb -x `$f `$P || echo DKFAIL `$f; done; " +
   "echo ===RELOCATE===; cp -a `$P/data/data/com.termux/files/usr/. `$P/ && echo MOVED && rm -rf `$P/data; " +
   "echo ===REWRITE1===; $rw " +

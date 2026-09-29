@@ -4163,11 +4163,13 @@ function syncComposer(view) {
   } else {
     rb.classList.add('hidden');
   }
-  // 目录行/模式行只在新建对话（无会话）时出现
+  // 目录行/模式行只在新建对话（无会话）时出现；窄屏（手机）不提供工作目录
+  // 选择——工作区由引擎锚定在应用私有目录（JX_WORKSPACE_DEFAULT），点了也
+  // 只会列出引擎私有路径，与 NARROW_WS_ADD_NOTICE 的口径一致
   const wsRow = $('ws-row');
   const modeRow = $('mode-row');
   if (!state.cur) {
-    wsRow.classList.remove('hidden');
+    if (!isNarrow()) wsRow.classList.remove('hidden');
     modeRow.classList.remove('hidden');
     $('ws-row-name').textContent = homeDraft.remote
       ? remoteDisplay(homeDraft.remote)

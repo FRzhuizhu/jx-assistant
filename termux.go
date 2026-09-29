@@ -17,6 +17,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -75,7 +77,8 @@ func termuxEnsure(manifestPath, tarGzPath, prefixRoot string, emit func(string))
 	versionFile := filepath.Join(prefixRoot, ".version")
 	if b, err := os.ReadFile(versionFile); err == nil &&
 		strings.TrimSpace(string(b)) == m.Version {
-		if _, serr := os.Stat(filepath.Join(prefixRoot, "bin", "bash")); serr == nil {
+		if _, serr := os.Stat(filepath.Join(prefixRoot, "bin", "bash")); serr == nil &&
+			checkSnapshotArch(filepath.Join(prefixRoot, "bin", "bash")) == nil {
 			return prefixRoot, nil
 		}
 	}
@@ -88,6 +91,14 @@ func termuxEnsure(manifestPath, tarGzPath, prefixRoot string, emit func(string))
 		return "", err
 	}
 	if err := extractTermuxTar(tarGzPath, staging, m.SHA256); err != nil {
+		os.RemoveAll(staging)
+		return "", err
+	}
+	// 架构防呆：在 x86_64 模拟器上制作的快照装到 arm64 真机（或反过来）时，
+	// 解压/重写一切正常、exec 一律 ENOEXEC——"已就绪"状态下所有命令都会
+	// 打穿且永不回落系统 sh。装配期校验 bin/bash 的 ELF 机器码，不符即报错，
+	// termuxPrefixOrEmpty 会返回空、命令回落系统执行。
+	if err := checkSnapshotArch(filepath.Join(staging, "bin", "bash")); err != nil {
 		os.RemoveAll(staging)
 		return "", err
 	}
@@ -206,6 +217,48 @@ func safeJoin(root, name string) (string, error) {
 		return "", fmt.Errorf("快照包含非法路径: %s", name)
 	}
 	return filepath.Join(root, clean), nil
+}
+
+// checkSnapshotArch 校验快照 bin/bash 的 ELF 架构与本机 GOARCH 一致
+//（快照按 ABI 制作，混装只会 ENOEXEC，见 termuxEnsure 的防呆注释）。
+func checkSnapshotArch(bashPath string) error {
+	f, err := os.Open(bashPath)
+	if err != nil {
+		return fmt.Errorf("快照缺少 bin/bash: %w", err)
+	}
+	defer f.Close()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return fmt.Errorf("读快照 bin/bash 头失败: %w", err)
+	}
+	if hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' {
+		return fmt.Errorf("快照 bin/bash 不是 ELF 文件")
+	}
+	got := binary.LittleEndian.Uint16(hdr[18:20])
+	var want uint16
+	switch runtime.GOARCH {
+	case "arm64":
+		want = 0xB7 // EM_AARCH64
+	case "amd64":
+		want = 0x3E // EM_X86_64
+	default:
+		return nil // 无快照支持的架构交给后续 exec 自然报错
+	}
+	if got != want {
+		return fmt.Errorf("快照架构不符：bin/bash 是 %s，本机是 %s（请换对应架构的快照重新打包）", elfArchName(got), runtime.GOARCH)
+	}
+	return nil
+}
+
+func elfArchName(machine uint16) string {
+	switch machine {
+	case 0xB7:
+		return "arm64(aarch64)"
+	case 0x3E:
+		return "x86_64"
+	default:
+		return fmt.Sprintf("e_machine=%#x", machine)
+	}
 }
 
 // termuxRelocate 装配期二次重写：把全树符号链接与文本脚本中残留的制作机前缀/

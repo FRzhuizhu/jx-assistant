@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 交付出口：写入公有目录「下载」（targetSdk 28 = legacy storage，
+         Android 8-12 运行时申请即可直写 /sdcard；13+ 各 ROM 行为不一：部分
+         静默拒绝、部分映射为「文件和媒体」授权——未授权时交付工具报错带引导） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
     <application
         android:label="数字助理"

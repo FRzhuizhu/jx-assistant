@@ -111,13 +111,20 @@ const (
 
 func DefaultConfig() *Config {
 	wd, _ := os.Getwd()
+	// 工作区默认目录：桌面 = 当前目录（安装形态锚到 exe 旁，见 main.go）；
+	// 安卓壳经 JX_WORKSPACE_DEFAULT 注入 engineRoot/workspace——应用私有目录
+	// 里单独的工作区子目录，引擎配置/数据/运行时不再泡在工作区里（边界清晰）。
+	ws := wd
+	if v := os.Getenv("JX_WORKSPACE_DEFAULT"); v != "" {
+		ws = v
+	}
 	return &Config{
 		Port:                  8788,
 		BindHost:              "127.0.0.1",
 		BaseURL:               "https://api.deepseek.com/v1",
 		APIKey:                "",
 		Model:                 "deepseek-chat",
-		Workspace:             wd,
+		Workspace:             ws,
 		MaxSteps:              maxStepsDefault,
 		AllowShell: true,
 		DataDir:    "data",

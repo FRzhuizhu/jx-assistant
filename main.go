@@ -105,6 +105,22 @@ func main() {
 			}
 		}
 	}
+	// 安卓：工作区锚定迁移——旧版默认工作区 = 引擎根目录（config/data/运行时
+	// 全泡在里面）；现默认收进 workspace/ 子目录。手机端从不自选工作目录，
+	// 旧值等于引擎根目录的必为默认值，配置与挂旧路径的历史会话一并改指。
+	var androidLegacyWS string
+	if isAndroidRuntime {
+		if cwd, cerr := os.Getwd(); cerr == nil && cfg.Workspace == cwd {
+			androidLegacyWS = cwd
+			cfg.Workspace = filepath.Join(cwd, "workspace")
+		}
+		_ = os.MkdirAll(cfg.Workspace, 0755) // 工作区在位（含全新安装）
+		if androidLegacyWS != "" {
+			if serr := cfg.Save(*cfgPath); serr != nil {
+				log.Printf("回写安卓工作区锚定失败: %v", serr)
+			}
+		}
+	}
 	// -port 只覆盖本次监听，不写进 cfg.Port：否则运行期任何一次保存配置
 	// （如设置页改专家/提供方）都会把临时端口永久落盘，改变下次启动行为
 	listenPort := cfg.Port
@@ -124,6 +140,15 @@ func main() {
 			log.Printf("历史会话工作目录改指失败（%s）: %v", legacyWS, merr)
 		} else if n > 0 {
 			log.Printf("默认工作区迁移：%d 个会话的工作目录改指 %s", n, cfg.Workspace)
+		}
+	}
+
+	// 安卓工作区锚定迁移的收尾：挂旧默认目录（引擎根）的历史会话改指 workspace/
+	if androidLegacyWS != "" {
+		if n, merr := app.Store.RepointWorkspace(androidLegacyWS, cfg.Workspace); merr != nil {
+			log.Printf("安卓历史会话工作目录改指失败（%s）: %v", androidLegacyWS, merr)
+		} else if n > 0 {
+			log.Printf("安卓工作区锚定迁移：%d 个会话的工作目录改指 %s", n, cfg.Workspace)
 		}
 	}
 

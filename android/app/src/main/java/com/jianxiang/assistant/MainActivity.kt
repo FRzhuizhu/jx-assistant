@@ -50,12 +50,23 @@ class MainActivity : Activity() {
         applyWindowInsets()
         buildWebView()
         showSplash("数字助理启动中…")
-        // 通知权限（13+ 运行时申请）：拒绝也继续，通知只影响完成提醒
+        // 运行时权限一次性申请：通知（13+，拒绝只影响完成提醒）与存储
+        //（交付到「下载」目录需要；13+ 各 ROM 行为不一——部分静默拒绝、部分
+        // 弹「文件和媒体」，未授权时交付工具报错自带授权指引）。拒绝均不阻塞启动
+        val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            perms.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+        if (perms.isNotEmpty()) {
+            requestPermissions(perms.toTypedArray(), 1)
         } else {
             startEngine()
         }

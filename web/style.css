@@ -2246,6 +2246,12 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 @media (max-width: 499.98px) {
   #app { height: 100dvh; --tb-h: 66px; } /* 手机地址栏收展时 100vh 会溢出，dvh 跟随可视高 */
 
+  /* 手机端不提供「选择工作目录/远程工作目录」入口——工作区由引擎锚定在应用
+     私有目录（JX_WORKSPACE_DEFAULT），加号菜单的远程挂载同理到电脑端操作。
+     CSS 媒体查询随宽窄切换自动生效（宽→窄收窄时无需 JS 重算兜底），配合
+     app-chat.js 里 syncComposer 的 isNarrow 守卫双保险 */
+  #ws-row, #pm-remote { display: none !important; }
+
   /* 顶栏两行：第一行控件（侧栏开关/模式徽章/子对话入口），第二行会话标题。
      顺序用 order 后移标题 + flex-basis:100% 把它独占推到第二行；定高 --tb-h
      供下方浮层的 top 对齐 */

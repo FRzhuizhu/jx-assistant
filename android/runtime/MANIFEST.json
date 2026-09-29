@@ -1,10 +1,11 @@
 {
-  "version": "1.0.0",
-  "created": "2026-09-28",
+  "version": "1.1.0",
+  "created": "2026-09-29",
+  "arch": "arm64",
   "file": "runtime.tgz",
-  "size": 75657900,
-  "sha256": "856efeb1fe8fab2dce111499ca30148b93af1a3b9f64a3ba7d2cd456165e49f7",
-  "note": "Termux runtime snapshot v1: bootstrap-2026.09.27 + Python 3.14.6 + pip + lxml/pillow + Office wheels (python-docx/openpyxl/python-pptx/XlsxWriter/et-xmlfile/typing_extensions) + ca-certificates + proot; text-rewritten and relocated to prefix root; USTC mirrors baked in; pruned (no llvm/clang toolchain, no tkinter/xorg chain, no docs/man/test suites).",
+  "size": 75888045,
+  "sha256": "a738fe0018d49fbd7427aa909acd991e4818d0af809c6ee89e865447d9b0c75e",
+  "note": "Termux runtime snapshot v1.1: aarch64（v1.0 误用 x86_64 模拟器构建，真机全部 ENOEXEC——引擎装配期已加 ELF 架构防呆，见 termux.go checkSnapshotArch）。bootstrap-2026.09.27-r1 (aarch64) + Python 3.14.6 + pip + lxml/pillow/cryptography(apt) + Office wheels (python-docx/openpyxl/python-pptx/XlsxWriter/et-xmlfile/typing_extensions) + PDF wheels (pypdfium2 官方 android_23_arm64_v8a 轮子/pdfplumber/pdfminer.six/pypdf/charset-normalizer) + openssh + ca-certificates + proot；USTC 镜像源已烘焙；剪枝同 v1（无 llvm/clang、无 tkinter/xorg 链、无文档/测试）。前缀保留 Termux 原生 /data/data/com.termux/files/usr，由引擎 termuxRelocate 装配期二次重写。",
   "layout": "tar entries are relative to $PREFIX (top-level: bin/ lib/ etc/ ...); symlinks included as tar symlink entries, restored by the installer",
   "mirror": {
     "apt": "http://mirrors.ustc.edu.cn/termux/apt/termux-main",
@@ -15,5 +16,5 @@
     "include/ headers, share/doc, share/man, share/info",
     "python test, idlelib, tkinter, turtledemo, lib2to3"
   ],
-  "built_by": "android-poc/tools/p1-runtime-build.ps1 (archived as android/runtime/make-runtime.ps1)"
+  "built_by": "android/runtime/pc-build/build-runtime-pc.sh（WSL Ubuntu 组装，不依赖安卓设备；设备侧路径见 android/runtime/make-runtime.ps1）"
 }

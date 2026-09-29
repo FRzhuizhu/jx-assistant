@@ -187,7 +187,8 @@ async function openSettings(pane) {
   renderComponentList();
   renderSkillsPanel();
   renderExpertsPanel();
-  setSettingsPane(pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : 'general');
+  const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : 'general';
+  setSettingsPane(target);
   bindFeedbackForm();
   // 关于页信息
   try {
@@ -196,13 +197,17 @@ async function openSettings(pane) {
     $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
   } catch (e) { $('about-status').textContent = '服务状态未知'; }
   $('settings').classList.remove('hidden');
-  // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并从一级菜单起步；
-  // 压一层历史让返回手势可以退出设置（见底部两级菜单节）
+  // 手机端：进设置即收起侧栏浮层（返回后落在对话区）。带直达分区（反馈胶囊/
+  // 手机图标/报错条反馈）时直接落在二级页面——否则分区只被高亮、人停在一级菜单，
+  // 还得自己再点一下；直达压两层历史（一级+二级），返回手势与手动点入完全
+  // 一致（二级→一级→关设置）
   narrowClosePanels();
-  setL2On(false);
+  const deep = isNarrow() && target !== 'general';
+  setL2On(deep);
   if (isNarrow() && setHistDepth === 0) {
-    setHistDepth = 1;
+    setHistDepth = deep ? 2 : 1;
     history.pushState({ jxSettings: 1 }, '');
+    if (deep) history.pushState({ jxSettings: 2 }, '');
   }
 }
 
@@ -1265,6 +1270,9 @@ async function renderSkillsPanel() {
 // ZIP 解压安装；用户取消选择框时静默返回。
 async function installSkillFromPicker(kind) {
   closePopovers();
+  // 手机端（窄屏）：系统选择框由后端弹在宿主机屏幕上，点了只会白等或直接
+  // 报错（安卓上「仅支持 Windows」）——与「添加工作目录」同款口径，指到电脑端
+  if (isNarrow()) { alert('手机端不支持选择技能文件夹/压缩包：请在电脑端（宽屏）的设置页添加技能。'); return; }
   const btn = $('skill-add-btn');
   let picked;
   try {

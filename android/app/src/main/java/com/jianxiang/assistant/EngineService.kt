@@ -182,7 +182,15 @@ class EngineService : Service() {
             val pb = ProcessBuilder(args).apply {
                 directory(root)
                 environment()["HOME"] = root.absolutePath
-                environment()["JX_WORKSPACE_DEFAULT"] = root.absolutePath
+                // 工作区锚定：引擎配置/数据/运行时留在 root 本体，模型工作区
+                // 收进 root/workspace 子目录（引擎侧 DefaultConfig 读取此变量，
+                // 并负责旧配置 engineRoot → workspace 的迁移与历史会话改指）。
+                // 建目录失败只记日志不拦启动（引擎侧 MkdirAll 会再兜一次）
+                val ws = File(root, "workspace")
+                if (!ws.exists() && !ws.mkdirs()) {
+                    Log.e(TAG, "workspace 目录创建失败: ${ws.absolutePath}")
+                }
+                environment()["JX_WORKSPACE_DEFAULT"] = ws.absolutePath
                 redirectErrorStream(true)
             }
             proc = pb.start()

@@ -22,7 +22,26 @@ import (
 	"time"
 )
 
+// androidDeliveryDir 手机端交付出口：公有目录「下载」下的专属子目录
+//（targetSdk 28 走 legacy storage，WRITE_EXTERNAL_STORAGE 运行时权限即可直写）。
+const androidDeliveryDir = "/sdcard/Download/坚祥数字助理"
+
 func deliverFileTool() Tool {
+	// 手机端：上传不登记原件路径，「交回上传处」语义不成立——交付出口统一为
+	// 公有目录下载文件夹（用户在文件管理器/Wireless 传输里直接可见）。
+	if isAndroidRuntime {
+		return Tool{
+			Spec: toolSpec("deliver_file",
+				"把工作区里的成品文件交付到手机的「下载」目录（/sdcard/Download/坚祥数字助理/，用户在系统文件管理器里直接可见）。本轮对话结束后系统会移动该文件过去；目标处若有同名文件会先快照备份到工作区 .jxai/delivery-backups/ 再替换，执行结果以系统注记进入后续对话。"+
+					"用户要求「把文件发给我/放到下载目录」时用本工具；工作区内常规写出不需要交付。若返回存储权限错误，请向用户说明：需要在系统弹窗或设置里允许本应用访问文件，然后重试。"+
+					"调用本工具不会结束对话（对话结束的判定仍是：只输出思考和正文、没有工具调用），所以应在调用本工具之后再输出给用户的正文总结。",
+				objSchema(map[string]any{
+					"source":   strProp("待交付文件的路径（须在工作区内，相对或绝对）"),
+					"filename": strProp("交付后的文件名（可选，缺省用源文件名）"),
+				}, "source")),
+			Run: runDeliverFile,
+		}
+	}
 	return Tool{
 		Spec: toolSpec("deliver_file",
 			"把工作区里的成品文件交付到用户上传文件所在的目录（仅本地会话）。核心逻辑：本轮对话结束后，系统会把这个文件移动到目标目录；若目标处存在将被替代的同名文件，会先把被替代的文件快照备份到工作区 .jxai/delivery-backups/ 下再完成替换，执行结果会以系统注记进入后续对话。"+
@@ -46,8 +65,11 @@ func runDeliverFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(p.Source) == "" || strings.TrimSpace(p.Upload) == "" {
-		return "", fmt.Errorf("source 与 upload 均不能为空")
+	if strings.TrimSpace(p.Source) == "" {
+		return "", fmt.Errorf("source 不能为空")
+	}
+	if !isAndroidRuntime && strings.TrimSpace(p.Upload) == "" {
+		return "", fmt.Errorf("upload 不能为空")
 	}
 	if t.isRemote() {
 		return "", fmt.Errorf("交付工具仅支持本地会话：远程会话的工作区不在本机，无法搬运到本地上传目录")
@@ -64,6 +86,34 @@ func runDeliverFile(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	if isDir, _, serr := t.envStat(abs); serr != nil || isDir {
 		return "", fmt.Errorf("待交付文件不存在或不是文件：%s", filepath.ToSlash(abs))
+	}
+	// 手机端：交付出口固定为公有目录下载文件夹（不需要上传记录；目录建不出
+	// 来多半是存储权限没给——把可操作的指引带给模型/用户，而不是裸错误）
+	if isAndroidRuntime {
+		name, err := sanitizeDeliveryName(p.Filename)
+		if err != nil {
+			return "", err
+		}
+		if name == "" {
+			name = filepath.Base(abs)
+		}
+		if err := os.MkdirAll(androidDeliveryDir, 0755); err != nil {
+			return "", fmt.Errorf("交付目录不可用：%v。多半是未授予存储权限——请向用户说明：在系统弹窗或 设置→应用→数字助理→权限 里允许「文件和媒体」访问后重试一次", err)
+		}
+		job := &DeliveryJob{
+			SessionID: t.sess.ID, SourcePath: abs, TargetDir: androidDeliveryDir, TargetName: name,
+			Status: "pending", CreatedAt: now(),
+		}
+		if err := t.app.Store.AddDeliveryJob(job); err != nil {
+			return "", fmt.Errorf("交付登记落库失败: %w", err)
+		}
+		pending := t.app.Store.PendingDeliveryCount(t.sess.ID)
+		out := fmt.Sprintf("已收到交付请求，将在本轮结束后执行（本轮因调用了工具不会结束对话，请继续完成正文输出）。\n登记：%s → %s。目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换。",
+			filepath.ToSlash(abs), filepath.ToSlash(filepath.Join(androidDeliveryDir, name)))
+		if pending > 0 {
+			out += fmt.Sprintf("当前待交付共 %d 项。", pending)
+		}
+		return out, nil
 	}
 	up := t.findUpload(p.Upload)
 	if up == nil {
@@ -186,6 +236,8 @@ func (a *App) runDeliveryJob(j *DeliveryJob) {
 		fail(fmt.Sprintf("待交付文件不存在或已被移动：%s（源文件不动的规则下无法交付，若模型已改名请重新登记）", filepath.ToSlash(j.SourcePath)))
 		return
 	}
+	// 目标目录兜底重建（授权晚于登记、目录被清等场景），建不出才算失败
+	_ = os.MkdirAll(j.TargetDir, 0755)
 	if di, err := os.Stat(j.TargetDir); err != nil || !di.IsDir() {
 		fail(fmt.Sprintf("交付目标目录不存在：%s", filepath.ToSlash(j.TargetDir)))
 		return

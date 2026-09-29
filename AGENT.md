@@ -384,7 +384,10 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 - **首页（新建对话）**：居中问候区 + 输入卡片；输入框上方两枚胶囊——**工作模式**
   在前（左，标准办公 / 编程，决定该会话的系统提示词与交付倾向，`CHAT_MODES`），
   **工作目录**在后（右缘对齐输入卡；候选 = 默认目录 + 历史用过的目录，也支持输入
-  任意绝对路径；目录只在新建时选）。
+  任意绝对路径；目录只在新建时选）。手机端（窄屏 <500px）没有工作目录胶囊、
+  加号菜单也没有 SSH 远程挂载项——工作区由引擎锚定在应用私有目录
+  （`JX_WORKSPACE_DEFAULT`），目录/远程挂载到电脑端操作（CSS 媒体查询 +
+  JS `isNarrow` 守卫双保险，见 style.css 窄屏节）。
 - **输入区工具栏**：左下角加号菜单（文件上传 / 计划模式 / 目标模式 /
   导出日志（运行时间线 Markdown）/ 导出原始数据（最近发给模型的请求）/
   SSH 远程工作区）与权限芯片；
@@ -718,10 +721,13 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 **安卓走内置 Linux 运行时**（`skills.go` 的 `ensureTermuxSkillRuntime`）：
 技能解释器 = Termux 快照里的 `python3`（执行带 `termuxEnv`，缺
 `LD_LIBRARY_PATH` 动态链接器找不到 libpython）；office/pdf 依赖烘焙进
-快照（清单见 `android/runtime/make-runtime.ps1` 的 pip 行），快照缺的
-纯 Python 依赖现场经 pip 补装、装不上如实报错（PyPI 无安卓轮子的 C 扩展
-依赖——如 onnxruntime/rapidocr——需加进快照才能支持）；每次技能调用都
-核对依赖（探测结果缓存，常态零开销）。
+快照（清单与校验见 `android/runtime/MANIFEST.json`，PC 侧组装脚本
+`android/runtime/pc-build/build-runtime-pc.sh`——WSL Ubuntu 里跑，不依赖
+设备；设备路径备选 `make-runtime.ps1`，**制作机 ABI 即快照 ABI**，v1.0
+误用 x86_64 模拟器产物导致 arm64 真机全 ENOEXEC，引擎装配期已加 ELF
+架构防呆），快照缺的纯 Python 依赖现场经 pip 补装、装不上如实报错
+（PyPI 无安卓轮子的 C 扩展依赖——如 onnxruntime/rapidocr——需加进快照
+才能支持）；每次技能调用都核对依赖（探测结果缓存，常态零开销）。
 
 **能力组件（与权限绑定的操作类能力）**：
 
