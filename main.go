@@ -23,6 +23,18 @@ import (
 // desktopDefault 由打包脚本注入（-ldflags -X）：=1 时默认桌面窗口形态。
 var desktopDefault string
 
+// androidPathAlias 在 /data/data/<pkg>/... 与 /data/user/0/<pkg>/... 两种同一
+// 目录的路径写法之间互换（应用层与内核 getcwd 各报一种，字面比较会漏判）。
+func androidPathAlias(p string) string {
+	if strings.HasPrefix(p, "/data/data/") {
+		return "/data/user/0/" + strings.TrimPrefix(p, "/data/data/")
+	}
+	if strings.HasPrefix(p, "/data/user/0/") {
+		return "/data/data/" + strings.TrimPrefix(p, "/data/user/0/")
+	}
+	return p
+}
+
 func main() {
 	// 安卓 x86_64：modernc sqlite 的 lstat 会被应用 seccomp 杀死（SIGSYS），
 	// 必须在首次打开数据库前替换为 newfstatat 实现（其他平台空操作）。
@@ -108,11 +120,15 @@ func main() {
 	// 安卓：工作区锚定迁移——旧版默认工作区 = 引擎根目录（config/data/运行时
 	// 全泡在里面）；现默认收进 workspace/ 子目录。手机端从不自选工作目录，
 	// 旧值等于引擎根目录的必为默认值，配置与挂旧路径的历史会话一并改指。
+	// 注意 /data/data/<pkg> 与 /data/user/0/<pkg> 是同一目录的两种写法（应用
+	// 层混用），比较前按别名互换归一，否则迁移静默漏判。
 	var androidLegacyWS string
 	if isAndroidRuntime {
-		if cwd, cerr := os.Getwd(); cerr == nil && cfg.Workspace == cwd {
-			androidLegacyWS = cwd
-			cfg.Workspace = filepath.Join(cwd, "workspace")
+		if cwd, cerr := os.Getwd(); cerr == nil {
+			if cfg.Workspace == cwd || cfg.Workspace == androidPathAlias(cwd) {
+				androidLegacyWS = cfg.Workspace
+				cfg.Workspace = filepath.Join(cwd, "workspace")
+			}
 		}
 		_ = os.MkdirAll(cfg.Workspace, 0755) // 工作区在位（含全新安装）
 		if androidLegacyWS != "" {
@@ -145,10 +161,17 @@ func main() {
 
 	// 安卓工作区锚定迁移的收尾：挂旧默认目录（引擎根）的历史会话改指 workspace/
 	if androidLegacyWS != "" {
-		if n, merr := app.Store.RepointWorkspace(androidLegacyWS, cfg.Workspace); merr != nil {
-			log.Printf("安卓历史会话工作目录改指失败（%s）: %v", androidLegacyWS, merr)
-		} else if n > 0 {
-			log.Printf("安卓工作区锚定迁移：%d 个会话的工作目录改指 %s", n, cfg.Workspace)
+		aliases := []string{androidLegacyWS, androidPathAlias(androidLegacyWS)}
+		repointed := 0
+		for _, old := range aliases {
+			if n, merr := app.Store.RepointWorkspace(old, cfg.Workspace); merr != nil {
+				log.Printf("安卓历史会话工作目录改指失败（%s）: %v", old, merr)
+			} else if n > 0 {
+				repointed += n
+			}
+		}
+		if repointed > 0 {
+			log.Printf("安卓工作区锚定迁移：%d 个会话的工作目录改指 %s", repointed, cfg.Workspace)
 		}
 	}
 

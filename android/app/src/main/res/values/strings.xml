@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">数字助理</string>
+    <string name="accessibility_desc">供数字助理按你的指示操作这台手机：截屏、点按、滑动、输入文字、打开应用。所有操作都在对话中可追溯；不开启时这些能力不可用。</string>
+</resources>

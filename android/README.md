@@ -11,11 +11,17 @@ android/
 │                                 arm64+x86_64 / useLegacyPackaging=true
 ├── app/src/main/
 │   ├── AndroidManifest.xml       INTERNET / 前台服务(dataSync) / 通知 / 存储（交付用）
+│   │                             + 无障碍服务声明（BIND_ACCESSIBILITY_SERVICE）
 │   ├── assets/runtime/           runtime.tgz + runtime-MANIFEST.json（构建时拷入，不入库）
 │   ├── java/com/jianxiang/assistant/
 │   │   ├── MainActivity.kt       通知+存储权限引导 → 拉服务 → 轮询就绪 → WebView
-│   │   └── EngineService.kt      前台服务：拷贝运行时资产、拉起 libjx.so、
-│   │                             守护重启、孤儿清理、通知栏「停止」
+│   │   ├── EngineService.kt      前台服务：拷贝运行时资产、拉起 libjx.so、
+│   │   │                         守护重启、孤儿清理、通知栏「停止」、启动设备桥
+│   │   ├── DeviceAccessibilityService.kt  无障碍执行体：截屏(takeScreenshot)/
+│   │   │                         手势点按滑动/焦点输入/系统键/界面树
+│   │   └── DeviceBridge.kt       设备桥：长轮询引擎 /api/device/poll 取命令、
+│   │                             执行完 POST /api/device/result 回传
+│   ├── res/xml/device_accessibility.xml   无障碍能力声明（读树/手势/截屏）
 │   └── res/                      自适应图标（蓝底白气泡对勾）
 ├── app/src/main/jniLibs/<abi>/libjx.so  ← 构建脚本从 ../ 复制（不入库）
 └── runtime/                      快照母本（runtime.tgz 不入库）+ MANIFEST.json
@@ -52,12 +58,28 @@ android/
 ## 工作区与权限模型
 
 - 工作区锚定：壳以 `JX_WORKSPACE_DEFAULT=files/engine/workspace` 注入，引擎
-  DefaultConfig 消费；旧配置（工作区=引擎根）首启自动迁移并把历史会话改指。
-  手机端不提供「选择工作目录」入口（窄屏隐藏）。
+  DefaultConfig 消费；旧配置（工作区=引擎根）首启自动迁移并把历史会话改指
+  （`/data/data/<pkg>` 与 `/data/user/0/<pkg>` 是同一目录的两种写法，比较按
+  别名归一）。手机端不提供「选择工作目录」入口（窄屏隐藏）。
 - 标准模式 = 命令在内置运行时里执行，始终处于安卓应用沙箱内（应用 uid +
   SELinux）；文件工具边界由引擎围栏把守（config/data 永久禁访问）。
-- 完全访问的三件套（截屏/无障碍/无线 ADB）**尚未接入**——对应后续「手机操控
-  组件」阶段。
+- **完全访问三件套**（2026-09-30 接入，模拟器 API 35 全链验证）：
+  1. **无障碍**（device_screenshot/device_ui/device_tap/device_swipe/
+     device_type/device_key）：Kotlin 无障碍服务执行，用户在
+     设置→无障碍→已下载的应用→数字助理 开启；截屏走 takeScreenshot
+     （API 30+，免 MediaProjection 弹窗）。
+  2. **无线 ADB**（adb_connect/adb_shell/adb_screencap）：引擎内置纯 Go
+     ADB 主机客户端（adb.go）。真机用法：开发者选项→无线调试 查端口后
+     `adb_connect host=127.0.0.1 port=<端口>`；首连会在设备上弹「允许调试」
+     （点允许永久记住；模拟器 adbd 不安全版免授权）。协议要点（API 35
+     实测）：报文字段小端、CNXN 校验和置 0、v1 shell:/exec: 已移除——
+     全走 shell,v2,raw（帧 [id][len:u32le][data]，含退出码，二进制安全）。
+  3. **打开应用**（device_app）：引擎直接 am/monkey 启动，无需无障碍。
+  - 三件套统一挂「操作手机」能力（perm.go capDevice，完全访问档捆绑点亮，
+    桌面端权限芯片自动隐藏）；环境快照实时公告无障碍/ADB 就绪状态。
+  - 桥通道：壳 DeviceBridge 长轮询引擎 `/api/device/poll`（仅回环可达），
+    结果 POST `/api/device/result`；本机可 `curl /api/device/selftest`
+    一键诊断全链（截屏/界面树/ADB 连接/shell/截屏 PNG）。
 - 交付出口：`deliver_file` 在手机端把成品落到
   `/sdcard/Download/坚祥数字助理/`（targetSdk 28 legacy storage，运行时申请
   WRITE_EXTERNAL_STORAGE 即可；未授权时报错自带引导文案）。

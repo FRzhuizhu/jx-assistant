@@ -127,7 +127,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
-	}, append(append(append(todos, browserTools()...), computerTools()...), history...)...)
+	}, append(append(append(append(todos, browserTools()...), computerTools()...), deviceTools()...), history...)...)
 }
 
 // ---------- Schema 辅助 ----------

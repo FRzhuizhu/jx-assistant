@@ -45,14 +45,16 @@ const (
 	capSandboxWrite = "sandbox-write"   // 能力：允许命令在沙箱内写入（只读档位下）
 	capBrowser      = "browser"         // 能力：允许操作浏览器（browser_* 工具）
 	capComputer     = "computer"        // 能力：允许操作电脑（computer_* 工具）
+	capDevice       = "device"          // 能力：允许操作手机（device_* / adb_* 工具，仅安卓）
 	grantTTL        = 5 * time.Minute   // 授权凭证有效期
 	approvalTTL     = 2 * time.Minute   // 审批等待上限，超时视为拒绝
 )
 
 // fullAccessCaps 是「完全访问」预设捆绑的能力：会话切到完全访问时，
-// 这三项在权限面板强制勾选并置灰（不可单独关闭），权限引擎同样视为开启；
-// 切离完全访问时随之自动取消（stripFullAccessCaps）。
-var fullAccessCaps = []string{capUnsandboxed, capBrowser, capComputer}
+// 这些项在权限面板强制勾选并置灰（不可单独关闭），权限引擎同样视为开启；
+// 切离完全访问时随之自动取消（stripFullAccessCaps）。capDevice（操作手机）
+// 仅安卓有意义，桌面端权限面板按平台隐藏该芯片。
+var fullAccessCaps = []string{capUnsandboxed, capBrowser, capComputer, capDevice}
 
 // escalationCapability 返回某类升级请求对应的能力开关 id：
 // 「始终允许」点亮它，之后该类动作不再逐次审批（常设授权）。

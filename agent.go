@@ -309,6 +309,24 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		} else {
 			b.WriteString("- 能力：未开启「操作电脑」——computer_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
 		}
+		// 手机操控（仅安卓注册）：device_* 走无障碍桥，adb_* 走引擎内置 ADB
+		// 客户端。就绪状态是易变信息（用户开关无障碍/连 ADB），归环境快照正管。
+		if isAndroidRuntime {
+			if hasCapability(sess, capDevice) {
+				line := "- 能力：已开启「操作手机」——可用 device_*（截屏/界面树/点按/滑动/输入/系统键/打开应用）与 adb_*（连接 adbd 后 shell uid 执行命令、底层截屏）工具。"
+				if _, svcAlive := deviceBridgeState(); svcAlive {
+					line += "无障碍服务已就绪。"
+				} else {
+					line += "无障碍服务未开启：device_* 需要 设置→无障碍→已下载的应用→数字助理 打开后可用（adb_* 不依赖无障碍，但需要用户开启无线调试并连接）。"
+				}
+				if s := adbStateText(); s != "未连接" {
+					line += "ADB：" + s + "。"
+				}
+				b.WriteString(line + "\n")
+			} else {
+				b.WriteString("- 能力：未开启「操作手机」——device_* / adb_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
+			}
+		}
 	}
 	if sess.PlanMode {
 		if sess.Mode == "assistant" {

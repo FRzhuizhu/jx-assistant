@@ -190,6 +190,8 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
 | 电脑操控 | `tool_computer_windows.go` / `_other.go` | 仅 Windows，其余注册时报错 |
 | 进程退出信号 | `pdeathsig_android.go` / `_other.go` | android 用 PR_SET_PDEATHSIG |
 | sqlite 兼容 | `sqlite_android_amd64.go` / `sqlite_android_stub.go` | 仅 android/amd64 打 seccomp 补丁 |
+| 手机操控工具 | `tool_device_android.go` / `_other.go` | 仅安卓注册 device_*/adb_*（三件套，见 android/README.md）；桥端点 device_bridge.go 全平台编译（无壳轮询自然空闲） |
+| ADB 主机客户端 | `adb.go`（平台中立） | 纯 Go 实现：RSA 认证 + shell,v2,raw（API 35 adbd 已移除 v1 shell:/exec:，报文字段小端、CNXN 零校验） |
 
 通用文件中的平台分支共 4 文件 12 处（审计于 2026-09）：`sandbox.go`
 72/79/81/100/119/143/203（沙箱分派与拒绝方言）、`agent.go` 217/225（Android

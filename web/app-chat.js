@@ -4208,7 +4208,7 @@ function openPlusMenu(view) {
 }
 
 // 完全访问预设捆绑的能力：切到完全访问即强制勾选、置灰不可关闭（后端权限引擎同样视为开启）
-const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer'];
+const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer', 'device'];
 
 function renderPermPop(view) {
   view = view || popView || mainView;

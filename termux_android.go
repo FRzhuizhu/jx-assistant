@@ -51,6 +51,9 @@ func killTermuxProcGroup(cmd *exec.Cmd) {
 // shell 与执行环境）。进程组收尾：命令结束后组杀清理残余子孙进程（对齐桌面
 // 沙箱的 kill-on-close 语义；常驻进程不会被保留）。
 func runTermuxBash(ctx context.Context, prefix string, r sandboxRun) (string, error) {
+	// 先建环境（termuxEnv 顺带确保 home/tmp 在位）再验工作目录：首条命令
+	// 时 home 尚未创建，先 Stat 会误报「工作目录不存在」
+	env := termuxEnv(prefix)
 	if info, serr := os.Stat(r.Dir); serr != nil || !info.IsDir() {
 		return "", fmt.Errorf("工作目录不存在: %s", r.Dir)
 	}
@@ -60,7 +63,7 @@ func runTermuxBash(ctx context.Context, prefix string, r sandboxRun) (string, er
 	wrapped := "cd " + shellQuote(r.Dir) + " && { " + r.Command + " ;}"
 	cmd := exec.CommandContext(ctx, bash, "-lc", wrapped)
 	cmd.Dir = r.Dir
-	cmd.Env = termuxEnv(prefix)
+	cmd.Env = env
 	applyTermuxProcAttr(cmd)
 	out, err := cmd.CombinedOutput()
 	// 组杀清理：命令结束（含超时被终止）后回收该进程组残余

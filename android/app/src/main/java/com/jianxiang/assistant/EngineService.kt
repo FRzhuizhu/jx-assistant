@@ -45,6 +45,9 @@ class EngineService : Service() {
     override fun onCreate() {
         super.onCreate()
         startForegroundWithType()
+        // 设备桥：长轮询引擎拿 device_* 命令（无障碍服务执行体）；引擎没起时
+        // 桥内静默重试，起了就自动接上（幂等，重复 start 无副作用）
+        DeviceBridge.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

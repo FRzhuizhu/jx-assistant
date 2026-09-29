@@ -25,6 +25,8 @@ async function loadStatus() {
     }
     // 更新横幅：SSE 无回放，刚打开页面从 /api/status 恢复「有新版本」状态
     if (st.update && st.update.available) showUpdateBanner(st.update);
+    // 「操作手机」能力芯片只在安卓端引擎上出现（桌面没有 device_*/adb_* 工具）
+    if (!st.android) document.getElementById('perm-opt-device')?.classList.add('hidden');
     syncComposer();
   } catch (e) {
     el.textContent = '服务离线'; el.className = 'pill gray'; el.classList.remove('hidden');
