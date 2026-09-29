@@ -193,30 +193,81 @@ func (a *App) readSkillGuide(skillID string) (string, error) {
 	return string(data), nil
 }
 
-// ensureSkillRuntime 保证「便携运行时 + 全部依赖模块」可用：
-// 一律使用随包分发的 技能/_runtime/python（自包含原则，不碰系统
-// Python）。已装配直接复用；缺失时联网装配（结果进程级缓存）。
+// ensureSkillRuntime 保证「技能的 Python 运行时 + 全部依赖模块」可用：
+// 桌面用随包分发的 技能/_runtime/python（自包含原则，不碰系统 Python），
+// 已装配直接复用；缺失时联网装配（结果进程级缓存）。
+// 安卓用内置 Linux 运行时（Termux 快照）的 python3——缺依赖经 pip 现场补装，
+// 每次调用都核对本次技能的依赖（探测结果有缓存，常态零开销）。
 func (a *App) ensureSkillRuntime(t *toolContext, modules, wheels []string) (*pythonRuntime, error) {
 	provisionMu.Lock()
 	defer provisionMu.Unlock()
-	if provisionedPy != nil {
+	if provisionedPy != nil && !isAndroidRuntime {
 		return provisionedPy, nil
+	}
+	emit := func(msg string) {
+		if t != nil && t.emit != nil {
+			t.emit(Event{Type: "tool_wait", Name: "skill-runtime", Output: msg})
+		}
+	}
+	if isAndroidRuntime {
+		py, err := ensureTermuxSkillRuntime(modules, wheels, emit)
+		if err != nil {
+			return nil, err
+		}
+		provisionedPy = py
+		return py, nil
 	}
 	dir, err := a.SkillsDir()
 	if err != nil {
 		return nil, err
 	}
 	rtDir := filepath.Join(dir, "_runtime", "python")
-	emit := func(msg string) {
-		if t != nil && t.emit != nil {
-			t.emit(Event{Type: "tool_wait", Name: "skill-runtime", Output: msg})
-		}
-	}
 	py, err := provisionPythonRuntime(rtDir, modules, wheels, emit)
 	if err != nil {
 		return nil, err
 	}
 	provisionedPy = py
+	return py, nil
+}
+
+// ensureTermuxSkillRuntime 安卓：技能解释器 = 内置 Linux 运行时的 python3
+// （office/pdf 依赖已烘焙进快照，见 android/runtime/make-runtime.ps1）。
+// 快照缺的纯 Python 依赖现场走 pip 补装（USTC 镜像已烘焙）；带 C 扩展且
+// PyPI 无安卓轮子的依赖装不上就如实报错（该能力需要加进快照才能支持）。
+func ensureTermuxSkillRuntime(modules, wheels []string, emit func(string)) (*pythonRuntime, error) {
+	prefix := termuxPrefixOrEmpty()
+	if prefix == "" {
+		return nil, fmt.Errorf("内置 Linux 运行时未就绪（首启装配中或装配失败，详见引擎日志），技能暂不可用；稍后重试")
+	}
+	py := &pythonRuntime{
+		Exe:     filepath.Join(prefix, "bin", "python3"),
+		Version: "内置运行时",
+		Env:     termuxEnv(prefix),
+	}
+	missing := []string{}
+	for _, m := range modules {
+		if !py.hasModule(m) {
+			missing = append(missing, m)
+		}
+	}
+	if len(missing) == 0 {
+		return py, nil
+	}
+	emit(fmt.Sprintf("内置运行时缺依赖（%s），正在经 pip 补装（镜像源，需联网）…", strings.Join(wheels, " ")))
+	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	defer cancel()
+	args := append([]string{"install", "--quiet", "-i", pipMirror}, wheels...)
+	out, err := runToolChildEnv(ctx, filepath.Join(prefix, "bin", "pip"), args, "", 0, py.Env)
+	if err != nil {
+		return nil, fmt.Errorf("补装技能依赖失败: %v\n%s", err, tailRunes(out, 800))
+	}
+	py.clearModuleCache()
+	for _, m := range modules {
+		if !py.hasModule(m) {
+			return nil, fmt.Errorf("依赖 %s 补装后仍不可用（PyPI 可能没有安卓轮子），请把该技能名与模块名反馈给开发者加进运行时快照", m)
+		}
+	}
+	emit("内置运行时依赖已补齐")
 	return py, nil
 }
 

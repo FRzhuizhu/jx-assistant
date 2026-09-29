@@ -38,6 +38,11 @@ d = Document()
 d.add_paragraph("runtime snapshot ok")
 d.save("$P/home/sample.docx")
 print("DOCX-OK")
+try:
+    import pypdfium2, pdfplumber, pypdf
+    print("PDF-OK")
+except Exception as e:
+    print("PDF-SKIP:", e)
 "@
 $bpy = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pyCode))
 
@@ -53,7 +58,7 @@ $cmd = "P=$P; export P; export APT_CONFIG=`$P/etc/apt/apt.conf; export DPKG_ROOT
   "echo ===UNPACK===; for f in `$P/var/cache/apt/archives/*.deb; do dpkg-deb -x `$f `$P || echo DKFAIL `$f; done; " +
   "echo ===RELOCATE===; cp -a `$P/data/data/com.termux/files/usr/. `$P/ && echo MOVED && rm -rf `$P/data; " +
   "echo ===REWRITE1===; $rw " +
-  "echo ===PIP===; pip install -i https://mirrors.ustc.edu.cn/pypi/simple/ python-docx openpyxl python-pptx 2>&1 | tail -3; " +
+  "echo ===PIP===; pip install -i https://mirrors.ustc.edu.cn/pypi/simple/ python-docx openpyxl python-pptx pypdfium2 pdfplumber pypdf 2>&1 | tail -5; " +
   "echo ===REWRITE2===; $rw " +
   "echo $bpy | base64 -d > `$P/tmp/verify.py; " +
   "echo ===VERIFY===; python3 `$P/tmp/verify.py 2>&1 | tail -4; " +
@@ -65,7 +70,7 @@ $cmd = "P=$P; export P; export APT_CONFIG=`$P/etc/apt/apt.conf; export DPKG_ROOT
   "echo ===SELFCHECK===; apt --version 2>&1 | head -1; python3 --version 2>&1 | head -1; " +
   "echo ===SIZE===; du -sh `$P | tail -1; " +
   "echo ===TAR===; cd `$P && rm -f ../runtime.tar.gz && tar -c . | /system/bin/toybox gzip > ../runtime.tar.gz && echo TAR-OK; " +
-  "echo ===OUT===; ls -la ../runtime.tar.gz"
+  "echo ===SHA===; sha256sum ../runtime.tar.gz; ls -la ../runtime.tar.gz"
 
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cmd))
 Write-Output '[p1-runtime-build] full pipeline running (download ~124MB + pip + pack) ...'

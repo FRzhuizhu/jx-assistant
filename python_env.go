@@ -18,6 +18,7 @@ type pythonRuntime struct {
 	Exe     string
 	Prefix  []string
 	Version string
+	Env     []string // 非空 = 执行时替换继承环境（安卓内置运行时需 Termux 前缀环境）
 }
 
 var (
@@ -34,7 +35,7 @@ func (p *pythonRuntime) hasModule(module string) bool {
 		return ok
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	_, err := runToolChild(ctx, p.Exe, append(p.Prefix, "-c", "import "+module), "", 0)
+	_, err := runToolChildEnv(ctx, p.Exe, append(p.Prefix, "-c", "import "+module), "", 0, p.Env)
 	cancel()
 	ok := err == nil
 	pyModuleCache[key] = ok
@@ -59,7 +60,7 @@ func (p *pythonRuntime) run(args []string, timeout time.Duration) (string, error
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	// 统一入口（child.go）：压窗 + 超时 + 捕获 + 解码
-	out, err := runToolChild(ctx, p.Exe, append(append([]string{}, p.Prefix...), args...), "", timeout)
+	out, err := runToolChildEnv(ctx, p.Exe, append(append([]string{}, p.Prefix...), args...), "", timeout, p.Env)
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("脚本执行超时（%v）", timeout)
 	}

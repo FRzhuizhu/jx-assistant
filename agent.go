@@ -264,6 +264,16 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	if exe, err := os.Executable(); err == nil {
 		b.WriteString("- 引擎程序：" + exe + "（支持子命令，如 `apkinfo <file.apk>` 查看 APK 包名/版本/签名）\n")
 	}
+	// 安卓：内置 Linux 运行时（Termux 快照）的就绪状态与用法。这是易变状态
+	//（首启装配约十几秒），归环境快照正管——就绪前后切换会以「环境更新」送达
+	// 模型，未就绪时模型不会误以为有 bash/python 可用。
+	if isAndroidRuntime && sess.Remote == nil {
+		if prefix := termuxPrefixOrEmpty(); prefix != "" {
+			b.WriteString("- 内置 Linux 运行时（Termux）已就绪：run_command 经 bash 执行，python3 / pip / apt / curl 及常用 GNU 工具可用；缺系统包用 `jx-pkg install <包…>`，缺 Python 包用 `jx-pkg pip install <包…>`（镜像已配好、需联网），不要自己拼 apt/dpkg 命令\n")
+		} else {
+			b.WriteString("- 内置 Linux 运行时未就绪（首启装配约十几秒，若一直未就绪见引擎日志）：当前命令只有系统 toybox（无 curl/pip/python），稍后重试\n")
+		}
+	}
 	mode := permModeOf(sess)
 	switch mode {
 	case permReadOnly:
@@ -276,7 +286,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		b.WriteString("- 权限模式：完全访问——读写与命令不受限（助手自身配置/数据仍受保护）；已捆绑开启「允许工作区外执行命令」「操作浏览器」「操作电脑」能力\n")
 	default:
 		if isAndroidRuntime {
-			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；本机命令无 OS 级沙箱（安卓内核禁用 Landlock），命令直接执行、由安卓应用沙箱承担隔离（对齐社区方案），联网不限\n")
+			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在内置 Linux 运行时（Termux）里执行，始终处于安卓应用沙箱内（应用 uid + SELinux；安卓内核禁用 Landlock，无 OS 级命令沙箱，文件边界由文件工具围栏把守），联网不限\n")
 		} else {
 			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
 		}
@@ -471,10 +481,10 @@ func detectOSDescAndroid() string {
 	if kr := kernelRelease(); kr != "" {
 		head += " · 内核 " + kr
 	}
-	head += " · shell 为 toybox（run_command 的 shell 参数用 sh）"
+	head += " · 系统命令层为 toybox（run_command 的 shell 参数在安卓上忽略）"
 	return head + "\n" +
-		"- 可用命令：pm am dumpsys settings getprop input uiautomator screencap logcat monkey cmd content 及常用 toybox 工具（grep/sed 为精简版，部分 GNU 选项不支持）\n" +
-		"- 没有 curl、https 版 wget、openssl、python、aapt2/apksigner/keytool——下载用「下载器」技能（aria2c），APK 校验用 apkinfo 子命令，不要反复探测\n" +
+		"- 完整工具链（bash / python3 / pip / apt / curl 等）由「内置 Linux 运行时（Termux）」提供，就绪状态与 jx-pkg 用法见环境快照；未就绪前只有下面这些系统层命令\n" +
+		"- 系统层可用命令：pm am dumpsys settings getprop input uiautomator screencap logcat monkey cmd content 及常用 toybox 工具（grep/sed 为精简版，部分 GNU 选项不支持）；系统层没有 curl、openssl、python、aapt2/apksigner/keytool，下载用「下载器」技能（aria2c），APK 校验用 apkinfo 子命令，不要反复探测\n" +
 		"- 常见坑：SELinux 禁硬链接（建临时文件用占位+rename，write_file 已内置处理）；/sdcard 多为 noexec 挂载，可执行文件放 /data/local/tmp 或应用 nativeLibraryDir，放 /sdcard 会 Permission denied；文本默认 UTF-8 无编码坑"
 }
 

@@ -13,8 +13,8 @@ android {
         // Phase 0：降至 28 换 W^X 豁免（Termux 运行时需 exec 应用私有目录二进制；
         // 与 Termux/dsh-mobile-apk 同构）。经模拟器 PoC 验证：exec/动态链接/rpath 全通
         targetSdk = 28
-        versionCode = 2
-        versionName = "0.1.6"
+        versionCode = 3
+        versionName = "0.1.9"
         ndk {
             // 引擎以 libjx.so 形式放在 jniLibs，安装时系统释放到
             // nativeLibraryDir（可执行、免解压）——targetSdk 29+ 的

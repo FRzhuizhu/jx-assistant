@@ -715,6 +715,13 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包脚本
 会校验运行时依赖齐全，缺一不出包。`skillsDir` 配置可指定
 技能目录位置（默认取可执行文件旁，不可写时落数据目录）。
+**安卓走内置 Linux 运行时**（`skills.go` 的 `ensureTermuxSkillRuntime`）：
+技能解释器 = Termux 快照里的 `python3`（执行带 `termuxEnv`，缺
+`LD_LIBRARY_PATH` 动态链接器找不到 libpython）；office/pdf 依赖烘焙进
+快照（清单见 `android/runtime/make-runtime.ps1` 的 pip 行），快照缺的
+纯 Python 依赖现场经 pip 补装、装不上如实报错（PyPI 无安卓轮子的 C 扩展
+依赖——如 onnxruntime/rapidocr——需加进快照才能支持）；每次技能调用都
+核对依赖（探测结果缓存，常态零开销）。
 
 **能力组件（与权限绑定的操作类能力）**：
 
@@ -764,7 +771,9 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   （`client.css` 可选）——纯浏览器半边，没有宿主代码、没有转译。
 - **发现与开关**：启动扫描 `组件/*/manifest.json`（损坏即跳过告警）；
   开关状态存 `data/components.json`（缺省启用）；接口 `GET/POST /api/components`、
-  资产 `GET /_components/{id}/{file}`（仅启用时提供）。
+  资产 `GET /api/components/{id}/{file}`（仅启用时提供）。资产挂 `/api/` 下且
+  `web/cx.js` 统一用 fetch 拿文本注入（不插相对 src 标签）——远程中继模式下
+  `/api/` 前缀被 remote-boot 的 fetch 劫持自动走隧道，组件在远程同样可用。
 - **热开关（核心特性）**：内嵌运行时 `web/cx.js` 随页面加载，负责发现注入与
   运行期开关。组件脚本调用 `CX.register({id, init, dispose})` 注册：
   `init()` 建立界面与状态，`dispose()` 完整撤销（删节点、卸样式、清监听）。
@@ -871,7 +880,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `GET/POST /api/plugins` | 插件清单 / 切换开关（即时生效，界面部分刷新后生效） |
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
-| `GET /_components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供） |
+| `GET /api/components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供；挂 `/api/` 下让中继隧道覆盖，cx.js fetch 文本注入） |
 | `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `progress_write` 的进度清单是两回事**） |
 | `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |
 | `GET /api/todos/workspaces` | 程序任务可选的工作目录（默认工作区 + 历史会话用过的目录） |

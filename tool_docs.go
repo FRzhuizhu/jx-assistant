@@ -46,9 +46,12 @@ func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.D
 	entry := filepath.Join(skillDir, filepath.FromSlash(manifest.Entry))
 	out, err := py.run(append([]string{entry}, args...), timeout)
 	if err != nil {
-		// 随包运行时仍缺模块：依赖清单未覆盖或运行时被损坏——给用户
-		// 可操作的修复指引，而不是让非编程用户去手工装依赖
+		// 运行时仍缺模块：依赖清单未覆盖或运行时被损坏——给用户可操作的
+		// 修复指引，而不是让非编程用户去手工装依赖（安卓指回快照补齐）
 		if mod, ok := pyMissingFromStderr(out); ok {
+			if isAndroidRuntime {
+				return "", fmt.Errorf("内置运行时缺少模块 %s（自动补装未覆盖，可能 PyPI 无安卓轮子）；请把该技能名与模块名反馈给开发者加进运行时快照", mod)
+			}
 			return "", fmt.Errorf("技能运行时缺少模块 %s。请重新安装软件修复运行时；若重新安装后仍出现，请把该技能名与模块名反馈给开发者补全依赖清单", mod)
 		}
 		return "", err

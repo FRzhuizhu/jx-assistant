@@ -364,6 +364,13 @@ func argvCmd(ctx context.Context, r sandboxRun, w io.Writer) *exec.Cmd {
 // 模块探测这类）：不属于会话命令、不进沙箱、不登记，统一做压窗 + 超时 + 捕获 + 解码。
 // timeout<=0 表示不限时（由 ctx 管）。
 func runToolChild(ctx context.Context, exe string, args []string, dir string, timeout time.Duration) (string, error) {
+	return runToolChildEnv(ctx, exe, args, dir, timeout, nil)
+}
+
+// runToolChildEnv 是 runToolChild 的带环境版：env 非空时替换默认继承环境
+// （安卓内置运行时的 python3/pip 必须带 Termux 前缀环境——LD_LIBRARY_PATH
+// 指向 prefix/lib，缺了动态链接器找不到 libpython）。
+func runToolChildEnv(ctx context.Context, exe string, args []string, dir string, timeout time.Duration, env []string) (string, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -372,6 +379,9 @@ func runToolChild(ctx context.Context, exe string, args []string, dir string, ti
 	cmd := exec.CommandContext(ctx, exe, args...)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if env != nil {
+		cmd.Env = env
 	}
 	hideConsoleWindow(cmd) // 内部小工具同样悄悄跑
 	out, err := cmd.CombinedOutput()
