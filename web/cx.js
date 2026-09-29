@@ -35,25 +35,42 @@
       return this._list.find((c) => c.id === id) || null;
     },
 
-    // 注入一个组件的资产（带代数防串台；重注入前先清旧标签）
+    // 注入一个组件的资产（带代数防串台；重注入前先清旧标签）。
+    // 资产统一经 /api/components/ 用 fetch 拿文本再注入（CSS 进 <style>、JS 用
+    // text 立即执行）：本地 fetch 直连本机服务；远程模式下 /api/ 前缀被
+    // remote-boot 的 fetch 劫持自动封帧走中继——组件加载因此天然兼容远程，
+    // 不需要任何远程特判。（旧做法插相对 src 的 <link>/<script> 标签，远程时
+    // 相对网关 origin 解析必 404，组件全体消失。）异步回来先查代数，快速开关
+    // 时旧请求作废，防止旧代码覆盖新一轮注入。
     _inject(c) {
       if (!c) return;
       const gen = (this._gen[c.id] = (this._gen[c.id] || 0) + 1);
       this._removeTags(c.id);
-      const base = '/_components/' + c.id + '/';
+      const base = '/api/components/' + c.id + '/';
       if (c.hasCss) {
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.dataset.cx = c.id;
-        link.href = base + 'client.css?t=' + gen;
-        document.head.appendChild(link);
+        fetch(base + 'client.css?t=' + gen)
+          .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+          .then((css) => {
+            if (this._gen[c.id] !== gen) return;
+            const style = document.createElement('style');
+            style.dataset.cx = c.id;
+            style.textContent = css;
+            document.head.appendChild(style);
+          })
+          .catch((e) => console.warn('[CX] 组件 ' + c.id + ' 样式加载失败', e));
       }
       if (c.hasJs) {
-        const s = document.createElement('script');
-        s.dataset.cx = c.id;
-        s.src = base + 'client.js?t=' + gen;
-        s.onerror = () => console.warn('[CX] 组件 ' + c.id + ' 脚本加载失败');
-        document.body.appendChild(s);
+        fetch(base + 'client.js?t=' + gen)
+          .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+          .then((code) => {
+            if (this._gen[c.id] !== gen) return;
+            const s = document.createElement('script');
+            s.dataset.cx = c.id;
+            // sourceURL 让报错堆栈按组件文件名显示（text 注入默认是匿名 inline）
+            s.text = code + '\n//# sourceURL=' + base + 'client.js';
+            document.body.appendChild(s);
+          })
+          .catch((e) => console.warn('[CX] 组件 ' + c.id + ' 脚本加载失败', e));
       }
     },
 

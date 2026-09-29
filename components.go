@@ -174,8 +174,10 @@ func (a *App) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleComponentAsset 提供组件的浏览器半边资产（仅平级文件，防目录穿越）。
+// 路径 /api/components/{id}/{file}：挂 /api/ 下让远程中继白名单天然覆盖
+// （前端经 fetch 拿文本注入，本地直连、远程走隧道，同一条加载路径）。
 func (a *App) handleComponentAsset(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/_components/")
+	rest := strings.TrimPrefix(r.URL.Path, "/api/components/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		http.NotFound(w, r)

@@ -206,7 +206,10 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("GET /_plugins/", http.HandlerFunc(a.handlePluginAsset))
 	mux.HandleFunc("GET /api/components", a.handleListComponents)
 	mux.HandleFunc("POST /api/components", a.handleSetComponent)
-	mux.Handle("GET /_components/", http.HandlerFunc(a.handleComponentAsset))
+	// 组件浏览器半边资产挂在 /api/ 下（而非独立 /_components/ 前缀）：前端 cx.js
+	// 统一用 fetch 拿资产，远程模式下 /api/ 前缀经 remote-boot 的 fetch 劫持自动
+	// 走中继隧道——旧 /_components/ 标签相对网关 origin 解析必 404，远程组件全体消失
+	mux.Handle("GET /api/components/", http.HandlerFunc(a.handleComponentAsset))
 	// 浏览器（browser_host.go / browser_panel_windows.go）：桌面右栏是原生
 	// WebView2 面板（前端经 panel-rect 上报占位区矩形），navigate/viewport/
 	// state 面向内嵌形态目标；open-view/view 是聊天链接点开的入口与远程

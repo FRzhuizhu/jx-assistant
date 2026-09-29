@@ -547,11 +547,13 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	}
 	defer resp.Body.Close()
 
-	// 响应体 gzip 仅对一次性 JSON 响应启用（前端带 x-p2p-gzip 头时）：正文先压
-	// 再 base64/加密，膨胀只作用于压缩后字节。SSE/流式响应必须排除——gzip 内部
-	// 缓冲不及时吐，会拖走对话流的实时性。
-	wantGz := fr.Headers["x-p2p-gzip"] == "1" &&
-		strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json")
+	// 响应体 gzip 仅对一次性响应启用（前端带 x-p2p-gzip 头时）：正文先压
+	// 再 base64/加密，膨胀只作用于压缩后字节。除 JSON 外也压 text/css、
+	// text/javascript 等组件资产（中继按流量走，文本压缩率高）；SSE/流式响应
+	// 必须排除——gzip 内部缓冲不及时吐，会拖走对话流的实时性。
+	ct := resp.Header.Get("Content-Type")
+	wantGz := fr.Headers["x-p2p-gzip"] == "1" && ct != "text/event-stream" &&
+		(strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/"))
 	head := map[string]any{
 		"t": "head", "id": fr.ID,
 		"status":      resp.StatusCode,
