@@ -10,16 +10,6 @@ let provTest = {};       // 卡片key -> { 模型id: {state:'run'|'ok'|'fail', m
 
 // lsGet/lsSet 使用顶部 162 行的兼容版（对象 JSON、字符串原样），此处不再重复定义。
 
-// 设置浮窗：左目录切换
-function setSettingsPane(name) {
-  document.querySelectorAll('.set-nav-item').forEach((b) => {
-    b.classList.toggle('active', b.dataset.pane === name);
-  });
-  document.querySelectorAll('.set-pane').forEach((p) => {
-    p.classList.toggle('active', p.id === 'set-pane-' + name);
-  });
-}
-
 /* ---------- 关于页：问题反馈（标题+正文+截图，服务端入库存图；只收不看） ---------- */
 
 const FB_MAX_IMAGES = 4;
@@ -152,7 +142,9 @@ function resetProvDraft(c) {
   provOpenKey = null; provTest = {}; provModelOpen = {};
 }
 
-// pane 可选：打开后直接落在指定分区（如 'network'，左下角手机图标用）；缺省常规页
+// pane 可选＝「地址」：打开设置并落在该分区，两端同义——桌面双栏显示该分区
+// 并高亮菜单项，手机直接进二级页面（navGoto）；缺省＝未选中态（菜单无高亮，
+// 二级区显示默认常规页，手机从一级菜单起步）
 async function openSettings(pane) {
   const c = await api('/api/config');
   presetsCache = c.presets || [];
@@ -187,8 +179,21 @@ async function openSettings(pane) {
   renderComponentList();
   renderSkillsPanel();
   renderExpertsPanel();
-  const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : 'general';
-  setSettingsPane(target);
+  const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : null;
+  // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并压一层「设置一级」
+  // 底座历史——直达分区时 navGoto 在其上补第二层，返回手势得以逐级退
+  narrowClosePanels();
+  if (isNarrow() && setHistDepth === 0) {
+    setHistDepth = 1;
+    history.pushState({ jxSettings: 1 }, '');
+  }
+  setNav.open = true;
+  if (target) navGoto(target); // 同一个地址两端同义：直达该分区（选中并渲染）
+  else {                        // 泛开：未选中态——二级区显示默认页，手机停一级菜单
+    setNav.pane = 'general';
+    setNav.level = 1;
+    renderNav();
+  }
   bindFeedbackForm();
   // 关于页信息
   try {
@@ -196,19 +201,6 @@ async function openSettings(pane) {
     $('about-version').textContent = '版本 ' + (st.version || '-') + ' · ' + (st.model || '');
     $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
   } catch (e) { $('about-status').textContent = '服务状态未知'; }
-  $('settings').classList.remove('hidden');
-  // 手机端：进设置即收起侧栏浮层（返回后落在对话区）。带直达分区（反馈胶囊/
-  // 手机图标/报错条反馈）时直接落在二级页面——否则分区只被高亮、人停在一级菜单，
-  // 还得自己再点一下；直达压两层历史（一级+二级），返回手势与手动点入完全
-  // 一致（二级→一级→关设置）
-  narrowClosePanels();
-  const deep = isNarrow() && target !== 'general';
-  setL2On(deep);
-  if (isNarrow() && setHistDepth === 0) {
-    setHistDepth = deep ? 2 : 1;
-    history.pushState({ jxSettings: 1 }, '');
-    if (deep) history.pushState({ jxSettings: 2 }, '');
-  }
 }
 
 /* ---------- 组件清单（/api/components + CX 运行时热开关） ---------- */
@@ -364,12 +356,15 @@ function buildProvCard(p, key) {
   card.className = 'prov-card' + (open ? ' open' : '');
 
   // 折叠头：状态点 + 名称 + 模型数 + 编辑/收起
+  // 预置提供方的名称实时取预置模板（模板改名后已保存的卡片跟着更新，
+  // 不用存量用户重存一遍）
+  const tp = p.presetId ? presetOf(p.presetId) : null;
   const configured = !!(p.key || p.keyMasked);
   const head = document.createElement('div');
   head.className = 'pv-head';
   head.innerHTML =
     `<span class="pv-dot ${configured ? 'ok' : 'no'}" title="${configured ? '密钥已配置' : '未配置密钥'}"></span>` +
-    `<b class="pv-name">${esc(p.name || '未命名提供方')}</b>` +
+    `<b class="pv-name">${esc((tp && tp.name) || p.name || '未命名提供方')}</b>` +
     `<span class="pv-meta">${p.models.length} 个模型</span>` +
     (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '') +
     `<span class="pv-edit">${open ? '收起' : '编辑'}</span>`;
@@ -418,7 +413,7 @@ function buildProvCard(p, key) {
   };
   form.appendChild(sel);
 
-  // 名称 + API 地址（预置方用系统地址，只展示不可改）
+  // 名称 + API 地址（预置方用系统地址，只展示不可改；备注展示计费方式/Key 获取方式）
   if (p.presetId) {
     const lblUrl = document.createElement('div');
     lblUrl.className = 'pf-label';
@@ -428,6 +423,13 @@ function buildProvCard(p, key) {
     fixed.className = 'pf-fixed';
     fixed.textContent = '使用系统预设地址：' + effURL(p);
     form.appendChild(fixed);
+    const note = (tp && tp.note) || '';
+    if (note) {
+      const fixedNote = document.createElement('div');
+      fixedNote.className = 'pf-note';
+      fixedNote.textContent = note;
+      form.appendChild(fixedNote);
+    }
   } else {
     const two = document.createElement('div');
     two.className = 'pf-two';
@@ -435,7 +437,7 @@ function buildProvCard(p, key) {
     cellName.innerHTML = '<div class="pf-label">名称</div>';
     const inName = document.createElement('input');
     inName.className = 'pf-input';
-    inName.placeholder = '如 硅基流动';
+    inName.placeholder = '如 公司内部网关';
     inName.value = p.name;
     inName.oninput = () => { p.name = inName.value; };
     cellName.appendChild(inName);
@@ -938,30 +940,52 @@ bindRemoteInput('set-remote-port', 'remotePort', (v) => parseInt(v, 10) || 0);
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;
 
-/* ---------- 手机端：两级菜单 + 返回键逐级退出 ----------
-   一级＝导航列表（整屏），点入二级＝对应分区（带返回头）。打开/进入二级时
-   pushState 压栈，手机返回手势由此逐级退回（二级→一级→关设置回对话区）；
-   取消/保存则主动回退等量历史，不留死栈。桌面不压栈、不分页，维持左右布局。 */
-let setHistDepth = 0; // 已压入的设置历史层数：0 无 / 1 设置一级 / 2 二级分区
+/* ---------- 设置导航：状态唯一、渲染集中 ----------
+   心智模型两端同构：设置＝一级菜单＋二级分区页。桌面双栏并排框定（左一级
+   右二级，level 只决定左栏高亮与否）；窄屏一屏一级或二级（pane-open 翻页，
+   pushState 压栈供返回手势逐级退：二级→一级→关设置，取消/保存主动退等量
+   历史不留死栈；桌面不压栈）。所有入口只改 setNav 状态，DOM 一律经 renderNav
+   投影——导航类名的写点全文件仅此一处。level=1 即「未选中」空态：菜单全无
+   高亮，二级区照常显示 pane 指的默认页（窄屏在后台，无渲染成本差异）。 */
+const setNav = { open: false, pane: 'general', level: 1 };
+let setHistDepth = 0; // 窄屏历史栈层数：0 无 / 1 一级 / 2 二级（桌面恒 0）
 
 function settingsCard() { return document.querySelector('.settings-card'); }
 
-// 手机一级 ⇄ 二级的视图切换（只动 class，桌面 CSS 不消费这些类）。
-// 返回头标题随之切换：一级叫「设置」，二级＝当前分区名
-function setL2On(on) {
+// 唯一 DOM 出口：从 setNav 推导全部导航外观（菜单高亮/分区显隐/翻页/返回头标题/弹窗显隐）
+function renderNav() {
+  document.querySelectorAll('.set-nav-item').forEach((b) => {
+    b.classList.toggle('active', setNav.level === 2 && b.dataset.pane === setNav.pane);
+  });
+  document.querySelectorAll('.set-pane').forEach((p) => {
+    p.classList.toggle('active', p.id === 'set-pane-' + setNav.pane);
+  });
   const card = settingsCard();
-  if (!card) return;
-  card.classList.toggle('pane-open', !!on);
-  const nav = document.querySelector('.set-nav-item.active');
-  $('set-back-title').textContent = on && nav ? nav.textContent.trim() : '设置';
+  if (card) card.classList.toggle('pane-open', setNav.level === 2); // 桌面 CSS 不消费，无视觉影响
+  const cur = document.querySelector('.set-nav-item[data-pane="' + setNav.pane + '"]');
+  $('set-back-title').textContent = setNav.level === 2 && cur ? cur.textContent.trim() : '设置';
+  $('settings').classList.toggle('hidden', !setNav.open);
 }
 
-function closeSettingsUI() {
-  $('settings').classList.add('hidden');
-  setL2On(false);
+// 选中分区＝「地址」：一级菜单点击与各直达入口共用，两端同一条路径。唯一
+// 平台差异＝窄屏把历史补到两层（契约：openSettings 已先压好「一级」底座）
+function navGoto(pane) {
+  setNav.pane = pane;
+  setNav.level = 2;
+  if (isNarrow() && setHistDepth < 2) {
+    setHistDepth = 2;
+    history.pushState({ jxSettings: 2 }, '');
+  }
+  renderNav();
+}
+
+function closeSettingsUI(fromPop) {
+  setNav.open = false;
+  setNav.level = 1; // 复位未选中态，下次打开从默认页起步
+  renderNav();
   const d = setHistDepth;
   setHistDepth = 0;
-  if (d > 0) {
+  if (d > 0 && !fromPop) {    // popstate 引发的关闭（栈已退穿）不再退栈
     backGuardSkipOnce = true; // 程序性退栈：返回键守卫跳过这次 popstate（左栏别跟着弹出来）
     history.go(-d);           // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
   }
@@ -970,29 +994,20 @@ function closeSettingsUI() {
 
 window.addEventListener('popstate', (e) => {
   const d = (e.state && e.state.jxSettings) || 0;
-  if ($('settings').classList.contains('hidden')) { setHistDepth = 0; return; } // UI 已关：只对齐
+  if (!setNav.open) { setHistDepth = 0; return; } // UI 已关：只对齐
   setHistDepth = d;
-  if (d >= 1) setL2On(d === 2); // 返回手势：二级退一级、一级再退＝下面的 d===0
-  if (d === 0) closeSettingsUI();
+  if (d >= 1) { setNav.level = d; renderNav(); } // 返回手势：二级退一级（高亮熄灭）；一级再退＝下面的 d===0
+  else closeSettingsUI(true);
 });
 
-$('set-cancel').onclick = closeSettingsUI;
+$('set-cancel').onclick = () => closeSettingsUI();
 $('settings').onclick = (e) => { if (e.target === $('settings')) closeSettingsUI(); };
 $('set-back').onclick = () => {
-  if (setHistDepth >= 2) history.back(); // 二级：返回＝回一级（走 popstate 统一处理）
-  else closeSettingsUI();                // 一级：返回＝退出设置回对话区
+  if (setNav.level === 2) history.back(); // 二级：返回＝回一级（走 popstate 统一处理）
+  else closeSettingsUI();                  // 一级：返回＝退出设置回对话区
 };
 document.querySelectorAll('.set-nav-item').forEach((b) => {
-  b.onclick = () => {
-    setSettingsPane(b.dataset.pane);
-    if (isNarrow()) {
-      setL2On(true);
-      if (setHistDepth < 2) {
-        setHistDepth++;
-        history.pushState({ jxSettings: setHistDepth }, '');
-      }
-    }
-  };
+  b.onclick = () => navGoto(b.dataset.pane);
 });
 // 模型页：「添加提供方」= 插入一张展开的自定义卡片（已有未保存草稿则直接展开，不覆盖）
 $('prov-add-card').onclick = () => {

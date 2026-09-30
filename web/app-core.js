@@ -627,6 +627,9 @@ function restoreHomeDraftLS() {
     homeDraft.workspace = d.workspace || '';
     homeDraft.mode = CHAT_MODES.some((m) => m.v === d.mode) ? d.mode : 'office';
     homeDraft.permission = d.permission || 'workspace-write';
+    // 「创建技能」模式的权限联动标记（app-chat.js 的 applyDraftMode 写入）：
+    // 恢复它，切换模式时才能识别「完全访问是联动自动设的」并随切换还原
+    homeDraft._fullFromMode = !!d._fullFromMode;
     homeDraft.provider = d.provider || '';
     homeDraft.model = d.model || '';
     homeDraft.thinking = d.thinking || '';

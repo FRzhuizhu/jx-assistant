@@ -188,6 +188,7 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
 | 命令沙箱 | `sandbox_windows.go`(+`_stub`) / `sandbox_linux.go`(+`_stub`) + `sandbox.go` 分派 | android 分支：无 OS 沙箱、直接执行，隔离由应用沙箱承担 |
 | 沙箱审计 | `sandbox_audit_windows.go` / `_other.go` | 常驻 ACE/密级标签仅 Windows，其余恒空 |
 | 电脑操控 | `tool_computer_windows.go` / `_other.go` | 仅 Windows，其余注册时报错 |
+| 演示记录器 | `recorder_windows.go` / `_other.go`（定义在 `recorder.go`，跨平台） | 创建技能模式专用；仅 Windows 有真实现（全局钩子+截屏+MCI 录音），其余报「不支持」 |
 | 进程退出信号 | `pdeathsig_android.go` / `_other.go` | android 用 PR_SET_PDEATHSIG |
 | sqlite 兼容 | `sqlite_android_amd64.go` / `sqlite_android_stub.go` | 仅 android/amd64 打 seccomp 补丁 |
 | 手机操控工具 | `tool_device_android.go` / `_other.go` | 仅安卓注册 device_*/adb_*（三件套，见 android/README.md）；桥端点 device_bridge.go 全平台编译（无壳轮询自然空闲） |
@@ -384,7 +385,10 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 ## 界面（对齐 DSH 风格）
 
 - **首页（新建对话）**：居中问候区 + 输入卡片；输入框上方两枚胶囊——**工作模式**
-  在前（左，标准办公 / 编程，决定该会话的系统提示词与交付倾向，`CHAT_MODES`），
+  在前（左，标准办公 / 编程 / 创建技能，决定该会话的系统提示词与交付倾向，
+  `CHAT_MODES`；选「创建技能」时联动把权限默认提到完全访问——该模式要看懂
+  用户演示并亲自验证技能步骤，见 `applyDraftMode`；切回别的模式且权限是联动
+  自动设的，则还原为工作区内读写），
   **工作目录**在后（右缘对齐输入卡；候选 = 默认目录 + 历史用过的目录，也支持输入
   任意绝对路径；目录只在新建时选）。手机端（窄屏 <500px）没有工作目录胶囊、
   加号菜单也没有 SSH 远程挂载项——工作区由引擎锚定在应用私有目录
@@ -625,6 +629,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 | `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + 历史查询 |
 | `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
+| `skill-create` | 创建技能：用户演示操作 → 沉淀成给后续 AI 照做的 SKILL.md 教程；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **demo_record_start/stop/status/transcribe（演示记录器，仅 Windows 真实现）+ register_skill（注册/覆盖技能）** + 用户技能清单注入（与 task 同） |
 
 **派发关系**：数字助理有两个派发工具——`dispatch_task` 派出**顶层工作任务**
 （进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
@@ -701,8 +706,13 @@ report_ready / done / stopped），前端常驻订阅：父对话里的子任务
 
 ## 多模型接入
 
-设置页「模型服务」可配置多个 OpenAI 兼容提供方（预置 DeepSeek / 智谱 GLM /
-Kimi / 通义千问 / OpenAI / Ollama 本地 / 自定义），填 Key 后一键拉取模型清单；
+设置页「模型服务」可配置多个 OpenAI 兼容提供方（预置 DeepSeek / 小米 MiMo /
+智谱 GLM（按量与 Coding 套餐两个端点）/ 火山方舟·豆包（按量与 Coding 套餐）/
+Kimi / 通义千问 / 百度千帆 / 腾讯混元 / MiniMax / 讯飞星火 / 阶跃星辰 / 硅基流动 /
+魔搭 ModelScope / OpenAI / Ollama 本地 / 自定义），填 Key 后一键拉取模型清单；
+预置模板带 Note 备注（计费方式、Key 获取入口），设置页卡片实时取模板展示——
+同一厂商的套餐端点与按量端点地址不同，填错端点扣不到套餐额度，这是拆成
+多条预置的原因；
 会话顶栏可单独切换本会话模型；派发时可指定子会话模型（providerId/modelId）。
 
 **API Key 的存储（各平台各用各家，原则：不回显、不被顺走）**：落盘前经
@@ -729,9 +739,32 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（指向
 本机含 SKILL.md 的文件夹）、开关、删除。用户技能按 **清单先行、内容按需**
 送达模型：环境快照里只列 名字（id）与一句话描述，要用哪个技能先调用
-`read_skill`（常驻工具，task 模式）读它的完整 SKILL.md 说明——技能增减
+`read_skill`（常驻工具，task / skill-create 模式）读它的完整 SKILL.md 说明——技能增减
 不改变工具定义；清单变化经环境快照补在对话**最底部**，并附一行
 「技能变更：新增 X／移除 Y」明说增删了哪个技能，上文历史快照一律不动。
+
+**创建技能模式（`skill-create`）**——技能的生产端：用户演示操作（或口述），
+AI 观察学习后写成 SKILL.md 并注册进 `技能/user/`。闭环三件套：
+①**演示记录器**（`recorder.go` 定义 + `recorder_windows.go` 实现，纯 syscall
+无 cgo）：`demo_record_start` 起录——WH_MOUSE_LL/WH_KEYBOARD_LL 全局钩子
+（回调只投递 channel，慢活全在 worker；带 LLMHF_INJECTED 标记的自家
+computer_* 注入事件被过滤）在每次点击、回车/Tab、窗口切换时截屏（复用
+BitBlt 截屏、逐字节去重、上限 400 张），连续打字聚合成 text 事件（Shift
+上档与 Ctrl/Alt 组合键还原；中文输入法只记原始按键，上屏结果以截图为准），
+MCI waveaudio 全程录 16kHz 单声道 audio.wav（无麦克风自动降级）；
+`demo_record_stop` 收录成 `工作区/演示记录/record-<时间戳>/{NNN.png,
+events.jsonl, audio.wav, INDEX.md}`——INDEX.md 是时间线对照表（事件↔截图↔
+字幕段），模型 read INDEX.md 定位、read_image 看图。事件毫秒时间轴与录音
+同源，SRT 字幕接上后天然对齐。仅 Windows 真实现，其他平台空桩报「不支持」
+（环境快照提前公告，模型引导用户口述替代）。②**语音转写接口位预留**：
+`recorder.go` 的 `activeSpeechTranscriber` 当前恒 nil（不引 whisper、不下载
+模型），配置结构 `Config.SpeechAPI`（provider/endpoint/apiKey/language）已
+留好——微软语音 API 调稳后实现一个注册进来，stop/`demo_record_transcribe`
+即自动产出 讲解.srt，历史录音可随时补转；未接入时理解演示以截图+事件+
+用户对话讲解为准。③**注册闭环**：`register_skill(path[, update])` 走
+`addUserSkill` 装进 `技能/user/`（update=true 先删旧再装，支持迭代改进），
+`read_skill` 读回自查。权限默认完全访问（`handleCreateSession` 分支 +
+前端 `applyDraftMode` 联动），演示记录器工具门控 `capComputer`（fail closed）。
 
 **运行环境自包含**：技能一律使用随软件分发的便携运行时
 `技能/_runtime/python`，**不探测、不依赖用户机器上的系统 Python**——

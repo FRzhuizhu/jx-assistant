@@ -93,6 +93,52 @@ const codingPrompt = `你是「坚祥数字助理」的编程模式助手，面�
 5. 简洁沟通：过程从简、结论清晰，用中文回复；代码、路径、命令与报错保持原文。
 6. 你还有 search_sessions / read_session_messages 两个历史工具：可以搜索并翻阅任何会话的原始记录，需要回忆之前的工作时优先用它。`
 
+// skillPrompt 是「创建技能」模式的系统提示词：这个模式只干一件事——把用户
+// 演示/讲解的操作沉淀成 SKILL.md 技能，供其他 AI 以后照着执行。定位是
+// 「观察者 + 教程作者」：核心不是复述步骤，而是从演示中顿悟操作逻辑，写成
+// 给后续 AI 的、抗界面变化的教程（哪些该写、哪些刻意不写见正文写作原则）。
+const skillPrompt = `你是「坚祥数字助理」的创建技能模式助手，只做一件事：把用户演示和讲解的操作，沉淀成一份「技能」——SKILL.md 教程，让其他 AI 以后照着它把同样的事做好。
+
+职责边界：
+1. 本会话只创建和改进技能。用户提出别的需求（改文档、查资料、装软件…）时，停下来提醒：「这是创建技能的会话——你是想创建技能，还是想办别的事？办别的事请新建对话换个模式」，等用户确认后再继续。
+2. 技能是写给「以后的 AI」看的教程，不是给用户的操作手册。写作时假想读者是一个有能力、但没见过这个网站/软件的 AI。
+
+工作流程：
+1. 记录演示：用户要演示时调用 demo_record_start（此后他的每次点击自动截屏、全程录音记日志），他演示完回来喊停，你调 demo_record_stop 收录材料。
+2. 理解材料：read INDEX.md 看时间线对照表，按编号 read_image 看关键截图，还原他做了什么；他在对话里说的话（语音输入）本身就是讲解，把对话内容与操作时间线对上。没有字幕时，主动请他口述关键步骤的意图，不要猜。
+3. 顿悟本质：从演示提炼「核心原理与操作逻辑」——这件事的目标是什么、分几步、每步的意图、哪条路是正路。这是技能的灵魂，比步骤本身重要。
+4. 写 SKILL.md（规范见后文），调 register_skill 注册，再 read_skill 读回自查一遍。
+5. 收尾建议用户开个普通对话试跑这个技能，有问题回来改（改完草稿目录后带 update=true 重新注册）。
+
+SKILL.md 写作原则（核心，逐条落实）：
+1. 记大致步骤，不记细节。写清楚「做什么、为什么这么做」，不要逐像素描述界面（按钮在第几行、弹窗长什么样）——界面会变，写死了技能就废了。描述界面元素用角色和文案（如「点右上角的『导出』按钮」），不要用坐标。
+2. 教后续 AI 用更可靠的方式：优先 URL 直达、键盘快捷键、命令行/API，而不是在界面上一步步点。用户演示时手动点的地方，如果你知道更稳的路径，写进技能并注明为什么更稳。
+3. 写明「推荐方式」与「避免方式」：哪些做法更快更稳，哪些是坑。用户演示中绕过的弯路、纠正过的操作，往往是最有价值的反面教材。
+4. 快捷键等加速技巧单独点出。
+5. 区分「每次都如此」与「这次恰好如此」：从单次演示泛化，别把偶然当必然；拿不准就问用户。
+6. frontmatter 的 description 是触发器，写得主动一点：把用户可能的各种说法都列进去，宁可多触发不可漏触发。
+7. 正文用祈使句、解释为什么、给例子；别堆大写 MUST/NEVER——需要吼才能执行的规则，通常是没解释清楚。目标 500 行以内。
+
+权限与验证：本模式默认完全访问（操作电脑/操作浏览器）。关键步骤吃不准时，亲自用 browser_* / computer_* 走一遍验证再写进技能；如实汇报，验证不了的环节注明「未验证」。用中文交流，简洁清晰。`
+
+// skillFilePrompt 是创建技能模式的文件工作准则：技能草稿目录约定 +
+// 注册/更新闭环 + 与 codingFilePrompt 同一套文件工具/快照纪律（不强调
+// deliver_result 交付——技能的正式交付动作是 register_skill 注册）。
+const skillFilePrompt = `
+## 技能文件规范
+
+技能 = 一个目录，至少含 SKILL.md（YAML frontmatter 写 name: 与 description:，正文是教程）。草稿目录建在工作区里（如 技能草稿/<技能名>/），写好后调用 register_skill(path) 注册进技能库；已注册的技能要更新时，改完草稿目录再带 update=true 重新注册。技能目录里只放教程本身；演示材料（截图/事件/录音）留在 演示记录/ 下，不要塞进技能目录。
+
+文件操作一律优先用文件工具：查看文本用 read（而不是 cat 等命令行）；创建文件或整体替换内容用 write（既有文件先 read 读过才能覆盖——观察策略强制，本会话刚创建/刚改过的除外）；局部修改优先用 edit，而不是重写整个文件。
+
+1. write / edit 的修改自动记录历史快照，用户编辑历史消息时可以把文件一并回退，无需你做额外操作。
+2. 通过 run_command、外部程序修改文件无法自动追踪：改动一个已存在的重要文件前，必须先调用 snapshot_file 打快照，否则该文件无法回退；新建文件无需快照。
+
+## 工作区目录约定
+
+- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
+- 过程产物放 .jxai/tmp/ 下，不要散落在工作区根目录；演示记录/ 是记录器的专用位置，不挪动、不改名、不删除（那是用户的演示原始材料）。`
+
 const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入口。用户只对你提需求，由你决定这件事交给哪个会话去做。
 
 ## 你是谁
@@ -197,6 +243,8 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 		base = officePrompt
 	case "coding":
 		base = codingPrompt
+	case "skill-create":
+		base = skillPrompt
 	}
 	// 引用文件覆盖：data/prompts/<mode>.md 存在时替换该模式的基础提示词；
 	// 模式附加段（文件规范/派发准则）是产品硬规则，覆盖后仍追加。
@@ -219,6 +267,8 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 		base += fileToolsPrompt + dispatchSubPrompt
 	case "coding":
 		base += codingFilePrompt + dispatchSubPrompt
+	case "skill-create":
+		base += skillFilePrompt + dispatchSubPrompt
 	}
 	// 子对话专家的追加提示词：预设只记名字，这里按名解析拼接在模式基础提示词
 	// 之后（会话内稳定——专家固定于派发时；删改专家等同改引用文件，前缀随之变化）
@@ -295,10 +345,10 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	b.WriteString("- 审批卡上用户点「始终允许」= 常设授权：命令升级点亮对应能力开关（如「允许工作区外执行命令」），工作区外写入把会话权限提升为完全访问（捆绑能力一并点亮），之后该类动作不再逐次审批\n")
 	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")
 	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录（含 API Key）；不可逆的破坏性命令会被危险命令护栏拦截（护栏默认开启，用户可在设置中关闭）\n")
-	// 能力开关只对带这些工具的模式（task/office/coding）有意义。工具定义常驻目录
+	// 能力开关只对带这些工具的模式（task/office/coding/skill-create）有意义。工具定义常驻目录
 	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
 	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截
-	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" {
+	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "skill-create" {
 		if hasCapability(sess, capBrowser) {
 			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
 		} else {
@@ -328,6 +378,17 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			}
 		}
 	}
+	// 创建技能模式的演示记录器公告：工具仅在该模式注册，可用性按平台分叉
+	//（Windows 真实现 / 其余平台空桩），转写服务接入状态也一并告知——
+	// 模型据此决定是「录演示」还是「让用户口述」。
+	if sess.Mode == "skill-create" && sess.Remote == nil {
+		if recorderSupported() {
+			b.WriteString("- 演示记录器（demo_record_start / demo_record_stop / demo_record_status）可用：开始后用户的每次点击、回车/Tab、窗口切换自动截屏，全程记事件日志与麦克风音频，材料落 工作区/演示记录/ 下，stop 后先读 INDEX.md 对照表再看截图。" +
+				map[bool]string{true: "语音讲解会转成 讲解.srt 字幕（转写服务已配置）。", false: "语音讲解暂不转写字幕（转写服务未配置，录音保留）——用户在对话里说的话就是讲解词。"}[transcriberActive()] + "\n")
+		} else {
+			b.WriteString("- 演示记录器在当前平台不可用（仅 Windows 桌面）：请让用户直接口述操作步骤与意图，必要时用可用的操作能力（browser_* / computer_* / device_*）亲自走关键路径验证\n")
+		}
+	}
 	if sess.PlanMode {
 		if sess.Mode == "assistant" {
 			b.WriteString("- 计划模式：已开启。dispatch_task / send_to_session 已暂停（任务会话会实际改动文件）；此阶段只用只读工具调研（list_sessions / read_session_summary / search_sessions / read_session_messages），调研完成后调用 exit_plan_mode 提交计划（目标/步骤/涉及文件/验收标准）供用户批准，批准后恢复派发。\n")
@@ -354,7 +415,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	// 自带技能一览（静态）；用户技能段也归入快照——开关技能只影响尾部
 	// 快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
 	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南）、downloader（下载器：aria2c 下载落盘）、apkinfo（APK 包名/版本/签名查看），需要时直接调用对应工具或子命令\n")
-	if sess.Mode == "task" {
+	if sess.Mode == "task" || sess.Mode == "skill-create" {
 		if block := a.userSkillsPromptBlock(); block != "" {
 			b.WriteString(block + "\n")
 		}

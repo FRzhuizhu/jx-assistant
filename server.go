@@ -764,6 +764,11 @@ func (a *App) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		models = append(models, m)
 	}
+	// 预置提供方未带模型目录时回落到模板清单：套餐端点（智谱 Coding 等）
+	// 不一定支持 /models 拉取，模板自带 glm-5.3 系才能开箱即用
+	if isPreset && len(models) == 0 && len(preset.Models) > 0 {
+		models = append(models, preset.Models...)
+	}
 	pc := ProviderCfg{ID: id, Name: name, BaseURL: baseURL, Models: models}
 	if key := strings.TrimSpace(in.APIKey); key != "" {
 		pc.APIKey = key
@@ -860,10 +865,11 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		ID      string `json:"id"`
 		Name    string `json:"name"`
 		BaseURL string `json:"baseURL"`
+		Note    string `json:"note,omitempty"`
 	}
 	presets := []presetView{}
 	for _, p := range DefaultProviders() {
-		presets = append(presets, presetView{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL})
+		presets = append(presets, presetView{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, Note: p.Note})
 	}
 	t := a.DefaultTarget()
 	writeJSON(w, 200, map[string]any{
@@ -1101,11 +1107,16 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		InheritContext bool             `json:"inheritContext"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体
-	if body.Mode != "assistant" && body.Mode != "aux" && body.Mode != "office" && body.Mode != "coding" {
+	if body.Mode != "assistant" && body.Mode != "aux" && body.Mode != "office" && body.Mode != "coding" && body.Mode != "skill-create" {
 		body.Mode = "task"
 	}
 	if body.Permission == "" {
 		body.Permission = "workspace-write"
+		// 创建技能模式默认完全访问：要看懂用户演示（截屏/键鼠记录）并亲自
+		// 验证技能关键步骤，操作电脑/浏览器是刚需；用户显式传权限则尊重。
+		if body.Mode == "skill-create" {
+			body.Permission = permFull
+		}
 	}
 	if body.Remote != nil {
 		spec, err := body.Remote.normalize()

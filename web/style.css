@@ -869,9 +869,8 @@ body.rp-open .w-handle { display: none; }
 /* ---------- 输入区新布局 ---------- */
 /* 工作目录胶囊独立在输入框上方（comopser-area 同时容纳胶囊与输入卡，整体在首页/对话页间搬移） */
 #composer-area { max-width: var(--content-w); margin: 0 auto; }
-/* 新建对话的两枚胶囊：工作模式在前（左），工作目录在后（右缘，与输入卡右沿对齐） */
+/* 新建对话的两枚胶囊：工作模式在前（左），工作目录紧随其后（右邻，间距同 gap） */
 #draft-chips { display: flex; align-items: center; gap: 8px; margin: 0 0 7px 2px; }
-#draft-chips #ws-row { margin-left: auto; }
 
 /* ---------- 附件区（输入框上方那条"本轮带进来的文件"轨道） ---------- */
 /* 没有附件时整块带 .hidden（= display:none，全局规则）——不占高度、不留白条，
@@ -1803,6 +1802,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 .pf-input:focus { outline: none; border-color: var(--accent); }
 .pf-fixed { padding: 8px 10px; background: var(--chip); border-radius: 8px; font-size: 12px; color: var(--text-2); }
+.pf-note { margin-top: 6px; padding: 0 2px; font-size: 12px; line-height: 1.6; color: var(--text-3); }
 .pf-two { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
 .key-row { display: flex; align-items: center; gap: 8px; }
 .key-row .pf-input { flex: 1; }

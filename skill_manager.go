@@ -384,6 +384,56 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 	return body, nil
 }
 
+// registerSkillTool 是技能注册工具（创建技能模式专用）：把写好的技能目录
+// 注册进用户技能库，闭合「写 SKILL.md → 注册 → read_skill 验证」的循环。
+// 与设置页的 POST /api/skills/add 同走 addUserSkill；update=true 时先删
+// 旧再装（addUserSkill 对已存在的 id 报错，迭代改进技能要用覆盖路径）。
+func registerSkillTool() Tool {
+	return Tool{
+		Spec: toolSpec("register_skill",
+			"把一个技能目录注册进用户技能库（目录必须含 SKILL.md）。注册后技能进入各任务会话的环境快照技能清单，可用 read_skill 读回验证。技能已注册过、要更新时带 update=true（用当前目录内容覆盖旧版）。",
+			objSchema(map[string]any{
+				"path":   strProp("技能目录路径（相对或绝对；目录里需有 SKILL.md）"),
+				"update": boolProp("技能已存在时先删旧版再装（默认 false）"),
+			}, "path")),
+		Run: func(t *toolContext, args json.RawMessage) (string, error) {
+			var p struct {
+				Path   string `json:"path"`
+				Update bool   `json:"update"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			abs, err := t.resolve(p.Path)
+			if err != nil {
+				return "", err
+			}
+			if isDir, _, serr := t.envStat(abs); serr != nil || !isDir {
+				return "", fmt.Errorf("目录不存在: %s（%s）", abs, p.Path)
+			}
+			if _, _, serr := t.envStat(filepath.Join(abs, "SKILL.md")); serr != nil {
+				return "", fmt.Errorf("目录里缺少 SKILL.md（技能必须自带说明文件）：%s", abs)
+			}
+			entry, err := t.app.addUserSkill(abs)
+			if err != nil {
+				if !p.Update || !strings.Contains(err.Error(), "已存在") {
+					return "", err
+				}
+				if err := t.app.deleteUserSkill(sanitizeSkillID(filepath.Base(abs))); err != nil {
+					return "", err
+				}
+				entry, err = t.app.addUserSkill(abs)
+				if err != nil {
+					return "", err
+				}
+			}
+			return fmt.Sprintf("已注册技能 %s（名称：%s%s）：各任务会话的技能清单会自动更新，" +
+				"可用 read_skill(id=%s) 读回验证。", entry.ID, entry.Name,
+				map[bool]string{true: "，覆盖旧版", false: ""}[p.Update], entry.ID), nil
+		},
+	}
+}
+
 func sanitizeSkillID(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.Map(func(r rune) rune {

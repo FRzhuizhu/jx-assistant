@@ -3968,7 +3968,7 @@ function modelNameOf(key) {
   return (hit && (hit.modelName || hit.modelId)) || mid;
 }
 
-const THINK_LABELS = { enabled: '思考·开', disabled: '思考·关', low: '思考·低', medium: '思考·中', high: '思考·高' };
+const THINK_LABELS = { enabled: '思考·开', disabled: '思考·关', low: '思考·低', medium: '思考·中', high: '思考·高', max: '思考·深' };
 
 // 当前生效的思考档位（会话级 / 首页草稿 / 指定视图的会话）
 function curThinking(view) {
@@ -4078,8 +4078,28 @@ const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读
 const CHAT_MODES = [
   { v: 'office', label: '标准办公', desc: '面向日常办公：文档、资料、表格、沟通文案，成果落文件' },
   { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件' },
+  { v: 'skill-create', label: '创建技能', desc: '看用户演示操作（自动截屏＋录音）→ 总结成给其他 AI 照做的技能教程；默认完全访问' },
 ];
 const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', label: '标准办公', desc: '' };
+
+// applyDraftMode：切换首页工作模式，带「创建技能」的权限联动——该模式要
+// 看懂用户演示（截屏/键鼠记录）并亲自验证技能步骤，操作电脑/浏览器是刚需，
+// 选中即默认完全访问（用户仍可在权限面板改回）；切去别的模式且权限还是
+// 本联动自动设的完全访问时，还原为工作区内读写。FULL_BUNDLED_TOOLS 的
+// 勾选随权限档联动（与权限面板同一套规则）。
+function applyDraftMode(v) {
+  const fullByAuto = homeDraft.permission === 'full' && homeDraft._fullFromMode;
+  if (v === 'skill-create' && homeDraft.permission !== 'full') {
+    homeDraft._fullFromMode = true;
+    homeDraft.permission = 'full';
+    homeDraft.tools = [...new Set([...(homeDraft.tools || []), ...FULL_BUNDLED_TOOLS])];
+  } else if (v !== 'skill-create' && fullByAuto) {
+    homeDraft._fullFromMode = false;
+    homeDraft.permission = 'workspace-write';
+    homeDraft.tools = (homeDraft.tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t));
+  }
+  homeDraft.mode = v;
+}
 
 // 模式下拉：选项列表 + 当前项打勾
 function renderModePop() {
@@ -4095,7 +4115,7 @@ function renderModePop() {
       '<span class="mp2-text"><b>' + esc(m.label) + '</b><i>' + esc(m.desc) + '</i></span>' +
       (homeDraft.mode === m.v ? '<span class="pop-check">✓</span>' : '');
     b.onclick = () => {
-      homeDraft.mode = m.v;
+      applyDraftMode(m.v);
       syncComposer();
       closePopovers();
     };

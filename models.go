@@ -32,13 +32,18 @@ type ProviderCfg struct {
 	BaseURL string     `json:"baseURL"`
 	APIKey  string     `json:"apiKey,omitempty"`
 	Models  []ModelCfg `json:"models"`
+	// Note 是预置提供方的备注（计费方式、Key 获取方式等），仅设置页展示，
+	// 不参与调用；已保存的提供方以预置模板为准实时取，不落盘。
+	Note string `json:"note,omitempty"`
 }
 
 // DefaultContextWindow 是模型未声明上下文窗口时的保守默认值。
 const DefaultContextWindow = 262144
 
-// DefaultProviders 预置常用提供方：DeepSeek 自带模型清单（其余拿到 Key 后
-// 用「获取模型列表」一键拉取），URL 均为 OpenAI 兼容端点。
+// DefaultProviders 预置常用提供方：DeepSeek/小米/智谱 Coding 自带模型清单
+// （其余拿到 Key 后用「获取模型列表」一键拉取），URL 均为 OpenAI 兼容端点。
+// 同一厂商按计费方式拆多条（按量 / 订阅套餐）：套餐端点与按量端点地址不同，
+// 填错端点会扣不到套餐额度，Name/Note 里写清楚区别。
 func DefaultProviders() []ProviderCfg {
 	return []ProviderCfg{
 		{ID: "deepseek", Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Models: []ModelCfg{
@@ -49,9 +54,31 @@ func DefaultProviders() []ProviderCfg {
 			{ID: "mimo-v2.6-pro", Name: "MiMo v2.6 Pro", ReasoningLevels: []string{"enabled", "disabled"}},
 			{ID: "mimo-v2.6-flash", Name: "MiMo v2.6 Flash", ReasoningLevels: []string{"enabled", "disabled"}},
 		}},
-		{ID: "zhipu", Name: "智谱 GLM", BaseURL: "https://open.bigmodel.cn/api/paas/v4"},
+		{ID: "zhipu", Name: "智谱 GLM（按量计费）", BaseURL: "https://open.bigmodel.cn/api/paas/v4",
+			Note: "按 token 计费的开放平台端点；订阅了 Coding Plan 套餐的用户请改用下方的套餐端点，否则扣不到套餐额度"},
+		{ID: "zhipu-coding", Name: "智谱 GLM（Coding Plan 套餐）", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4", Models: []ModelCfg{
+			{ID: "glm-5.3", Name: "GLM-5.3", ContextWindow: 1048576, MaxOutput: 131072, ReasoningLevels: []string{"enabled", "low", "high", "max"}},
+			{ID: "glm-5.3-flash", Name: "GLM-5.3-Flash（多模态）", ContextWindow: 1048576, MaxOutput: 131072, SupportsImages: true, ReasoningLevels: []string{"enabled", "low", "high", "max"}},
+		}, Note: "走 Coding Plan 订阅额度；Key 需在「个人编程套餐」页单独创建，与按量计费 Key 不通用。套餐优先保障编程工具，通用 Agent 高负载时段可能限流排队"},
+		{ID: "doubao", Name: "火山方舟 / 豆包（按量计费）", BaseURL: "https://ark.cn-beijing.volces.com/api/v3",
+			Note: "模型填模型 ID（如 doubao-seed-2.0-pro）或接入点 ID（ep- 开头）；Key 在火山引擎方舟控制台创建"},
+		{ID: "doubao-coding", Name: "火山方舟 / 豆包（Coding 套餐）", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3",
+			Note: "走方舟 Coding Plan 订阅额度（doubao-seed-code 系列）；需先在火山引擎订阅套餐"},
 		{ID: "moonshot", Name: "Kimi / 月之暗面", BaseURL: "https://api.moonshot.cn/v1"},
-		{ID: "qwen", Name: "通义千问", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+		{ID: "qwen", Name: "通义千问", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+			Note: "阿里云百炼兼容模式；Key 在百炼控制台创建（sk- 开头）"},
+		{ID: "qianfan", Name: "百度千帆", BaseURL: "https://qianfan.baidubce.com/v2",
+			Note: "千帆 v2 OpenAI 兼容端点（文心/DeepSeek 系等）；Key 用千帆控制台的 API Key"},
+		{ID: "hunyuan", Name: "腾讯混元", BaseURL: "https://api.hunyuan.cloud.tencent.com/v1",
+			Note: "Key 在腾讯云混元控制台创建"},
+		{ID: "minimax", Name: "MiniMax", BaseURL: "https://api.minimaxi.com/v1"},
+		{ID: "spark", Name: "讯飞星火", BaseURL: "https://spark-api-open.xf-yun.com/v1",
+			Note: "密钥填讯飞开放平台的 APIPassword（控制台「API Password」页生成），不是旧版 WebSocket 鉴权的 AppID/APIKey/APISecret 组合"},
+		{ID: "stepfun", Name: "阶跃星辰", BaseURL: "https://api.stepfun.com/v1"},
+		{ID: "siliconflow", Name: "硅基流动", BaseURL: "https://api.siliconflow.cn/v1",
+			Note: "聚合平台：一个 Key 调用多家开源模型（DeepSeek/Qwen/GLM 等），部分模型免费"},
+		{ID: "modelscope", Name: "魔搭 ModelScope（免费额度）", BaseURL: "https://api-inference.modelscope.cn/v1",
+			Note: "免费推理接口（每日限量、不保证稳定，不建议重要任务依赖）；密钥用魔搭账户的 SDK Token，需绑定阿里云账号"},
 		{ID: "openai", Name: "OpenAI", BaseURL: "https://api.openai.com/v1"},
 		{ID: "ollama", Name: "Ollama 本地", BaseURL: "http://127.0.0.1:11434/v1"},
 	}
@@ -140,7 +167,7 @@ func guessModelMeta(id string) (ctx int, images bool) {
 		return false
 	}
 	images = has("4o", "gpt-4-turbo", "gpt-4.1", "gpt-5", "o3", "o4-mini", "claude",
-		"gemini", "glm-4v", "qwen-vl", "-vl-", "vision", "llava", "pixtral", "grok-4", "vlmodel")
+		"gemini", "glm-4v", "glm-5.3-flash", "qwen-vl", "-vl-", "vision", "llava", "pixtral", "grok-4", "vlmodel")
 	switch {
 	case has("moonshot-v1-128k"):
 		return 131072, images
@@ -166,6 +193,8 @@ func guessModelMeta(id string) (ctx int, images bool) {
 		return 16384, images
 	case has("glm-4v"):
 		return 8192, true
+	case has("glm-5.3"):
+		return 1048576, images // 5.3 系上下文 1M（模型卡片），flash 为多模态
 	case has("glm-4"), has("glm-5"):
 		return 131072, images
 	case has("qwen-long"):
@@ -209,6 +238,8 @@ func guessReasoningLevels(id string) []string {
 		return []string{"enabled"} // 思考专用模型，只能开
 	case has("deepseek"):
 		return []string{"enabled", "disabled"} // V3.2+ 混合思考
+	case has("glm-5.3"):
+		return []string{"enabled", "low", "high", "max"} // 5.3 起思考常开，用 reasoning_effort 调深浅
 	case has("glm-4.5"), has("glm-4.6"), has("glm-5"):
 		return []string{"enabled", "disabled"}
 	case has("qwen3"), has("kimi"), has("k2"):

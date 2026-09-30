@@ -87,6 +87,10 @@ type Config struct {
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`
+	// 语音转写服务配置（演示记录器的讲解音频 → SRT 字幕，预留字段）：
+	// provider（如 microsoft）/ endpoint / apiKey / language。当前版本尚未
+	// 接入任何服务商；接入后 recorder.go 的 activeSpeechTranscriber 读这里。
+	SpeechAPI map[string]string `json:"speechApi,omitempty"`
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的

@@ -33,6 +33,8 @@ func modeLabelOf(mode string) string {
 		return "标准办公"
 	case "coding":
 		return "编程"
+	case "skill-create":
+		return "创建技能"
 	}
 	return mode
 }

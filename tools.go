@@ -120,14 +120,20 @@ func (a *App) toolsFor(mode string) []Tool {
 		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
 			exitPlanModeTool(), updateGoalTool()}, history...)
 	}
-	return append([]Tool{
+	// 创建技能模式专属工具（demo_record_* 演示记录器 + register_skill 注册闭环）
+	// 只挂在该模式——其他模式的工具目录保持原形状（缓存与提示词都不受影响）。
+	skillCreate := []Tool{}
+	if mode == "skill-create" {
+		skillCreate = append(demoRecordTools(), registerSkillTool())
+	}
+	return append(append([]Tool{
 		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
 		snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
-	}, append(append(append(append(todos, browserTools()...), computerTools()...), deviceTools()...), history...)...)
+	}, skillCreate...), append(append(append(append(todos, browserTools()...), computerTools()...), deviceTools()...), history...)...)
 }
 
 // ---------- Schema 辅助 ----------
