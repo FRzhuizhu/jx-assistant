@@ -43,8 +43,8 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
 - 动手新写之前，先搜一遍代码库：工具实现看 `tools.go` / `historytools.go`，
   上下文处理看 `context.go` / `contextengine.go`，扩展机制看 `components.go` /
   `adapters.go`，前端按区域看 `web/`（对话区 `app-chat.js`、左栏+顶栏
-  `app-left.js`、右栏 `app-right.js`、设置 `app-settings.js`、共享地基
-  `app-core.js`）——大概率已经有了，复用而不是重写。
+  `app-left.js`、右栏 `app-right.js`、设置 `app-settings.js`、桌面壳右键菜单
+  `app-ctxmenu.js`、共享地基 `app-core.js`）——大概率已经有了，复用而不是重写。
 - 优先用 Go 标准库。本项目直接依赖只有 3 个（`modernc.org/sqlite`、
   `golang.org/x/crypto`、`pkg/sftp`），全部是不可替代项；想引入新依赖，
   先自问前 3 条问不问得过去。
@@ -406,6 +406,26 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   换会话/新建对话/刷新即丢（暂存只在内存里）。载荷沿用原有两条路：桌面壳的本地
   会话走原生选择框采本机真实路径（该路径可作 `deliver_file` 交付目标），浏览器 /
   手机 / 远程 / 粘贴 / 拖拽走 multipart（单文件 32MB 上限、一次最多 20 个）。
+- **桌面壳右键菜单**（`web/app-ctxmenu.js`，仅 `desktop-shell` 形态注册；网页/
+  手机模式保留浏览器原生右键）：go-webview2 库在 `Debug=false` 时把 WebView2
+  默认右键菜单与 DevTools 一并禁了，桌面壳右键原本什么都不弹——这里补自定义
+  菜单，弹层复用左栏 `openCtxMenu`（条目扩展了 `{sep}` 分隔线与 `{disabled}`
+  置灰）。按右键目标组装：输入控件给 撤销/重做/剪切/复制/粘贴/全选（编辑动作
+  对焦后走 `document.execCommand`，保留原生撤销栈）；对话区选区给
+  复制/引用到输入框/问AI/朗读；消息气泡给 复制全文/朗读（Web Speech API，
+  代码块丢弃、markdown 剥壳，中文声库优先，单飞、朗读中变「停止朗读」）；
+  网页链接给 打开/在系统浏览器中打开/复制链接；文件路径链接与
+  交付卡行给 预览/在系统中打开/在文件夹中定位/复制路径；工具调用截图给 在右栏
+  查看/复制图片。空白处不弹。**粘贴的剪贴板读取有平台分叉**：桌面壳里
+  `navigator.clipboard.readText` 会永久挂起（WebView2 的剪贴板读权限停在
+  prompt 且没有授权 UI，go-webview2 的 SetPermission 对它不生效——真机诊断
+  见 `gui-test/ctxmenu-clipboard-diag.mjs`），所以桌面壳直接读本机端点
+  `GET /api/clipboard`（`clipboard_windows.go` 读系统剪贴板：文本 +
+  截图常带的 PNG 注册格式，文本优先、PNG 入附件与 Ctrl+V 同口径；
+  剪贴板属敏感数据，loopbackOnly 仅回环可达）；网页模式 readText 行为正常
+  走标准 API。配套端点：`POST /api/open-url`（仅 http/https）、
+  `POST /api/sessions/{id}/open-path|reveal-path`（`insideWorkspace` 限
+  工作区内，远程会话拒绝），用户主动操作、不经模型权限门控（同交付卡片口径）。
 - **权限面板**（点权限芯片弹出，两列）：左列权限单选（只读 / 工作区内读写 /
   完全访问），右列能力多选（允许工作区外执行命令 / 操作浏览器 / 操作电脑）。
   切到完全访问时三项能力联动勾选并置灰（不可单独关闭）。

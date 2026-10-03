@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -186,6 +187,15 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/open", a.handleDeliveryOpenFile)
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/reveal", a.handleDeliveryReveal)
 	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
+	// 桌面壳右键菜单的「在系统中打开/在文件夹中定位/在系统浏览器中打开」：
+	// 用户主动操作（同交付卡片口径），open-path/reveal-path 只放行会话工作区
+	// 内已存在的路径，open-url 只放行 http(s)
+	mux.HandleFunc("POST /api/open-url", a.handleOpenURL)
+	mux.HandleFunc("POST /api/sessions/{id}/open-path", a.handleSessionOpenPath)
+	mux.HandleFunc("POST /api/sessions/{id}/reveal-path", a.handleSessionRevealPath)
+	// 读系统剪贴板（右键「粘贴」在桌面壳里的兜底路径：WebView2 里
+	// readText 会永久挂起）。剪贴板是敏感数据：仅回环可达
+	mux.HandleFunc("GET /api/clipboard", a.handleClipboardRead)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
 	mux.HandleFunc("GET /api/questions", a.handleListQuestions)
@@ -2298,6 +2308,117 @@ func (a *App) deliveryListed(sessionID, path string) bool {
 		}
 	}
 	return false
+}
+
+// handleOpenURL 用系统默认浏览器打开一个 http(s) 链接（桌面壳右键菜单的
+// 「在系统浏览器中打开」）。只放行 http/https——file://、javascript: 等
+// 一律拒绝；rundll32 FileProtocolHandler 对 URL 的处理即交给默认浏览器
+// （非 Windows 平台 xdg-open/open 同理）。用户主动操作，不经模型权限门控。
+func (a *App) handleOpenURL(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	raw := strings.TrimSpace(body.URL)
+	if raw == "" {
+		writeErr(w, 400, "需要 url")
+		return
+	}
+	if len(raw) > 2048 {
+		writeErr(w, 400, "url 过长")
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		writeErr(w, 400, "仅支持打开 http/https 链接")
+		return
+	}
+	if err := openPathWithDefaultApp(raw); err != nil {
+		writeErr(w, 500, "打开失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// handleSessionOpenPath 用系统默认程序打开会话工作区里的一个文件或目录
+// （右键菜单「在系统中打开」：文件走默认程序，目录等于在资源管理器里打开）。
+// 边界与 /api/browser/open-view 同口径：tctx.resolve 把路径限制在会话工作区
+// 内、envStat 确认存在；远程会话没有本机路径，明确拒绝（文案同交付卡片）。
+func (a *App) handleSessionOpenPath(w http.ResponseWriter, r *http.Request) {
+	a.handleSessionOpenOrReveal(w, r, true)
+}
+
+// handleSessionRevealPath 在资源管理器里定位会话工作区里的一个文件或目录
+// （右键菜单「在文件夹中定位」），校验口径与 open-path 完全一致。
+func (a *App) handleSessionRevealPath(w http.ResponseWriter, r *http.Request) {
+	a.handleSessionOpenOrReveal(w, r, false)
+}
+
+func (a *App) handleSessionOpenOrReveal(w http.ResponseWriter, r *http.Request, open bool) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	want := strings.TrimSpace(body.Path)
+	if want == "" {
+		writeErr(w, 400, "需要 path")
+		return
+	}
+	if m.Remote != nil {
+		writeErr(w, 400, "这是 SSH 远程工作区里的路径，本机没有对应文件，无法用系统程序打开")
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	abs, err := tctx.resolve(want)
+	if err != nil || !insideWorkspace(tctx, abs) {
+		http.NotFound(w, r)
+		return
+	}
+	if _, _, serr := tctx.envStat(abs); serr != nil {
+		writeErr(w, 404, "路径不存在: "+want)
+		return
+	}
+	var opErr error
+	if open {
+		opErr = openPathWithDefaultApp(abs)
+	} else {
+		opErr = revealInExplorer(abs)
+	}
+	if opErr != nil {
+		writeErr(w, 500, "打开失败: "+opErr.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// handleClipboardRead 读系统剪贴板（桌面壳右键「粘贴」的兜底：WebView2 里
+// navigator.clipboard.readText 会永久挂起，权限态停在 prompt 且没有授权 UI，
+// 见 clipboard_windows.go 头注）。返回 {text} 与可选 {png}（截图，base64）。
+// 剪贴板属敏感数据：仅回环可达（loopbackOnly，与设备桥同闸），LAN/远程一律 403。
+func (a *App) handleClipboardRead(w http.ResponseWriter, r *http.Request) {
+	if !loopbackOnly(w, r) {
+		return
+	}
+	text, png, err := readClipboardWindows()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	resp := map[string]string{"text": text}
+	if len(png) > 0 {
+		resp["png"] = base64.StdEncoding.EncodeToString(png)
+	}
+	writeJSON(w, 200, resp)
 }
 
 // handleDeliveryDownload 提供交付文件的下载。只放行已登记进 deliveries 的

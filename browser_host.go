@@ -762,25 +762,32 @@ func (a *App) workspaceFileForView(sid, rel string) (m *SessionMeta, abs string,
 	if err != nil {
 		return nil, "", false
 	}
-	root, err := tctx.resolve("")
-	if err != nil {
+	if !insideWorkspace(tctx, abs) {
 		return nil, "", false
-	}
-	if m.Remote != nil {
-		if _, inside := posixInside(root, abs); !inside {
-			return nil, "", false
-		}
-	} else {
-		// Windows 卷不区分大小写：小写后做包含判定，防 d:\ 与 D:\ 误判越界
-		sub, rerr := filepath.Rel(strings.ToLower(root), strings.ToLower(abs))
-		if rerr != nil || sub == ".." || strings.HasPrefix(sub, ".."+string(filepath.Separator)) || filepath.IsAbs(sub) {
-			return nil, "", false
-		}
 	}
 	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
 		return nil, "", false
 	}
 	return m, abs, true
+}
+
+// insideWorkspace 判定 abs（已解析的绝对路径）是否在会话工作区内。Windows 卷
+// 不区分大小写：小写后做 Rel 包含判定，防 d:\ 与 D:\ 误判越界；远程会话按
+// POSIX 口径（posixInside）。open-view 与右键菜单的 open-path/reveal-path 共用。
+func insideWorkspace(tctx *toolContext, abs string) bool {
+	root, err := tctx.resolve("")
+	if err != nil {
+		return false
+	}
+	if tctx.sess.Remote != nil {
+		_, inside := posixInside(root, abs)
+		return inside
+	}
+	sub, rerr := filepath.Rel(strings.ToLower(root), strings.ToLower(abs))
+	if rerr != nil || sub == ".." || strings.HasPrefix(sub, ".."+string(filepath.Separator)) || filepath.IsAbs(sub) {
+		return false
+	}
+	return true
 }
 
 // handleBrowserOpenView 聊天链接点开的统一入口（用户主动操作，不经模型权限门控）：

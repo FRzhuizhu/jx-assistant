@@ -1400,6 +1400,7 @@ function deliveryCard(dvs, sid, view) {
   dvs.forEach((d) => {
     const row = document.createElement('div');
     row.className = 'dc-file';
+    row.dataset.path = d.path; // 右键菜单取路径用（app-ctxmenu.js）
     row.title = d.path + '\n点击打开这个文件';
     const nm = document.createElement('span');
     nm.className = 'dc-name';

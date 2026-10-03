@@ -372,9 +372,17 @@ function openCtxMenu(items, x, y) {
   const m = ensureCtxMenu();
   m.innerHTML = '';
   items.forEach((it) => {
+    // {sep:true} 画分隔线；{disabled:true} 置灰不可点（桌面壳右键菜单用）
+    if (it.sep) {
+      const s = document.createElement('div');
+      s.className = 'ctx-sep';
+      m.appendChild(s);
+      return;
+    }
     const b = document.createElement('button');
     b.className = 'pop-item' + (it.danger ? ' danger' : '');
     b.textContent = it.label;
+    b.disabled = !!it.disabled;
     b.onclick = (e) => { e.stopPropagation(); closePopovers(); it.fn(); };
     m.appendChild(b);
   });

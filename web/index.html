@@ -812,13 +812,14 @@
   <button class="ub-close" type="button" title="关闭">✕</button>
 </div>
 
-<!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
+<!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → ctxmenu（桌面壳右键菜单）→ settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
 <script src="/qrcode.lib.js"></script>
 <script src="/qr.js"></script>
 <script src="/app-core.js"></script>
 <script src="/app-left.js"></script>
 <script src="/app-right.js"></script>
 <script src="/app-chat.js"></script>
+<script src="/app-ctxmenu.js"></script>
 <script src="/app-settings.js"></script>
 <script src="/app.js"></script>
 <script src="/cx.js"></script>

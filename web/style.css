@@ -1445,6 +1445,10 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .ctx-menu { min-width: 150px; }
 .pop-item.danger { color: #c0392b; }
 .pop-item.danger:hover { background: rgba(192, 57, 43, .08); }
+/* 右键菜单扩展：分组分隔线 + 当前不可用项置灰（不可点） */
+.ctx-sep { height: 1px; margin: 5px 8px; background: var(--border); }
+.pop-item:disabled { color: var(--text-3); opacity: .55; cursor: default; }
+.pop-item:disabled:hover { background: none; }
 /* 弹出卡里的纯告知行（窄屏「添加工作目录」提示）：不可点的正文，点它自身也收起卡片 */
 /* 新对话页目录面板里的同款告知行：面板本身有 360px 宽，不必照侧栏窄卡的
    230px 折行（同前缀选择器优先级更高，压在 .pop-notice 基础规则之上） */
