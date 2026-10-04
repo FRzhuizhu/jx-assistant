@@ -1,0 +1,83 @@
+/* 组件：语音（朗读与听写） —— 组件/voice/client.css
+ *
+ * 本组件的全部样式，随组件热加载/卸载（cx.js 注入 <style>）：语音输入按钮的
+ * hover/录音态与「灰字暂定层 / 倒计时徽标 / 重连转圈 / 一次性轻提示」原先写在
+ * 主程序 web/style.css 里，本次随功能一起迁到本文件，**取值一字未改**（观感不变）。
+ * 后半段是设置区与朗读按钮的样式。
+ */
+
+/* ---------- 语音输入按钮（.cbtn 已给通用外观，这里只保留 hover 差异） ---------- */
+.cbtn.voice:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
+@keyframes voice-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(77,107,254,.35); } 50% { box-shadow: 0 0 0 6px rgba(77,107,254,0); } }
+/* 录音态（.cbtn.on）：原先作为 .cbtn 通用激活态写在 style.css，实际只有语音按钮
+   用得到——随语音一起迁来 */
+.cbtn.on { color: #fff; background: var(--accent); border-color: var(--accent); animation: voice-pulse 1.4s ease-in-out infinite; }
+
+/* ---------- 语音输入：灰字暂定层 / 倒计时徽标 / 一次性轻提示 ----------
+   灰字层叠在输入框之上：已定稿正文用透明占位参与排版（保证换行位置一致），
+   未定稿的转写文字用 --text-3 灰显示。pointer-events:none 保证它不吃点击、
+   不可选中；它也不进输入框的值，所以天然不可编辑。 */
+.voice-shadow {
+  position: absolute; pointer-events: none; overflow: hidden; z-index: 1;
+  white-space: pre-wrap; word-break: break-word;
+}
+.voice-shadow.hidden { display: none; }
+.voice-shadow-head { color: transparent; }
+.voice-shadow-tail { color: var(--text-3); }
+/* 灰字在场时隐掉输入框 placeholder（否则两层字会叠在一起） */
+.composer-input.voice-dictating::placeholder { color: transparent; }
+/* 时长倒计时徽标：最后 9 秒挂在麦克风按钮右上角，换数字弹一下 */
+.voice-count {
+  position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px;
+  line-height: 16px; text-align: center; font-size: 11px; font-weight: 700;
+  padding: 0 3px; box-sizing: border-box; border-radius: 8px;
+  background: #e5484d; color: #fff;
+}
+.voice-count.pop { animation: voice-count-pop .5s ease-out both; }
+/* 连接中：按钮转圈（连上了才变蓝） */
+.cbtn.connecting { color: var(--accent); border-color: rgba(77, 107, 254, .45); }
+.cbtn.connecting svg { opacity: 0; }
+.voice-spinner {
+  position: absolute; top: 50%; left: 50%; margin: -7px 0 0 -7px;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgba(77, 107, 254, .3); border-top-color: var(--accent);
+  animation: voice-spin .8s linear infinite;
+}
+@keyframes voice-spin { to { transform: rotate(360deg); } }
+@keyframes voice-count-pop { 0% { transform: scale(1.55); } 100% { transform: scale(1); } }
+/* 轻提示：语音重连失败等一次性告知，浮在输入区上方 */
+.voice-toast {
+  position: fixed; left: 50%; bottom: 108px; transform: translate(-50%, 8px);
+  max-width: min(520px, 86vw); padding: 9px 14px; border-radius: 10px;
+  background: #2b2f36; color: #fff; font-size: 12.5px; line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(16, 20, 26, .28);
+  opacity: 0; pointer-events: none; z-index: 9999;
+  transition: opacity .25s ease, transform .25s ease;
+}
+.voice-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- 消息朗读按钮（消息操作行，与复制/压缩同排） ---------- */
+.act-tts.playing { color: var(--danger); }
+
+/* ---------- 设置区（设置 → 内置组件 → 语音） ---------- */
+.sp-group {
+  font-size: 12.5px; font-weight: 600; color: var(--text-2);
+  margin: 12px 0 2px;
+}
+.sp-group:first-child { margin-top: 4px; }
+.sp-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 12.5px; }
+.sp-row .sp-label { flex: 0 0 104px; color: var(--text-2); }
+.sp-row .sp-value { color: var(--text-3); font-size: 12px; }
+.sp-range { width: 220px; accent-color: var(--accent); cursor: pointer; }
+.sp-select, .sp-num {
+  font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg); color: inherit;
+}
+.sp-select { flex: 1; max-width: 340px; }
+.sp-num { width: 84px; }
+.sp-btn {
+  font-size: 12px; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+}
+.sp-btn:hover { color: var(--accent); border-color: var(--accent); }
+.sp-note { font-size: 12px; color: var(--text-3); margin: 6px 0; line-height: 1.6; }

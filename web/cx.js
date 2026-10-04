@@ -8,7 +8,13 @@
  *   3. 设置页开关 → CX.toggle(id, on)：
  *      开 = 重新注入脚本（立即生效）；
  *      关 = 调 dispose() + 移除标签。组件没提供 dispose 时返回 needsRefresh。
- * 全程不需要刷新页面、不需要重启服务。 */
+ * 全程不需要刷新页面、不需要重启服务。
+ *
+ * 组件设置区：组件在 init 里调 CX.registerSettings({id, title, mount}) 把自己的
+ * 设置区交给 CX 保管；设置页（「内置组件」页）按 CX.settingsSections() 渲染，
+ * 组件激活状态一变（注册/注销/热开关）CX 就派发 window 事件 cx:change，设置页
+ * 收到后重挂——于是关掉组件时它那段设置连同按钮一起消失。 */
+
 (function () {
   if (window.CX) return;
 
@@ -16,6 +22,7 @@
     _list: [],        // /api/components 的清单
     _active: {},      // id -> { dispose }（已 init 的组件）
     _gen: {},         // id -> 代数（防快速反复开关的旧请求串台）
+    _sections: [],    // {id, title, mount}：组件设置区（设置页「内置组件」渲染）
 
     async boot() {
       try {
@@ -87,6 +94,7 @@
         return;
       }
       this._active[def.id] = { dispose: def.dispose || null };
+      this._signal(); // 激活状态变了：通知设置页重挂（含 init 里刚注册的设置区）
       if (def.init) {
         try { def.init(); } catch (e) { console.warn('[CX] 组件 ' + def.id + ' init 失败', e); }
       }
@@ -104,6 +112,7 @@
         throw new Error(d.error || res.statusText);
       }
       const c = this._manifest(id);
+      if (c) c.enabled = !!on; // 清单跟着更新：兜底提示与组件互查看的就是它
       if (on) {
         this._inject(c);
         return { hot: true };
@@ -113,12 +122,39 @@
       if (rec && typeof rec.dispose === 'function') {
         try { rec.dispose(); } catch (e) { console.warn('[CX] 组件 ' + id + ' dispose 失败', e); }
         delete this._active[id];
+        this._signal(); // 卸载完成：设置页重挂，该组件的设置区随之消失
         this._removeTags(id);
         return { hot: true };
       }
       this._removeTags(id);
       delete this._active[id];
+      this._signal(); // 卸载完成：设置页重挂，该组件的设置区随之消失
       return { hot: false };
+    },
+
+    // 组件交出（或更新）自己的设置区；通常在 init 里调用。
+    // 设置区随组件激活状态显示：没激活的组件那段不会渲染出来。
+    registerSettings(def) {
+      if (!def || !def.id || typeof def.mount !== 'function') return;
+      const i = this._sections.findIndex((s) => s.id === def.id);
+      if (i >= 0) this._sections[i] = def; else this._sections.push(def);
+      this._signal();
+    },
+
+    unregisterSettings(id) {
+      const i = this._sections.findIndex((s) => s.id === id);
+      if (i >= 0) this._sections.splice(i, 1);
+      this._signal();
+    },
+
+    // 当前该渲染的组件设置区（只有激活中的组件；设置页照这个清单排）
+    settingsSections() {
+      return this._sections.filter((s) => this.isActive(s.id));
+    },
+
+    // 激活状态/设置区有变 → 通知页面（设置页监听 cx:change 重挂组件设置区）
+    _signal() {
+      try { window.dispatchEvent(new CustomEvent('cx:change')); } catch (e) { /* 老引擎忽略 */ }
     },
 
     // 当前是否已激活（供组件互查）

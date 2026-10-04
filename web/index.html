@@ -170,7 +170,7 @@
             </span>
           </div>
           <div class="composer-right">
-            <button id="btn-voice" class="cbtn voice" title="语音输入">
+            <button id="btn-voice" class="cbtn voice hidden" title="语音输入">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
             </button>
             <!-- 上下文用量圆环：弧长=占窗口比例，中心百分比；悬停显示分类明细与缓存命中率（纯展示无点击） -->
@@ -248,7 +248,7 @@
                   </span>
                 </div>
                 <div class="composer-right">
-                  <button id="sub-btn-voice" class="cbtn voice" title="语音输入">
+                  <button id="sub-btn-voice" class="cbtn voice hidden" title="语音输入">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
                   </button>
                   <div id="sub-ctx-ring" class="ctx-ring" aria-label="上下文用量">
@@ -549,6 +549,8 @@
           <div class="prov-section">
             <div class="tip-inline" style="margin:0 0 10px">来自 组件/ 的原生外围扩展；开关即时生效，无需刷新</div>
             <div id="component-list"></div>
+            <!-- 组件自己的设置区（组件经 CX.registerSettings 交出，关掉组件即消失） -->
+            <div id="component-sections"></div>
           </div>
         </div>
         <div class="set-pane" id="set-pane-skills">

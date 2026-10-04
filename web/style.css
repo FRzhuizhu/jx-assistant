@@ -511,10 +511,12 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 /* 助手消息：通栏 Markdown */
 .msg.assistant { margin-bottom: 6px; }
 .msg.assistant .md { line-height: 1.75; word-break: break-word; }
+/* 助手最终输出的操作行（复制/压缩/分支/朗读 + 时间）常驻显示：这几个是常用入口，
+   藏在悬停后面反而找不到；用户气泡那侧的复制/编辑/时间仍按悬停显隐 */
 .msg-actions {
   display: flex; gap: 4px; margin: 2px 0 18px; opacity: 0; transition: opacity .15s;
 }
-.msg.assistant:hover .msg-actions { opacity: 1; }
+.msg.assistant .msg-actions { opacity: 1; }
 .act-copy {
   display: flex; align-items: center; gap: 5px;
   background: none; border: none; color: var(--text-3);
@@ -523,7 +525,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .act-copy:hover { background: var(--hover); color: var(--text-2); }
 /* 操作行上的消息时间：用户消息里排在「复制」左边，模型最终输出里靠最右
    （act-time-end 用 margin-left:auto 顶到行尾）；字号与颜色跟行动作按钮同级，
-   保持克制。跟随操作行的悬停显隐，不额外常驻。 */
+   保持克制。助手侧的操作行常驻显示，它自然也就常驻。 */
 .act-time { align-self: center; font-size: .82em; color: var(--text-3); white-space: nowrap; }
 .act-time-end { margin-left: auto; }
 
@@ -940,7 +942,7 @@ body.rp-open .w-handle { display: none; }
 }
 .cbtn svg { width: 15px; height: 15px; }
 .cbtn:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); background: var(--hover); }
-.cbtn.on { color: #fff; background: var(--accent); border-color: var(--accent); animation: voice-pulse 1.4s ease-in-out infinite; }
+/* .cbtn.on（按钮激活态 + voice-pulse 动画）只有语音输入按钮用得到：随语音组件迁到 组件/voice/client.css */
 .chip-btn {
   display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2);
   border: 1px solid var(--border); background: var(--bg); border-radius: 999px;
@@ -1627,52 +1629,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .rm-entry.file svg { color: var(--text-3); opacity: .7; }
 .rm-empty { padding: 12px; font-size: 12px; color: var(--text-3); text-align: center; }
 
-/* ---------- 语音输入按钮（.cbtn 已给通用外观，这里只保留 hover 差异） ---------- */
-.cbtn.voice:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); }
-@keyframes voice-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(77,107,254,.35); } 50% { box-shadow: 0 0 0 6px rgba(77,107,254,0); } }
-
-/* ---------- 语音输入：灰字暂定层 / 倒计时徽标 / 一次性轻提示 ----------
-   灰字层叠在输入框之上：已定稿正文用透明占位参与排版（保证换行位置一致），
-   未定稿的转写文字用 --text-3 灰显示。pointer-events:none 保证它不吃点击、
-   不可选中；它也不进输入框的值，所以天然不可编辑。 */
-.voice-shadow {
-  position: absolute; pointer-events: none; overflow: hidden; z-index: 1;
-  white-space: pre-wrap; word-break: break-word;
-}
-.voice-shadow.hidden { display: none; }
-.voice-shadow-head { color: transparent; }
-.voice-shadow-tail { color: var(--text-3); }
-/* 灰字在场时隐掉输入框 placeholder（否则两层字会叠在一起） */
-.composer-input.voice-dictating::placeholder { color: transparent; }
-/* 时长倒计时徽标：最后 9 秒挂在麦克风按钮右上角，换数字弹一下 */
-.voice-count {
-  position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px;
-  line-height: 16px; text-align: center; font-size: 11px; font-weight: 700;
-  padding: 0 3px; box-sizing: border-box; border-radius: 8px;
-  background: #e5484d; color: #fff;
-}
-.voice-count.pop { animation: voice-count-pop .5s ease-out both; }
-/* 连接中：按钮转圈（连上了才变蓝） */
-.cbtn.connecting { color: var(--accent); border-color: rgba(77, 107, 254, .45); }
-.cbtn.connecting svg { opacity: 0; }
-.voice-spinner {
-  position: absolute; top: 50%; left: 50%; margin: -7px 0 0 -7px;
-  width: 14px; height: 14px; border-radius: 50%;
-  border: 2px solid rgba(77, 107, 254, .3); border-top-color: var(--accent);
-  animation: voice-spin .8s linear infinite;
-}
-@keyframes voice-spin { to { transform: rotate(360deg); } }
-@keyframes voice-count-pop { 0% { transform: scale(1.55); } 100% { transform: scale(1); } }
-/* 轻提示：语音重连失败等一次性告知，浮在输入区上方 */
-.voice-toast {
-  position: fixed; left: 50%; bottom: 108px; transform: translate(-50%, 8px);
-  max-width: min(520px, 86vw); padding: 9px 14px; border-radius: 10px;
-  background: #2b2f36; color: #fff; font-size: 12.5px; line-height: 1.5;
-  box-shadow: 0 8px 24px rgba(16, 20, 26, .28);
-  opacity: 0; pointer-events: none; z-index: 9999;
-  transition: opacity .25s ease, transform .25s ease;
-}
-.voice-toast.show { opacity: 1; transform: translate(-50%, 0); }
+/* ---------- 语音输入相关样式：已随语音功能迁入组件 组件/voice/client.css ---------- */
 
 /* ---------- 会话圆点：平时隐藏；橙=待审批 绿=完成未看 红=未读 ---------- */
 .session-item .dot { display: none; }
@@ -2250,11 +2207,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 @media (max-width: 499.98px) {
   #app { height: 100dvh; --tb-h: 66px; } /* 手机地址栏收展时 100vh 会溢出，dvh 跟随可视高 */
 
-  /* 手机端不提供「选择工作目录/远程工作目录」入口——工作区由引擎锚定在应用
-     私有目录（JX_WORKSPACE_DEFAULT），加号菜单的远程挂载同理到电脑端操作。
-     CSS 媒体查询随宽窄切换自动生效（宽→窄收窄时无需 JS 重算兜底），配合
-     app-chat.js 里 syncComposer 的 isNarrow 守卫双保险 */
-  #ws-row, #pm-remote { display: none !important; }
+  /* 手机端照常提供工作区选择（选已有目录/远程挂载——新建对话要能换工作区），
+     只有「添加工作目录」这步在窄屏就地给告知（见 app-chat.js 的
+     toggleWsPopAddNotice，原生选择框弹在宿主机屏幕上手机等不到）。
+     加号菜单的 SSH 远程挂载仍收口到电脑端操作——胶囊弹层里已有同功能入口 */
+  #pm-remote { display: none !important; }
 
   /* 顶栏两行：第一行控件（侧栏开关/模式徽章/子对话入口），第二行会话标题。
      顺序用 order 后移标题 + flex-basis:100% 把它独占推到第二行；定高 --tb-h

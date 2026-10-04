@@ -18,8 +18,34 @@ const JX = {
   _msgActions: [],       // fn(actsRow, msg)：向消息悬停操作行追加按钮
   _settingsSections: [], // {title, mount(el)}：设置弹窗分区
   on(ev, fn) { (this._bus[ev] = this._bus[ev] || []).push(fn); },
+  // 退订事件（组件热卸载用）
+  off(ev, fn) {
+    const a = this._bus[ev];
+    if (!a) return;
+    const i = a.indexOf(fn);
+    if (i >= 0) a.splice(i, 1);
+  },
   emit(ev, payload) { (this._bus[ev] || []).forEach((f) => { try { f(payload); } catch (e) { console.warn('[JX]', ev, e); } }); },
-  registerMessageAction(fn) { this._msgActions.push(fn); },
+  registerMessageAction(fn) {
+    this._msgActions.push(fn);
+    // 补挂：本地组件毫秒级加载总赶在渲染前，远程走中继秒级——历史消息的操作行
+    // 常在本钩子注册前就已渲染完毕（渲染时遍历不到它，按钮丢失）。对已渲染的行
+    // 回放一次本钩子（行上的消息引用见 msgActions 的 acts._jxMsg）；时间戳先摘出
+    // 再放回，保证补挂的按钮与正常渲染一样排在时间戳之前。行的渲染必然早于本次
+    // 注册（push 在扫描前完成），不会重复挂载；组件热卸载由其 dispose 自清按钮。
+    document.querySelectorAll('.msg-actions').forEach((row) => {
+      if (!row._jxMsg) return;
+      const t = row.querySelector('.act-time-end');
+      if (t) t.remove();
+      try { fn(row, row._jxMsg); } catch (e) { console.warn('[JX] action replay', e); }
+      if (t) row.appendChild(t);
+    });
+  },
+  // 注销消息操作行钩子（组件热卸载用：关掉后新渲染的操作行不该再带上它的按钮）
+  unregisterMessageAction(fn) {
+    const i = this._msgActions.indexOf(fn);
+    if (i >= 0) this._msgActions.splice(i, 1);
+  },
   registerSettingsSection(sec) { this._settingsSections.push(sec); },
   // 插件向输入区左侧挂控件（按钮等），注册即生效；右栏子对话输入区镜像一份
   // （点击转发给原件执行，原件的 class 变化同步过来，两边外观/行为一致）

@@ -248,7 +248,33 @@ async function renderComponentList() {
     box.appendChild(row);
   }
   if (!list.length) box.innerHTML = '<div class="pr-note">组件/ 下没有发现组件</div>';
+  mountComponentSections(); // 组件自己的设置区（组件经 CX.registerSettings 交出）
 }
+
+/* ---------- 组件设置区（CX.registerSettings；组件关掉时它那段随之消失） ---------- */
+
+function mountComponentSections() {
+  const box = $('component-sections');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const sec of CX.settingsSections()) {
+    const wrap = document.createElement('div');
+    wrap.className = 'prov-section jx-section';
+    const h = document.createElement('h4');
+    h.textContent = sec.title;
+    wrap.appendChild(h);
+    const body = document.createElement('div');
+    wrap.appendChild(body);
+    try { sec.mount(body); } catch (e) { body.textContent = '组件设置加载失败：' + e.message; }
+    box.appendChild(wrap);
+  }
+}
+
+// 组件激活状态或设置区有变（注册 / 设置页热开关）→ 重挂；设置弹窗没开就等下次打开
+window.addEventListener('cx:change', () => {
+  const set = $('settings');
+  if (set && !set.classList.contains('hidden')) mountComponentSections();
+});
 
 /* ---------- 插件清单与分区（/api/plugins + JX 注册的分区） ---------- */
 

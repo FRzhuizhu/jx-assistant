@@ -840,6 +840,11 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   `init()` 建立界面与状态，`dispose()` 完整撤销（删节点、卸样式、清监听）。
   设置页切换开关时**前端即时加载/卸载，不需要刷新页面、不需要重启服务**；
   组件未提供 `dispose` 时退化为提示刷新。
+- **组件设置区**：组件在 `init` 里调 `CX.registerSettings({id, title, mount})` 把自己的
+  设置区交给运行时；设置页「内置组件」页在组件清单下方按 `CX.settingsSections()`
+  渲染（只渲染当前激活的组件，`CX.unregisterSettings(id)` 可撤）。注册/注销/热开关
+  都会派发 `window` 事件 `cx:change`，设置页收到后重挂——关掉组件时它那段设置
+  连同按钮一起消失。设置样式与偏好由组件自理（组件 CSS + `localStorage`）。
 - **宿主半边可以落在主程序里**：组件本身是纯浏览器半边，但它掌管的功能若需要
   后端（持久化、定时、接口、模型工具），就写在主程序对应文件里、按
   `Components.IsEnabled(<id>)` 自查开关——组件关掉时那部分功能一并停。
@@ -853,7 +858,13 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   图谱区为分支泳道图（全部分支拓扑、合并分叉、引用徽标、HEAD 高亮、提交详情），
   顶栏可选仓库与切换本地分支。宿主半边在 `gitpanel.go`，写边界只有暂存/取消暂存/
   提交/切换本地分支，不做 push/pull/reset/discard）、
-  `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）。
+  `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）、
+  `voice`（语音（朗读与听写）——输入区语音输入按钮的听写（原属基础架构
+  `web/app-chat.js`，已整体迁入本组件：按钮 DOM 仍在 `web/index.html`，位置与样式
+  不变，逻辑与样式（灰字暂定层、断线退避重连、倒计时、轻提示）都在 `组件/voice/`）、
+  助手消息操作行的朗读（TTS，Web Speech）、以及组件设置区（语速/音色/试听/单次
+  听写时长上限，偏好存 `localStorage` 的 `cx:voice:` 命名空间）。关掉即热卸载：
+  语音按钮隐藏、朗读按钮撤掉、设置区消失）。
 
 ## 插件与插件兼容层
 
@@ -871,7 +882,8 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 - **前端接入**：页面注入的插件脚本经 `JX` 接口接入原生界面——
   `JX.registerMessageAction`（消息操作行按钮）、`JX.registerSettingsSection`
   （设置分区）、`JX.addComposerControl`（输入区控件）、`JX.on/emit`（事件总线：
-  send / message:done / session:open）。
+  send / message:done / session:open）；`JX.unregisterMessageAction` / `JX.off`
+  是对应的注销口（组件/插件热卸载时把钩子摘干净，不留悬挂按钮）。
 - 首个适配：**dsh-speech**（消息朗读 / 浏览器听写 / 转写润色），映射表见
   `插件兼容层/dsh-speech/README.md`。为下一个插件写适配 = 原件拷进 `插件/`，
   在 `插件兼容层/` 建同名目录写资产与说明，必要时加一个 `adapter_<名>.go`。
