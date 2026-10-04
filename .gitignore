@@ -29,3 +29,6 @@ android/runtime/*.tgz
 工作区/
 默认工作区/
 ppt合并/
+# 发布 APK 不入库（仓库惯例），android-poc 为早期 PoC（137MB 大头是 app/build，正式安卓工程在 android/）
+*.apk
+android-poc/
