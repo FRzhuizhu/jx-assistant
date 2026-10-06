@@ -666,6 +666,10 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 两边的队列都在服务端（`PendingMsg`），刷新页面/换窗口不丢、多窗口一致；本轮结束时
 还没注入的插话自动转为排队，消息不会卡在队列里。会话空闲时发来排队消息会自动拉起一轮。
+**排队项与插话气泡都可点 ✏️ 编辑**（撤回式，参考 ZCode）：先从服务端队列权威删除
+（复用 `remove`），成功后才把原文回填输入框当草稿——消息要么在队列、要么在输入框，
+不会有两份；输入框里已有草稿时拒绝（防覆盖），改完重发按当前模式重新排队/插话（排到
+队尾）。编辑只对用户自己发的消息开放（kind 空/chat），数字助理派发注入的不参与。
 
 **不静默、也不往对话里塞话**：对话区只放真实对话（用户消息 + 助手输出 + 工具过程）。
 正常完成与用户手动停止**不产生任何附加内容**；模型调用因网络失败（连接失败/超时/
@@ -938,7 +942,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 | `POST /api/sessions/{id}/stop` | 显式停止本会话执行（流断开不再等于停止） |
 | `POST /api/sessions/{id}/retry` | 失败后重试：不重复落库用户消息，带着当前上下文再跑一轮（SSE 流式返回，同 /chat） |
 | `POST /api/sessions/{id}/interject` | 执行中发消息：`{content, mode}`，`steer`=插话（下一次调用模型前注入）、`queue`=排队（本轮结束后作为独立一轮发送）；未在执行时按排队处理并顺手拉起执行 |
-| `POST /api/sessions/{id}/pending` | 排队坞操作：`{id, action:'remove'\|'steer'}`（移出队列 / 提前为插话） |
+| `POST /api/sessions/{id}/pending` | 排队坞操作：`{id, action:'remove'\|'steer'}`（移出队列 / 提前为插话）；前端「编辑排队/插话消息」＝ `remove` 后把原文回填输入框草稿，复用 remove，无新 action |
 | `POST /api/sessions/{id}/compact` | 手动压缩为一条摘要 |
 | `POST /api/sessions/{id}/remote` | 设置/解除会话的 SSH 远程工作区（`{remote:{…}}` 或 `{clear:true}`） |
 | `GET /api/approvals` | 待决定的越权审批清单（轮询兜底） |

@@ -1668,6 +1668,19 @@ function renderMessages(msgs, view, opts) {
     b.appendChild(badge);
     b.appendChild(document.createTextNode(pm.content));
     wrap.appendChild(b);
+    // 悬停操作行：与正式用户气泡同一套样式，只有「编辑」（退回输入框改完重发）。
+    // 只给自己发的插话（kind 空/chat）；派发注入的其他形态不参与。
+    if (!pm.kind || pm.kind === 'chat') {
+      const acts = document.createElement('div');
+      acts.className = 'msg-actions user-acts';
+      const ed = document.createElement('button');
+      ed.className = 'act-copy act-edit';
+      ed.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>编辑';
+      ed.title = '退回输入框编辑后重新发送';
+      ed.onclick = () => editPendingMsg(view, pm);
+      acts.appendChild(ed);
+      wrap.appendChild(acts);
+    }
     tail.appendChild(wrap);
   });
   // 刚发出、等回显的「发送中」占位（最末位，晚于插话）
@@ -3304,6 +3317,10 @@ function renderQueueDock(view) {
     txt.title = pm.content;
     li.appendChild(txt);
     li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '<path d="M12 19V5M5 12l7-7 7 7"/>'));
+    // 编辑只给自己发的排队项（kind 空/chat）；数字助理派发注入的不参与
+    if (!pm.kind || pm.kind === 'chat') {
+      li.appendChild(qdAction('edit', view, pm, '退回输入框编辑', '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'));
+    }
     li.appendChild(qdAction('remove', view, pm, '移出队列', '<path d="M6 6l12 12M18 6L6 18"/>'));
     ul.appendChild(li);
   });
@@ -3317,7 +3334,7 @@ function qdAction(action, view, pm, title, path) {
   b.type = 'button';
   b.title = title;
   b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
-  b.onclick = () => pendingAction(view, pm.id, action);
+  b.onclick = () => (action === 'edit' ? editPendingMsg(view, pm) : pendingAction(view, pm.id, action));
   return b;
 }
 
@@ -3330,6 +3347,34 @@ async function pendingAction(view, id, action) {
     pendingHint(view, action === 'steer' ? '已提前为插话：下一次调用模型前生效' : '已移出队列');
   } catch (e) {
     pendingHint(view, '操作失败：' + e.message);
+  }
+}
+
+// 编辑待生效消息（排队/插话）＝「撤回式编辑」：先从服务端队列权威删除（remove），
+// 成功后才把原文回填输入框当草稿——消息要么在队列、要么在输入框，不会有两份。
+// 输入框里已有草稿时拒绝，避免覆盖正在打的内容；删除请求返回前切走了会话则只保留
+// 删除、放弃回填（否则会把旧会话的内容写进新会话的输入框）。
+async function editPendingMsg(view, pm) {
+  view = view || mainView;
+  if (view.input.value.trim()) {
+    pendingHint(view, '请先发送或清空输入框内容，再编辑排队消息');
+    return;
+  }
+  const sid = view.state.cur && view.state.cur.id;
+  if (!sid) return;
+  try {
+    const d = await api('/api/sessions/' + sid + '/pending', {
+      method: 'POST', body: JSON.stringify({ id: pm.id, action: 'remove' }),
+    });
+    if (!view.state.cur || view.state.cur.id !== sid) return;
+    applyPending(view, d.pending);
+    view.input.value = pm.content;
+    autoGrow(view.input);
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS(); // 程序化填入也要落盘，切走/重启不丢
+    view.input.focus();
+    pendingHint(view, '已退回输入框：编辑后重新发送');
+  } catch (e) {
+    if (view.state.cur && view.state.cur.id === sid) pendingHint(view, '操作失败：' + e.message);
   }
 }
 
