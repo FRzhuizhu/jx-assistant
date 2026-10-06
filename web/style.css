@@ -2064,17 +2064,29 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   border: 1px solid var(--border); border-radius: 12px; background: var(--code-bg);
   overflow: hidden;
 }
-.qd-head {
-  display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: none;
-  padding: 7px 12px; font: inherit; font-size: 12px; color: var(--text-2); cursor: pointer; text-align: left;
+.qd-head { display: flex; align-items: center; padding: 3px 6px 3px 8px; }
+.qd-toggle {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; border: none; background: none;
+  padding: 4px 6px 4px 4px; font: inherit; font-size: 12px; color: var(--text-2); cursor: pointer; text-align: left;
 }
-.qd-head svg { width: 14px; height: 14px; flex: none; }
-.qd-head .caret { margin-left: auto; width: 12px; height: 12px; transition: transform .15s; }
+.qd-toggle svg { width: 14px; height: 14px; flex: none; }
+.qd-toggle .caret { margin-left: auto; width: 12px; height: 12px; transition: transform .15s; }
 .qd-count { font-weight: 600; color: var(--text); }
 .qd-sub { color: var(--text-3); }
+/* 横幅：暂停生效 / 执行结束后队列保留——给一个明确的「继续发送」入口 */
+.qd-banner {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+  border-top: 1px solid var(--border-2); font-size: 12px; color: var(--text-2);
+}
+.qd-banner .qd-btext { flex: 1; min-width: 0; }
+.qd-resume {
+  flex: none; border: 1px solid var(--accent); background: none; color: var(--accent);
+  border-radius: 999px; padding: 2px 12px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.qd-resume:hover { background: var(--accent); color: var(--bg, #fff); }
 .qd-list { list-style: none; margin: 0; padding: 0 0 2px; max-height: 176px; overflow-y: auto; }
 .qd-row {
-  display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 12px;
+  display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 6px;
   border-top: 1px solid var(--border-2);
 }
 .qd-row .qd-text {
@@ -2088,6 +2100,18 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .qd-act svg { width: 14px; height: 14px; }
 .qd-act:hover { background: var(--hover); color: var(--text); }
 .qd-act.qd-steer:hover { color: var(--accent); }
+.qd-pause:hover { color: var(--accent); }
+/* 拖拽排序：把手 + 落点指示（上下半行=插前/插后，锚线上送服务端定序） */
+.qd-grip {
+  flex: none; width: 15px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-3); opacity: .65; cursor: grab;
+}
+.qd-grip:hover { opacity: 1; color: var(--text-2); }
+.qd-grip:active { cursor: grabbing; }
+.qd-grip svg { width: 11px; height: 11px; pointer-events: none; }
+.qd-row.dragging { opacity: .45; }
+.qd-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.qd-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 
 /* ---------- 报错条：真实失败的提示（在输入框上方，不属于对话区） ---------- */
 .run-error {

@@ -63,6 +63,7 @@ type App struct {
 	pendMu          sync.Mutex
 	pendingSteer    map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
 	pendingQueue    map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
+	queuePaused     map[string]bool          // 会话队列是否暂停（暂停后本轮结束不自动续发；恢复时空闲即接着发）
 	midrunPref      string                   // 执行中发消息的偏好（queue/steer）：前端设置项 jx.midrun 随消息上报，派发注入按它处理（见 runtime.go）
 	errMu           sync.Mutex
 	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
@@ -1801,13 +1802,15 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 		mode = "steer"
 	}
 	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content), kindChat, "")
-	if !a.IsRunning(m.ID) {
-		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次
+	if !a.IsRunning(m.ID) && !a.queuePausedOf(m.ID) {
+		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次（暂停时只排队不拉起）
 	}
 	writeJSON(w, 200, map[string]any{"accepted": true, "id": pm.ID, "mode": mode})
 }
 
-// handlePending 处理排队坞上的操作：删除（remove）或把排队项提前为插话（steer）。
+// handlePending 处理排队坞上的操作：删除（remove）、提前为插话（steer）、
+// 拖拽排序（move，before=锚点项 id，空=队尾）与暂停/恢复队列（pause/resume，
+// 这两个是会话级开关，不需要 id）。恢复时若会话空闲且有排队消息，顺手拉起执行。
 func (a *App) handlePending(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
@@ -1816,18 +1819,42 @@ func (a *App) handlePending(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID     string `json:"id"`
 		Action string `json:"action"`
+		Before string `json:"before"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
-		writeErr(w, 400, "id 不能为空")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体格式错误")
 		return
 	}
-	action := "remove"
-	if body.Action == "steer" {
-		action = "steer"
-	}
-	if !a.updatePending(m.ID, body.ID, action) {
-		writeErr(w, 404, "这条消息已经不在队列里了")
-		return
+	switch body.Action {
+	case "pause":
+		a.setQueuePaused(m.ID, true)
+	case "resume":
+		a.setQueuePaused(m.ID, false)
+		if !a.IsRunning(m.ID) && len(a.pendingOf(m.ID).Queue) > 0 {
+			a.kickQueue(m) // 空闲且有保留的排队消息：接着把它们发完
+		}
+	case "move":
+		if body.ID == "" {
+			writeErr(w, 400, "id 不能为空")
+			return
+		}
+		if !a.movePending(m.ID, body.ID, body.Before) {
+			writeErr(w, 404, "这条消息已经不在队列里了")
+			return
+		}
+	default: // remove / steer
+		if body.ID == "" {
+			writeErr(w, 400, "id 不能为空")
+			return
+		}
+		action := "remove"
+		if body.Action == "steer" {
+			action = "steer"
+		}
+		if !a.updatePending(m.ID, body.ID, action) {
+			writeErr(w, 404, "这条消息已经不在队列里了")
+			return
+		}
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "pending": a.pendingOf(m.ID)})
 }

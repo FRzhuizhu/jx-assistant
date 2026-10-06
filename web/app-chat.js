@@ -200,6 +200,10 @@ async function loadSessionInto(id, tok) {
   state.msgs = data.messages || [];
   state.pendingSteer = (data.pending && data.pending.steer) || [];
   state.pendingQueue = (data.pending && data.pending.queue) || [];
+  state.queuePaused = !!(data.pending && data.pending.paused);
+  // 空闲但队列有保留（上轮停止/出错/暂停后留下的）：横幅给「继续」入口
+  state.queueHeld = state.pendingQueue.length > 0 && !state.queuePaused &&
+    !(data.running || (state.cur && state.cur.status === 'running'));
   state.checkpoints = data.checkpoints || [];
   state.deliveries = data.deliveries || [];
   if (data.error) showRunError(mainView, data.error); else hideRunError(mainView);
@@ -3051,6 +3055,8 @@ function handleEvent(ev, view) {
       break;
     case 'stopped':
       view.hint.textContent = ev.error || '已停止';
+      // 停止后队列保留不自动续：横幅给「继续发送」入口（队列空则无事发生）
+      view.state.queueHeld = (view.state.pendingQueue || []).length > 0;
       if (view.state.attached) reloadMessages(view);
       break;
     case 'delta':
@@ -3095,6 +3101,7 @@ function handleEvent(ev, view) {
       view.state.streamThinking = '';
       removeLive(view);
       showRunError(view, ev.error);
+      view.state.queueHeld = (view.state.pendingQueue || []).length > 0; // 出错后队列保留
       break;
     case 'retry':
       // 重试即将开始（人工点重试 / 网络失败自动重试）：本步已流出的半截作废——
@@ -3111,6 +3118,8 @@ function handleEvent(ev, view) {
       break;
     case 'done':
       view.hint.textContent = '';
+      // 正常收尾但队列仍有保留 = 暂停生效（排水循环被暂停门挡下）：横幅走暂停分支
+      view.state.queueHeld = (view.state.pendingQueue || []).length > 0;
       if (view === mainView && state.cur && state.cur.mode === 'assistant') setFace('done', 4000);
       break;
   }
@@ -3271,6 +3280,7 @@ async function endTurn(view, aborted, stream) {
       !view.state.cur || view.state.cur.id !== stream.sid)) return;
   renderMessages(view.state.msgs, view);
   setStreamUI(false, view);
+  renderQueueDock(view); // 流结束才轮得到横幅判定（执行结束后队列保留的「继续发送」）
   if (view === mainView) {
     loadSessions();
     loadStatus();
@@ -3282,7 +3292,9 @@ async function endTurn(view, aborted, stream) {
   }
 }
 
-// 排队坞：输入框上方的紧凑面板，列出排队的消息（可删除、可提前为插话）
+// 排队坞：输入框上方的紧凑面板，列出排队的消息（提前为插话/编辑回填/删除/
+// 拖拽排序）。头部带队列级「暂停/继续」开关；暂停中、或执行结束后队列保留
+// （停止/出错）时给横幅 +「继续发送」。顺序与暂停状态都以服务端为准。
 function renderQueueDock(view) {
   view = view || mainView;
   const box = viewEl(view, 'queue-dock');
@@ -3290,27 +3302,65 @@ function renderQueueDock(view) {
   const list = view.state.pendingQueue || [];
   if (!view.state.cur || !list.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
+  const paused = !!view.state.queuePaused;
+  const held = !paused && view.state.queueHeld && !view.state.streaming;
   const expanded = box.dataset.open === '1' || list.length === 1;
   box.innerHTML = '';
   const panel = document.createElement('div');
   panel.className = 'qd-panel';
+  // 头部常驻（单条也有——暂停是队列级开关，单条消息同样可能想压着不发）
+  const head = document.createElement('div');
+  head.className = 'qd-head';
+  const tog = document.createElement('button');
+  tog.className = 'qd-toggle';
+  tog.type = 'button';
+  tog.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h13M3 6h18M3 18h18"/><path d="M17 9l3 3-3 3"/></svg>' +
+    '<span class="qd-count">' + list.length + ' 条排队消息</span>' +
+    '<span class="qd-sub">' + (paused ? '已暂停，继续前不自动发送' : '本轮结束后依次发送') + '</span>' +
+    (list.length > 1 ? '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>' : '');
   if (list.length > 1) {
-    const head = document.createElement('button');
-    head.className = 'qd-head';
-    head.type = 'button';
-    head.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h13M3 6h18M3 18h18"/><path d="M17 9l3 3-3 3"/></svg>' +
-      '<span class="qd-count">' + list.length + ' 条排队消息</span>' +
-      '<span class="qd-sub">本轮结束后依次发送</span>' +
-      '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>';
-    head.onclick = () => { box.dataset.open = expanded ? '0' : '1'; renderQueueDock(view); };
-    panel.appendChild(head);
+    tog.onclick = () => { box.dataset.open = expanded ? '0' : '1'; renderQueueDock(view); };
+  } else {
+    tog.tabIndex = -1; // 单条没有折叠语义
+    tog.style.cursor = 'default';
+  }
+  head.appendChild(tog);
+  const pause = document.createElement('button');
+  pause.className = 'qd-act qd-pause';
+  pause.type = 'button';
+  pause.title = paused ? '继续：排队消息依次自动发送' : '暂停：本轮结束后排队消息保留不自动发送';
+  pause.innerHTML = paused
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l14 8-14 8Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>';
+  pause.onclick = () => pendingAction(view, '', paused ? 'resume' : 'pause');
+  head.appendChild(pause);
+  panel.appendChild(head);
+  if (paused || held) {
+    const banner = document.createElement('div');
+    banner.className = 'qd-banner';
+    const bt = document.createElement('span');
+    bt.className = 'qd-btext';
+    bt.textContent = paused
+      ? '队列已暂停：' + list.length + ' 条消息保留，不会自动发送'
+      : '本轮已结束：' + list.length + ' 条排队消息保留待发';
+    banner.appendChild(bt);
+    const resume = document.createElement('button');
+    resume.className = 'qd-resume';
+    resume.type = 'button';
+    resume.textContent = '继续发送';
+    resume.onclick = () => pendingAction(view, '', 'resume');
+    banner.appendChild(resume);
+    panel.appendChild(banner);
   }
   if (!expanded) { box.appendChild(panel); return; }
   const ul = document.createElement('ul');
   ul.className = 'qd-list';
+  ul.addEventListener('dragend', () => qdClearDropMarks(ul));
   list.forEach((pm) => {
     const li = document.createElement('li');
     li.className = 'qd-row';
+    li.dataset.id = pm.id;
+    if (list.length > 1) li.appendChild(qdGrip(pm, li));
     const txt = document.createElement('span');
     txt.className = 'qd-text';
     txt.textContent = pm.content.length > 200 ? pm.content.slice(0, 200) + '…' : pm.content;
@@ -3322,10 +3372,70 @@ function renderQueueDock(view) {
       li.appendChild(qdAction('edit', view, pm, '退回输入框编辑', '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'));
     }
     li.appendChild(qdAction('remove', view, pm, '移出队列', '<path d="M6 6l12 12M18 6L6 18"/>'));
+    qdDropTarget(view, li);
     ul.appendChild(li);
   });
   panel.appendChild(ul);
   box.appendChild(panel);
+}
+
+// 拖拽把手（HTML5 DnD，桌面用；触屏拖拽浏览器不支持，排序走桌面端）
+function qdGrip(pm, li) {
+  const g = document.createElement('span');
+  g.className = 'qd-grip';
+  g.title = '拖拽调整发送顺序';
+  g.draggable = true;
+  g.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></svg>';
+  g.addEventListener('dragstart', (e) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', pm.id);
+    li.classList.add('dragging');
+  });
+  g.addEventListener('dragend', () => li.classList.remove('dragging'));
+  return g;
+}
+
+// 行落点：上半行=插到该行前，下半行=插到该行后（用下一行当锚点；末行下半=队尾）。
+// 锚点 id 上送服务端定序（move before=锚点），顺序唯一权威在服务端。
+function qdDropTarget(view, li) {
+  li.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = li.getBoundingClientRect();
+    const top = (e.clientY - r.top) < r.height / 2;
+    qdClearDropMarks(li.parentElement);
+    li.classList.add(top ? 'drop-before' : 'drop-after');
+  });
+  li.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const dragId = e.dataTransfer.getData('text/plain');
+    if (!dragId || dragId === li.dataset.id) return;
+    const list = view.state.pendingQueue || [];
+    const idx = list.findIndex((p) => p.id === li.dataset.id);
+    if (idx < 0) return; // 拖的过程中列表变了：放弃本次落点（下次渲染已对齐最新）
+    const r = li.getBoundingClientRect();
+    const top = (e.clientY - r.top) < r.height / 2;
+    const anchor = top ? list[idx].id : (list[idx + 1] ? list[idx + 1].id : '');
+    if (anchor === dragId) return; // 原位：不动
+    movePendingTo(view, dragId, anchor);
+  });
+}
+
+function qdClearDropMarks(ul) {
+  if (!ul) return;
+  ul.querySelectorAll('.drop-before,.drop-after').forEach((n) => n.classList.remove('drop-before', 'drop-after'));
+}
+
+// 拖拽排序落地：move 成功后直接应用服务端返回的 pending 快照（多窗口一致）
+async function movePendingTo(view, id, before) {
+  try {
+    const d = await api('/api/sessions/' + view.state.cur.id + '/pending', {
+      method: 'POST', body: JSON.stringify({ id, action: 'move', before: before || '' }),
+    });
+    applyPending(view, d.pending);
+  } catch (e) {
+    pendingHint(view, '排序失败：' + e.message);
+  }
 }
 
 function qdAction(action, view, pm, title, path) {
@@ -3339,6 +3449,19 @@ function qdAction(action, view, pm, title, path) {
 }
 
 async function pendingAction(view, id, action) {
+  if (action === 'pause' || action === 'resume') {
+    // 队列级开关（不需要消息 id）：暂停后本轮跑完保留不续发；恢复时空闲即接着发
+    try {
+      const d = await api('/api/sessions/' + view.state.cur.id + '/pending', {
+        method: 'POST', body: JSON.stringify({ id: '', action }),
+      });
+      applyPending(view, d.pending);
+      pendingHint(view, action === 'pause' ? '已暂停队列：本轮结束后排队消息保留不发送' : '已继续队列：排队消息将依次发送');
+    } catch (e) {
+      pendingHint(view, '操作失败：' + e.message);
+    }
+    return;
+  }
   try {
     const d = await api('/api/sessions/' + view.state.cur.id + '/pending', {
       method: 'POST', body: JSON.stringify({ id, action }),
@@ -3383,6 +3506,8 @@ function applyPending(view, pending) {
   if (!pending) return;
   view.state.pendingSteer = pending.steer || [];
   view.state.pendingQueue = pending.queue || [];
+  view.state.queuePaused = !!pending.paused;
+  if (!view.state.pendingQueue.length) view.state.queueHeld = false; // 队列清空：保留横幅不再有意义
   renderQueueDock(view);
   if (view.state.cur) renderMessages(view.state.msgs, view);
 }

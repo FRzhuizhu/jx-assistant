@@ -49,8 +49,9 @@ type PendingMsg struct {
 
 // PendingState 是某个会话当前的待生效消息快照（随会话详情与事件下发）。
 type PendingState struct {
-	Steer []*PendingMsg `json:"steer"`
-	Queue []*PendingMsg `json:"queue"`
+	Steer  []*PendingMsg `json:"steer"`
+	Queue  []*PendingMsg `json:"queue"`
+	Paused bool          `json:"paused"` // 队列暂停：本轮结束后排队消息保留不自动发送
 }
 
 func (a *App) initRuntime() {
@@ -62,6 +63,7 @@ func (a *App) initRuntime() {
 	a.remotes = map[string]*remoteClient{}
 	a.pendingSteer = map[string][]*PendingMsg{}
 	a.pendingQueue = map[string][]*PendingMsg{}
+	a.queuePaused = map[string]bool{}
 	a.runErrors = map[string]string{}
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
@@ -394,6 +396,7 @@ func (a *App) pendingOf(sessionID string) *PendingState {
 	a.pendMu.Lock()
 	defer a.pendMu.Unlock()
 	st := &PendingState{Steer: []*PendingMsg{}, Queue: []*PendingMsg{}}
+	st.Paused = a.queuePaused[sessionID]
 	st.Steer = append(st.Steer, a.pendingSteer[sessionID]...)
 	st.Queue = append(st.Queue, a.pendingQueue[sessionID]...)
 	return st
@@ -439,6 +442,71 @@ func (a *App) updatePending(sessionID, msgID, action string) bool {
 		a.broadcastPending(sessionID)
 	}
 	return found
+}
+
+// movePending 拖拽排序：把排队项 id 移到 before 之前（before 空 = 移到队尾）。
+// 只调整排队队列的内部顺序；id 或锚点不在队列里（可能刚被消费）返回 false，
+// 顺序保持不动，由前端如实提示。
+func (a *App) movePending(sessionID, id, before string) bool {
+	a.pendMu.Lock()
+	list := a.pendingQueue[sessionID]
+	from := -1
+	for i, pm := range list {
+		if pm.ID == id {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		a.pendMu.Unlock()
+		return false
+	}
+	if before == id { // 放回原位：不动
+		a.pendMu.Unlock()
+		return true
+	}
+	to := len(list) // 默认队尾
+	if before != "" {
+		found := -1
+		for i, pm := range list {
+			if pm.ID == before {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			a.pendMu.Unlock()
+			return false
+		}
+		to = found
+	}
+	pm := list[from]
+	list = append(list[:from], list[from+1:]...)
+	if to > from {
+		to-- // 挖掉自身后，其后的锚点下标前移一位
+	}
+	list = append(list[:to], append([]*PendingMsg{pm}, list[to:]...)...)
+	a.pendingQueue[sessionID] = list
+	a.pendMu.Unlock()
+	a.broadcastPending(sessionID)
+	return true
+}
+
+// setQueuePaused 暂停/恢复会话队列的自动发送。暂停后本轮照常跑完，排队消息
+// 保留不自动续发（新来且会话空闲的也只排队不拉起）；状态随 pending 快照广播。
+func (a *App) setQueuePaused(sessionID string, paused bool) {
+	a.pendMu.Lock()
+	a.queuePaused[sessionID] = paused
+	a.pendMu.Unlock()
+	a.broadcastPending(sessionID)
+}
+
+// queuePausedOf 会话队列当前是否暂停（排水循环每条消息前都来问一次，
+// 暂停开关在执行中切换也能即时生效）。
+func (a *App) queuePausedOf(sessionID string) bool {
+	a.pendMu.Lock()
+	defer a.pendMu.Unlock()
+	return a.queuePaused[sessionID]
 }
 
 // broadcastPending 把待生效消息的最新快照推给所有在线前端（多窗口/刷新后一致）。
@@ -534,8 +602,8 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 	// 本轮结束仍没被注入的插话转为排队：作为独立一轮接着发，消息不丢
 	a.requeueSteer(m.ID)
 
-	// 排队消息逐条续跑（停止/出错后不再自动续，留给用户决定）
-	for err == nil && run.ctx.Err() == nil {
+	// 排队消息逐条续跑（停止/出错/暂停后不再自动续，留给用户决定）
+	for err == nil && run.ctx.Err() == nil && !a.queuePausedOf(m.ID) {
 		pm := a.popQueue(m.ID)
 		if pm == nil {
 			break
@@ -674,7 +742,7 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	}
 	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
 		Message: TextMessage("user", head+"\n\n"+summary+"\n\n"+followUp),
-		Kind: kindReport, Origin: "dispatch", CreatedAt: now(),
+		Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
 	})
 	// 用户主动叫停的**不自动触发**父会话那一轮（那正是「助理自作主张」的来源）：
 	// 回报照旧落库、照旧广布 report_ready（前端可见），父会话下一轮自然带着这条

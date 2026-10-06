@@ -74,6 +74,8 @@ const state = {
   abort: null,
   pendingSteer: [], // 执行中已插话、等下一次调用模型生效的消息（服务端为准）
   pendingQueue: [], // 执行中排队的消息：本轮结束后自动作为独立一轮发送
+  queuePaused: false, // 排队是否暂停（服务端为准，随 pending 快照下发）
+  queueHeld: false,   // 执行结束后队列仍有保留（停止/出错/暂停完一轮）：横幅给「继续」入口
   defaultWs: '',    // 默认工作区（文件夹），来自 /api/status
   models: [],       // 可选模型清单，来自 /api/models
   defaultProvider: '',
@@ -527,6 +529,7 @@ const mainView = {  key: 'main',
 const subState = {
   cur: null, msgs: [], streaming: false, abort: null,
   streamText: '', streamThinking: '', pendingSteer: [], pendingQueue: [],
+  queuePaused: false, queueHeld: false,
 };
 const subView = {
   key: 'sub',

@@ -280,6 +280,10 @@ async function openSubSession(id) {
     subState.msgs = data.messages || [];
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
     subState.pendingQueue = (data.pending && data.pending.queue) || [];
+    subState.queuePaused = !!(data.pending && data.pending.paused);
+    // 空闲但队列有保留（上轮停止/出错/暂停后留下的）：横幅给「继续」入口
+    subState.queueHeld = subState.pendingQueue.length > 0 && !subState.queuePaused &&
+      !(data.running || (subState.cur && subState.cur.status === 'running'));
     subState.checkpoints = data.checkpoints || [];
     subState.deliveries = data.deliveries || [];
     if (data.error) showRunError(subView, data.error); else hideRunError(subView);
