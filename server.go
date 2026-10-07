@@ -35,8 +35,9 @@ type App struct {
 	Ctx        *ContextEngine // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
 	Plugins    *PluginRegistry
 	Components *ComponentRegistry
-	Todos      *todoScheduler // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
-	static     fs.FS          // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层（ccplugin*.go）
+	Todos      *todoScheduler    // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
+	static     fs.FS             // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
 	mu              sync.Mutex
 	sessLocks       map[string]*sync.Mutex
@@ -58,6 +59,8 @@ type App struct {
 	listenPort      int                      // 本机监听端口（远程中继的桥接目标，热重启连接用）
 	remoteCtlMu     sync.Mutex
 	remoteCtlCancel context.CancelFunc // 中继连接存活句柄（nil=未运行，remoteaccess.go）
+	shellEpochMu    sync.Mutex
+	shellEpoch      int64 // 远程外壳版本代数：「关于」页一键清缓存按钮递增（remoteaccess.go，落盘 data/shell-epoch.json）
 	evtMu           sync.Mutex
 	subscribers     map[chan Event]bool // /api/events 的订阅者
 	pendMu          sync.Mutex
@@ -114,6 +117,11 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 		questions: map[string]*UserQuestion{}, jobs: map[string]*jobRun{},
 		remotes: map[string]*remoteClient{}}
 	a.Ctx = &ContextEngine{app: a} // 上下文引擎：所有会话经它组装与记事件
+	// Claude Code 插件兼容层：加载已安装插件，后台连接 MCP 服务器、装载 mods
+	// （失败记日志不阻断）
+	a.CCPlugins = InitCCPlugins(a, cfg.DataDir)
+	a.CCPlugins.MCPStartAll()
+	a.CCPlugins.ModsStartAll()
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
 	a.recoverInterrupted()
@@ -127,6 +135,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.Todos = newTodoScheduler(a)
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
+	// 远程外壳版本代数恢复（一键清缓存的计数，remoteaccess.go）
+	a.loadShellEpoch()
 	return a, nil
 }
 
@@ -176,6 +186,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/p2p-shell", a.handleP2PShell)
 	mux.HandleFunc("GET /api/shell-hash", a.handleShellHash)
+	mux.HandleFunc("POST /api/shell-bump", a.handleShellBump) // 「关于」页一键清远程端缓存：外壳代数 +1
 	mux.HandleFunc("POST /api/feedback", a.handleFeedbackCreate)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
@@ -215,6 +226,14 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
 	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)
 	mux.Handle("GET /_plugins/", http.HandlerFunc(a.handlePluginAsset))
+	// Claude Code 插件兼容层（ccplugin*.go）：安装/开关/市场/命令清单
+	mux.HandleFunc("GET /api/cc-plugins", a.handleListCCPlugins)
+	mux.HandleFunc("POST /api/cc-plugins/toggle", a.handleSetCCPlugin)
+	mux.HandleFunc("POST /api/cc-plugins/install", a.handleInstallCCPlugin)
+	mux.HandleFunc("POST /api/cc-plugins/uninstall", a.handleUninstallCCPlugin)
+	mux.HandleFunc("POST /api/cc-plugins/marketplace/add", a.handleCCMarketplaceAdd)
+	mux.HandleFunc("GET /api/cc-plugins/marketplace/{id}", a.handleCCMarketplaceBrowse)
+	mux.HandleFunc("GET /api/cc-plugins/commands", a.handleCCPluginCommands)
 	mux.HandleFunc("GET /api/components", a.handleListComponents)
 	mux.HandleFunc("POST /api/components", a.handleSetComponent)
 	// 组件浏览器半边资产挂在 /api/ 下（而非独立 /_components/ 前缀）：前端 cx.js
@@ -1521,6 +1540,13 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "该会话正在执行，稍后再压缩")
 		return
 	}
+	// Claude Code 插件：PreCompact hook（阻断即取消本次压缩）
+	if a.CCPlugins != nil && a.CCPlugins.hasAnyHooks() {
+		if oc := a.ccEmitHookEvent(r.Context(), m, "PreCompact", "", nil, nil); oc.Block {
+			writeErr(w, 403, "压缩被插件 hook 拒绝："+oc.Reason)
+			return
+		}
+	}
 	summary, err := a.doSummarize(m, "manual", a.Cfg.KeepRounds)
 	if err != nil {
 		writeErr(w, 400, err.Error())
@@ -2736,6 +2762,38 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.noteMidrunPref(body.Midrun)
+	// Claude Code 插件：斜杠命令展开（插件命令正文或 mod 命令执行；未命中原样
+	// 发送，不影响普通输入）
+	if a.CCPlugins != nil {
+		body.Content = a.ccExpandSlashMessage(r.Context(), m, body.Content)
+	}
+	// Claude Code 插件：UserPromptSubmit hook（可拒绝消息或附加上下文）
+	var ccExtraContext string
+	if a.CCPlugins != nil && a.CCPlugins.hasAnyHooks() {
+		outcome := a.ccEmitHookEvent(r.Context(), m, "UserPromptSubmit", "", nil,
+			map[string]any{"prompt": body.Content})
+		if outcome.Block {
+			writeErr(w, 403, "消息被插件 hook 拒绝："+outcome.Reason)
+			return
+		}
+		if outcome.SystemMsg != "" {
+			a.broadcast(Event{Type: "report", SessionID: m.ID, Output: outcome.SystemMsg})
+		}
+		ccExtraContext = outcome.ExtraContext
+	}
+	// Claude Code 插件 mods：prompt.submit（可改写文本或丢弃）
+	if a.CCPlugins != nil && a.CCPlugins.hasMods() {
+		oc := a.ccEmitModEvent(r.Context(), m, "prompt.submit", map[string]any{"text": body.Content})
+		if oc.Answer != nil {
+			if reason, ok := oc.Answer["drop"].(string); ok {
+				writeErr(w, 403, "消息被 mod 丢弃："+reason)
+				return
+			}
+		}
+		if t, ok := oc.Rewrite["text"].(string); ok && strings.TrimSpace(t) != "" {
+			body.Content = t
+		}
+	}
 	if _, ok := w.(http.Flusher); !ok {
 		writeErr(w, 500, "当前连接不支持流式响应")
 		return
@@ -2757,6 +2815,13 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	um := TextMessage("user", body.Content)
 	sm := a.appendMessage(m, um)
 	opening := []Event{{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat}}
+	// UserPromptSubmit 的 additionalContext：用户消息后落一条系统注入行（发给模型）
+	if ccExtraContext != "" {
+		rm := a.landUserSide(m, ccExtraContext, kindReport, "plugin-hook", func(ev Event) {
+			opening = append(opening, ev)
+		})
+		_ = rm
+	}
 	if m.Title == "" {
 		m.Title = truncateRunes(body.Content, 24)
 		_ = a.Store.SaveMeta(m)

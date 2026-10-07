@@ -420,6 +420,12 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		if block := a.userSkillsPromptBlock(); block != "" {
 			b.WriteString(block + "\n")
 		}
+		// Claude Code 插件技能清单（ccplugin_skills.go）：同为清单先行、按需读取
+		if a.CCPlugins != nil {
+			if block := a.CCPlugins.ccSkillsPromptBlock(); block != "" {
+				b.WriteString(block + "\n")
+			}
+		}
 	}
 	return b.String()
 }
@@ -791,6 +797,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	// 开轮留痕：本轮拼装快照（系统提示词/环境快照/工具定义）由上下文引擎
 	// 组装并落 kind=prompt 行（OpenRound），主循环不再亲手拼这条行
 	a.ctxEngine().OpenRound(sess, emit)
+	// Claude Code 插件：SessionStart hook（只在会话首轮发，对齐 Claude 的
+	// startup 语义；additionalContext 忽略——首条环境快照已定）
+	if msgs, mErr := a.Store.Messages(sess.ID); mErr == nil && len(msgs) == 0 {
+		if oc := a.ccEmitHookEvent(ctx, sess, "SessionStart", "", nil, map[string]any{"source": "startup"}); oc.SystemMsg != "" {
+			emit(Event{Type: "report", Output: oc.SystemMsg})
+		}
+	}
 	defer a.requeueSteer(sess.ID) // 正常/异常退出后残留插话转为排队，由执行体接着发
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
@@ -936,6 +949,18 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				a.ruleCompactPass(sess)
 				continue
 			}
+			// Claude Code 插件：Stop / SubagentStop hook（观察通知；阻断语义不支持）
+			if a.CCPlugins != nil && a.CCPlugins.hasAnyHooks() {
+				evName := "Stop"
+				if sess.ParentID != "" {
+					evName = "SubagentStop"
+				}
+				if oc := a.ccEmitHookEvent(ctx, sess, evName, "", nil, nil); oc.SystemMsg != "" {
+					emit(Event{Type: "report", Output: oc.SystemMsg})
+				}
+			}
+			// Claude Code 插件 mods：turn.complete（观察；answer.text 转报告行）
+			a.ccModTurnComplete(ctx, sess, emit)
 			emit(Event{Type: "done"})
 			a.ruleCompactPass(sess) // 轮末：规则压缩增量检查
 			return nil
@@ -963,7 +988,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			emit(Event{Type: "tool_start", Name: tc.Function.Name, Args: tc.Function.Arguments})
 			var out string
-			if sess.PlanMode && suspendedInPlan(sess.Mode, tc.Function.Name) {
+			// Claude Code 插件：PreToolUse hook + mods 的 tool.call（拒绝/改参/
+			// 自答；无注册时零开销直通；mods 在 settings hooks 之后）
+			if hookDeny := a.ccPreToolUse(ctx, sess, &tc); hookDeny != "" {
+				out = hookDeny
+			} else if modDeny := a.ccModPreToolUse(ctx, sess, &tc); modDeny != "" {
+				out = modDeny
+			} else if sess.PlanMode && suspendedInPlan(sess.Mode, tc.Function.Name) {
 				// 计划模式硬拦：工具目录保持不变（请求形状/缓存稳定），调用时拒绝；
 				// exit_plan_mode 批准后 PlanMode 即刻置 false，同一回合内自动放行
 				out = "计划模式下该工具已暂停：" + tc.Function.Name + "。当前仅可只读探索；请完成调研后调用 exit_plan_mode 提交计划供用户批准。"
@@ -990,6 +1021,10 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			if strings.TrimSpace(out) == "" {
 				out = "（工具执行完成，无输出）"
+			}
+			// Claude Code 插件：PostToolUse hook（改写工具结果；无 hook 零开销）
+			if rewritten := a.ccPostToolUse(ctx, sess, tc, out); rewritten != "" {
+				out = rewritten
 			}
 			tm := Message{Role: "tool", Content: out, ToolCallID: tc.ID}
 			tsm := a.appendMessage(sess, tm)

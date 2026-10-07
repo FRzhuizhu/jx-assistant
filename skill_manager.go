@@ -367,6 +367,16 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 		}
 	}
 	if !inList {
+		// Claude Code 插件技能（ccplugin_skills.go）：带命名空间的 id（插件名:技能名）
+		if t.app.CCPlugins != nil {
+			if s, plugin, ok := t.app.CCPlugins.ccSkillByID(id); ok {
+				body, err := plugin.ccSkillBody(&s, t.app.CCPlugins.UserConfigOf(plugin))
+				if err != nil {
+					return "", err
+				}
+				return body, nil
+			}
+		}
 		return "", fmt.Errorf("技能 %s 不在当前清单里（不存在或已停用），请用清单里给出的 id", id)
 	}
 	userDir, err := t.app.userSkillsDir()

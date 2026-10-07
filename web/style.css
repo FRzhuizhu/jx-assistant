@@ -2359,3 +2359,30 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 /* 桌面模式下原生子窗口盖住舞台：提示文字只在网页模式可见（原生控件创建后
    舞台被覆盖；网页模式无控件，提示常驻） */
 html.desktop-shell .bpw-hint { display: none; }
+
+/* ---------- Claude 插件兼容层（app-ccplugins.js） ---------- */
+.ccp-install-row { display: flex; gap: 8px; margin: 0 0 8px; }
+.ccp-install-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg2, #fff); color: inherit; }
+.ccp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
+.ccp-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg-tag, #eef0f4); color: var(--fg-dim, #666); }
+.ccp-comps { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 0; }
+.ccp-comp-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.ccp-comp-tip { font-size: 11px; opacity: .6; }
+.ccp-config { margin-top: 6px; display: grid; gap: 6px; }
+.ccp-config-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ccp-config-row span { flex-shrink: 0; min-width: 88px; }
+.ccp-config-row input { flex: 1; min-width: 0; padding: 5px 9px; border: 1px solid var(--bd, #d8d8de); border-radius: 7px; font-size: 12px; background: var(--bg2, #fff); color: inherit; }
+.ccp-uninstall { align-self: flex-start; margin-top: 6px; font-size: 11px; padding: 3px 10px; border: 1px solid #e2b4b4; border-radius: 7px; background: transparent; color: #b04a4a; cursor: pointer; }
+.ccp-uninstall:hover { background: #fbecec; }
+.ccp-market-select { max-width: 100%; margin: 2px 0 8px; padding: 6px 8px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg2, #fff); color: inherit; }
+.ccp-market-list { display: grid; gap: 6px; margin: 0 0 10px; max-height: 260px; overflow: auto; }
+.ccp-market-item { border: 1px solid var(--bd, #d8d8de); border-radius: 9px; padding: 8px 10px; }
+.ccp-market-item.installed { opacity: .6; }
+.ccp-market-item p { margin: 3px 0 6px; font-size: 12px; opacity: .75; }
+.ccp-install-btn { font-size: 11px; padding: 3px 12px; border-radius: 7px; border: 1px solid var(--bd, #d8d8de); background: transparent; cursor: pointer; color: inherit; }
+#ccp-cmd-pop { position: fixed; z-index: 260; max-height: 300px; overflow: auto; background: var(--bg-pop, #fff); border: 1px solid var(--bd, #d8d8de); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 4px; }
+.ccp-cmd-item { padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+.ccp-cmd-item.active { background: var(--bg-tag, #eef0f4); }
+.ccp-cmd-name { font-size: 12px; font-weight: 600; }
+.ccp-cmd-hint { font-weight: 400; opacity: .55; font-size: 11px; }
+.ccp-cmd-desc { font-size: 11px; opacity: .65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

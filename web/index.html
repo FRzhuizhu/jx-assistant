@@ -370,8 +370,12 @@
           技能
         </button>
         <button class="set-nav-item" data-pane="plugins">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
           插件
+        </button>
+        <button class="set-nav-item" data-pane="ccplugins">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+          Claude 插件
         </button>
         <button class="set-nav-item" data-pane="about">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
@@ -576,6 +580,25 @@
           </div>
           <div id="plugin-sections"></div>
         </div>
+        <div class="set-pane" id="set-pane-ccplugins">
+          <h3>Claude 插件</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">兼容 Anthropic Claude Code 插件格式（plugin.json + skills/commands/agents/hooks/MCP）。技能、命令、专家装好后即可用；hooks / mods / MCP 属执行型组件，默认关闭、需在此显式开启。输入框里输入 / 可触发插件命令。</div>
+            <div class="ccp-install-row">
+              <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL" />
+              <button id="ccp-install-btn" class="pf-add">安装</button>
+            </div>
+            <div class="ccp-install-row">
+              <input id="ccp-market-src" type="text" placeholder="市场 git URL（如 https://github.com/anthropics/claude-plugins-official）" />
+              <button id="ccp-market-btn" class="pf-add">添加市场</button>
+            </div>
+            <div id="ccp-market-panel"></div>
+          </div>
+          <div class="gen-section">
+            <h4>已安装 <span class="sec-sub">开关即时保存；卸载会删除本地缓存</span></h4>
+            <div id="ccp-list"></div>
+          </div>
+        </div>
         <div class="set-pane" id="set-pane-about">
           <h3>关于</h3>
           <div class="about-block">
@@ -588,6 +611,15 @@
             </div>
             <p class="tip" id="about-status" style="margin-top:14px"></p>
             <p class="tip">Go 后端（LLM 主循环 + 工具集 + 编排 + 上下文管理）+ 原生 JS 前端；SQLite 存储；单文件交付。</p>
+          </div>
+          <div class="gen-section">
+            <h4>远程外壳 <span class="sec-sub">远程端（手机）经中继加载的单文件页面</span></h4>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <span class="tip-inline" id="about-shell-ver">外壳版本读取中…</span>
+              <button id="btn-shell-bump" type="button" class="fb-img-btn" style="margin-top:0">一键清除远程端缓存</button>
+              <span class="sf-desc" id="about-shell-done" style="display:none"></span>
+            </div>
+            <p class="tip" style="margin:8px 0 0">远程端每次打开本就拉最新外壳；此按钮把版本号 +1，让仍停留在旧页面或旧缓存里的远程端（含还停在旧版配对页上的手机）在下次加载时自动清缓存并整页重载。</p>
           </div>
           <div class="gen-section" id="feedback-section">
             <h4>问题反馈 <span class="sec-sub">反馈存到服务端供排查改进</span></h4>
@@ -822,6 +854,7 @@
 <script src="/app-right.js"></script>
 <script src="/app-chat.js"></script>
 <script src="/app-ctxmenu.js"></script>
+<script src="/app-ccplugins.js"></script>
 <script src="/app-settings.js"></script>
 <script src="/app.js"></script>
 <script src="/cx.js"></script>

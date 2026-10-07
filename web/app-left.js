@@ -1078,8 +1078,14 @@ let guardReadyAt = 0;           // 加载瞬间的杂散 popstate 忽略窗口
 
 function backGuardArm() {
   if (guardOn) return; // 幂等：栈顶已有哨兵，不再堆叠
+  try {
+    history.pushState({ jxGuard: 1 }, '');
+  } catch (e) {
+    return; // 环境不允许 pushState（远程外壳一类宿主）：守卫降级为不生效，
+            // 返回键交给浏览器——别让异常沿着 onLeftPanelClosed 把
+            // openSettings 的后续步骤（开 UI/压栈）整个打断
+  }
   guardOn = true;
-  history.pushState({ jxGuard: 1 }, '');
 }
 
 // 左栏被收起后的统一钩子：补回哨兵，让下一次返回键重新从「呼出左栏」开始。

@@ -398,6 +398,14 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   导出日志（运行时间线 Markdown）/ 导出原始数据（最近发给模型的请求）/
   SSH 远程工作区）与权限芯片；
   发送按钮左侧是**模型芯片**（既是显示也是选择，按提供方分组）。
+- **手机端设置页的两级返回**（`app-settings.js` 的「设置导航」节）：窄屏下
+  设置＝一级菜单＋二级分区页，返回头/手势逐级退（二级→一级→关设置）。历史
+  栈契约：返回键**UI 直切优先**（`setNav.level` 改完 `renderNav`，不依赖
+  popstate），`history` 只做栈同步且**只退实际压入的层数**（`setHistPushed`
+  与 `setHistDepth` 分开记账），`pushState` 一律走 `setHistPush` 的
+  try/catch——宿主环境（远程外壳一类）不支持历史 API 时降级为纯 UI 导航，
+  绝不让 `back()`/`go()` 越过自己压的栈把用户带出应用。左栏返回守卫的
+  `backGuardArm` 同样容错（压哨兵失败＝守卫不生效，不向上抛）。
 - **附件区**（输入框正上方一条轨道，主对话与右栏子对话同款，渲染与采集见
   `app-chat.js` 的 `renderAttachments` / `stageFiles` / `flushAttachments`）：
   选择、粘贴（截图）、拖拽进来的文件先在这里**暂存**——图片给缩略图，其余给
@@ -899,6 +907,80 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 - 首个适配：**dsh-speech**（消息朗读 / 浏览器听写 / 转写润色），映射表见
   `插件兼容层/dsh-speech/README.md`。为下一个插件写适配 = 原件拷进 `插件/`，
   在 `插件兼容层/` 建同名目录写资产与说明，必要时加一个 `adapter_<名>.go`。
+
+## Claude Code 插件兼容层（ccplugin*.go）
+
+对 Anthropic Claude Code 插件格式（`.claude-plugin/plugin.json` + skills /
+commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全部该格式
+插件，不是逐个手写适配（与上一节的 DSH 手写适配层是两套并存的机制）。
+设置页「Claude 插件」分区管理；输入框 `/` 触发插件命令弹层。
+
+- **目录布局**（全在受保护的数据区内）：`data/claude-plugins/cache/<市场>/<插件>/<版本>/`
+  插件本体（`${CLAUDE_PLUGIN_ROOT}`）、`data/claude-plugins/data/<插件>@<市场>/`
+  运行时数据与 mod store（`${CLAUDE_PLUGIN_DATA}`）、`marketplaces/<市场id>/`
+  市场克隆、`plugins.json` 安装记录与开关。安装四来源：本地目录/zip、git/zip
+  URL、市场条目三形态（`./相对路径` | `git-subdir` | `url`）。
+- **组件映射**：skills → `read_skill` 按需读取 + 环境快照清单（id 带命名空间
+  `插件名:技能名`）；commands → 斜杠命令注册表，handleChat 落库前展开
+  （`$ARGUMENTS`/`$1..$9`/`\$` 转义）；agents → 动态子对话专家（experts.go
+  三处合并，名称即 dispatch_sub 参数）；hooks（settings 形态）→ 事件桥 +
+  命令/http 执行器（stdin JSON、exit 2 阻断、stdout JSON decision 协议：
+  permissionDecision/updatedInput/updatedToolOutput/additionalContext）；
+  `.mcp.json` → 纯 Go MCP 客户端（stdio 行帧 JSON-RPC 与 streamable HTTP），
+  工具名 `mcp__<插件>_<服务器>__<工具>` 保持 Claude 原样（插件 hooks 的
+  matcher 可直接匹配）。
+- **mods（`{"modules":["./register.js"]}` 形态）**：goja 纯 Go 内嵌 JS 运行时
+  （四平台一致含安卓）。ESM→CJS 薄转换（import/export 行级改写，mod 的
+  import 形态受 Claude 规范约束故可行）；`register(on)` 装载时调用一次；
+  事件：session.start / prompt.submit / tool.call / command.run /
+  turn.complete（与 settings hooks 共用分发点，mods 在后）；matcher 支持
+  值/数组/正则；`next` 链内联递归，返回 undefined=放行（e 取最后一次 next
+  的参数）、返回对象=短路答案（deny/result/text/drop）。`$` API 十六个命名
+  空间见 ccplugin_modapi.go；`$.command.register`/`$.tool.register` 注册的
+  命令与工具（`mcp__<插件名>__<工具>`）经 command.run / tool.call 事件路由
+  回 mod。
+- **权限模型**（与 Claude 的有意差异，见下）：skills/commands/agents 静态组件
+  随插件开关生效；**hooks/mods/mcp 执行型组件缺省关闭**，设置页逐类显式开启
+  （显式组件开关 > 总开关 > 缺省）。mod 的 `$.fs.write`/`$.process.run` 过
+  会话权限门控（read-only 拒绝）+ 危险命令护栏；settings hooks 的 shell
+  命令同样过护栏。
+- **接入点**：agent.go（工具循环 PreToolUse→tool.call→执行→PostToolUse、
+  收尾 Stop/SubagentStop→turn.complete、开轮 SessionStart）；handleChat
+  （斜杠展开→UserPromptSubmit→prompt.submit）；tools.go 的 ccMCPTools()
+  （MCP+mod 工具，只在重载边界变化——前缀缓存契约）；experts.go（动态专家）；
+  skill_manager.go 的 read_skill（用户技能查不到回落插件技能）。
+- **API**：`GET /api/cc-plugins`（清单+市场）、`POST /api/cc-plugins/toggle`
+  （总开关/组件开关/userConfig 三合一）、`/install`、`/uninstall`、
+  `/marketplace/add`、`GET /marketplace/{id}`（浏览）、`GET /commands`
+  （弹层）。
+- **测试**：ccplugin_test.go（frontmatter/占位符/decision 协议/matcher/加载/
+  安装/真实插件冒烟——本机有 claude-plugins-official 克隆时装 25 个真插件
+  验证）+ ccplugin_mod_test.go（goja 语法矩阵/ESM 转换/handler 链/mods
+  端到端：官方 first-mod 示例原文全链路）。
+
+### 与 Claude Code 的已知差异（有意为之或暂不支持）
+
+1. mod 敏感 API 过会话权限门控与危险命令护栏（Claude 对 mods 明确无沙箱，
+   本引擎收紧）；`$.env.set` 限 `JXCC_<插件名>_` 前缀、`$.env.get` 拒读密钥类
+   环境变量；`$.settings.read` 只回脱敏提示。
+2. `.ts` mods 不支持（明确报错）；goja 覆盖 ES2017 常用语法，超新语法
+   （类私有字段等）不保证。`.mcpb`/`.dxt` 打包、lspServers/outputStyles/
+   themes/workflows/monitors/channels 组件忽略（扫描时记日志）。
+3. UI 渲染类事件（ui.render/press/panes/blit…）不触发，注册了也收不到；
+   `$.ui` 仅 toast/status/log 映射为全局事件流通知；`$.process.spawn`、
+   `$.audio`、`$.telemetry` 调用即抛错。
+4. settings hooks 事件子集：UserPromptSubmit / PreToolUse / PostToolUse /
+   Stop / SubagentStop / SessionStart / PreCompact（其余 30+ 事件无对应物
+   不触发）；prompt/agent/mcp_tool 型 handler 与 async 语义跳过；Stop 的
+   block 决策不改变行为（只观察）。
+5. `transcript_path` 提供简化 JSONL 导出（每行 {role,content}），非 Claude
+   完整格式。
+6. agents 的 model 别名（sonnet/opus）与 tools 白名单不生效；skills 的
+   `!`cmd`` 动态注入、allowed-tools 免批、context:fork 不生效。
+7. `$.model.fork` 不继承会话历史（与 complete 同路径）；`$.session.usage`
+   未实现。
+8. mods 无 `--plugin-dir` 热重载与 `claude plugin validate/test` CLI；装卸
+   经设置页，重载即插件重载边界。
 
 ## 存储与模块结构
 

@@ -133,7 +133,17 @@ func (a *App) toolsFor(mode string) []Tool {
 		snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
-	}, skillCreate...), append(append(append(append(todos, browserTools()...), computerTools()...), deviceTools()...), history...)...)
+	}, skillCreate...), append(append(append(append(append(todos, a.ccMCPTools()...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
+}
+
+// ccMCPTools 返回已连接插件 MCP 服务器与 mods 注册的动态工具
+// （mcp__<插件>_<服务器>__<工具> / mcp__<插件名>__<工具>）。
+// 工具集只在插件重载边界变化，会话中保持稳定（前缀缓存契约）。
+func (a *App) ccMCPTools() []Tool {
+	if a.CCPlugins == nil {
+		return nil
+	}
+	return append(a.CCPlugins.MCPTools(), a.CCPlugins.ModTools()...)
 }
 
 // ---------- Schema 辅助 ----------

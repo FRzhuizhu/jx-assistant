@@ -290,8 +290,11 @@
   function tunnelFetch(input, init) {
     init = init || {};
     var urlStr = typeof input === 'string' ? input : (input && input.url) || String(input);
+    // 相对路径的基址：location 为 blob: 外壳时不能直接当 base（new URL 会抛错，
+    // 相对 /api/* 一律相对源解析即可）；宿主页形态再怎么换，这条兜底都成立
+    var base = location.protocol === 'blob:' ? location.origin + '/' : location.href;
     var u;
-    try { u = new URL(urlStr, location.href); } catch (e) { return realFetch(input, init); }
+    try { u = new URL(urlStr, base); } catch (e) { return realFetch(input, init); }
     if (u.origin !== location.origin || u.pathname.indexOf('/api/') !== 0) {
       return realFetch(input, init); // 非同源或非 API：原样放行
     }
@@ -505,13 +508,16 @@
   };
 
   /* ---------- 外壳缓存自愈 ----------
-     210 配对页（gate.html）为省首开流量把整个外壳（内联全部 CSS/JS）缓存在
-     localStorage['p2p_shell_cache_v3_<设备号>']，有效期 12 小时——TTL 内不问家里
-     直接用缓存。家端前端更新后，手机最长 12 小时跑旧样式（远程「样式和电脑上
-     不一样」的根源）。这里开机用 /api/shell-hash（几十字节，走中继）对一下本
-     外壳的内容哈希：不一致 = 家端外壳已变，清掉配对页的缓存并整页刷新——
-     配对页发现缓存没了会重新连家拉新外壳。稳态（哈希一致）零额外流量；
-     sessionStorage 旗标保证一次会话最多自动刷新一回，不会循环。 */
+     210 配对页（gate.html）现版每次打开都经通道从家里拉最新外壳，localStorage
+     ['p2p_shell_cache_v3_<设备号>'] 只是直连+中继都失败时的离线兜底（2026-09-30
+     起如此；更早的配对页给这缓存设过 12 小时 TTL，TTL 内不问家里直接用缓存，
+     家端更新后手机最长 12 小时跑旧样式——远程「样式和电脑上不一样」的历史根源，
+     部分手机可能还停在那种旧配对页上）。这里开机用 /api/shell-hash（几十字节，
+     走中继）对一下本外壳的运行版本（内容哈希.代数）：不一致 = 家端外壳已变、
+     或家里「关于」页按过一键清缓存（代数 +1，强制全部远程端清缓存重拉），
+     清掉配对页的缓存并整页刷新——配对页发现缓存没了会重新连家拉新外壳，停在
+     旧配对页上的手机也由此被拉齐。稳态（版本一致）零额外流量；sessionStorage
+     旗标保证一次会话最多自动刷新一回，不会循环。 */
   if (window.JX_SHELL_HASH) {
     var shellRefreshed = false;
     try { shellRefreshed = !!sessionStorage.getItem('jx_shell_refreshed'); } catch (e) {}

@@ -33,6 +33,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -693,8 +695,8 @@ func validRemoteHost(h string) bool {
 // 二进制（或 dev webdir 文件）变化。
 var (
 	p2pShellOnce sync.Once
-	p2pShellHTML string
-	p2pShellHash string // 外壳内容 SHA-256（十六进制）：注入 window.JX_SHELL_HASH 并经 /api/shell-hash 下发，远程引导开机比对、不一致即清手机端外壳缓存（配对页把整页缓存 12 小时，家端前端更新后 TTL 内手机一直跑旧样式）
+	p2pShellBase string // 外壳基底：内联与引导注入完成（版本脚本除外），按进程缓存
+	p2pShellHash string // 基底内容 SHA-256（十六进制）：运行版本 = 哈希 + "." + 代数（shellEpoch）
 	p2pShellErr  error
 )
 
@@ -736,25 +738,26 @@ func (a *App) p2pShell() (string, error) {
 			return
 		}
 		s = strings.Replace(s, "<head>", "<head>\n<script>\n"+string(boot)+"\n</script>", 1)
-		// 内容哈希随外壳一起注入与保存：注入的哈希也是外壳内容的一部分，
-		// 故先算哈希再注入（否则哈希含自身、无法稳定计算）
+		// 内容哈希只对基底计算（版本脚本不含在内——代数可变，改由服务时注入；
+		// 且哈希必须先于自身注入计算，否则含自身无法稳定得出）
 		sum := sha256.Sum256([]byte(s))
 		p2pShellHash = fmt.Sprintf("%x", sum)
-		s = strings.Replace(s, "<head>",
-			"<head>\n<script>window.JX_SHELL_HASH="+fmt.Sprintf("%q", p2pShellHash)+";</script>", 1)
-		p2pShellHTML = s
+		p2pShellBase = s
 	})
-	return p2pShellHTML, p2pShellErr
+	return p2pShellBase, p2pShellErr
 }
 
 // handleP2PShell 供 210 配对页拉取应用外壳；?enc=gzip 返回整体压缩体
 // （中继按流量走，700KB 外壳压到 ~150KB）。
 func (a *App) handleP2PShell(w http.ResponseWriter, r *http.Request) {
-	html, err := a.p2pShell()
+	base, err := a.p2pShell()
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// 版本脚本服务时注入：基底按进程缓存，代数（一键清缓存按钮）变了无需重建
+	html := strings.Replace(base, "<head>",
+		"<head>\n<script>window.JX_SHELL_HASH="+fmt.Sprintf("%q", a.shellVersion())+";</script>", 1)
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Query().Get("enc") == "gzip" {
 		w.Header().Set("Content-Type", "application/gzip")
@@ -767,13 +770,67 @@ func (a *App) handleP2PShell(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(html))
 }
 
-// handleShellHash 下发当前外壳内容哈希（几十字节）：远程引导开机比对，不一致即
-// 清手机端外壳缓存并重拉——把配对页 12 小时缓存的前端更新延迟压到「下一次打开」。
+// handleShellHash 下发当前外壳运行版本（内容哈希.代数，几十字节）：远程引导
+// （remote-boot.js）开机比对，不一致即清手机端外壳缓存并整页重拉——把任何原因
+// 的旧外壳（含「关于」页一键清缓存按下的代数递增）压到「下一次打开」就更新。
 func (a *App) handleShellHash(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.p2pShell(); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, 200, map[string]any{"hash": p2pShellHash})
+	writeJSON(w, 200, map[string]any{"hash": a.shellVersion()})
+}
+
+/* ---------- 外壳版本代数：「关于」页一键清缓存 ---------- */
+
+// shellVersion 当前外壳运行版本 = 基底内容哈希 + "." + 代数。嵌入式脚本
+// （window.JX_SHELL_HASH）与 /api/shell-hash 同源生成，稳态两端一致；代数递增后
+// 全部旧外壳「版本不一致」，remote-boot 的自愈（清 p2p_shell_cache_v3 并整页
+// 刷新）随即触发——不需要给手机端新下发自毁指令，旧机制天然复用。
+func (a *App) shellVersion() string {
+	a.shellEpochMu.Lock()
+	defer a.shellEpochMu.Unlock()
+	return fmt.Sprintf("%s.%d", p2pShellHash, a.shellEpoch)
+}
+
+func (a *App) shellEpochPath() string {
+	return filepath.Join(a.Cfg.DataDir, "shell-epoch.json")
+}
+
+// loadShellEpoch 启动时恢复代数：进程重启若把代数打回去，全部远程端会白白
+// 多经历一轮「比对不一致→清缓存→刷新」。
+func (a *App) loadShellEpoch() {
+	data, err := os.ReadFile(a.shellEpochPath())
+	if err != nil {
+		return
+	}
+	var v struct {
+		Epoch int64 `json:"epoch"`
+	}
+	if json.Unmarshal(data, &v) == nil && v.Epoch >= 0 {
+		a.shellEpoch = v.Epoch
+	}
+}
+
+// handleShellBump 「关于」页一键清除远程端缓存：代数 +1 并落盘。按过后，仍在
+// 运行的远程页面在下次加载时发现版本不一致，自动清掉本地缓存整页重拉；连还停
+// 留在旧版配对页（12 小时 TTL 时代外壳）上的手机也一并治愈——它们的自愈同样
+// 比对 /api/shell-hash。日常远程端每次打开本就拉最新外壳，此按钮是异常状态的
+// 统一兜底，多按无害（只是多递增几个代数）。
+func (a *App) handleShellBump(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.p2pShell(); err != nil { // 先确保基底与内容哈希就绪（版本号完整）
+		writeErr(w, 500, err.Error())
+		return
+	}
+	a.shellEpochMu.Lock()
+	a.shellEpoch++
+	ep := a.shellEpoch
+	a.shellEpochMu.Unlock()
+	data, _ := json.Marshal(map[string]int64{"epoch": ep})
+	if err := writeFileAtomic(a.shellEpochPath(), data); err != nil {
+		log.Printf("[远程] 外壳代数落盘失败（本次仍生效，重启后回退）: %v", err)
+	}
+	log.Printf("[远程] 外壳版本已递增至 %s（远程端下次加载自动清缓存重载）", a.shellVersion())
+	writeJSON(w, 200, map[string]any{"hash": a.shellVersion()})
 }

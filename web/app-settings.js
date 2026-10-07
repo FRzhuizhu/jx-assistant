@@ -179,13 +179,14 @@ async function openSettings(pane) {
   renderComponentList();
   renderSkillsPanel();
   renderExpertsPanel();
+  renderCCPluginPanel();
   const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : null;
   // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并压一层「设置一级」
   // 底座历史——直达分区时 navGoto 在其上补第二层，返回手势得以逐级退
   narrowClosePanels();
   if (isNarrow() && setHistDepth === 0) {
     setHistDepth = 1;
-    history.pushState({ jxSettings: 1 }, '');
+    setHistPush();
   }
   setNav.open = true;
   if (target) navGoto(target); // 同一个地址两端同义：直达该分区（选中并渲染）
@@ -201,6 +202,41 @@ async function openSettings(pane) {
     $('about-version').textContent = '版本 ' + (st.version || '-') + ' · ' + (st.model || '');
     $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
   } catch (e) { $('about-status').textContent = '服务状态未知'; }
+  loadAboutShell();
+}
+
+/* ---------- 关于页：远程外壳版本 + 一键清远程端缓存 ----------
+   版本 = 外壳内容哈希.代数（/api/shell-hash）。按钮 POST /api/shell-bump 把代数
+   +1：旧外壳里的嵌入版本随之全部「不一致」，remote-boot 自愈（清手机端缓存并
+   整页重拉）在它们的下一次加载时触发——见 remoteaccess.go handleShellBump。 */
+function fmtShellVer(h) {
+  // 显示带代数（哈希前 8 位 + .N）：按钮按下后版本行能看到变化
+  const i = h.lastIndexOf('.');
+  return i > 0 ? h.slice(0, 8) + '…' + h.slice(i) : h.slice(0, 12) + '…';
+}
+async function loadAboutShell() {
+  const ver = $('about-shell-ver');
+  try {
+    const d = await api('/api/shell-hash');
+    ver.textContent = d && d.hash ? '外壳版本 ' + fmtShellVer(d.hash) : '外壳版本未知';
+  } catch (e) { ver.textContent = '外壳版本读取失败'; }
+  const btn = $('btn-shell-bump');
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = '1';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    const done = $('about-shell-done');
+    try {
+      const d = await api('/api/shell-bump', { method: 'POST' });
+      if (d && d.hash) ver.textContent = '外壳版本 ' + fmtShellVer(d.hash);
+      done.style.display = '';
+      done.textContent = '已生效：远程端下次打开自动清缓存重载';
+    } catch (e) {
+      done.style.display = '';
+      done.textContent = '失败：' + e.message;
+    }
+    btn.disabled = false;
+  };
 }
 
 /* ---------- 组件清单（/api/components + CX 运行时热开关） ---------- */
@@ -974,7 +1010,21 @@ $('set-save').onclick = saveSettings;
    投影——导航类名的写点全文件仅此一处。level=1 即「未选中」空态：菜单全无
    高亮，二级区照常显示 pane 指的默认页（窄屏在后台，无渲染成本差异）。 */
 const setNav = { open: false, pane: 'general', level: 1 };
-let setHistDepth = 0; // 窄屏历史栈层数：0 无 / 1 一级 / 2 二级（桌面恒 0）
+let setHistDepth = 0;  // 窄屏历史栈层数：0 无 / 1 一级 / 2 二级（桌面恒 0）
+let setHistPushed = 0; // 实际压栈成功的层数（与 depth 分开记账：环境不支持
+                       // pushState、或历史栈被宿主页动过时两者会背离——一切
+                       // 主动回退只信它，防超界跳出应用）
+
+// 压一层设置历史。环境可能不允许 pushState（远程外壳一类的宿主会抛
+// SecurityError）：失败时静默降级为纯 UI 导航——返回键直切层、不碰
+// history，绝不让 back()/go() 越过自己压的栈把用户带出应用（手机端
+// 二级页返回曾被带回宿主连接页的根源）。
+function setHistPush() {
+  try {
+    history.pushState({ jxSettings: setHistDepth }, '');
+    setHistPushed++;
+  } catch (e) { /* 降级：只走 UI 层级 */ }
+}
 
 function settingsCard() { return document.querySelector('.settings-card'); }
 
@@ -1000,7 +1050,7 @@ function navGoto(pane) {
   setNav.level = 2;
   if (isNarrow() && setHistDepth < 2) {
     setHistDepth = 2;
-    history.pushState({ jxSettings: 2 }, '');
+    setHistPush();
   }
   renderNav();
 }
@@ -1009,19 +1059,21 @@ function closeSettingsUI(fromPop) {
   setNav.open = false;
   setNav.level = 1; // 复位未选中态，下次打开从默认页起步
   renderNav();
-  const d = setHistDepth;
+  const n = setHistPushed; // 只退实际压成功的层数（depth 可能虚高，按它退会越界）
   setHistDepth = 0;
-  if (d > 0 && !fromPop) {    // popstate 引发的关闭（栈已退穿）不再退栈
+  setHistPushed = 0;
+  if (n > 0 && !fromPop) {  // popstate 引发的关闭（栈已退穿）不再退栈
     backGuardSkipOnce = true; // 程序性退栈：返回键守卫跳过这次 popstate（左栏别跟着弹出来）
-    history.go(-d);           // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
+    history.go(-n);           // 退掉自己压入的栈；popstate 到达时已隐藏，无副作用
   }
   loadStatus(); // 设置里可能刚改了远程开关：左下角手机图标状态随之对齐
 }
 
 window.addEventListener('popstate', (e) => {
   const d = (e.state && e.state.jxSettings) || 0;
-  if (!setNav.open) { setHistDepth = 0; return; } // UI 已关：只对齐
+  if (!setNav.open) { setHistDepth = 0; setHistPushed = 0; return; } // UI 已关：只对齐
   setHistDepth = d;
+  setHistPushed = d;
   if (d >= 1) { setNav.level = d; renderNav(); } // 返回手势：二级退一级（高亮熄灭）；一级再退＝下面的 d===0
   else closeSettingsUI(true);
 });
@@ -1029,8 +1081,18 @@ window.addEventListener('popstate', (e) => {
 $('set-cancel').onclick = () => closeSettingsUI();
 $('settings').onclick = (e) => { if (e.target === $('settings')) closeSettingsUI(); };
 $('set-back').onclick = () => {
-  if (setNav.level === 2) history.back(); // 二级：返回＝回一级（走 popstate 统一处理）
-  else closeSettingsUI();                  // 一级：返回＝退出设置回对话区
+  if (setNav.level === 2) {
+    // UI 先直切回一级：不依赖 popstate——历史栈不可用/被宿主动过时也正确。
+    // 随后若有自己压的栈再同步退一步；没压过（或压失败）就到此为止，
+    // 绝不裸 back() 把用户带出应用
+    setNav.level = 1;
+    setHistDepth = 1;
+    renderNav();
+    if (setHistPushed > 0) {
+      setHistPushed--;
+      history.back(); // 到达 {jxSettings:1} 的 popstate 与上面的直切幂等
+    }
+  } else closeSettingsUI();                  // 一级：返回＝退出设置回对话区
 };
 document.querySelectorAll('.set-nav-item').forEach((b) => {
   b.onclick = () => navGoto(b.dataset.pane);

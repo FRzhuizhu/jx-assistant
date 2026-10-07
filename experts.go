@@ -84,7 +84,8 @@ func defaultExperts() []ExpertCfg {
 // expertByName 在自定义专家里按名精确匹配（内置专家无追加提示词，提示词
 // 构建无需解析它们）；不论启停——存量子对话不因停用而丢追加段，只有删除
 // 才会让这段消失。名称即调用参数，匹配必须逐字相等（不做大小写折叠——
-// 100% 一致比宽松匹配更可预测）。
+// 100% 一致比宽松匹配更可预测）。Claude Code 插件的动态专家（ccplugin_agents.go）
+// 同样参与匹配（插件卸载时自然消失，与自定义专家被删同语义）。
 func (a *App) expertByName(name string) *ExpertCfg {
 	name = strings.TrimSpace(name)
 	for i := range a.Cfg.Experts {
@@ -92,11 +93,19 @@ func (a *App) expertByName(name string) *ExpertCfg {
 			return &a.Cfg.Experts[i]
 		}
 	}
+	if a.CCPlugins != nil {
+		for _, e := range a.CCPlugins.Experts() {
+			if e.Name == name {
+				ee := e
+				return &ee
+			}
+		}
+	}
 	return nil
 }
 
 // enabledExpertByName 在可派发的专家里按名精确找（dispatch_sub 的 expert
-// 参数用）：内置在前常开，自定义需 Enabled。
+// 参数用）：内置在前常开，自定义需 Enabled，插件专家随插件启用。
 func (a *App) enabledExpertByName(name string) *ExpertCfg {
 	name = strings.TrimSpace(name)
 	sys := systemExperts()
@@ -105,20 +114,26 @@ func (a *App) enabledExpertByName(name string) *ExpertCfg {
 			return &sys[i]
 		}
 	}
-	if e := a.expertByName(name); e != nil && e.Enabled {
-		return e
+	if e := a.expertByName(name); e != nil {
+		if e.Enabled {
+			return e
+		}
+		return nil
 	}
 	return nil
 }
 
 // enabledExperts 全部可派发的专家（进 dispatch_sub 工具说明的清单）：
-// 内置在前 + 启用中的自定义。
+// 内置在前 + 启用中的自定义 + 启用插件的动态专家。
 func (a *App) enabledExperts() []ExpertCfg {
 	out := systemExperts()
 	for _, e := range a.Cfg.Experts {
 		if e.Enabled {
 			out = append(out, e)
 		}
+	}
+	if a.CCPlugins != nil {
+		out = append(out, a.CCPlugins.Experts()...)
 	}
 	return out
 }
