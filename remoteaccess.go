@@ -490,7 +490,8 @@ func (h *hubCtx) handleRelay(rid, ivB64, ctB64 string) {
 }
 
 // bridge 把一条 req 帧转成本机 HTTP 请求并流式回传。sender 失败（连接已死）
-// 立即取消请求，避免对空气播。
+// 立即取消请求，避免对空气播。响应拆帧的核心在 bridgeCore（中继/直连共用），
+// 本包装负责中继特有部分：每帧 AES 封包裹 res/rid、结束时发 done。
 func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.mu.Lock()
@@ -502,12 +503,32 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 		delete(h.cancels, rid)
 		h.mu.Unlock()
 	}()
+	// send：单帧 seal 后经 {t:'res'} 回传；失败即中止整条桥接
+	send := func(v map[string]any) bool {
+		iv, ct, err := sealJSON(key, v)
+		if err != nil {
+			return false
+		}
+		return h.sendJSON(map[string]any{"t": "res", "rid": rid, "iv": iv, "ct": ct}) == nil
+	}
+	bridgeCore(ctx, h.client, h.port, fr, send)
+	_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
+}
 
+// bridgeCore 把一条已验证的 req 帧桥到本机回环 HTTP 并按帧回传响应：
+// head（含 gz 标志）→ chunk* → end；任何阶段失败发 err 帧后返回。send 是传输
+// 层发送函数——中继版封 AES 后裹 {t:'res',rid}（hubCtx.bridge），直连版明文
+// JSON 直接写 DataChannel（DTLS 链路本身加密，p2pdirect.go）。发送失败立即
+// 返回，由调用方的 defer cancel() 收掉进行中的 HTTP 请求。
+func bridgeCore(ctx context.Context, client *http.Client, port int, fr relayReqFrame, send func(map[string]any) bool) {
+	fail := func(msg string) {
+		send(map[string]any{"t": "err", "id": fr.ID, "msg": msg})
+	}
 	var body io.Reader
 	if fr.Body != "" {
 		raw, err := base64.StdEncoding.DecodeString(fr.Body)
 		if err != nil {
-			h.replyErr(rid, fr.ID, key, "bad base64 body")
+			fail("bad base64 body")
 			return
 		}
 		body = strings.NewReader(string(raw))
@@ -517,30 +538,16 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 		method = "GET"
 	}
 	req, err := http.NewRequestWithContext(ctx, method,
-		fmt.Sprintf("http://%s:%d%s", relayBridgeHost, h.port, fr.Path), body)
+		fmt.Sprintf("http://%s:%d%s", relayBridgeHost, port, fr.Path), body)
 	if err != nil {
-		h.replyErr(rid, fr.ID, key, err.Error())
+		fail(err.Error())
 		return
 	}
 	// 透传必要头（host/content-length 由本端重算，其余浏览器头无意义不透传）
 	if ct := fr.Headers["content-type"]; ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
-
-	// send：单帧 seal 后经 {t:'res'} 回传；失败即中止整条桥接
-	send := func(v any) bool {
-		iv, ct, err := sealJSON(key, v)
-		if err != nil {
-			return false
-		}
-		return h.sendJSON(map[string]any{"t": "res", "rid": rid, "iv": iv, "ct": ct}) == nil
-	}
-	fail := func(msg string) {
-		send(map[string]any{"t": "err", "id": fr.ID, "msg": msg})
-		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
-	}
-
-	resp, err := h.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
 			fail("bridge: " + err.Error())
@@ -550,7 +557,7 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	defer resp.Body.Close()
 
 	// 响应体 gzip 仅对一次性响应启用（前端带 x-p2p-gzip 头时）：正文先压
-	// 再 base64/加密，膨胀只作用于压缩后字节。除 JSON 外也压 text/css、
+	// 再 base64/传输，膨胀只作用于压缩后字节。除 JSON 外也压 text/css、
 	// text/javascript 等组件资产（中继按流量走，文本压缩率高）；SSE/流式响应
 	// 必须排除——gzip 内部缓冲不及时吐，会拖走对话流的实时性。
 	ct := resp.Header.Get("Content-Type")
@@ -569,7 +576,6 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	}
 	sendEnd := func() {
 		send(map[string]any{"t": "end", "id": fr.ID})
-		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
 	}
 	if wantGz {
 		// 流式 gzip：分块都是压缩后的字节（接收端按 head.gz 标志整体解压）
@@ -595,7 +601,6 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			if !send(map[string]any{"t": "chunk", "id": fr.ID, "data": base64.StdEncoding.EncodeToString(buf[:n])}) {
-				cancel()
 				return
 			}
 		}
@@ -610,9 +615,9 @@ func (h *hubCtx) bridge(rid string, fr relayReqFrame, key []byte) {
 	sendEnd()
 }
 
-// chunkSender 把 gzip 输出切成中继帧。
+// chunkSender 把 gzip 输出切成传输帧（中继/直连共用）。
 type chunkSender struct {
-	send func(any) bool
+	send func(map[string]any) bool
 	id   string
 }
 

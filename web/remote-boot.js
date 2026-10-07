@@ -312,110 +312,273 @@
       var ct = getH('content-type') || (body && body.contentType);
       if (typeof ct === 'string' && ct) headers['content-type'] = ct;
       if (HAS_DECOMPRESS) headers['x-p2p-gzip'] = '1'; // 声明可解压；服务端按响应类型决定是否压
+      // 传输选择：直连已建立且请求体在 DataChannel 单消息安全区内 → 直连
+      //（发送前的失败回落中继；已开流后断开按网络错误处理，应用重试兜底）；
+      // 其余（未打通/大请求体如上传）走中继
+      if (directUsable(body)) {
+        return dcTunnelFetch(u, init, body, headers).catch(function (e) {
+          if (e && e.dcPre) return relayTunnelFetch(u, init, body, headers);
+          throw e;
+        });
+      }
+      return relayTunnelFetch(u, init, body, headers);
+    });
+  }
+
+  function relayTunnelFetch(u, init, body, headers) {
+    var method = (init.method || 'GET').toUpperCase();
+    var id = 'r' + (++seq);
+    var frame = { t: 'req', id: id, method: method, path: u.pathname + u.search, headers: headers };
+    if (body && body.u8) frame.body = bytesToB64(body.u8);
+    return seal({ pk: cfg.pairKey, ts: Math.floor(Date.now() / 1000), frame: frame }).then(function (pack) {
+    return realFetch('/relay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Relay-Peer': cfg.peerId },
+      body: JSON.stringify(pack),
+    });
+    }).then(function (resp) {
+      if (!resp.ok || !resp.body) {
+        return resp.text().catch(function () { return ''; }).then(function (t) {
+          var msg = t;
+          try { msg = JSON.parse(t).error || t; } catch (e) {}
+          throw new Error('中继错误 HTTP ' + resp.status + (msg ? '：' + msg : ''));
+        });
+      }
+      // NDJSON 逐帧解密 → 流式 Response
+      var reader = resp.body.getReader();
+      var dec = new TextDecoder();
+      var buf = '';
+      var controllerRef = null;
+      var aborted = false;
+      if (init.signal) {
+        var onAbort = function () {
+          aborted = true;
+          try { reader.cancel(); } catch (e) {}
+          if (controllerRef) { try { controllerRef.error(new DOMException('Aborted', 'AbortError')); } catch (e) {} }
+        };
+        if (init.signal.aborted) { onAbort(); return Promise.reject(new DOMException('Aborted', 'AbortError')); }
+        init.signal.addEventListener('abort', onAbort);
+      }
+      return new Promise(function (resolve, reject) {
+        var settled = false; // 已拿到 head（外层 Response 已 resolve）
+        var fail = function (e) {
+          if (settled) { if (controllerRef) { try { controllerRef.error(e); } catch (e2) {} } }
+          else { settled = true; reject(e); }
+        };
+        var handleFrame = function (fr) {
+          if (fr.t === 'head' && !settled) {
+            settled = true;
+            // head.gz：响应体是 gzip 流（服务端已压缩）——chunk 帧仍进 raw 控制器，
+            // 外层套 DecompressionStream 流式解压给消费方；解压错误沿管道传播
+            var raw = new ReadableStream({
+              start: function (c) { controllerRef = c; },
+            });
+            var stream = (fr.gz && HAS_DECOMPRESS)
+              ? raw.pipeThrough(new DecompressionStream('gzip'))
+              : raw;
+            var hdrs = new Headers();
+            if (fr.contentType) hdrs.set('Content-Type', fr.contentType);
+            resolve(new Response(stream, { status: fr.status || 200, headers: hdrs }));
+          } else if (fr.t === 'chunk') {
+            if (controllerRef) controllerRef.enqueue(b64ToBytes(fr.data));
+          } else if (fr.t === 'end') {
+            if (controllerRef) { try { controllerRef.close(); } catch (e) {} }
+            controllerRef = null;
+          } else if (fr.t === 'err') {
+            fail(new Error(fr.msg || '远程错误'));
+            controllerRef = null;
+          } else if (fr.t === 'authfail') {
+            fail(new Error('配对密钥错误'));
+            controllerRef = null;
+          }
+        };
+        // 单条 async 循环：读一块 → 按序逐行解密（帧解密是异步的，串行等待
+        // 才不会与流结束信号赛跑）→ 流尽后处理无换行尾行 → 终局判定。
+        // 210 的 NDJSON 每行都以换行符结尾，尾行兜底只是防御。
+        (async function () {
+          for (;;) {
+            var r;
+            try { r = await reader.read(); }
+            catch (e) { fail(aborted ? new DOMException('Aborted', 'AbortError') : e); return; }
+            if (r.done) break;
+            buf += dec.decode(r.value, { stream: true });
+            var nl;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+              var line = buf.slice(0, nl).trim();
+              buf = buf.slice(nl + 1);
+              if (!line) continue;
+              var f = null;
+              try { f = JSON.parse(line); } catch (e) { continue; }
+              if (!f.iv || !f.ct) continue;
+              var fr;
+              try { fr = await Promise.resolve(openPack(f.iv, f.ct)); }
+              catch (e) { fail(e); return; }
+              handleFrame(fr);
+              if (fr.t === 'end' || fr.t === 'err' || fr.t === 'authfail') return;
+            }
+          }
+          if (buf.trim()) { // 无结尾换行的最后一帧
+            var tf = null;
+            try { tf = JSON.parse(buf.trim()); } catch (e) { tf = null; }
+            if (tf && tf.iv && tf.ct) {
+              try { handleFrame(await Promise.resolve(openPack(tf.iv, tf.ct))); }
+              catch (e) { fail(e); return; }
+            }
+          }
+          if (!settled) { settled = true; reject(new Error('中继无响应：配对密钥错误或目标异常')); }
+          else if (controllerRef) { try { controllerRef.close(); } catch (e) {} }
+        })();
+      });
+    });
+  }
+
+  /* ---------- P2P 直连（WebRTC DataChannel）：中继之上的自动加速 ----------
+     外壳先以中继起步（保底可用），随后把 SDP offer 经 POST /api/webrtc-offer 发给
+     家端（该请求被本劫持层封 AES 走中继隧道，密文过 210），answer 原路返回；
+     DataChannel 打通后首帧 auth.pairKey 鉴权，之后 /api 请求直传（DTLS 加密，
+     帧协议与中继内层一致：req/head/chunk/end/err/abort）。打不通/中途断开自动
+     留在（回落）中继；一次页面加载只试一轮——打不通的网络环境短期内不会再通。
+     window.__JX_REMOTE_MODE（'relay'/'direct'）供排查与测试观察。 */
+  var dcx = { mode: 'relay', pc: null, dc: null, tried: false, seq: 0, pending: {} };
+  try { window.__JX_REMOTE_MODE = 'relay'; } catch (e) {}
+  var DC_MAX_BODY = 192 * 1024; // req 帧请求体原始字节上限（DataChannel 单消息安全区），更大的（如上传）走中继
+
+  function directUsable(body) {
+    return dcx.mode === 'direct' && dcx.dc && dcx.dc.readyState === 'open' &&
+      (!body || !body.u8 || body.u8.length <= DC_MAX_BODY);
+  }
+
+  function dcTunnelFetch(u, init, body, headers) {
+    return new Promise(function (resolve, reject) {
+      var dc = dcx.dc;
+      if (!dc || dc.readyState !== 'open') {
+        var e0 = new Error('直连未就绪'); e0.dcPre = true; reject(e0); return;
+      }
       var method = (init.method || 'GET').toUpperCase();
-      var id = 'r' + (++seq);
+      var id = 'd' + (++dcx.seq);
+      var controllerRef = null;
+      var settled = false;
+      var onAbort = null;
+      var entry = {
+        onFrame: function (fr) {
+          if (fr.t === 'head' && !settled) {
+            settled = true;
+            var raw = new ReadableStream({ start: function (c) { controllerRef = c; } });
+            var stream = (fr.gz && HAS_DECOMPRESS) ? raw.pipeThrough(new DecompressionStream('gzip')) : raw;
+            var hdrs = new Headers();
+            if (fr.contentType) hdrs.set('Content-Type', fr.contentType);
+            resolve(new Response(stream, { status: fr.status || 200, headers: hdrs }));
+          } else if (fr.t === 'chunk') {
+            if (controllerRef) controllerRef.enqueue(b64ToBytes(fr.data));
+          } else if (fr.t === 'end') {
+            delete dcx.pending[id];
+            if (controllerRef) { try { controllerRef.close(); } catch (e) {} }
+            controllerRef = null;
+          } else if (fr.t === 'err') {
+            delete dcx.pending[id];
+            var msg = fr.msg || '远程错误';
+            if (settled) { if (controllerRef) { try { controllerRef.error(new Error(msg)); } catch (e) {} } }
+            else { settled = true; reject(new Error(msg)); }
+            controllerRef = null;
+          }
+        },
+        fail: function (e) { // 通道断开：在途请求按网络错误收场（应用既有重试兜底）
+          delete dcx.pending[id];
+          if (settled) { if (controllerRef) { try { controllerRef.error(e); } catch (e2) {} } }
+          else { settled = true; reject(e); }
+          controllerRef = null;
+        }
+      };
+      dcx.pending[id] = entry;
+      if (init.signal) {
+        onAbort = function () {
+          try { dc.send(JSON.stringify({ t: 'abort', id: id })); } catch (e) {}
+          entry.fail(new DOMException('Aborted', 'AbortError'));
+        };
+        if (init.signal.aborted) {
+          delete dcx.pending[id];
+          var ea = new DOMException('Aborted', 'AbortError'); ea.dcPre = true;
+          reject(ea); return;
+        }
+        init.signal.addEventListener('abort', onAbort);
+      }
       var frame = { t: 'req', id: id, method: method, path: u.pathname + u.search, headers: headers };
       if (body && body.u8) frame.body = bytesToB64(body.u8);
-      return seal({ pk: cfg.pairKey, ts: Math.floor(Date.now() / 1000), frame: frame }).then(function (pack) {
-        return realFetch('/relay', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Relay-Peer': cfg.peerId },
-          body: JSON.stringify(pack),
-        });
-      }).then(function (resp) {
-        if (!resp.ok || !resp.body) {
-          return resp.text().catch(function () { return ''; }).then(function (t) {
-            var msg = t;
-            try { msg = JSON.parse(t).error || t; } catch (e) {}
-            throw new Error('中继错误 HTTP ' + resp.status + (msg ? '：' + msg : ''));
-          });
-        }
-        // NDJSON 逐帧解密 → 流式 Response
-        var reader = resp.body.getReader();
-        var dec = new TextDecoder();
-        var buf = '';
-        var controllerRef = null;
-        var aborted = false;
-        if (init.signal) {
-          var onAbort = function () {
-            aborted = true;
-            try { reader.cancel(); } catch (e) {}
-            if (controllerRef) { try { controllerRef.error(new DOMException('Aborted', 'AbortError')); } catch (e) {} }
-          };
-          if (init.signal.aborted) { onAbort(); return Promise.reject(new DOMException('Aborted', 'AbortError')); }
-          init.signal.addEventListener('abort', onAbort);
-        }
-        return new Promise(function (resolve, reject) {
-          var settled = false; // 已拿到 head（外层 Response 已 resolve）
-          var fail = function (e) {
-            if (settled) { if (controllerRef) { try { controllerRef.error(e); } catch (e2) {} } }
-            else { settled = true; reject(e); }
-          };
-          var handleFrame = function (fr) {
-            if (fr.t === 'head' && !settled) {
-              settled = true;
-              // head.gz：响应体是 gzip 流（服务端已压缩）——chunk 帧仍进 raw 控制器，
-              // 外层套 DecompressionStream 流式解压给消费方；解压错误沿管道传播
-              var raw = new ReadableStream({
-                start: function (c) { controllerRef = c; },
-              });
-              var stream = (fr.gz && HAS_DECOMPRESS)
-                ? raw.pipeThrough(new DecompressionStream('gzip'))
-                : raw;
-              var hdrs = new Headers();
-              if (fr.contentType) hdrs.set('Content-Type', fr.contentType);
-              resolve(new Response(stream, { status: fr.status || 200, headers: hdrs }));
-            } else if (fr.t === 'chunk') {
-              if (controllerRef) controllerRef.enqueue(b64ToBytes(fr.data));
-            } else if (fr.t === 'end') {
-              if (controllerRef) { try { controllerRef.close(); } catch (e) {} }
-              controllerRef = null;
-            } else if (fr.t === 'err') {
-              fail(new Error(fr.msg || '远程错误'));
-              controllerRef = null;
-            } else if (fr.t === 'authfail') {
-              fail(new Error('配对密钥错误'));
-              controllerRef = null;
-            }
-          };
-          // 单条 async 循环：读一块 → 按序逐行解密（帧解密是异步的，串行等待
-          // 才不会与流结束信号赛跑）→ 流尽后处理无换行尾行 → 终局判定。
-          // 210 的 NDJSON 每行都以换行符结尾，尾行兜底只是防御。
-          (async function () {
-            for (;;) {
-              var r;
-              try { r = await reader.read(); }
-              catch (e) { fail(aborted ? new DOMException('Aborted', 'AbortError') : e); return; }
-              if (r.done) break;
-              buf += dec.decode(r.value, { stream: true });
-              var nl;
-              while ((nl = buf.indexOf('\n')) >= 0) {
-                var line = buf.slice(0, nl).trim();
-                buf = buf.slice(nl + 1);
-                if (!line) continue;
-                var f = null;
-                try { f = JSON.parse(line); } catch (e) { continue; }
-                if (!f.iv || !f.ct) continue;
-                var fr;
-                try { fr = await Promise.resolve(openPack(f.iv, f.ct)); }
-                catch (e) { fail(e); return; }
-                handleFrame(fr);
-                if (fr.t === 'end' || fr.t === 'err' || fr.t === 'authfail') return;
-              }
-            }
-            if (buf.trim()) { // 无结尾换行的最后一帧
-              var tf = null;
-              try { tf = JSON.parse(buf.trim()); } catch (e) { tf = null; }
-              if (tf && tf.iv && tf.ct) {
-                try { handleFrame(await Promise.resolve(openPack(tf.iv, tf.ct))); }
-                catch (e) { fail(e); return; }
-              }
-            }
-            if (!settled) { settled = true; reject(new Error('中继无响应：配对密钥错误或目标异常')); }
-            else if (controllerRef) { try { controllerRef.close(); } catch (e) {} }
-          })();
-        });
+      try { dc.send(JSON.stringify(frame)); }
+      catch (e) { delete dcx.pending[id]; e.dcPre = true; reject(e); }
+    });
+  }
+
+  function dcFrame(data) {
+    var f = null;
+    try { f = JSON.parse(data); } catch (e) { return; }
+    if (!f || !f.t) return;
+    if (f.t === 'authok') {
+      dcx.mode = 'direct';
+      try { window.__JX_REMOTE_MODE = 'direct'; console.info('[远程] P2P 直连已建立，后续请求直传（断开自动回中继）'); } catch (e) {}
+      return;
+    }
+    var en = dcx.pending[f.id];
+    if (en) en.onFrame(f);
+  }
+
+  function dcDown() {
+    if (dcx.mode !== 'direct' && !dcx.dc && !dcx.pc) return;
+    dcx.mode = 'relay';
+    try { window.__JX_REMOTE_MODE = 'relay'; } catch (e) {}
+    var pend = dcx.pending;
+    dcx.pending = {};
+    for (var id in pend) { try { pend[id].fail(new Error('直连通道断开')); } catch (e) {} }
+    try { if (dcx.pc) dcx.pc.close(); } catch (e) {}
+    dcx.pc = null;
+    dcx.dc = null;
+  }
+
+  function startDirect() {
+    if (dcx.tried || typeof RTCPeerConnection !== 'function') return;
+    dcx.tried = true;
+    var pc = null;
+    try {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.miwifi.com:3478', 'stun:stun.qq.com:3478'] }] });
+    } catch (e) {
+      try { console.info('[远程] 直连不可用（RTCPeerConnection 构造失败）：' + e.message); } catch (e2) {}
+      return;
+    }
+    dcx.pc = pc;
+    var dc = pc.createDataChannel('jxapi', { ordered: true });
+    dcx.dc = dc;
+    dc.onmessage = function (ev) { dcFrame(ev.data); };
+    dc.onopen = function () {
+      try { dc.send(JSON.stringify({ t: 'auth', pairKey: cfg.pairKey })); } catch (e) {}
+    };
+    dc.onclose = dcDown;
+    pc.onconnectionstatechange = function () {
+      var st = pc.connectionState;
+      if (st === 'failed' || st === 'disconnected' || st === 'closed') dcDown();
+    };
+    var offerP = pc.createOffer().then(function (o) { return pc.setLocalDescription(o); });
+    var gathered = new Promise(function (res) {
+      var t = setTimeout(res, 2500); // STUN 不可达时到点带已有候选走（局域网 host 候选即时可得）
+      pc.onicegatheringstatechange = function () {
+        if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); }
+      };
+    });
+    offerP.then(function () { return gathered; }).then(function () {
+      // 信令走被劫持的 fetch＝中继隧道（此刻 mode 尚为 relay，天然路由正确）
+      return window.fetch('/api/webrtc-offer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp })
       });
+    }).then(function (r) {
+      if (!r.ok) throw new Error('信令 HTTP ' + r.status);
+      return r.json();
+    }).then(function (d) {
+      if (!d || !d.answer) throw new Error('无应答');
+      return pc.setRemoteDescription({ type: 'answer', sdp: d.answer });
+    }).catch(function (e) {
+      dcDown(); // 留在中继：本轮不重试（打不通的网络环境短期内不会再通）
+      try { console.info('[远程] 直连未建立，继续走中继：' + (e && e.message || e)); } catch (e2) {}
     });
   }
 
@@ -472,6 +635,9 @@
     });
   };
   RemoteEventSource.prototype.close = function () { this._stop = true; this.readyState = 2; };
+
+  // 直连升级：延迟起步——首屏 API（会话清单等）先走中继抢首渲染，随后再打洞
+  setTimeout(startDirect, 1000);
   window.EventSource = RemoteEventSource;
 
   /* ---------- 资产助手：附件/下载/导出经隧道 blob 化（供 app-chat.js 兜底） ---------- */

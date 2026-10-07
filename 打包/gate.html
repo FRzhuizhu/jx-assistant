@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>远程接入</title>
-<script src="/peerjs.min.js" defer></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -270,7 +269,6 @@ function pjGcmOpen(key, iv, ctTag) { return pjGcm(key, iv, ctTag, true); }
 
 /* ---------- 中继封包（与目标侧 sealFrame/openPack 格式一致） ---------- */
 let cfg = null; // {peerId, pairKey}
-let handoffConn = null; // 直连 DataConnection：仅本页拉外壳期间持有（换页即随文档销毁，应用不再复用）
 let _relayKeyObj = null, _relayKeyFor = '';
 async function relayKeyObj() {
   if (!HAS_SUBTLE) return null;
@@ -298,74 +296,6 @@ async function open(ivB64, ctB64) {
     return JSON.parse(new TextDecoder().decode(pt));
   }
   return JSON.parse(new TextDecoder().decode(pjGcmOpen(relayKeyBytes(), iv, ct)));
-}
-
-/* ---------- 通道 A：P2P 直连（PeerJS DataChannel 帧协议；仅中继失败时兜底） ---------- */
-async function waitPeer(ms) { // peerjs 为 defer 加载：兜底直连时可能尚未就绪，最多等 ms
-  const t0 = Date.now();
-  while (typeof Peer === 'undefined') {
-    if (Date.now() - t0 > ms) return false;
-    await new Promise(r => setTimeout(r, 100));
-  }
-  return true;
-}
-async function directFetchShell() {
-  if (!(await waitPeer(3000))) throw new Error('peerjs 未加载');
-  return await new Promise((resolve, reject) => {
-    const peer = new Peer({
-      host: location.hostname,
-      port: Number(location.port) || 80,
-      path: '/peerjs',
-      key: 'chat_p2p_v1',
-      secure: location.protocol === 'https:',
-      config: { iceServers: [{ urls: ['stun:stun.miwifi.com:3478', 'stun:stun.qq.com:3478'] }] },
-    });
-    let settled = false;
-    const fail = (msg) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { peer.destroy(); } catch {}
-      reject(new Error(msg));
-    };
-    const timer = setTimeout(() => fail('直连超时（4s，不通即转中继）'), 4000);
-    peer.on('error', (e) => {
-      if (e.type === 'peer-unavailable') fail('目标设备不在线');
-      else if (e.type === 'browser-incompatible') fail('当前浏览器不支持 WebRTC');
-      else fail('P2P 错误 ' + e.type);
-    });
-    peer.on('open', () => {
-      setStatus('信令已连 · 打洞中…');
-      // 默认 binary 序列化（带大消息分片；'json' 模式不分片，47KB 外壳帧会被 DataChannel 截断）。
-      // 本页连接仅顶层自用（拉外壳），换页即销毁；应用持续流量走中继（fetch 劫持）
-      const conn = peer.connect(cfg.peerId, { reliable: true });
-      handoffConn = conn; // 拉外壳期间持有（换页销毁）
-      const onFrame = (f) => {
-        if (!f || typeof f !== 'object') return;
-        if (f.t === 'head') head = f;
-        else if (f.t === 'chunk') chunks.push(b64ToBytes(f.data));
-        else if (f.t === 'end') {
-          settled = true; clearTimeout(timer);
-          resolve({ status: head.status || 0, contentType: head.contentType || '', chunks });
-        } else if (f.t === 'err') {
-          settled = true; clearTimeout(timer);
-          reject(new Error(f.msg || '远程错误'));
-        }
-      };
-      let head = null; const chunks = [];
-      conn.on('open', () => conn.send({ t: 'auth', pairKey: cfg.pairKey }));
-      conn.on('data', (f) => {
-        if (!settled && f && f.t === 'authok') {
-          setStatus('已连接 · 正在从设备获取页面…');
-          conn.send({ t: 'req', id: 'shell1', method: 'GET', path: shellPath(), headers: {} });
-          return;
-        }
-        if (!settled && f && f.t === 'authfail') return fail('配对密钥错误');
-        onFrame(f);
-      });
-      conn.on('close', () => { if (!settled) fail('连接被关闭'); });
-    });
-  });
 }
 
 /* ---------- 通道 B：加密中继（POST /relay，NDJSON 逐帧解密） ---------- */
@@ -476,22 +406,15 @@ async function connect() {
   cfg = { peerId: $('peerId').value.trim(), pairKey: $('pairKey').value.trim() };
   if (!cfg.peerId || !cfg.pairKey) { setStatus('请填写设备码和配对密钥', true); return; }
   try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch {}
-  setStatus('连接信令服务器…');
+  setStatus('经加密中继连接…');
+  // 首屏外壳统一走中继（家端 Go 程序从不接 PeerJS 信令——旧「直连优先」在家端
+  // 换 Go 后从未打通过，纯浪费首开时间，已删）。真正的 P2P 直连在应用内升级：
+  // 外壳起步于中继，boot 后 remote-boot 经中继交换 SDP 打 DataChannel（p2pdirect.go），
+  // 打通即直传、打不通留在中继——与本页无关
   let r = null;
-  let via = ''; // 成功通道：direct / relay（只影响首屏与状态文案；换页后持续流量统一走中继）
   const errs = [];
-  // 直连优先快试（4s，不通即弃）→ 中继保底（中继成功后不再回头试直连——打不通的
-  // 网络环境短期内不会再打通，白等徒增首开延迟）；两条路拉到外壳都顶层整页换掉本页
-  try {
-    if (window._forceRelay) throw new Error('强制中继');
-    r = await directFetchShell();
-    via = 'direct';
-  } catch (e1) {
-    errs.push('直连：' + e1.message);
-    setStatus('直连未通，转加密中继…');
-    try { r = await relayFetchShell(); via = 'relay'; }
-    catch (e2) { errs.push('中继：' + e2.message); }
-  }
+  try { r = await relayFetchShell(); }
+  catch (e2) { errs.push('中继：' + e2.message); }
   if (!r) {
     // 双通道都失败的最后兜底：缓存虽已过期但还在 → 用它换页（应用内自行直连/中继重连），
     // 避免网络抖动时死停在配对页；应用连上后会静默刷新缓存
@@ -504,7 +427,7 @@ async function connect() {
     setStatus(errs.join('；'), true); return;
   }
   if (r.status !== 200) { setStatus('获取页面失败：HTTP ' + r.status, true); return; }
-  swapToShell(r.chunks, r.contentType, via);
+  swapToShell(r.chunks, r.contentType, '');
 }
 
 /* 入口：URL #peer=..&pk=.. 自动填入并直连；否则展示配对表单（回填上次配置） */
@@ -517,7 +440,6 @@ async function connect() {
     const peer = h.get('peer') || APP_ID;
     const pk = h.get('pk');
     if (peer && pk) hashCfg = { peerId: peer, pairKey: pk };
-    if (h.get('relay') === '1') window._forceRelay = true;
     history.replaceState(null, '', location.pathname + location.search);
   }
   let saved = null;
