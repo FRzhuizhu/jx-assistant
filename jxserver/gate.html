@@ -272,7 +272,7 @@ function pjGcmOpen(key, iv, ctTag) { return pjGcm(key, iv, ctTag, true); }
 
 /* ---------- 中继封包（与目标侧 sealFrame/openPack 格式一致） ---------- */
 let cfg = null; // {peerId, pairKey}
-let handoffConn = null; // 直连成功时的 DataConnection：换页时交接给应用复用（免二次连接）
+let handoffConn = null; // 直连 DataConnection：仅本页拉外壳期间持有（换页即随文档销毁，应用不再复用）
 let _relayKeyObj = null, _relayKeyFor = '';
 async function relayKeyObj() {
   if (!HAS_SUBTLE) return null;
@@ -339,9 +339,9 @@ async function directFetchShell() {
     peer.on('open', () => {
       setStatus('信令已连 · 打洞中…');
       // 默认 binary 序列化（带大消息分片；'json' 模式不分片，47KB 外壳帧会被 DataChannel 截断）。
-      // 本页连接仅顶层自用（拉外壳）；应用在 iframe 内用自己的 peerjs 重连，不存在 realm 错配
+      // 本页连接仅顶层自用（拉外壳），换页即销毁；应用持续流量走中继（fetch 劫持）
       const conn = peer.connect(cfg.peerId, { reliable: true });
-      handoffConn = conn; // 直连成功即记录：换页时交接给应用，免去二次连接
+      handoffConn = conn; // 拉外壳期间持有（换页销毁）
       const onFrame = (f) => {
         if (!f || typeof f !== 'object') return;
         if (f.t === 'head') head = f;
@@ -450,27 +450,28 @@ async function swapToShell(chunks, contentType, via) {
   try { localStorage.setItem(SHELL_CACHE_KEY, JSON.stringify({ html, ts: Date.now() })); } catch {}
   swapInHtml(html, via, false);
 }
-// 立即换页（html 为未注入的原始外壳）：应用渲染到全屏 iframe——顶层 document.write 在自身
+// 立即换页（html 为未注入的原始外壳）：顶层整页替换——document.open/write 把配对页
+// 本身换成应用，应用成为唯一顶层文档（2026-10 起弃用 iframe 嵌套：嵌套文档里 pushState
+// 条目在退栈遍历会被引擎按条目 URL 重载 iframe，把应用整个换成配对页——手机端设置
+// 二级页按返回直接「回中继页」的根源，已实测；顶层文档无此怪癖，原生历史栈可用）。
 // 解析期间调用时会"拼接"而非"重置"文档（双份样式叠影 + 配对页脚本残留重入 → 无限重载），
-// iframe 文档由我们新建，open/write/close 行为确定，且顶层配对页永不自我重写。
-// via 用于通道交接（挂顶层 window.__p2pHandoff，同源 iframe 内应用读取）；cached=true 时剥离应用的「连接前隐藏界面」脚本
-let appFrame = null;
+// 兜底等 DOMContentLoaded 后再 open；顶层换页后旧文档连同 JS 上下文整体退场。
+// cached=true 时剥离应用的「连接前隐藏界面」脚本
+let swapped = false;
 function swapInHtml(html, via, cached) {
-  if (via === 'direct' && handoffConn) window.__p2pHandoff = { mode: 'direct', conn: handoffConn, cfg };
-  else if (via === 'relay') window.__p2pHandoff = { mode: 'relay', cfg };
-  else window.__p2pHandoff = null; // 缓存启动：应用按上次通道（p2p_last_mode）自行决策
-  if (appFrame) { appFrame.remove(); appFrame = null; }
-  appFrame = document.createElement('iframe');
-  appFrame.setAttribute('title', 'app');
-  appFrame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:9999;background:#fff';
-  document.body.appendChild(appFrame);
-  let h = html.replace('<head>', '<head><scr' + 'ipt>window.P2P_GATE=true;window.P2P_APP_ID=' + JSON.stringify(APP_ID || '') + ';</scr' + 'ipt>');
-  // 缓存启动不藏界面：应用的该脚本块带前置注释且跨行，正则需容忍（[^<]* 吃掉注释与换行）
-  if (cached) h = h.replace(/<script>[^<]*if \(window\.P2P_GATE[\s\S]*?<\/script>\s*/, '');
-  const doc = appFrame.contentDocument;
-  doc.open(); doc.write(h); doc.close();
-  const panel = document.querySelector('.panel');
-  if (panel) panel.style.display = 'none'; // 应用就位：隐藏配对表单防叠影（保留在 DOM，连接失败可再显示）
+  void via; // 通道只影响首屏拉取（直连快试/中继保底）；换页后应用经 remote-boot 的
+            // fetch 劫持直连 /relay，不依赖配对页存活，也无上下文需要交接
+  const doSwap = () => {
+    if (swapped) return;
+    swapped = true;
+    let h = html.replace('<head>', '<head><scr' + 'ipt>window.P2P_GATE=true;window.P2P_APP_ID=' + JSON.stringify(APP_ID || '') + ';</scr' + 'ipt>');
+    // 缓存启动不藏界面：应用的该脚本块带前置注释且跨行，正则需容忍（[^<]* 吃掉注释与换行）
+    if (cached) h = h.replace(/<script>[^<]*if \(window\.P2P_GATE[\s\S]*?<\/script>\s*/, '');
+    try { document.open(); document.write(h); document.close(); }
+    catch (e) { swapped = false; setStatus('换页失败：' + e.message, true); }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', doSwap);
+  else doSwap();
 }
 
 async function connect() {
@@ -479,10 +480,10 @@ async function connect() {
   try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch {}
   setStatus('连接信令服务器…');
   let r = null;
-  let via = ''; // 成功通道：direct / relay（交接给应用，免二次直连快试）
+  let via = ''; // 成功通道：direct / relay（只影响首屏与状态文案；换页后持续流量统一走中继）
   const errs = [];
-  // 直连优先快试（4s，不通即弃）→ 中继保底；换页后通过 __p2pHandoff 告知应用已建立的通道形态，
-  // 应用据此免做第二轮直连快试（蜂窝网络下双重等待是之前慢的主因之一）
+  // 直连优先快试（4s，不通即弃）→ 中继保底（中继成功后不再回头试直连——打不通的
+  // 网络环境短期内不会再打通，白等徒增首开延迟）；两条路拉到外壳都顶层整页换掉本页
   try {
     if (window._forceRelay) throw new Error('强制中继');
     r = await directFetchShell();
