@@ -63,6 +63,7 @@ async function openAssistant() {
 // 「新工作任务」不立即建会话：留在首页聚焦输入框，发出第一条消息才真正创建
 function goHomeNewTask() {
   narrowClosePanels(); // 窄屏：从左栏浮层发起，选中目标即收起浮层
+  if (marketOpen()) closeMarket(); // 新工作任务也是一张「对话页」：回首页即关掉市场页
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   navTok.main++;          // 作废在途的会话加载（回首页是同步完成的导航）
   navBusy.main = false;
@@ -80,6 +81,7 @@ function goHomeNewTask() {
 
 async function openSession(id) {
   narrowClosePanels(); // 窄屏：在左栏浮层里选中会话即收起浮层
+  if (marketOpen()) closeMarket(); // 市场像一张对话页：打开任何对话即关掉它（app-market.js）
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
