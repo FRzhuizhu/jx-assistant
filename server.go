@@ -52,8 +52,10 @@ type App struct {
 	jobs            map[string]*jobRun // 会话内后台作业（jobs.go）
 	protectPaths    []string           // 助手自身配置/数据目录，任何模式禁访问
 	skillsMu        sync.Mutex
-	skillsReady     bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
-	skillsDirOurs   string // 已解析的技能目录（App 级缓存，避免跨实例污染）
+	skillsReady     bool             // 技能母本是否已释放（SkillsDir 首次解析后置位）
+	skillsDirOurs   string           // 已解析的技能目录（App 级缓存，避免跨实例污染）
+	marketMu        sync.Mutex
+	marketCache     marketCacheEntry // 市场清单拉取缓存（60s，见 market.go）
 	remoteMu        sync.Mutex
 	remotes         map[string]*remoteClient // SSH 远程连接池（remote.go）
 	listenPort      int                      // 本机监听端口（远程中继的桥接目标，热重启连接用）
@@ -240,6 +242,11 @@ func (a *App) Routes() http.Handler {
 	// 统一用 fetch 拿资产，远程模式下 /api/ 前缀经 remote-boot 的 fetch 劫持自动
 	// 走中继隧道——旧 /_components/ 标签相对网关 origin 解析必 404，远程组件全体消失
 	mux.Handle("GET /api/components/", http.HandlerFunc(a.handleComponentAsset))
+	// 市场（技能/组件/插件，见 market.go）：清单视图 + 一键安装/卸载；
+	// 同样挂 /api/ 下让远程中继天然覆盖
+	mux.HandleFunc("GET /api/market", a.handleMarketView)
+	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
+	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
 	mux.HandleFunc("GET /api/device/poll", a.handleDevicePoll)
@@ -903,6 +910,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"bindHost":         a.Cfg.BindHost,
 		"lanIPs":           lanIPv4s(),
 		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
+		"marketURL":        a.Cfg.MarketURL,
 		"updateURL":        a.Cfg.UpdateURL,
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
@@ -926,6 +934,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		RemotePairKey   *string `json:"remotePairKey"` // 远程接入配对密钥（端到端加密密钥的种子）
 		RemoteHost      *string `json:"remoteHost"`    // 中继网关地址（域名或 IP，不带协议与端口）
 		RemotePort      *int    `json:"remotePort"`    // 中继网关端口
+		MarketURL       *string `json:"marketURL"`     // 市场（技能/组件/插件）服务器清单地址
 		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
@@ -1028,6 +1037,17 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.Cfg.RemoteAccess.Port = *v
+	}
+	if v := body.MarketURL; v != nil {
+		u := strings.TrimSpace(*v)
+		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			writeErr(w, 400, "市场地址需为 http(s) 的清单地址（jx-server 的 /market/manifest.json）")
+			return
+		}
+		a.Cfg.MarketURL = u
+		a.marketMu.Lock()
+		a.marketCache = marketCacheEntry{} // 换市场源：缓存作废
+		a.marketMu.Unlock()
 	}
 	if v := body.UpdateURL; v != nil {
 		u := strings.TrimSpace(*v)

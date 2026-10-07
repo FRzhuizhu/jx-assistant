@@ -84,6 +84,10 @@
     <div id="session-list"></div>
 
     <div class="sidebar-foot">
+      <button id="btn-market" class="foot-btn" title="市场：安装/更新 技能、组件与插件">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
+        市场
+      </button>
       <button id="btn-recycle" class="foot-btn" title="回收站">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         回收站
@@ -121,6 +125,31 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
       </button>
     </header>
+
+    <!-- 市场视图（app-market.js）：body.market-mode 下占领主区（对话区与输入区隐藏），
+         技能/组件/插件 三 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
+    <div id="market-view" class="hidden">
+      <div class="mk-head">
+        <div class="mk-title">
+          <h2>市场</h2>
+          <span id="mk-server" class="mk-server" title="市场服务器（设置 · 网络访问 可改）"></span>
+        </div>
+        <input id="mk-search" type="search" placeholder="搜索名称 / 描述 / 标签…" autocomplete="off" spellcheck="false">
+        <button id="mk-refresh" class="mk-icon-btn" title="刷新清单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        </button>
+      </div>
+      <div class="mk-tabs">
+        <button data-mk-tab="skill" class="mk-tab active">技能</button>
+        <button data-mk-tab="component" class="mk-tab">组件</button>
+        <button data-mk-tab="plugin" class="mk-tab">插件</button>
+        <span class="mk-tabs-rest">
+          <span id="mk-count"></span>
+          <button id="mk-ext-market" class="mk-link hidden">管理外部 Claude 市场</button>
+        </span>
+      </div>
+      <div id="mk-list" class="mk-list"></div>
+    </div>
 
     <div id="progress-panel" class="hidden"></div>
     <div id="messages"><div class="msg-col" id="msg-col"></div></div>
@@ -484,6 +513,14 @@
                 <input id="set-remote-port" class="pf-input" type="number" min="1" max="65535" style="width:90px">
               </div>
               <p class="sf-desc">中继网关（210 网关 server.js）的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
+            </div>
+          </div>
+          <div class="gen-section">
+            <h4>市场（技能 / 组件 / 插件）</h4>
+            <div class="set-field">
+              <div class="sf-label">市场服务器</div>
+              <input id="set-market-url" class="pf-input" placeholder="http://网关地址:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
+              <p class="sf-desc">jx-server 市场的清单地址（同一台服务器上与中继网关共用端口）；填好即用，改动即时生效。留空则市场页显示未配置。</p>
             </div>
           </div>
           <p class="tip">网络访问设置保存在服务端；远程接入改动即时生效，局域网绑定改动重启程序后生效。</p>
@@ -855,6 +892,7 @@
 <script src="/app-chat.js"></script>
 <script src="/app-ctxmenu.js"></script>
 <script src="/app-ccplugins.js"></script>
+<script src="/app-market.js"></script>
 <script src="/app-settings.js"></script>
 <script src="/app.js"></script>
 <script src="/cx.js"></script>

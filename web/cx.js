@@ -132,6 +132,36 @@
       return { hot: false };
     },
 
+    // 重拉清单并对账（市场安装/卸载组件后由 app-market.js 调用）：
+    // 新出现且启用的组件立即注入、消失的组件热卸载，全程不刷新页面。
+    async refresh() {
+      let fresh;
+      try {
+        const res = await fetch('/api/components');
+        const data = await res.json();
+        fresh = data.components || [];
+      } catch (e) {
+        console.warn('[CX] 清单刷新失败', e);
+        return;
+      }
+      const oldIds = new Set(this._list.map((c) => c.id));
+      const newIds = new Set(fresh.map((c) => c.id));
+      for (const id of oldIds) {
+        if (newIds.has(id)) continue;
+        const rec = this._active[id];
+        if (rec && typeof rec.dispose === 'function') {
+          try { rec.dispose(); } catch (e) { console.warn('[CX] 组件 ' + id + ' dispose 失败', e); }
+        }
+        delete this._active[id];
+        this._removeTags(id);
+      }
+      this._list = fresh;
+      for (const c of fresh) {
+        if (c.enabled && !oldIds.has(c.id)) this._inject(c);
+      }
+      this._signal(); // 增删都会影响设置页「内置组件」清单与组件设置区
+    },
+
     // 组件交出（或更新）自己的设置区；通常在 init 里调用。
     // 设置区随组件激活状态显示：没激活的组件那段不会渲染出来。
     registerSettings(def) {

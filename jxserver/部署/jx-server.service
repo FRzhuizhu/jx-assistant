@@ -1,0 +1,25 @@
+[Unit]
+Description=坚祥 jx-server（远程访问中继 + 技能/组件/插件市场）
+Documentation=file:///opt/jx-server/部署/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jx-server
+# 端口 2228：与现有 chat-p2p（2227，Node 网关）并行，互不影响；
+# peer-key 与 chat-p2p 一致（chat_p2p_v1），客户端切换只改端口。
+ExecStart=/opt/jx-server/jx-server -addr :PORT -data /opt/jx-server/data -peer-key chat_p2p_v1
+Restart=always
+RestartSec=3
+MemoryMax=512M
+LimitNOFILE=16384
+# 轻量加固：市场只读下发，发布走 SSH 子命令
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/jx-server/data
+
+[Install]
+WantedBy=multi-user.target

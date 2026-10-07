@@ -2386,3 +2386,66 @@ html.desktop-shell .bpw-hint { display: none; }
 .ccp-cmd-name { font-size: 12px; font-weight: 600; }
 .ccp-cmd-hint { font-weight: 400; opacity: .55; font-size: 11px; }
 .ccp-cmd-desc { font-size: 11px; opacity: .65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============================================================
+   市场视图（app-market.js，market.go 的浏览器半边）：
+   左侧栏底部「市场」进入的主区整页视图——body.market-mode 下对话区与
+   输入区让位（topbar 保留，侧栏/右栏开合仍可用），技能/组件/插件三 tab
+   + 搜索 + 卡片网格（安装/更新/卸载）。
+   ============================================================ */
+
+body.market-mode #progress-panel,
+body.market-mode #messages,
+body.market-mode #composer-wrap { display: none; }
+
+#market-view { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 16px 26px 20px; }
+.mk-head { display: flex; align-items: center; gap: 12px; flex: none; }
+.mk-title { display: flex; align-items: baseline; gap: 10px; flex: none; }
+#market-view h2 { font-size: 17px; font-weight: 600; }
+.mk-server { font-size: 12px; color: var(--text-3); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-server.off { color: var(--amber); }
+#mk-search { flex: 1; max-width: 430px; min-width: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font-size: 13px; outline: none; }
+#mk-search:focus { border-color: var(--accent); }
+.mk-icon-btn { flex: none; width: 34px; height: 34px; border: none; border-radius: 9px; background: none; color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.mk-icon-btn svg { width: 17px; height: 17px; }
+.mk-icon-btn:hover { background: var(--hover); color: var(--text); }
+
+.mk-tabs { display: flex; align-items: center; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--border); flex: none; }
+.mk-tab { padding: 8px 14px 9px; border: none; background: none; font-size: 13.5px; color: var(--text-2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.mk-tab:hover { color: var(--text); }
+.mk-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.mk-tabs-rest { margin-left: auto; display: flex; align-items: center; gap: 10px; padding-bottom: 6px; }
+#mk-count { font-size: 12px; color: var(--text-3); }
+.mk-link { border: none; background: none; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0; }
+.mk-link:hover { text-decoration: underline; }
+
+.mk-list { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; align-content: start; padding-top: 12px; }
+.mk-hint { grid-column: 1 / -1; color: var(--text-3); font-size: 13px; line-height: 1.9; padding: 24px 4px; white-space: normal; }
+.mk-hint .mk-link { font-size: 13px; }
+.mk-suggest { margin-top: 10px; }
+.mk-suggest code { background: var(--code-bg); padding: 3px 8px; border-radius: 6px; font-size: 12px; }
+.mk-suggest-acts { margin-top: 12px; display: flex; gap: 8px; }
+.mk-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; background: var(--bg); }
+.mk-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.mk-card.installed { border-color: color-mix(in srgb, var(--green) 32%, var(--border)); }
+.mk-card-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mk-card-head b { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-ver { margin-left: auto; flex: none; font-size: 11.5px; color: var(--text-3); }
+.mk-desc { font-size: 12px; color: var(--text-2); line-height: 1.55; max-height: 56px; overflow: hidden; }
+.mk-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.mk-tag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--text-2); }
+.mk-card-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+.mk-installed { font-size: 11.5px; color: var(--green); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-act { flex: none; font-size: 12px; padding: 5px 14px; border-radius: 8px; border: 1px solid transparent; background: var(--accent); color: #fff; cursor: pointer; }
+.mk-act:hover { background: var(--accent-hover); }
+.mk-act:disabled { opacity: .6; cursor: default; }
+.mk-act.ghost { background: transparent; border-color: var(--border); color: var(--text-2); }
+.mk-act.ghost:hover { background: #fbecec; border-color: #e2b4b4; color: var(--danger); }
+
+/* 窄屏（手机远程/窄窗口）：单列卡片、搜索框全宽、页边距收紧 */
+@media (max-width: 499.98px) {
+  #market-view { padding: 10px 12px 14px; }
+  .mk-head { flex-wrap: wrap; }
+  #mk-search { max-width: none; }
+  .mk-list { grid-template-columns: 1fr; }
+}

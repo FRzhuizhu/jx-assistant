@@ -151,6 +151,9 @@ func (r *ComponentRegistry) SetEnabled(id string, on bool) error {
 // Dir 返回组件目录（资产服务用）。
 func (r *ComponentRegistry) Dir() string { return r.dir }
 
+// Rescan 重扫组件目录（市场安装/卸载后调用：新组件即时装载、删除的组件即时效）。
+func (r *ComponentRegistry) Rescan() { r.rescan() }
+
 // ---------- HTTP 处理器 ----------
 
 func (a *App) handleListComponents(w http.ResponseWriter, r *http.Request) {

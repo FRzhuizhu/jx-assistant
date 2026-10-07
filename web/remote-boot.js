@@ -30,21 +30,6 @@
     return;
   }
 
-  /* ---------- 禁用 history 写入（远程外壳专项） ----------
-     应用跑在 gate 的 iframe 里、文档由 document.write 生成：这种文档里
-     pushState 的条目会继承配对页的 URL，而部分引擎（实测桌面/移动 Chrome）
-     在退栈遍历这类条目时会按条目 URL 把 iframe 整个重新加载——一次
-     history.back() 后应用被换成配对页（手机端设置二级页按返回直接
-     「回到中继页」的根源，已实测取证）。前端仅有的两处 history 写入
-     （app-settings.js setHistPush 的设置两级返回栈、app-left.js
-     backGuardArm 的左栏返回哨兵）都带 try/catch 降级：压栈抛错即退回
-     纯 UI 导航——返回键/返回手势的逐级语义在远程形态下让位给「绝不把
-     用户带出应用」，popstate/back 本身不动。 */
-  try {
-    history.pushState = function () { throw new Error('jx-remote: history write disabled'); };
-    history.replaceState = function () { throw new Error('jx-remote: history write disabled'); };
-  } catch (e) { /* 覆盖失败（极端宿主）：维持原生行为 */ }
-
   var realFetch = window.fetch.bind(window);
   var HAS_SUBTLE = typeof crypto !== 'undefined' && !!crypto.subtle;
   var HAS_DECOMPRESS = typeof DecompressionStream === 'function'; // 响应 gzip 解压能力（现代浏览器）
