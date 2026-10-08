@@ -327,29 +327,34 @@ function diffBody(prev, cur) {
   return out.join('\n') + (out.length ? '\n————\n' : '') + String(cur ?? '');
 }
 
-// 首轮拼装的「系统提示词」行：渲染在回合用户消息上方（请求里的最前部）
+// 首轮拼装的「系统提示词」行：渲染在回合用户消息上方——它就是请求消息序列的
+// 第 1 条（messages[0]），每次请求逐字节重发，不变则命中前缀缓存
 function sysHeadRow(sys, seq) {
-  return procTextRow('系统提示词已拼装', fmtCount(String(sys).length) + ' 字 · 每次请求的最前部，不变则命中前缀缓存', sys, seq);
+  return procTextRow('系统提示词已拼装', fmtCount(String(sys).length) + ' 字 · 请求消息序列第 1 条（messages[0]）· 不变则命中前缀缓存', sys, seq);
 }
 
-// 首轮拼装的尾部材料：运行环境（请求收尾的 user 消息）+ 工具定义（请求体
-// 里与消息平级的 tools 数组），紧随用户消息展示
-function promptTailRows(env, tools, seq) {
-  const wrap = document.createElement('div');
-  wrap.appendChild(procTextRow('运行环境', fmtCount(String(env ?? '').length) + ' 字 · 固定在请求尾部', env ?? '', seq));
-  if (tools != null) {
-    const row = document.createElement('div');
-    row.className = 'proc-row';
-    if (seq != null) row.dataset.seq = seq;
-    row.innerHTML =
-      '<div class="proc-head">' + chev('p-chev') +
-      '<span class="p-name">工具定义</span><span class="p-sub">· ' + tools.length + ' 个 · 与消息平级发送</span></div>' +
-      '<div class="proc-body"><pre></pre></div>';
-    row.querySelector('pre').textContent = JSON.stringify(tools, null, 2);
-    bindProcToggle(row);
-    wrap.appendChild(row);
-  }
-  return wrap;
+// 工具定义行：渲染在「系统提示词」行下方、用户消息**之前**。它在请求里不是消息——
+// 是请求体顶层的 tools 数组（与 messages 平级，不属于消息序列，所以没有"第几条"），
+// 由服务端按自己的模板排进提示。排在消息序列之前展示，才对得上真实请求的顺序：
+// 系统提示词 → 工具定义 → 消息序列（末尾那条 user 消息是运行环境快照）。
+function toolsRow(tools, seq) {
+  const row = document.createElement('div');
+  row.className = 'proc-row';
+  if (seq != null) row.dataset.seq = seq;
+  row.innerHTML =
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">工具定义</span><span class="p-sub">· ' + tools.length + ' 个 · 请求体顶层字段（与 messages 平级，不在消息序列里）</span></div>' +
+    '<div class="proc-body"><pre></pre></div>';
+  row.querySelector('pre').textContent = JSON.stringify(tools, null, 2);
+  bindProcToggle(row);
+  return row;
+}
+
+// 首轮拼装的尾部材料：只有「运行环境」——它是请求**消息序列里**的一条 user 快照
+// （追加式：首条整份、其后按行差分；有变化才追加，且追加在当轮用户消息之后，
+// 所以首轮它就是那次请求的最后一条消息），故展示在用户消息下方。
+function promptTailRows(env, seq) {
+  return procTextRow('运行环境', fmtCount(String(env ?? '').length) + ' 字 · 追加式环境快照（作为 user 消息进消息序列，有变化才追加新的）', env ?? '', seq);
 }
 
 // 系统提示词变更行：diff + 新全文；前缀改变意味着此前缓存的前缀将失效
@@ -568,6 +573,7 @@ function inheritBlock(items, resultOf, sid) {
   const turns = groupTurns(items, resultOf);
   turns.forEach((turn, ti) => {
     if (turn.sysHead) body.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
+    if (turn.headTools) body.appendChild(toolsRow(turn.headTools, turn.headToolsSeq));
     if (turn.userMsg) body.appendChild(userBubble(turn.userMsg, viewOf(sid)));
     renderFinishedTurn(body, turn, key + ':' + ti);
   });
@@ -654,7 +660,7 @@ const ROW_ITEM_BUILDERS = {
     st.lastEnv = txt;
   },
   // 提示词拼装快照：变化驱动展示（规范 §4）——首轮完整交代拼装结构
-  // （系统提示词在用户消息上方、运行环境+工具定义紧随其后，即请求真实排布），
+  // （系统提示词 + 工具定义在用户消息上方、运行环境在请求末尾，即请求真实排布），
   // 此后仅在系统提示词/工具定义变更时出折叠行；环境变化由 env 行负责
   prompt(m, st) {
     let sys = '', env = '', tools = null;
@@ -668,7 +674,9 @@ const ROW_ITEM_BUILDERS = {
     if (!st.sawPrompt) {
       // 首轮：lastEnv 同步为本轮环境，随后的同文快照行会被去重
       st.cur.sysHead = sys; st.cur.sysHeadSeq = m.seq;
-      st.cur.items.push({ k: 'prompttail', seq: m.seq, env, tools });
+      // 工具定义跟着提示词走（都在消息序列之前展示），运行环境留在尾部材料里
+      st.cur.headTools = tools; st.cur.headToolsSeq = m.seq;
+      st.cur.items.push({ k: 'prompttail', seq: m.seq, env });
       st.lastEnv = env;
     } else {
       // 空壳行（服务端把与上一条逐字节相同的快照瘦成 {} 后）不产生任何变更展示：
@@ -840,7 +848,7 @@ async function forkFromAnswer(m, btn) {
 }
 
 function renderItem(it, opts) {
-  if (it.k === 'prompttail') return promptTailRows(it.env, it.tools, it.seq);
+  if (it.k === 'prompttail') return promptTailRows(it.env, it.seq);
   if (it.k === 'envnote') return envNoteRow(it.text, it.prev, it.seq);
   if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
   if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
@@ -947,8 +955,10 @@ function subTaskCard(tc, result) {
   return d;
 }
 
-/* ---------- 长消息折叠（只作用于数字助理主对话：用户气泡、数字助理正文、
-   以及作为「用户消息变体」的派发通知气泡，见 app-chat.js 的 applyFolds） ----------
+/* ---------- 长消息折叠（只作用于数字助理主对话里「用户自己发的灰色气泡」：
+   用户气泡，以及作为「用户消息变体」的派发通知气泡（同样是灰底气泡）。
+   **数字助理的正文回复（.msg.assistant 的 .md）不在折叠目标里**——那是模型给出的
+   正常回复，多长都完整展开显示，不裁剪、不出「展开 / 收起」控件（见 applyFolds）。 ----------
    需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
    短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区宽度、
    字号一变，同一段文字换行出的行数就变，所以：
@@ -973,15 +983,17 @@ function foldEnabled() {
   return !!(state.cur && state.cur.mode === 'assistant');
 }
 
-// 折叠目标：主对话里已定稿的用户气泡、数字助理正文与派发通知气泡（后者是
-// 「用户消息的变体」，同样是长消息）。跳过流式中的那块（边流边折叠会一直遮住
+// 折叠目标：主对话里已定稿的用户气泡与派发通知气泡（后者是
+// 「用户消息的变体」，同样是长消息）。**数字助理的正文（.msg.assistant > .md）
+// 刻意不在目标里**：那是模型给出的正常回复，多长都完整显示，不裁剪、不出折叠
+// 控件（用户气泡的折叠效果保持不变）。跳过流式中的那块（边流边折叠会一直遮住
 // 最新输出）与编辑态/排队态占位气泡（临时形态，带虚线边框）。
 function foldTargets() {
   const col = mainView.col;
   if (!col) return [];
   const live = mainView.liveId ? document.getElementById(mainView.liveId) : null;
   const out = [];
-  col.querySelectorAll('.msg.user > .bubble, .msg.assistant > .md, .msg.sysnote > .bubble').forEach((el) => {
+  col.querySelectorAll('.msg.user > .bubble, .msg.sysnote > .bubble').forEach((el) => {
     const msg = el.parentElement;
     if (!msg || msg.classList.contains('editing') || msg.classList.contains('queued') || msg.classList.contains('pending-steer')) return;
     if (live && (msg === live || live.contains(msg))) return; // 流式实时块不折
@@ -1598,6 +1610,7 @@ function pendingSendOf(st, msgs, sid) {
 // 渲染单个回合（用户气泡 + 过程折叠 + 完成态收尾件）；isLast 决定是否走流式尾部窗口
 function appendTurn(target, turn, key, view, isLast) {
   if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
+  if (turn.headTools) target.appendChild(toolsRow(turn.headTools, turn.headToolsSeq));
   if (turn.userMsg) target.appendChild(userBubble(turn.userMsg, view));
   if (isLast && view.state.streaming) {
     renderStreamingTurn(target, turn, key);

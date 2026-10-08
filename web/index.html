@@ -178,7 +178,9 @@
           </div>
         </div>
         <!-- 附件区：本轮要带进对话的文件（选择/粘贴/拖拽先暂存在这里，点发送才写入工作区）。
-             没有附件时带 hidden，整块不参与布局（零占位、不留白条）；渲染见 app-chat.js 的 renderAttachments -->
+             这层就是输入卡上方的「第二层」白底条带（style.css 的 .attach-rail：与输入
+             卡同宽同底色同圆角、1px 描边，有附件才扩展出来）。
+             没有附件时带 hidden，整块不参与布局（零占位、不留白边）；渲染见 app-chat.js 的 renderAttachments -->
         <div id="attachments" class="attach-rail hidden"></div>
         <div id="composer" class="composer-card"><!-- composer-card -->
         <textarea id="input" class="composer-input" rows="3" placeholder="描述你想要构建的内容…"></textarea>

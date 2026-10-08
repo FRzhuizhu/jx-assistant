@@ -75,28 +75,39 @@
   }
 
   /* ================= 语音快捷键 =================
-     表示：keys 数组，元素为 'ctrl'|'alt'|'shift'|'meta' | 单个字母/数字 | 'f1'..'f12'
-     | 'space' | 'mouse-side'（侧键，前后两枚都算）| 'mouse-left' | 'mouse-right'。
-     校验：不允许只剩单独的 mouse-left 或单独的 mouse-right（会废掉正常点击/菜单）。
-     模式：tap=点按切换（按一下开始/再按结束）；hold=长按输入（按住说话、松开结束）。
+     表示：**备选数组**——shortcutAlternatives() 返回 [[键…], …]，每个元素是一种
+     可触发的组合（组合内全按住才触发，任一组合触发即可）。
+     · 用户自定义（设置页录制）：单组合，元素为 'ctrl'|'alt'|'shift'|'meta' |
+       单个字母/数字 | 'f1'..'f12' | 'space' | 'mouse-side'（侧键，前后两枚都算）
+       | 'mouse-left' | 'mouse-right'。
+     · 默认（未自定义）：**鼠标侧键优先**——浏览器无法枚举鼠标按键，用「是否
+       见过侧键事件」学习判定（sawSide）：见过 → 只用侧键；从没见过 → 侧键与
+       Alt 键**两者皆可**（没有侧键的机器自然用 Alt，按过一次侧键后 Alt 退役）。
+     · 独按修饰键（如默认的 Alt）：按住期间又按了别的键（用户在按 Alt+X 组合）
+       → 解除不触发；点按模式在**独按松开**时触发，避免任何 Alt 组合误触。
+     · 校验：不允许只剩单独的 mouse-left 或单独的 mouse-right（废掉正常点击/菜单）。
+     · 模式：tap=点按切换；hold=长按输入（按住说话、松开/失焦结束）。
      仅窗口聚焦时激活；失焦自动清空按键状态并结束长按会话。纯字母/数字单键在
      输入框聚焦时不触发（字符要留给打字），组合键不受此限。 */
 
-  const DEFAULT_SHORTCUT = ['mouse-side'];
   const KEY_NAMES = {
     ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', meta: 'Win', space: '空格',
     'mouse-side': '鼠标侧键', 'mouse-left': '鼠标左键', 'mouse-right': '鼠标右键',
   };
 
-  function voiceShortcut() {
+  function isModKey(k) { return k === 'ctrl' || k === 'alt' || k === 'shift' || k === 'meta'; }
+
+  // 默认备选：侧键优先；没见过侧键前 Alt 也可用（见上注释的学习式判定）
+  function shortcutAlternatives() {
     const v = pref.get('shortcut', null);
-    return (Array.isArray(v) && v.length) ? v : DEFAULT_SHORTCUT.slice();
+    if (Array.isArray(v) && v.length) return [v];
+    return pref.get('sawSide', false) ? [['mouse-side']] : [['mouse-side'], ['alt']];
   }
   function voiceShortcutMode() {
     return pref.get('shortcutMode', 'tap') === 'hold' ? 'hold' : 'tap';
   }
-  function shortcutLabel(keys) {
-    return (keys || voiceShortcut()).map((k) => KEY_NAMES[k] || k.toUpperCase()).join('+');
+  function shortcutLabel() {
+    return shortcutAlternatives().map((alt) => alt.map((k) => KEY_NAMES[k] || k.toUpperCase()).join('+')).join('或');
   }
   function validShortcut(keys) {
     if (!Array.isArray(keys) || keys.length === 0) return false;
@@ -143,33 +154,91 @@
     return voiceCtl.main || voiceCtl.sub || null;
   }
 
-  function shortcutHeld() {
-    for (const k of voiceShortcut()) {
+  function altHeld(alt) { // 一个备选组合是否被完整按住
+    for (const k of alt) {
       if (!heldKey.has(k) && !heldMouse.has(k)) return false;
     }
     return true;
+  }
+
+  // 独按修饰键状态（如默认备选里的 Alt）：按住期间按了别的键就解除，
+  // 防止用户按 Alt+X 组合时误触语音
+  let armedSolo = null; // { key, started }（started=hold 模式已开说话）
+
+  function cancelSolo() {
+    if (!armedSolo) return;
+    if (armedSolo.started) {
+      holdSession = false;
+      const ctl = activeVoiceCtl();
+      if (ctl && ctl.active()) ctl.stop();
+    }
+    armedSolo = null;
   }
 
   function shortcutFire(action) { // action: 'press' | 'release'
     if (!active || captureMode || !document.hasFocus()) return;
     const ctl = activeVoiceCtl();
     if (!ctl) return;
-    if (micHiddenByEnv()) {
-      if (action === 'press') voiceToast('远程手机端页面已隐藏听写：手机浏览器多不支持语音识别');
+    const alts = shortcutAlternatives();
+    const mode = voiceShortcutMode();
+
+    if (action === 'press') {
+      if (micHiddenByEnv()) {
+        voiceToast('远程手机端页面已隐藏听写：手机浏览器多不支持语音识别');
+        return;
+      }
+      // 1) 非独按修饰键的备选：完整按住即触发
+      for (const alt of alts) {
+        if (alt.length === 1 && isModKey(alt[0])) continue; // 独按修饰键走 2)
+        if (!altHeld(alt)) continue;
+        if (mode === 'hold') {
+          if (!holdSession && !ctl.active()) { holdSession = true; ctl.start(); }
+        } else if (!firedLatch) {
+          firedLatch = true; // 一次完整按下只触发一回，全松开后复位
+          ctl.toggle();
+        }
+        return;
+      }
+      // 2) 独按修饰键：按住先布防；点按模式在独按松开时触发（见 release）
+      for (const alt of alts) {
+        if (alt.length === 1 && isModKey(alt[0]) && altHeld(alt)) {
+          if (!armedSolo) {
+            armedSolo = { key: alt[0], started: false };
+            if (mode === 'hold' && !ctl.active()) {
+              holdSession = true;
+              armedSolo.started = true;
+              ctl.start();
+            }
+          }
+          return;
+        }
+      }
       return;
     }
-    if (voiceShortcutMode() === 'hold') {
-      if (action === 'press') {
-        if (!holdSession && !ctl.active()) { holdSession = true; ctl.start(); }
-      } else if (holdSession && !shortcutHeld()) {
+
+    // release
+    if (armedSolo) {
+      const k = armedSolo.key;
+      if (!heldKey.has(k) && !heldMouse.has(k)) { // 独按松开
+        if (armedSolo.started) {
+          holdSession = false;
+          if (ctl.active()) ctl.stop();
+        } else if (mode === 'tap') {
+          if (!micHiddenByEnv()) ctl.toggle();
+        }
+        armedSolo = null;
+        firedLatch = false;
+        return;
+      }
+    }
+    if (holdSession) {
+      const anyHeld = alts.some((a) => altHeld(a)) || (armedSolo && armedSolo.started);
+      if (!anyHeld) {
         holdSession = false;
         if (ctl.active()) ctl.stop();
       }
-    } else if (action === 'press' && !firedLatch && shortcutHeld()) {
-      firedLatch = true; // 一次完整按下只触发一回，全松开后复位
-      ctl.toggle();
     }
-    if (action === 'release' && !shortcutHeld()) firedLatch = false;
+    if (!alts.some((a) => altHeld(a)) && !armedSolo) firedLatch = false;
   }
 
   let scKeyDown = null, scKeyUp = null, scMouseDown = null, scMouseUp = null, scContextMenu = null, scBlur = null;
@@ -178,6 +247,7 @@
     heldKey.clear();
     heldMouse.clear();
     firedLatch = false;
+    cancelSolo();
     if (holdSession) {
       holdSession = false;
       const ctl = activeVoiceCtl();
@@ -195,8 +265,11 @@
         heldKey.delete(k);
         return;
       }
-      if (voiceShortcut().includes(k)) e.preventDefault();
-      if (!e.repeat) { heldKey.add(k); shortcutFire('press'); }
+      if (shortcutAlternatives().some((a) => a.includes(k))) e.preventDefault();
+      if (e.repeat) return;
+      if (armedSolo && k !== armedSolo.key) cancelSolo(); // 独按期间按了别的键：解除
+      heldKey.add(k);
+      shortcutFire('press');
     };
     scKeyUp = (e) => {
       if (!active) return;
@@ -206,10 +279,17 @@
     };
     scMouseDown = (e) => {
       if (!active || captureMode) return;
+      // 侧键学习：见过一次侧键，默认备选里的 Alt 就退役（浏览器枚举不了鼠标按键，
+      // 这是"有没有侧键"的实际可得判定）
+      if ((e.button === 3 || e.button === 4) && !pref.get('sawSide', false)) {
+        pref.set('sawSide', true);
+        refreshShortcutPlaceholders();
+      }
       const m = normMouse(e);
       if (!m) return;
       // 侧键在快捷键里时拦掉默认的后退/前进导航
-      if (voiceShortcut().includes(m)) e.preventDefault();
+      if (shortcutAlternatives().some((a) => a.includes(m))) e.preventDefault();
+      if (armedSolo && m !== armedSolo.key) cancelSolo();
       heldMouse.add(m);
       shortcutFire('press');
     };
@@ -222,7 +302,8 @@
     // 快捷键含鼠标右键（左右同按）时，按住期间压掉右键菜单
     scContextMenu = (e) => {
       if (!active) return;
-      if (voiceShortcut().includes('mouse-right') && heldMouse.has('mouse-left') && heldMouse.has('mouse-right')) {
+      if (shortcutAlternatives().some((a) => a.includes('mouse-right')) &&
+          heldMouse.has('mouse-left') && heldMouse.has('mouse-right')) {
         e.preventDefault();
       }
     };

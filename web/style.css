@@ -347,12 +347,14 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   margin-bottom: 2px;
 }
 
-/* 长消息折叠（只作用于数字助理主对话：用户气泡、数字助理正文，以及作为
-   「用户消息变体」的派发通知气泡，见 app-chat.js 的 applyFolds）。判定用
+/* 长消息折叠（只作用于数字助理主对话里「用户自己发的灰色气泡」：用户气泡，
+   以及作为「用户消息变体」的派发通知气泡，见 app-chat.js 的 applyFolds；数字助理的正文
+   （.md）不折叠、多长都完整显示（foldTargets 的目标选择器里没有它）。判定用
    **实际渲染高度**（行高 × 6）而不是字符数——对话区宽度、字号一变每行能放多少
    字就变。折叠态：按 6 行高度裁剪 + 底部渐隐到气泡自身底色 + 居中「展开」小按钮；
    展开态：不再裁剪，按钮落到正文下方变成「收起」。
-   --fold-bg 是渐隐终点色：气泡里等于气泡底色，数字助理正文里等于页面底色。 */
+   --fold-bg 是渐隐终点色：气泡里等于气泡自身底色（.msg.user 一处赋值）；
+   数字助理正文不折叠，再没有别的赋值点，兜底取页面底色。 */
 .fold-box { position: relative; }
 .fold-box.folded { max-height: var(--fold-h); overflow: hidden; }
 .fold-fade {
@@ -877,15 +879,25 @@ body.rp-open .w-handle { display: none; }
 /* ---------- 附件区（输入框上方那条"本轮带进来的文件"轨道） ---------- */
 /* 没有附件时整块带 .hidden（= display:none，全局规则）——不占高度、不留白条，
    也没有空状态提示；有附件才上屏。横向排卡片、溢出把竖向滚轮平移成横向滚动
-   （滚动条隐藏，滚轮处理见 app-chat.js 的 setupAttachDrop）。 */
+   （滚动条隐藏，滚轮处理见 app-chat.js 的 setupAttachDrop）。
+   常态（有附件）下它是输入卡上方的一层白底「第二层条带」：与输入卡同宽
+   （#composer-area 的 --content-w 口径）、同底色同圆角、边缘 1px 描边——用户上传
+   文件或图片时这层在白底上「扩展」出来，视觉上就是输入卡上面的第二条白边。
+   没有附件时它整块不参与布局，两道闸保证：渲染层给 .hidden（renderAttachments
+   按附件条数切换），CSS 层再兜 .attach-rail:empty（卡全被移除后即便漏了 hidden
+   也绝不留一条空白边）——手机端「没附件却多一条白边」就是缺了这条兜底才冒的。 */
 .attach-rail {
   display: flex; align-items: center; gap: 8px;
-  margin: 0 0 7px 2px;
+  margin: 0 0 8px; padding: 6px 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+  box-sizing: border-box;
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none; -ms-overflow-style: none;
 }
 .attach-rail::-webkit-scrollbar { height: 0; display: none; }
 .attach-rail.busy { opacity: .75; } /* 落盘中：整条略淡，卡片自己再标「上传中…」 */
+/* 空轨道＝彻底收起：不占高度、不画白边（无附件时的零占位兜底，见上方注释） */
+.attach-rail:empty { display: none; }
 .attach-item {
   flex: 0 0 auto; position: relative;
   display: flex; align-items: center; gap: 7px;
@@ -2277,7 +2289,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   /* 悬浮输入卡贴边留缝（含 iPhone 底部手势条安全区） */
   .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
   /* 附件区：窄屏再收紧一点（一行仍放得下两三枚卡片） */
-  .attach-rail { margin-left: 0; }
+  .attach-rail { margin-left: 0; padding: 5px 6px; }
   .attach-name { max-width: 118px; }
   .attach-thumb { width: 40px; height: 40px; }
   /* 回收站红边（桌面规则 body.bin-mode #sidebar{position:relative}）特异性更高，

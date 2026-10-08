@@ -86,6 +86,10 @@
     commit: null,         // 图谱区：点开的提交详情
     commits: [], commitsMore: false, commitsLoading: false,
     branches: null, branchesOpen: false,
+    commitMsg: '',        // 提交信息框文本（轮询刷新只重画清单、不重画提交框，但文本另存一份兜底）
+    aiBusy: false,        // AI 摘要生成中（跨刷新保留：按钮文案/禁用不被轮询复位）
+    commitBusy: false,    // 提交进行中（同上：防刷新后按钮回活、重复提交）
+    opError: '',          // 操作类错误（用户点出来的）：轮询不抹，下一次成功操作才清
     timer: null,
   };
 
@@ -163,6 +167,10 @@
       S.repo = repoSel.value;
       lsSet('jx.gitp.repo', S.repo);
       S.commits = []; S.branches = null; S.detail = null; S.commit = null;
+      // 仓库换了：提交信息框清空，别把上一个仓库的信息提交到另一个仓库
+      S.commitMsg = '';
+      S.opError = '';
+      syncCommitBar();
       refreshAll();
     };
     top.appendChild(repoSel);
@@ -281,7 +289,11 @@
       strip.classList.add(cls);
       strip.textContent = text;
     };
-    if (S.error) show('err', S.error);
+    // 操作类错误（点按钮失败）优先；它们只由下一次成功操作清除——轮询的 loadStatus
+    // 成功时会把 S.error 清空（那是读取类错误的语义），不能让它顺手抹掉刚弹出的
+    // 「生成摘要失败」提示，否则用户只看到按钮转一圈又复原、没有任何原因。
+    if (S.opError) show('err', S.opError);
+    else if (S.error) show('err', S.error);
     else if (S.note) { show('note', S.note); }
     else if (S.reason) show('warn', S.reason);
     if (S.note) {
@@ -342,11 +354,12 @@
     try {
       const d = await gitPost('checkout', { branch: name });
       S.error = '';
+      S.opError = '';
       S.note = d.summary || '已切换到 ' + name;
       S.commits = []; S.detail = null; S.commit = null;
       await refreshAll();
     } catch (e) {
-      S.error = e.message;
+      S.opError = e.message;
       renderStrip();
       renderTop(); // 切换失败：下拉回到当前分支
     }
@@ -354,53 +367,113 @@
 
   /* ---------- 渲染：更改区 ---------- */
 
-  function renderChanges() {
-    const box = $id('gitp-changes');
-    if (!box) return;
-    box.innerHTML = '';
-    const head = root.querySelector('.gitp-pane-changes .gitp-pane-badge');
-    const total = S.groups.staged.length + S.groups.unstaged.length + S.groups.untracked.length + S.groups.conflicted.length;
-    if (head) head.textContent = total ? String(total) : '';
+  /* 提交信息栏（textarea + AI 摘要 / 提交）全生命周期只建一次。
+   * 关键：loadStatus 每轮（12 秒轮询、切页可见、对话完成、手动刷新、切页签）
+   * 都会重画更改区。若连提交框一起重建，会同时踩三个坑——
+   *   1) 收到的 AI 摘要写进的是闭包里那个已经被替换掉（脱离文档）的旧 textarea，
+   *      界面看不到任何输出，按钮却恢复原状（「转一圈没反应」）；
+   *   2) 用户正在手打的提交信息随新节点一起消失（每 12 秒一次）；
+   *   3) 焦点与光标丢失，中文输入法组合被打断。
+   * 所以这里只重画下面的文件清单，提交框节点始终复用；文本另存 S.commitMsg，
+   * 详情视图往返、组件重建等节点被搬动的场景也能恢复。 */
+  let commitBar = null; // { cm, ta, ai, ok }
 
-    if (S.detail) { box.appendChild(renderFileDetail()); return; }
-
-    /* 提交区（VSCode SCM 式：消息框在清单上方） */
+  function buildCommitBar() {
     const cm = el('div', 'gitp-commitbar');
     const ta = el('textarea', 'gitp-commit-msg');
     ta.id = 'gitp-commit-msg';
     ta.rows = 2;
     ta.placeholder = '提交信息（已暂存改动会一起提交）';
+    ta.value = S.commitMsg;
+    ta.oninput = () => { S.commitMsg = ta.value; };
     const btns = el('div', 'gitp-commit-btns');
     const ai = el('button', 'gitp-btn', 'AI 摘要');
     ai.title = '用当前会话配置的模型为已暂存改动生成提交信息（只生成，不提交）';
     ai.onclick = async () => {
-      ai.disabled = true; ai.textContent = '生成中…';
+      if (S.aiBusy) return; // 生成中重复点击直接忽略（按钮本就禁用，这里防程序化触发）
+      S.aiBusy = true;
+      S.opError = '';
+      syncCommitBar();
+      renderStrip();
       try {
         const d = await gitPost('summarize');
-        ta.value = d.message;
+        S.commitMsg = d.message || '';
         S.error = '';
-      } catch (e) { S.error = e.message; renderStrip(); }
-      ai.disabled = false; ai.textContent = 'AI 摘要';
+        S.opError = '';
+      } catch (e) {
+        S.opError = e.message;
+      }
+      S.aiBusy = false;
+      syncCommitBar();
+      renderStrip();
     };
     const ok = el('button', 'gitp-btn primary', '✓ 提交');
     ok.onclick = async () => {
-      if (!ta.value.trim()) { S.error = '提交信息为空'; renderStrip(); ta.focus(); return; }
-      ok.disabled = true;
+      if (S.commitBusy) return;
+      if (!(S.commitMsg || '').trim()) {
+        S.opError = '提交信息为空';
+        renderStrip();
+        ta.focus();
+        return;
+      }
+      S.commitBusy = true;
+      S.opError = '';
+      syncCommitBar();
+      renderStrip();
       try {
-        const d = await gitPost('commit', { message: ta.value });
-        ta.value = '';
+        const d = await gitPost('commit', { message: S.commitMsg });
+        S.commitMsg = '';
         S.error = '';
+        S.opError = '';
         S.note = '已提交：' + (d.summary || '完成');
         refreshAll();
-      } catch (e) { S.error = e.message; renderStrip(); }
-      ok.disabled = false;
+      } catch (e) {
+        S.opError = e.message;
+      }
+      S.commitBusy = false;
+      syncCommitBar();
+      renderStrip();
     };
     btns.appendChild(ai);
     btns.appendChild(ok);
     cm.appendChild(ta);
     cm.appendChild(btns);
-    if (!S.groups.staged.length) ok.disabled = true;
-    box.appendChild(cm);
+    return { cm, ta, ai, ok };
+  }
+
+  // 把状态刷到提交框（节点可能此刻不在文档里，比如正在看文件 diff——值照样留住）
+  function syncCommitBar() {
+    if (!commitBar) return;
+    const { ta, ai, ok } = commitBar;
+    if (ta.value !== S.commitMsg) ta.value = S.commitMsg;
+    ai.disabled = S.aiBusy;
+    ai.textContent = S.aiBusy ? '生成中…' : 'AI 摘要';
+    ok.disabled = S.commitBusy || !S.groups.staged.length;
+  }
+
+  function ensureCommitBar() {
+    if (!commitBar) commitBar = buildCommitBar();
+    syncCommitBar();
+    return commitBar.cm;
+  }
+
+  function renderChanges() {
+    const box = $id('gitp-changes');
+    if (!box) return;
+    const head = root.querySelector('.gitp-pane-changes .gitp-pane-badge');
+    const total = S.groups.staged.length + S.groups.unstaged.length + S.groups.untracked.length + S.groups.conflicted.length;
+    if (head) head.textContent = total ? String(total) : '';
+
+    if (S.detail) { // 详情视图整块替换（提交框节点留在 commitBar 里，返回时原样放回）
+      box.textContent = '';
+      box.appendChild(renderFileDetail());
+      return;
+    }
+
+    /* 提交区（VSCode SCM 式：消息框在清单上方）——节点复用，刷新不重建 */
+    const cm = ensureCommitBar();
+    if (cm.parentNode !== box) box.insertBefore(cm, box.firstChild);
+    for (const child of Array.from(box.children)) if (child !== cm) child.remove();
 
     const body = el('div', 'gitp-groups');
     const mkGroup = (title, list, kind) => {
@@ -446,9 +519,10 @@
     try {
       await gitPost(kind, { paths });
       S.error = '';
+      S.opError = '';
       await loadStatus();
       await loadGraph(true);
-    } catch (e) { S.error = e.message; renderStrip(); }
+    } catch (e) { S.opError = e.message; renderStrip(); }
   }
 
   /* ---------- 渲染：文件 diff 详情（更改区内） ---------- */
@@ -459,7 +533,8 @@
     renderChanges();
     try {
       S.diff = await gitGet('diff', { path, staged: staged ? '1' : '0' });
-    } catch (e) { S.error = e.message; renderStrip(); }
+      S.opError = '';
+    } catch (e) { S.opError = e.message; renderStrip(); }
     renderChanges();
   }
 
@@ -641,7 +716,8 @@
       S.commit.message = d.message || '';
       S.commit.files = d.files || [];
       S.diff = d.diff || { text: '', empty: true };
-    } catch (e) { S.error = e.message; renderStrip(); }
+      S.opError = '';
+    } catch (e) { S.opError = e.message; renderStrip(); }
     renderGraph();
   }
 
@@ -742,6 +818,9 @@
       S.session = cur;
       S.repo = ''; // 会话换了，工作区多半也换了：回默认仓库
       S.commits = []; S.branches = null; S.detail = null; S.commit = null;
+      S.commitMsg = ''; // 同上：跟着工作区一起换的还有提交信息框
+      S.opError = '';
+      syncCommitBar();
       lsSet('jx.gitp.repo', '');
     }
   }
@@ -758,7 +837,7 @@
       S.behind = d.behind || 0;
       S.groups = { staged: d.staged || [], unstaged: d.unstaged || [], untracked: d.untracked || [], conflicted: d.conflicted || [] };
       S.reason = d.reason || '';
-      S.error = '';
+      S.error = ''; // 只清读取类错误；S.opError（用户点操作失败的原因）留给用户读
       if (S.detail) {
         // 文件在刷新后可能已消失（被提交/撤销）：退回清单
         const stillThere = S.groups.staged.concat(S.groups.unstaged, S.groups.untracked, S.groups.conflicted)
@@ -859,6 +938,7 @@
       JX._bus['message:done'] = (JX._bus['message:done'] || []).filter((f) => f !== onMessageDone);
       document.removeEventListener('visibilitychange', onVisible);
       delete rpViews.git;
+      commitBar = null; // 提交框节点随 root 一起丢弃：下次激活重建（文本仍在 S.commitMsg 里）
       if (typeof rpRenderTabs === 'function') rpRenderTabs();
       if (root && root.parentNode) root.parentNode.removeChild(root);
       root = null;
