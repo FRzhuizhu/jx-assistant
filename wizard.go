@@ -225,7 +225,7 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 	server := strings.TrimRight(strings.TrimSpace(body.Server), "/")
 	user := strings.TrimSpace(body.User)
 	if server == "" || user == "" || len([]rune(user)) > 32 {
-		writeErr(w, 400, "需要服务器地址与本人称呼（称呼 1~32 字）")
+		writeErr(w, 400, "需要服务器地址与用户名（1~32 字）")
 		return
 	}
 	if !strings.HasPrefix(server, "http://") && !strings.HasPrefix(server, "https://") {

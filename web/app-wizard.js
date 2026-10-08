@@ -1,5 +1,5 @@
 /* 首次接入向导前端（wizard.go 的浏览器半边）：公司名（局域网自动发现）/ 服务器地址
- * 二选一 + 本人称呼 → POST /api/wizard/discover|connect → 自动配好内部模型通道、
+ * 二选一 + 用户名 → POST /api/wizard/discover|connect → 自动配好内部模型通道、
  * 技能/组件市场、软件更新。首次启动 app.js 调 maybeShowWizard 自动弹（!wizardDone），
  * 设置·网络访问的「重新运行接入向导」可随时重开；「跳过」写 wizardDone 不再自动弹，
  * 点遮罩/Esc 关闭视为暂缓（下次启动还会弹）。 */
@@ -50,7 +50,7 @@ async function wzConnect() {
   const server = ($('wz-server').value || '').trim();
   const user = ($('wz-user').value || '').trim();
   if (!company && !server) { wzSetResult('bad', '请填公司名称或服务器地址（二选一）'); return; }
-  if (!user) { wzSetResult('bad', '请填本人称呼（服务端按人分配 API key 并统计用量）'); return; }
+  if (!user) { wzSetResult('bad', '请填用户名（服务端按人分配 API key 并统计用量）'); return; }
   wzBusy = true;
   const go = $('wz-go');
   go.disabled = true;

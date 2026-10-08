@@ -378,7 +378,7 @@
 </div>
 
 <!-- 首次接入向导（app-wizard.js）：填公司名（局域网自动发现）或服务器地址 二选一 +
-     本人称呼 → 一键接通公司服务端：自动配置内部模型通道（含服务端分配的 API key 与
+     用户名 → 一键接通公司服务端：自动配置内部模型通道（含服务端分配的 API key 与
      公司默认模型）、技能/组件市场、软件更新。机制照 confirm-modal（hidden 切换/点遮罩
      关闭/Enter 提交）；首次启动自动弹出，设置·网络访问可随时重开 -->
 <div id="welcome-modal" class="modal hidden">
@@ -386,7 +386,7 @@
     <h2 id="wz-title">欢迎使用坚祥数字助理</h2>
     <p class="wz-sub">接入公司服务端后即可开箱使用（模型、技能市场、软件更新全自动配置）。</p>
     <div class="wz-form">
-      <label>本人称呼<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
+      <label>用户名<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
       <div class="wz-either"><b>公司名称与服务器地址，两项填其中一项即可</b></div>
       <label>公司名称<input id="wz-company" placeholder="局域网内自动发现（配对口令）" autocomplete="off"></label>
       <label>服务器地址<input id="wz-server" placeholder="如 192.168.1.10:PORT（与上项二选一）" autocomplete="off" spellcheck="false"></label>
