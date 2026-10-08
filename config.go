@@ -62,7 +62,7 @@ type Config struct {
 	MaxSteps   int           `json:"maxSteps"`
 	AllowShell bool          `json:"allowShell"`
 	DataDir    string        `json:"dataDir"`
-	SkillsDir             string `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
+	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
 	// 上下文压缩设置
 	CompactMode      string  `json:"compactMode"`      // rule=规则压缩(默认) llm=模型摘要 off=关闭
 	KeepRounds       int     `json:"keepRounds"`       // 保留最近 N 轮不压缩
@@ -92,7 +92,9 @@ type Config struct {
 	UpdateURL string `json:"updateURL"`
 	// 语音转写服务配置（演示记录器的讲解音频 → SRT 字幕，预留字段）：
 	// provider（如 microsoft）/ endpoint / apiKey / language。当前版本尚未
-	// 接入任何服务商；接入后 recorder.go 的 activeSpeechTranscriber 读这里。
+	// 接入任何服务商（语音组件的朗读走 Edge 免密钥通道、听写走浏览器
+	// SpeechRecognition，都不读这份配置）；接入后 recorder.go 的
+	// activeSpeechTranscriber 读这里。
 	SpeechAPI map[string]string `json:"speechApi,omitempty"`
 }
 
@@ -126,24 +128,24 @@ func DefaultConfig() *Config {
 		ws = v
 	}
 	return &Config{
-		Port:                  8788,
-		BindHost:              "127.0.0.1",
-		BaseURL:               "https://api.deepseek.com/v1",
-		APIKey:                "",
-		Model:                 "deepseek-chat",
-		Workspace:             ws,
-		MaxSteps:              maxStepsDefault,
-		AllowShell: true,
-		DataDir:    "data",
-		CompactMode:           "rule",
-		KeepRounds:            5,
-		RuleInterval:          5,
-		CompactThreshold:      0.8,
-		SnapshotDays:          7,
-		SnapshotMaxMB:         32,
-		SnapshotManualMaxMB:   -1,
-		SnapshotEnabled:       nil, // 缺省开启；nil 表示"未配置"，按开处理
-		Experts:               defaultExperts(),
+		Port:                8788,
+		BindHost:            "127.0.0.1",
+		BaseURL:             "https://api.deepseek.com/v1",
+		APIKey:              "",
+		Model:               "deepseek-chat",
+		Workspace:           ws,
+		MaxSteps:            maxStepsDefault,
+		AllowShell:          true,
+		DataDir:             "data",
+		CompactMode:         "rule",
+		KeepRounds:          5,
+		RuleInterval:        5,
+		CompactThreshold:    0.8,
+		SnapshotDays:        7,
+		SnapshotMaxMB:       32,
+		SnapshotManualMaxMB: -1,
+		SnapshotEnabled:     nil, // 缺省开启；nil 表示"未配置"，按开处理
+		Experts:             defaultExperts(),
 		RemoteAccess: RemoteAccessCfg{
 			Enabled: false,
 			Host:    "nas.example.org",

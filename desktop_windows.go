@@ -306,6 +306,13 @@ func runDesktop(app *App, url string) error {
 	}
 	// 右栏原生浏览器面板：COM 调用一律经 Dispatch 投递到本窗口的 UI 线程
 	app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
+	// 右侧栏截图（panel_screenshot 工具）的通道：shellEval 注入主界面 JS，
+	// 探针把右栏矩形 POST /api/shell/panel-view 回到 panelViewCh。
+	// ExecuteScript 是 COM 调用，必须发生在 UI 线程——工具侧从任意 goroutine
+	// 调 shellEval，这里经 Dispatch 投递到主窗口消息循环再执行。
+	app.shellEval = func(js string) { w.Dispatch(func() { w.Eval(js) }) }
+	app.shellWnd = uintptr(w.Window())
+	app.panelViewCh = make(chan panelViewReport, 1)
 	sep := "?"
 	if strings.Contains(url, "?") {
 		sep = "&"

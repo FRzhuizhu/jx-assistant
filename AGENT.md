@@ -780,8 +780,9 @@ events.jsonl, audio.wav, INDEX.md}`——INDEX.md 是时间线对照表（事件
 `recorder.go` 的 `activeSpeechTranscriber` 当前恒 nil（不引 whisper、不下载
 模型），配置结构 `Config.SpeechAPI`（provider/endpoint/apiKey/language）已
 留好——微软语音 API 调稳后实现一个注册进来，stop/`demo_record_transcribe`
-即自动产出 讲解.srt，历史录音可随时补转；未接入时理解演示以截图+事件+
-用户对话讲解为准。③**注册闭环**：`register_skill(path[, update])` 走
+即自动产出 讲解.srt，历史录音可随时补转（语音组件的朗读走 Edge 免密钥通道、
+听写走浏览器 SpeechRecognition，都不读这份配置）；未接入时理解演示以截图+
+事件+用户对话讲解为准。③**注册闭环**：`register_skill(path[, update])` 走
 `addUserSkill` 装进 `技能/user/`（update=true 先删旧再装，支持迭代改进），
 `read_skill` 读回自查。权限默认完全访问（`handleCreateSession` 分支 +
 前端 `applyDraftMode` 联动），演示记录器工具门控 `capComputer`（fail closed）。
@@ -832,14 +833,24 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   只是隐藏面板（AI 继续操作）；工具条的「在系统浏览器打开」把当前网址跳到
   用户日常浏览器（跳转后不受 AI 控制）。
 - **聊天链接点开（人机共看）**：对话正文里的 markdown 链接与裸 http(s) 网址
-  渲染为可点链接，交付卡片的 `.html/.htm/.svg` 文件带「打开」——桌面版左键
-  点击一律在右栏浏览器面板打开（Ctrl/中键走浏览器默认新标签）；网页版没有
-  原生面板，一律新标签页打开。这是用户操作，不经模型权限门控；打开时内嵌
-  形态自动成为工具作用目标（active），并注入`【网页查看】`回报（origin=
-  webview，与能力无关——没开「操作浏览器」能力时模型只知道网址看不到画面，
-  开启后 browser_screenshot/browser_content 看到的就是用户眼前这页）。本地
-  交付文件转 `file://`（同目录相对资源可用），SSH 远程会话经
-  `/api/browser/view` 流式渲染（相对资源不加载）。
+  渲染为可点链接——桌面版左键点击一律在右栏浏览器面板打开（Ctrl/中键走
+  浏览器默认新标签）；网页版没有原生面板，一律新标签页打开。这是用户操作，
+  不经模型权限门控；打开时内嵌形态自动成为工具作用目标（active）。**不注入
+  任何对话回报**（用户口径：打开了什么是个人的事）——模型需要看画面时用户
+  会主动说，模型用 `panel_screenshot` 截右栏（见下）。本地 html 交付文件转
+  `file://`（同目录相对资源可用），SSH 远程会话经 `/api/browser/view` 流式
+  渲染（相对资源不加载）。
+- **右栏「文件」查看页**（`fileview.go`）：代码/文本/图片/PDF 类交付文件与
+  聊天文件链接的展示位（iframe 自包含页：等宽+行号+截断保护，图片/PDF 经
+  `/api/fileraw` 内嵌）——不依赖原生面板 overlay 与 file://，桌面/网页/远程
+  三端一致。交付卡「打开」三路路由：这类文件进「文件」页；html/htm 与网址
+  进右栏「浏览器」；Word/Excel/exe 等二进制走系统默认应用（设置·常规
+  「交付文件打开方式」可整体改回系统应用；远程会话尽力进查看页）。
+- **`panel_screenshot`**（无能力门控，仅桌面版）：对右侧栏截图（GDI 截屏
+  像素，浏览器页/文件查看页/任何视图通用）。实现：注入主界面探针 JS 读
+  `#rpanel` 矩形 POST `/api/shell/panel-view` 回传，Go 侧客户区原点+CSS×dpr
+  换算屏幕坐标后 BitBlt 截图入附件；ExecuteScript 必须 UI 线程执行
+  （runDesktop 里经 `w.Dispatch` 包了一层）。右栏收起时报「没有打开内容」。
 - **电脑操作**（能力开关 `computer`）：`computer_screenshot / click /
   type / key / scroll / windows` 六件工具，win32 SendInput + GDI
   DIB Section 直调，无 cgo；点击坐标以截屏图片像素为准。
@@ -861,10 +872,15 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   设置页切换开关时**前端即时加载/卸载，不需要刷新页面、不需要重启服务**；
   组件未提供 `dispose` 时退化为提示刷新。
 - **组件设置区**：组件在 `init` 里调 `CX.registerSettings({id, title, mount})` 把自己的
-  设置区交给运行时；设置页「内置组件」页在组件清单下方按 `CX.settingsSections()`
-  渲染（只渲染当前激活的组件，`CX.unregisterSettings(id)` 可撤）。注册/注销/热开关
-  都会派发 `window` 事件 `cx:change`，设置页收到后重挂——关掉组件时它那段设置
-  连同按钮一起消失。设置样式与偏好由组件自理（组件 CSS + `localStorage`）。
+  设置交给运行时；`CX.unregisterSettings(id)` 可撤。注册/注销/热开关都会派发
+  `window` 事件 `cx:change`，设置页收到后重挂。设置样式与偏好由组件自理
+  （组件 CSS + `localStorage`）。呈现形态两种（`app-settings.js` 渲染，只渲染当前
+  激活的组件）：①缺省＝「内置组件」页清单下方的设置段；②注册时带
+  `pane: {label, icon}` ＝**独立设置页**——设置一级菜单出现专属入口（插在
+  「内置组件」之后）+ 专属分区页（`set-pane-component-<id>`，动态创建于
+  `.set-panes`），导航状态机按 data-pane 寻址与静态页同一条路径；组件停用时
+  导航项与页面一并撤掉（正停在该页时退回常规页）。`voice` 组件用的是独立页
+  （设置 → 语音）。
 - **宿主半边可以落在主程序里**：组件本身是纯浏览器半边，但它掌管的功能若需要
   后端（持久化、定时、接口、模型工具），就写在主程序对应文件里、按
   `Components.IsEnabled(<id>)` 自查开关——组件关掉时那部分功能一并停。
@@ -879,12 +895,27 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   顶栏可选仓库与切换本地分支。宿主半边在 `gitpanel.go`，写边界只有暂存/取消暂存/
   提交/切换本地分支，不做 push/pull/reset/discard）、
   `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）、
-  `voice`（语音（朗读与听写）——输入区语音输入按钮的听写（原属基础架构
-  `web/app-chat.js`，已整体迁入本组件：按钮 DOM 仍在 `web/index.html`，位置与样式
-  不变，逻辑与样式（灰字暂定层、断线退避重连、倒计时、轻提示）都在 `组件/voice/`）、
-  助手消息操作行的朗读（TTS，Web Speech）、以及组件设置区（语速/音色/试听/单次
-  听写时长上限，偏好存 `localStorage` 的 `cx:voice:` 命名空间）。关掉即热卸载：
-  语音按钮隐藏、朗读按钮撤掉、设置区消失）。
+  `voice`（语音（朗读与听写），**零配置**——朗读走后端、听写走浏览器，都不需要
+  任何密钥。**朗读（TTS）**：宿主半边在 `voiceapi.go`，直连微软 Edge「大声朗读」
+  通道（speech.platform.bing.com 的 readaloud，无密钥免配置，与 Edge/WebView2
+  内置朗读同一套服务；WebSocket 协议逐项对齐聊天服务 chat-server 的 Node 实现
+  ——Sec-MS-GEC 令牌/Edge 扩展 Origin/随机 muid；前端 POST `/api/voice/tts`
+  → mp3 流回 blob 播放，音色清单 `/api/voice/voices` 同源 322 个神经音色、中文
+  排前）。朗读不再用浏览器 speechSynthesis——部分手机浏览器没有它，旧版远程
+  手机端连朗读设置区都不渲染；现在设置区恒渲染、任何浏览器行为一致。**听写
+  （STT）**：浏览器自带的 SpeechRecognition（WebView2/Edge/Chrome 内置的微软
+  识别接口），即本组件一直以来的实现（灰字暂定层/断线退避重连/倒计时徽标，
+  按钮三态），逻辑原样；连接失败提示建议换 Edge。**语音快捷键**：默认鼠标
+  侧键，设置页可录制自定义键盘单键/组合键、鼠标左右键同按（不允许单独的
+  左键/右键）；点按切换与长按输入两种模式；仅窗口聚焦时生效（失焦自动松手
+  结束长按）；主输入框占位灰字由基座 `sendKeyHint` 追加组件交出的
+  `window.JXVoiceHint` 片段（子输入框组件自己拼）。**远程手机端**
+  （`window.JX_REMOTE` 且视口 <500）自动隐藏听写按钮（resize 跨阈值即时
+  显隐），快捷键触发给提示不启动。设置＝**独立设置页「语音」**（设置 →
+  语音：语速默认 1.2、Edge 音色、试听、听写时长上限、快捷键与触发方式）；
+  偏好存 `localStorage` 的 `cx:voice:` 命名空间。关掉即热卸载：语音端点 404、
+  按钮隐藏、朗读按钮撤掉、快捷键引擎与占位提示一并撤掉、设置页连导航项
+  一起消失）。
 
 ## 插件与插件兼容层
 
@@ -1058,10 +1089,8 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `GET /api/git/status` `/diff` `/graph` `/commit` `/branches` | Git 面板读接口（组件 `git-panel`；未启用时 404。graph 为 `--all --topo-order` 的父母哈希+装饰引用，泳道由前端计算） |
 | `POST /api/git/stage` `/unstage` `/commit` `/summarize` `/checkout` | Git 面板写接口：暂存 / 取消暂存 / 提交 / AI 生成提交信息（只生成不提交）/ 切换本地分支（分支名限服务端列出的清单，改动会被覆盖时 git 拒绝）。仓库只能选服务端扫描出的候选，路径经 pathspec 校验 |
 | `POST /api/plugins/dsh-speech/polish` | 转写润色（dsh-speech 适配器 Go 半边） |
-| `GET /api/voice/capabilities` | 后端语音服务（微软 Azure Speech）是否已配置——前端据此选后端/浏览器模式（组件 `voice`；未启用时 404） |
-| `GET /api/voice/voices` | Azure 神经音色清单（TTS 音色下拉数据源；中文区排前，进程内缓存 6 小时） |
-| `POST /api/voice/stt?lang=zh-CN` | 一段完整音频（WAV，前端按静音切段上送）→ `{text, status}`；后端调 Azure 短音频识别 |
-| `POST /api/voice/tts` | `{text, rate, voice}` → mp3 音频流（后端组 SSML 调 Azure 合成；前端 blob 化 `<audio>` 播放） |
+| `GET /api/voice/voices` | Edge 神经音色清单（朗读音色下拉数据源；中文区排前，进程内缓存 6 小时；组件 `voice`，未启用时 404） |
+| `POST /api/voice/tts` | `{text, rate, voice}` → mp3 音频流（后端走 Edge「大声朗读」无密钥通道；前端 blob 化 `<audio>` 播放）。听写不走后端：浏览器 SpeechRecognition |
 | `GET /` | 内嵌前端页面（按开关注入插件资产） |
 
 聊天 SSE 事件：`message` / `delta` / `tool_start` / `tool_wait`（等待审批）/ `tool_end` /

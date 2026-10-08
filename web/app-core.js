@@ -752,11 +752,14 @@ function composerEnterKeydown(e, doSend) {
 }
 
 /* ---------- 输入框占位文案跟随发送快捷键设置（jx.sendkey） ---------- */
-// sendKeyHint：快捷键提示短语（渲染路径每次刷新占位符时统一取这里，别写死）
+// sendKeyHint：快捷键提示短语（渲染路径每次刷新占位符时统一取这里，别写死）。
+// 语音组件（组件/voice）经 window.JXVoiceHint 交来它的快捷键提示片段，追加在
+// 发送提示之后（组件卸载时置空）。
 function sendKeyHint() {
-  return lsGet('jx.sendkey', 'enter') === 'ctrl'
+  const base = lsGet('jx.sendkey', 'enter') === 'ctrl'
     ? 'Ctrl+回车键发送，回车键 或 Shift+回车键换行，可到设置里更改快捷键'
     : '回车键发送，Shift+回车键 或 Ctrl+回车键换行，可到设置里更改快捷键';
+  return base + (window.JXVoiceHint || '');
 }
 function updateSendKeyHint() {
   const el = $('input');

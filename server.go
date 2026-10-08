@@ -52,8 +52,8 @@ type App struct {
 	jobs            map[string]*jobRun // 会话内后台作业（jobs.go）
 	protectPaths    []string           // 助手自身配置/数据目录，任何模式禁访问
 	skillsMu        sync.Mutex
-	skillsReady     bool             // 技能母本是否已释放（SkillsDir 首次解析后置位）
-	skillsDirOurs   string           // 已解析的技能目录（App 级缓存，避免跨实例污染）
+	skillsReady     bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
+	skillsDirOurs   string // 已解析的技能目录（App 级缓存，避免跨实例污染）
 	marketMu        sync.Mutex
 	marketCache     marketCacheEntry // 市场清单拉取缓存（60s，见 market.go）
 	remoteMu        sync.Mutex
@@ -79,6 +79,13 @@ type App struct {
 	browserHeaded   *BrowserHost  // 有头独立窗口宿主（旧版行为，惰性创建）
 	nativePanel     browserTarget // 桌面右栏原生 WebView2 面板（browser_panel_windows.go；网页模式为 nil）
 	browserActive   browserTarget // 工具作用目标：最近一次 browser_open 选定的实例
+
+	// 桌面壳（runDesktop）注入的右侧栏截图通道（panelshot_windows.go）：
+	// shellEval 往主界面注入 JS、panelViewCh 收回右栏矩形回传，shellWnd 是
+	// 主窗口 HWND（客户区原点换算屏幕坐标用）。非桌面形态全为零值。
+	shellEval   func(string)
+	shellWnd    uintptr
+	panelViewCh chan panelViewReport
 }
 
 func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
@@ -248,6 +255,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/market", a.handleMarketView)
 	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
 	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
+	// 语音组件（voice）宿主半边（voiceapi.go）：朗读走微软 Edge「大声朗读」
+	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
+	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
+	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
 	mux.HandleFunc("GET /api/device/poll", a.handleDevicePoll)
@@ -263,6 +274,13 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/browser/state", a.handleBrowserState)
 	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
 	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)
+	// 文件查看页（fileview.go）：代码/文本类交付与文件链接的右栏「文件」视图，
+	// 自包含 HTML，桌面/网页/远程三端一致；fileraw 供图片/PDF 内嵌
+	mux.HandleFunc("GET /api/fileview", a.handleFileView)
+	mux.HandleFunc("GET /api/fileraw", a.handleFileRaw)
+	// 右侧栏截图（panelshot_windows.go）：panel_screenshot 工具注入主界面的
+	// 探针 JS 把右栏矩形回传到这里
+	mux.HandleFunc("POST /api/shell/panel-view", a.handleShellPanelView)
 	// 待办与定时任务（组件 todo-scheduler 的宿主半边）：组件未启用时这些接口一律 404
 	mux.HandleFunc("GET /api/todos", a.handleTodoList)
 	mux.HandleFunc("POST /api/todos", a.handleTodoCreate)

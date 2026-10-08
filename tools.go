@@ -133,7 +133,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 		jobOutputTool(), jobListTool(), jobKillTool(),
-	}, skillCreate...), append(append(append(append(append(todos, a.ccMCPTools()...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
+	}, skillCreate...), append(append(append(append(append(todos, append(a.ccMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
 }
 
 // ccMCPTools 返回已连接插件 MCP 服务器与 mods 注册的动态工具

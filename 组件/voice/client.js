@@ -1,30 +1,39 @@
 /* 组件：语音（朗读与听写） —— 组件/voice/client.js
  *
- * 三块能力，都是纯浏览器半边（本组件没有宿主代码、没有后端接口）：
+ * 分工（2026-10-07 定稿，用户口径）：
  *
- * 1) 听写：输入区右下角的语音输入按钮（#btn-voice / #sub-btn-voice，主对话与右栏
- *    子对话各一套）。**这套实现在本次改动前属于基础架构（web/app-chat.js），现在
- *    整体迁到本组件**——逻辑逐行保持原样：连接中/录音中三态、灰色暂定层（未定稿
- *    转写叠在输入框上显示为灰字、静置 2.5 秒落成正文）、断线退避重连、时长上限
- *    倒计时徽标、一次性轻提示。按钮 DOM 仍在 web/index.html（位置与样式不变），
- *    只是默认带 .hidden——由本组件接管显示与行为，组件关掉按钮就不出现。
+ * 1) 朗读（TTS）：**后端实现**。前端 POST /api/voice/tts（文本+语速+音色）→
+ *    后端直连微软 Edge「大声朗读」通道（speech.platform.bing.com 的 readaloud，
+ *    无密钥、免配置，与 Edge/WebView2 内置朗读同一套服务；协议移植自聊天服务
+ *    chat-server 的 Node 实现）→ mp3 流回 → blob 化 <audio> 播放。音色清单来自
+ *    /api/voice/voices（Edge 神经音色：晓晓/云希/Aria…，中文排前）。朗读不再用
+ *    浏览器的 speechSynthesis——那在远程手机端上部分浏览器没有，旧版连朗读
+ *    设置区都不渲染。
  *
- * 2) 朗读：助手消息操作行的「朗读 / 停止」按钮（Web Speech TTS）。实现参考旧插件
- *    dsh-speech（原件与转译版见 插件/.回收站/dsh-speech、插件兼容层/回收站/dsh-speech）：
- *    cleanForSpeech 清洗 markdown（代码块/反引号/链接/标题/列表/表格竖线/强调符）、
- *    音色挑选（指定 URI → zh-CN → zh）、单飞播放（点新朗读停上一条、播放中变停止）。
+ * 2) 听写（STT）：**浏览器自带的 SpeechRecognition**（WebView2/Edge 内置的微软
+ *    识别接口，音频由浏览器直接发给它的识别服务）——即本组件一直以来的实现，
+ *    逻辑与样式原样保留：连接中/录音中三态、灰色暂定层（未定稿转写叠在输入框
+ *    上显示为灰字、静置 2.5 秒落成正文）、断线退避重连、时长上限倒计时徽标、
+ *    一次性轻提示。桌面 WebView2 可用；远程手机端受手机浏览器识别服务可达性
+ *    限制（安卓 Chrome 走谷歌服务，国内不通）——后端化听写的可行性结论见
+ *    语音后端化-研究与改动说明.md（无头 Edge 假麦克风试验：音频能进
+ *    getUserMedia，但 SR 不消费假设备，路不通）。
  *
- * 3) 设置：设置 → 内置组件 → 「语音（朗读与听写）」下的偏好区（朗读语速 / 音色 /
- *    试听 / 单次听写时长上限），偏好存 localStorage（命名空间 cx:voice）。设置区经
- *    CX.registerSettings 注册，组件关掉时一并消失。
+ * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
+ *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
+ *    仅在窗口聚焦时激活（失焦自动松手）。主输入框的占位灰字会像发送快捷键
+ *    一样带上语音快捷键提示（app-core 的 sendKeyHint 追加 window.JXVoiceHint，
+ *    子输入框由本组件自己拼）。远程页面且视口宽度 <500（手机端）时隐藏听筒
+ *    按钮（window.JX_REMOTE 区分远程；手机浏览器多不支持语音识别）。
  *
- * 热开关：设置页里关掉本组件 → dispose() 完整撤销（按钮隐藏、识别停止、朗读停止、
- * 消息操作行钩子注销、设置区消失），不需要刷新页面。
+ * 全程零配置（不需要任何密钥）。按钮 DOM 在 web/index.html（位置与样式不变），
+ * 默认带 .hidden——按钮属于本组件，组件关掉（设置 → 内置组件）或没加载到页面
+ * = 按钮整组不出现。热开关 dispose 完整撤销（识别停止、朗读停止、钩子注销、
+ * 设置页消失），不需要刷新页面。
  */
 (function () {
   if (!window.CX) return;
 
-  const synth = 'speechSynthesis' in window ? window.speechSynthesis : null;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   let active = false;    // 组件是否激活：dispose 后立刻失效，兜住还在飞的异步回调
@@ -41,12 +50,12 @@
     set(k, v) { try { localStorage.setItem('cx:voice:' + k, JSON.stringify(v)); } catch (e) { /* 隐私模式忽略 */ } },
   };
 
-  // 朗读语速（0.5–3，默认 1.3 为 WebView2 实测调校值）
+  // 朗读语速（0.5–3，默认 1.2；后端折成 SSML 的百分比语速）
   function spokenRate() {
-    const v = Number(pref.get('rate', 1.3));
-    return isFinite(v) ? Math.min(3, Math.max(0.5, v)) : 1.3;
+    const v = Number(pref.get('rate', 1.2));
+    return isFinite(v) ? Math.min(3, Math.max(0.5, v)) : 1.2;
   }
-  // 单次听写时长上限（秒）：原先写死在基础架构里的 4 分钟，现在可在设置区调
+  // 单次听写时长上限（秒）
   function maxDictateSec() {
     const v = Number(pref.get('maxSec', 240));
     return isFinite(v) && v >= 30 ? Math.min(600, v) : 240;
@@ -57,7 +66,221 @@
     stop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="16" y1="9" x2="22" y2="15"/><line x1="22" y1="9" x2="16" y2="15"/></svg>',
   };
 
-  /* ================= 一、朗读（TTS） ================= */
+  function apiErrMsg(res, text) {
+    try {
+      const j = JSON.parse(text);
+      if (j && j.error) return j.error;
+    } catch (e) { /* 非 JSON 正文 */ }
+    return 'HTTP ' + res.status;
+  }
+
+  /* ================= 语音快捷键 =================
+     表示：keys 数组，元素为 'ctrl'|'alt'|'shift'|'meta' | 单个字母/数字 | 'f1'..'f12'
+     | 'space' | 'mouse-side'（侧键，前后两枚都算）| 'mouse-left' | 'mouse-right'。
+     校验：不允许只剩单独的 mouse-left 或单独的 mouse-right（会废掉正常点击/菜单）。
+     模式：tap=点按切换（按一下开始/再按结束）；hold=长按输入（按住说话、松开结束）。
+     仅窗口聚焦时激活；失焦自动清空按键状态并结束长按会话。纯字母/数字单键在
+     输入框聚焦时不触发（字符要留给打字），组合键不受此限。 */
+
+  const DEFAULT_SHORTCUT = ['mouse-side'];
+  const KEY_NAMES = {
+    ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', meta: 'Win', space: '空格',
+    'mouse-side': '鼠标侧键', 'mouse-left': '鼠标左键', 'mouse-right': '鼠标右键',
+  };
+
+  function voiceShortcut() {
+    const v = pref.get('shortcut', null);
+    return (Array.isArray(v) && v.length) ? v : DEFAULT_SHORTCUT.slice();
+  }
+  function voiceShortcutMode() {
+    return pref.get('shortcutMode', 'tap') === 'hold' ? 'hold' : 'tap';
+  }
+  function shortcutLabel(keys) {
+    return (keys || voiceShortcut()).map((k) => KEY_NAMES[k] || k.toUpperCase()).join('+');
+  }
+  function validShortcut(keys) {
+    if (!Array.isArray(keys) || keys.length === 0) return false;
+    if (keys.length === 1 && (keys[0] === 'mouse-left' || keys[0] === 'mouse-right')) return false;
+    return keys.every((k) => KEY_NAMES[k] !== undefined || /^[a-z0-9]$/.test(k) || /^f([1-9]|1[0-2])$/.test(k));
+  }
+
+  // 事件 → 规范化键名
+  function normKey(e) {
+    const k = e.key;
+    if (k === 'Control') return 'ctrl';
+    if (k === 'Alt') return 'alt';
+    if (k === 'Shift') return 'shift';
+    if (k === 'Meta') return 'meta';
+    const lk = String(k).toLowerCase();
+    if (/^[a-z0-9]$/.test(lk)) return lk;
+    if (/^f([1-9]|1[0-2])$/.test(lk)) return lk;
+    if (lk === ' ') return 'space';
+    return null; // 其他键不收（避免录出系统级/生僻组合）
+  }
+  function normMouse(e) {
+    return { 0: 'mouse-left', 2: 'mouse-right', 3: 'mouse-side', 4: 'mouse-side' }[e.button] || null;
+  }
+  function isEditable(t) {
+    return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable));
+  }
+
+  // 全局按键状态与触发（监听装在 document/window 上，dispose 摘除）
+  const heldKey = new Set();   // 当前按着的键盘键
+  const heldMouse = new Set(); // 当前按着的鼠标键
+  let holdSession = false;     // 长按会话进行中
+  let firedLatch = false;      // 点按已触发，等快捷键全部松开后复位
+  let captureMode = false;     // 设置页录制快捷键时暂停引擎
+  const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
+  let onResize = null;         // 远程窄屏隐藏的窗口尺寸联动
+
+  function micHiddenByEnv() {
+    return !!window.JX_REMOTE && window.innerWidth < 500; // 远程手机端页面
+  }
+
+  function activeVoiceCtl() {
+    const ae = document.activeElement;
+    if (voiceCtl.sub && ae && ae.id === 'sub-input') return voiceCtl.sub;
+    return voiceCtl.main || voiceCtl.sub || null;
+  }
+
+  function shortcutHeld() {
+    for (const k of voiceShortcut()) {
+      if (!heldKey.has(k) && !heldMouse.has(k)) return false;
+    }
+    return true;
+  }
+
+  function shortcutFire(action) { // action: 'press' | 'release'
+    if (!active || captureMode || !document.hasFocus()) return;
+    const ctl = activeVoiceCtl();
+    if (!ctl) return;
+    if (micHiddenByEnv()) {
+      if (action === 'press') voiceToast('远程手机端页面已隐藏听写：手机浏览器多不支持语音识别');
+      return;
+    }
+    if (voiceShortcutMode() === 'hold') {
+      if (action === 'press') {
+        if (!holdSession && !ctl.active()) { holdSession = true; ctl.start(); }
+      } else if (holdSession && !shortcutHeld()) {
+        holdSession = false;
+        if (ctl.active()) ctl.stop();
+      }
+    } else if (action === 'press' && !firedLatch && shortcutHeld()) {
+      firedLatch = true; // 一次完整按下只触发一回，全松开后复位
+      ctl.toggle();
+    }
+    if (action === 'release' && !shortcutHeld()) firedLatch = false;
+  }
+
+  let scKeyDown = null, scKeyUp = null, scMouseDown = null, scMouseUp = null, scContextMenu = null, scBlur = null;
+
+  function clearShortcutState() {
+    heldKey.clear();
+    heldMouse.clear();
+    firedLatch = false;
+    if (holdSession) {
+      holdSession = false;
+      const ctl = activeVoiceCtl();
+      if (ctl && ctl.active()) ctl.stop();
+    }
+  }
+
+  function installShortcutEngine() {
+    scKeyDown = (e) => {
+      if (!active || captureMode) return;
+      const k = normKey(e);
+      if (!k) return;
+      // 纯字母/数字单键：目标是输入框时不触发也不拦截（字符留给打字）
+      if (k.length === 1 && /^[a-z0-9]$/.test(k) && isEditable(e.target)) {
+        heldKey.delete(k);
+        return;
+      }
+      if (voiceShortcut().includes(k)) e.preventDefault();
+      if (!e.repeat) { heldKey.add(k); shortcutFire('press'); }
+    };
+    scKeyUp = (e) => {
+      if (!active) return;
+      const k = normKey(e);
+      if (k) heldKey.delete(k);
+      shortcutFire('release');
+    };
+    scMouseDown = (e) => {
+      if (!active || captureMode) return;
+      const m = normMouse(e);
+      if (!m) return;
+      // 侧键在快捷键里时拦掉默认的后退/前进导航
+      if (voiceShortcut().includes(m)) e.preventDefault();
+      heldMouse.add(m);
+      shortcutFire('press');
+    };
+    scMouseUp = (e) => {
+      if (!active) return;
+      const m = normMouse(e);
+      if (m) heldMouse.delete(m);
+      shortcutFire('release');
+    };
+    // 快捷键含鼠标右键（左右同按）时，按住期间压掉右键菜单
+    scContextMenu = (e) => {
+      if (!active) return;
+      if (voiceShortcut().includes('mouse-right') && heldMouse.has('mouse-left') && heldMouse.has('mouse-right')) {
+        e.preventDefault();
+      }
+    };
+    scBlur = () => clearShortcutState();
+    document.addEventListener('keydown', scKeyDown);
+    document.addEventListener('keyup', scKeyUp);
+    document.addEventListener('mousedown', scMouseDown);
+    document.addEventListener('mouseup', scMouseUp);
+    document.addEventListener('contextmenu', scContextMenu);
+    window.addEventListener('blur', scBlur);
+    // 远程窄屏隐藏的窗口尺寸联动（旋转/分屏跨过 500 阈值时即时显隐）
+    onResize = () => {
+      if (!active) return;
+      for (const view of [mainView, subView]) {
+        const b = viewEl(view, 'btn-voice');
+        if (!b) continue;
+        b.classList.toggle('hidden', micHiddenByEnv());
+      }
+    };
+    window.addEventListener('resize', onResize);
+  }
+
+  function removeShortcutEngine() {
+    if (scKeyDown) document.removeEventListener('keydown', scKeyDown);
+    if (scKeyUp) document.removeEventListener('keyup', scKeyUp);
+    if (scMouseDown) document.removeEventListener('mousedown', scMouseDown);
+    if (scMouseUp) document.removeEventListener('mouseup', scMouseUp);
+    if (scContextMenu) document.removeEventListener('contextmenu', scContextMenu);
+    if (scBlur) window.removeEventListener('blur', scBlur);
+    if (onResize) window.removeEventListener('resize', onResize);
+    scKeyDown = scKeyUp = scMouseDown = scMouseUp = scContextMenu = scBlur = onResize = null;
+    clearShortcutState();
+  }
+
+  /* ---------- 占位灰字：语音快捷键提示（主输入框经基座 sendKeyHint 追加
+     window.JXVoiceHint；子输入框由本组件拼接，dispose 时还原） ---------- */
+  let subBasePH = null; // 子输入框原始占位文案
+
+  function voiceHintText() {
+    const mode = voiceShortcutMode();
+    return '；语音输入：' + shortcutLabel() + (mode === 'hold' ? '（按住说话）' : '（点按）');
+  }
+  function refreshShortcutPlaceholders() {
+    if (!active) return;
+    window.JXVoiceHint = voiceHintText();
+    if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
+    const sub = document.getElementById('sub-input');
+    if (sub) {
+      if (subBasePH === null) subBasePH = sub.placeholder || '向子对话发消息…';
+      sub.placeholder = subBasePH + voiceHintText();
+    }
+  }
+  function restoreSubPlaceholder() {
+    const sub = document.getElementById('sub-input');
+    if (sub && subBasePH !== null) sub.placeholder = subBasePH;
+  }
+
+  /* ================= 一、朗读（TTS，后端 Edge 通道，免配置） ================= */
 
   /** 去掉会被念出来的 markdown 语法噪声（与 dsh-speech 的 cleanForSpeech 同款）。 */
   function cleanForSpeech(src) {
@@ -76,19 +299,10 @@
     return s.replace(/\s{2,}/g, ' ').trim();
   }
 
-  /** 给一条 utterance 挑音色：设置里指定的 URI → 中文（zh-CN 优先）→ 引擎默认。 */
-  function pickVoice(u) {
-    if (!synth) return;
-    const uri = pref.get('voice', '');
-    const vs = synth.getVoices();
-    const v = (uri && vs.find((x) => x.voiceURI === uri)) ||
-      vs.find((x) => /^zh[-_]cn/i.test(x.lang || '')) ||
-      vs.find((x) => /^zh/i.test(x.lang || ''));
-    if (v) u.voice = v;
-    else u.lang = 'zh-CN';
-  }
-
   let playingBtn = null; // 正在朗读的那条消息的按钮（单飞：同时只有一条在播）
+
+  let playURL = null;    // blob URL（播完/停止即 revoke）
+  let playEl = null;     // <audio> 元素
 
   function restBtn(btn) {
     btn.classList.remove('playing');
@@ -96,26 +310,58 @@
     btn.title = '朗读这条消息';
   }
 
+  function stopAudio() {
+    if (playEl) {
+      playEl.onended = playEl.onerror = null;
+      playEl.pause();
+      playEl = null;
+    }
+    if (playURL) { URL.revokeObjectURL(playURL); playURL = null; }
+  }
+
   function stopSpeak() {
-    if (synth) synth.cancel();
+    stopAudio();
     if (playingBtn) { restBtn(playingBtn); playingBtn = null; }
+  }
+
+  /** 后端合成并播放一段文本：返回 Promise，播放结束/出错时落定（单飞：先停上一条）。 */
+  function ttsPlay(text) {
+    stopAudio();
+    return fetch('/api/voice/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, rate: spokenRate(), voice: pref.get('edgeVoice', '') }),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+      return res.blob();
+    }).then((blob) => new Promise((resolve, reject) => {
+      playURL = URL.createObjectURL(blob);
+      playEl = new Audio(playURL);
+      playEl.onended = () => { stopAudio(); resolve(); };
+      playEl.onerror = () => { stopAudio(); reject(new Error('播放失败')); };
+      playEl.play().catch(reject);
+    }));
+  }
+
+  /** 朗读一条消息：按钮态驱动 + 后端合成播放。 */
+  async function speakTextBackend(text, btn) {
+    playingBtn = btn;
+    btn.classList.add('playing');
+    btn.innerHTML = ICON.stop + '停止';
+    btn.title = '停止朗读';
+    try {
+      await ttsPlay(text);
+      if (playingBtn === btn) { restBtn(btn); playingBtn = null; }
+    } catch (e) {
+      if (playingBtn === btn) { restBtn(btn); playingBtn = null; }
+      voiceToast('朗读失败：' + (e && e.message ? e.message : e));
+    }
   }
 
   function speakText(text, btn) {
     if (playingBtn === btn) { stopSpeak(); return; } // 再点一次 = 停止
     stopSpeak(); // 单飞：新的朗读立即停掉上一条
-    const u = new SpeechSynthesisUtterance(text);
-    pickVoice(u);
-    u.rate = spokenRate();
-    u.onend = u.onerror = () => {
-      restBtn(btn);
-      if (playingBtn === btn) playingBtn = null;
-    };
-    playingBtn = btn;
-    btn.classList.add('playing');
-    btn.innerHTML = ICON.stop + '停止';
-    btn.title = '停止朗读';
-    synth.speak(u);
+    speakTextBackend(text, btn);
   }
 
   // 消息操作行钩子：给每条助手消息挂「朗读」（钩子可注销，热关闭后新渲染的行不会再有）
@@ -131,19 +377,22 @@
     row.appendChild(btn);
   }
 
-  /* ================= 二、听写（语音输入） =================
-     以下整段迁自基础架构 web/app-chat.js 的语音输入块（本次改动前它是主程序的一部分），
-     除「时长上限改读设置」外逻辑未动。四个层次：
+  /* ================= 二、听写（语音输入，浏览器 SpeechRecognition） =================
+     以下为本组件一直以来的实现，原样保留（原属基础架构 web/app-chat.js，组件化时
+     迁入）。四个层次：
      1) 连接：点麦克风先进「连接中」——按钮转圈，不算开始说话。连上（onstart）才
-        变蓝进入录音态；VOICE_CONNECT_TIMEOUT 之内连不上就退避重试，重试 VOICE_MAX_RETRY
-        次仍连不上才弹报错。首次连接往往比后续慢（要跟云端服务建链），所以这里
-        的等待给得比"点了没反应"的看门狗宽，且**不打断正在建立的连接**。
-     2) 识别：浏览器原生 Web Speech（Edge/Chrome）。音频由浏览器直接发给云端识别
-        服务，链路抖动、静音收尾、引擎自行结束都很常见 → 录音态掉线同样退避重连。
+        变蓝进入录音态；VOICE_CONNECT_TIMEOUT 之内连不上就退避重试，重试
+        VOICE_MAX_RETRY 次仍连不上才弹报错。首次连接往往比后续慢（要跟云端服务
+        建链），所以这里的等待给得比"点了没反应"的看门狗宽，且**不打断正在建立
+        的连接**。
+     2) 识别：浏览器原生 Web Speech（WebView2/Edge/Chrome——微软的识别服务）。
+        音频由浏览器直接发给云端识别服务，链路抖动、静音收尾、引擎自行结束都很
+        常见 → 录音态掉线同样退避重连。
      3) 灰字：转写先落在叠层上显示为灰字——它不在输入框的值里，所以不可编辑、
         不可选中；静置 VOICE_SETTLE_MS（2.5 秒）后落成黑色正文写进输入框，此后
         与手打文字一样可编辑。断线收尾时把已有灰字立即落定，避免白说。
-     4) 节流：单次听写最长 maxDictateSec()（默认 240 秒），最后 9 秒在麦克风按钮上出倒计时徽标。 */
+     4) 节流：单次听写最长 maxDictateSec()（默认 240 秒），最后 9 秒在麦克风按钮
+        上出倒计时徽标。 */
 
   const voiceOn = { main: false, sub: false };
   const voiceSess = { main: null, sub: null };
@@ -220,7 +469,7 @@
     }
   }
 
-  /** 一次性轻提示（语音连不上等），浮在输入区上方，不打断输入。 */
+  /** 一次性轻提示（语音连不上/朗读失败等），浮在输入区上方，不打断输入。 */
   function voiceToast(text) {
     const el = document.createElement('div');
     el.classList.add('voice-toast');
@@ -231,6 +480,15 @@
       el.classList.remove('show');
       setTimeout(() => { if (el.remove) el.remove(); }, 300);
     }, 6000);
+  }
+
+  /** 把一段文字落进输入框正文（程序化写入不触发 input 事件：手动落草稿）。 */
+  function commitText(view, text) {
+    if (!text) return;
+    const inp = view.input;
+    inp.value = voiceJoin(inp.value, text);
+    autoGrow(inp);
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
   }
 
   function bindVoiceButton(view) {
@@ -324,13 +582,7 @@
         sess.committed.set(i, (sess.committed.get(i) || '') + seg.text);
         text += seg.text;
       }
-      if (text !== '') {
-        const inp = view.input;
-        inp.value = voiceJoin(inp.value, text);
-        autoGrow(inp);
-        // 语音是程序化写入，不触发 input 事件：手动落一次当前上下文的草稿
-        if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
-      }
+      if (text !== '') commitText(view, text);
       renderShadow();
     };
     // 全部定稿（断线收尾、用户按停、引擎重置结果列表时用：先说出来的先落定，不丢字）
@@ -376,9 +628,8 @@
     const scheduleRetry = () => {
       if (!sess.active || sess.done || sess.stopping || sess.restartTimer) return;
       if (sess.retries >= VOICE_MAX_RETRY) {
-        // 带上最后一次的错误码（network / no-speech / aborted / language-not-supported…）：
-        // 桌面端（WebView2）排查时，这一小段就是唯一的现场线索
-        finish('语音识别已停止', '语音识别连接不稳定（网络），连续 ' + VOICE_MAX_RETRY + ' 次连不上，已停止听写' +
+        // 带上最后一次的错误码（network / no-speech / aborted / language-not-supported…）
+        finish('语音识别已停止', '语音识别连接失败（连续 ' + VOICE_MAX_RETRY + ' 次）：浏览器可能不支持或识别服务不可达，建议换用 Microsoft Edge 浏览器' +
           (sess.lastErr ? '（' + sess.lastErr + '）' : ''));
         return;
       }
@@ -484,7 +735,8 @@
     };
 
     btn.onclick = () => {
-      if (!SR) { setHint('当前浏览器不支持语音识别', 2500); return; }
+      if (!SR) { setHint('当前浏览器不支持语音识别（建议 Edge / Chrome）', 4000); return; }
+      if (micHiddenByEnv()) { setHint('远程手机端页面已隐藏听写：手机浏览器多不支持语音识别', 4000); return; }
       if (sess.active) { stopByUser(); return; } // 再点一次 = 结束听写（连接中/录音中都一样）
       sess.active = true;
       sess.done = false;
@@ -512,12 +764,19 @@
       setHint('');
       removeVoiceShadow(view.input);
       btn.classList.remove('on', 'connecting');
-      btn.onclick = null;
       voiceOn[key] = false;
+    };
+
+    // 交给快捷键引擎的控制器（点按=toggle，长按=start/stop）
+    return {
+      active: () => sess.active,
+      toggle: () => btn.onclick(),
+      start: () => { if (!sess.active) btn.onclick(); },
+      stop: () => { if (sess.active) btn.onclick(); },
     };
   }
 
-  /* ================= 三、设置区（CX.registerSettings） ================= */
+  /* ================= 三、设置区（独立设置页「语音」） ================= */
 
   function mountSettings(el) {
     el.innerHTML = '';
@@ -534,7 +793,6 @@
       g.textContent = title;
       el.appendChild(g);
     };
-    // 一行：标签 + 控件（控件右侧可再跟一个值标签）
     const row = (label, ctrl) => {
       const r = document.createElement('div');
       r.className = 'sp-row';
@@ -555,100 +813,184 @@
       return b;
     };
 
-    if (!synth && !SR) {
-      note('此浏览器不支持语音合成（朗读）与语音识别（听写），本组件不可用。');
-      return;
-    }
+    /* ----- 朗读（后端 Edge 通道，免配置） ----- */
+    group('朗读（后端微软 Edge 通道，免配置）');
+    note('朗读由后端直连微软 Edge「大声朗读」接口（无密钥），任何浏览器、远程手机端行为一致。');
 
-    /* ----- 朗读 ----- */
-    if (synth) {
-      group('朗读');
+    // 语速：滑块 + 当前倍率（后端折成 SSML 百分比语速）
+    const rate = document.createElement('input');
+    rate.type = 'range';
+    rate.min = '0.5'; rate.max = '3'; rate.step = '0.1';
+    rate.value = String(spokenRate());
+    rate.className = 'sp-range';
+    const rateVal = document.createElement('span');
+    rateVal.className = 'sp-value';
+    rateVal.textContent = rate.value + '×';
+    rate.oninput = () => { rateVal.textContent = rate.value + '×'; pref.set('rate', parseFloat(rate.value)); };
+    row('朗读语速', rate).appendChild(rateVal);
 
-      // 语速：滑块 + 当前倍率
-      const rate = document.createElement('input');
-      rate.type = 'range';
-      rate.min = '0.5'; rate.max = '3'; rate.step = '0.1';
-      rate.value = String(spokenRate());
-      rate.className = 'sp-range';
-      const rateVal = document.createElement('span');
-      rateVal.className = 'sp-value';
-      rateVal.textContent = rate.value + '×';
-      rate.oninput = () => { rateVal.textContent = rate.value + '×'; pref.set('rate', parseFloat(rate.value)); };
-      row('朗读语速', rate).appendChild(rateVal);
+    // 音色：Edge 神经音色清单（/api/voice/voices，中文排前）
+    const sel = document.createElement('select');
+    sel.className = 'sp-select';
+    const fillVoices = (voices) => {
+      sel.innerHTML = '';
+      const auto = document.createElement('option');
+      auto.value = '';
+      auto.textContent = '自动（中文用晓晓）';
+      sel.appendChild(auto);
+      for (const v of voices) {
+        const o = document.createElement('option');
+        o.value = v.name;
+        o.textContent = v.display;
+        sel.appendChild(o);
+      }
+      sel.value = pref.get('edgeVoice', '');
+    };
+    fillVoices([]);
+    fetch('/api/voice/voices').then(async (res) => {
+      if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+      const d = await res.json();
+      if (!el.isConnected) return; // 设置区已收起：结果作废
+      fillVoices(d.voices || []);
+    }).catch((e) => {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = '音色清单获取失败（' + (e && e.message ? e.message : e) + '）——点试听可验证服务连通';
+      sel.innerHTML = '';
+      sel.appendChild(o);
+    });
+    sel.onchange = () => pref.set('edgeVoice', sel.value);
+    row('朗读音色', sel);
 
-      // 音色：自动（优先中文）+ 系统语音清单
-      const sel = document.createElement('select');
-      sel.className = 'sp-select';
-      const fillVoices = () => {
-        const vs = synth.getVoices().slice().sort((a, b) => {
-          const az = /^zh/i.test(a.lang || '') ? 0 : 1;
-          const bz = /^zh/i.test(b.lang || '') ? 0 : 1;
-          if (az !== bz) return az - bz;
-          return String(a.name || '').localeCompare(String(b.name || ''));
-        });
-        sel.innerHTML = '<option value="">自动（优先中文）</option>';
-        for (const v of vs) {
-          const o = document.createElement('option');
-          o.value = v.voiceURI;
-          o.textContent = v.name + '（' + v.lang + '）';
-          sel.appendChild(o);
-        }
-        sel.value = pref.get('voice', '');
-        // 选中的音色若已不在系统清单里，值落不到任何 option 上，浏览器会自动回落到「自动」
-      };
-      fillVoices();
-      // 语音清单可能首帧后才到：跟随引擎的变化信号刷新（设置区已关掉就自我注销）
-      const onVoices = () => {
-        if (!el.isConnected) { synth.removeEventListener('voiceschanged', onVoices); return; }
-        fillVoices();
-      };
-      if (synth.addEventListener) synth.addEventListener('voiceschanged', onVoices);
-      sel.onchange = () => pref.set('voice', sel.value);
-      row('朗读音色', sel);
-
-      // 试听：播放中变「停止」
-      const test = btn('试听', '用当前语速与音色试听一句');
-      let testing = false;
-      const setTesting = (on) => { testing = on; test.textContent = on ? '停止' : '试听'; };
-      test.onclick = () => {
-        if (testing) { synth.cancel(); setTesting(false); return; }
-        const u = new SpeechSynthesisUtterance('你好，这是坚祥数字助理的语音试听。');
-        pickVoice(u);
-        u.rate = spokenRate();
-        u.onend = u.onerror = () => setTesting(false);
-        synth.cancel();
-        setTesting(true);
-        synth.speak(u);
-      };
-      row('试听', test);
-    } else {
-      note('此浏览器不支持 speechSynthesis，朗读不可用；听写不受影响。');
-    }
+    // 试听：播放中变「停止」（走同一条后端通道）
+    const test = btn('试听', '用当前语速与音色试听一句');
+    let testing = false;
+    const setTesting = (on) => { testing = on; test.textContent = on ? '停止' : '试听'; };
+    test.onclick = () => {
+      if (testing) { stopSpeak(); setTesting(false); return; }
+      setTesting(true);
+      ttsPlay('你好，这是坚祥数字助理的语音试听。')
+        .catch((e) => voiceToast('试听失败：' + (e && e.message ? e.message : e)))
+        .then(() => { if (testing && !playEl) setTesting(false); });
+    };
+    row('试听', test);
 
     /* ----- 听写 ----- */
-    if (SR) {
-      group('听写');
-      const sec = document.createElement('input');
-      sec.type = 'number';
-      sec.min = '30'; sec.max = '600'; sec.step = '10';
-      sec.className = 'sp-num';
-      sec.value = String(maxDictateSec());
-      sec.title = '单次听写的最长时长；到点自动收尾，最后 9 秒按钮上出倒计时';
-      sec.onchange = () => {
-        const v = Math.round(Number(sec.value));
-        const ok = isFinite(v) && v >= 30 && v <= 600 ? v : 240;
-        sec.value = String(ok);
-        pref.set('maxSec', ok);
+    group('听写');
+    const sec = document.createElement('input');
+    sec.type = 'number';
+    sec.min = '30'; sec.max = '600'; sec.step = '10';
+    sec.className = 'sp-num';
+    sec.value = String(maxDictateSec());
+    sec.title = '单次听写的最长时长；到点自动收尾，最后 9 秒按钮上出倒计时';
+    sec.onchange = () => {
+      const v = Math.round(Number(sec.value));
+      const ok = isFinite(v) && v >= 30 && v <= 600 ? v : 240;
+      sec.value = String(ok);
+      pref.set('maxSec', ok);
+    };
+    const unit = document.createElement('span');
+    unit.className = 'sp-value';
+    unit.textContent = '秒（30–600，默认 240）';
+    row('单次听写时长上限', sec).appendChild(unit);
+    note('听写用浏览器自带的语音识别（WebView2 / Edge / Chrome——微软的识别服务，'
+      + '音频由浏览器直接发给它的识别服务）：链路抖动会自动退避重连；输入框上方浮出'
+      + '的灰字是未定稿的转写，停下约 2.5 秒才落成正文。连接失败时多半是浏览器不支持'
+      + '或识别服务不可达，换用 Microsoft Edge 通常可解。');
+
+    /* ----- 快捷键 ----- */
+    group('语音快捷键');
+
+    // 触发方式：点按切换 / 长按输入
+    const modeSel = document.createElement('select');
+    modeSel.className = 'sp-select';
+    const m1 = document.createElement('option');
+    m1.value = 'tap'; m1.textContent = '点按切换（按一下开始，再按一下结束）';
+    const m2 = document.createElement('option');
+    m2.value = 'hold'; m2.textContent = '长按输入（按住说话，松开结束）';
+    modeSel.append(m1, m2);
+    modeSel.value = voiceShortcutMode();
+    modeSel.onchange = () => {
+      pref.set('shortcutMode', modeSel.value === 'hold' ? 'hold' : 'tap');
+      firedLatch = false;
+      refreshShortcutPlaceholders();
+    };
+    row('触发方式', modeSel);
+
+    // 快捷键录制：按下组合 → 全部松开时落定；Esc 取消
+    const scBtn = btn('', '点击后按下想要的组合键（支持鼠标侧键、键盘组合、鼠标左右键同按）');
+    const resetBtn = btn('恢复默认', '恢复为鼠标侧键');
+    const renderScBtn = () => { scBtn.textContent = '录制：' + shortcutLabel(); };
+    renderScBtn();
+    const scWrap = document.createElement('span');
+    scWrap.appendChild(scBtn);
+    scWrap.appendChild(resetBtn);
+    row('快捷键', scWrap);
+    note('默认鼠标侧键（前后两枚都算）。可自定义键盘单键/组合键、鼠标左右键同时按'
+      + '（不支持单独的左键或右键）；仅在本窗口聚焦时生效，失焦自动松手。纯字母/'
+      + '数字单键在输入框里打字时不会触发（字符留给打字），加修饰键或换功能键即可。');
+
+    scBtn.onclick = () => {
+      if (captureMode) return;
+      captureMode = true;
+      const got = new Set();
+      scBtn.textContent = '请按下组合键，全部松开后保存（Esc 取消）…';
+      let finished = false;
+      const cleanup = () => {
+        finished = true;
+        captureMode = false;
+        document.removeEventListener('keydown', kd);
+        document.removeEventListener('keyup', ku);
+        document.removeEventListener('mousedown', md);
+        document.removeEventListener('mouseup', mu);
+        renderScBtn();
       };
-      const unit = document.createElement('span');
-      unit.className = 'sp-value';
-      unit.textContent = '秒（30–600，默认 240）';
-      row('单次听写时长上限', sec).appendChild(unit);
-      note('听写用浏览器自带的语音识别（Edge / Chrome）：音频由浏览器发给它的识别服务，' +
-        '链路抖动会自动退避重连；输入框上方浮出的灰字是未定稿的转写，停下约 2.5 秒才落成正文。');
-    } else {
-      note('此浏览器不支持 SpeechRecognition（听写不可用，建议 Edge / Chrome）。');
-    }
+      const finalize = () => {
+        if (finished) return;
+        const keys = Array.from(got);
+        cleanup();
+        if (!keys.length) return;
+        if (!validShortcut(keys)) {
+          voiceToast('不支持这个组合：不能只用单独的鼠标左键或右键');
+          return;
+        }
+        pref.set('shortcut', keys);
+        firedLatch = false;
+        refreshShortcutPlaceholders();
+        renderScBtn();
+      };
+      const kd = (e) => {
+        if (e.key === 'Escape') { cleanup(); return; }
+        const k = normKey(e);
+        if (k) { got.add(k); e.preventDefault(); }
+      };
+      const ku = (e) => {
+        const k = normKey(e);
+        if (k) got.delete(k);
+        if (got.size === 0) finalize();
+      };
+      const md = (e) => {
+        const m = normMouse(e);
+        if (m) { got.add(m); e.preventDefault(); }
+      };
+      const mu = (e) => {
+        const m = normMouse(e);
+        if (m) got.delete(m);
+        if (got.size === 0) setTimeout(finalize, 60); // 键盘松完的收尾也走这里
+      };
+      document.addEventListener('keydown', kd);
+      document.addEventListener('keyup', ku);
+      document.addEventListener('mousedown', md);
+      document.addEventListener('mouseup', mu);
+      // 8 秒没录成自动取消
+      setTimeout(() => { if (!finished && got.size === 0) cleanup(); }, 8000);
+    };
+    resetBtn.onclick = () => {
+      pref.set('shortcut', DEFAULT_SHORTCUT.slice());
+      firedLatch = false;
+      refreshShortcutPlaceholders();
+      renderScBtn();
+    };
   }
 
   /* ================= 注册 ================= */
@@ -661,29 +1003,48 @@
 
       // 语音输入按钮（主对话与右栏子对话各一套）：按钮 DOM 在主程序 index.html 里
       //（位置与样式不变），默认带 .hidden——按钮属于本组件，由组件揭开并接管行为；
-      // 组件关掉/没加载 = 按钮整组不出现
+      // 组件关掉/没加载 = 按钮整组不出现。远程手机端（JX_REMOTE 且视口 <500）
+      // 不揭开听筒按钮（手机浏览器多不支持语音识别；resize 跨过阈值时即时显隐）
       for (const view of [mainView, subView]) {
         const b = viewEl(view, 'btn-voice');
         if (!b) continue;
-        b.classList.remove('hidden');
-        bindVoiceButton(view);
+        voiceCtl[view.key] = bindVoiceButton(view);
+        if (!micHiddenByEnv()) b.classList.remove('hidden');
       }
 
-      // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读
-      if (synth) {
-        msgAction = onMessageAction;
-        JX.registerMessageAction(msgAction);
-        const onOpen = () => stopSpeak();
-        const onDone = () => stopSpeak();
-        busHooks.push({ ev: 'session:open', fn: onOpen }, { ev: 'message:done', fn: onDone });
-        for (const h of busHooks) JX.on(h.ev, h.fn);
-      }
+      // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）
+      msgAction = onMessageAction;
+      JX.registerMessageAction(msgAction);
+      const onOpen = () => stopSpeak();
+      const onDone = () => stopSpeak();
+      busHooks.push({ ev: 'session:open', fn: onOpen }, { ev: 'message:done', fn: onDone });
+      for (const h of busHooks) JX.on(h.ev, h.fn);
 
-      CX.registerSettings({ id: 'voice', title: '语音（朗读与听写）', mount: mountSettings });
+      // 快捷键引擎 + 输入框占位灰字的语音提示
+      installShortcutEngine();
+      refreshShortcutPlaceholders();
+
+      // 设置区以独立分区页呈现（设置 → 语音，位于「内置组件」之后）：
+      // pane 字段交给 app-settings.js 动态挂导航项与页面容器，组件关掉即撤
+      CX.registerSettings({
+        id: 'voice',
+        title: '语音（朗读与听写）',
+        pane: {
+          label: '语音',
+          icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+        },
+        mount: mountSettings,
+      });
     },
 
     dispose() {
       active = false;
+
+      // 快捷键引擎与占位提示收尾
+      removeShortcutEngine();
+      window.JXVoiceHint = '';
+      if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
+      restoreSubPlaceholder();
 
       // 听写：会话收尾 + 按钮隐藏（按钮归组件：卸载后整组消失，等下次启用再揭开）
       for (const view of [mainView, subView]) {
@@ -691,11 +1052,13 @@
         const sess = voiceSess[key];
         if (sess && sess.teardown) sess.teardown();
         voiceSess[key] = null;
+        voiceCtl[key] = null;
         voiceOn[key] = false;
         const b = viewEl(view, 'btn-voice');
         if (b) {
           b.classList.add('hidden');
           b.classList.remove('on', 'connecting');
+          b.onclick = null;
           if (view.hint) view.hint.textContent = '';
         }
       }

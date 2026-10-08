@@ -174,9 +174,12 @@ async function openSettings(pane) {
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
   // 默认「等待排队」：未设置过（新装）时下拉选框显示等待，用户选过就按用户存的显示
   selRefs.midrun.set(lsGet('jx.midrun', 'queue'));
+  // 交付文件打开方式（本机偏好，即时生效）
+  selRefs.fileopen.set(lsGet('jx.fileopen', 'panel'));
   renderPluginList();
   mountPluginSections();
   renderComponentList();
+  mountComponentPanes(); // 声明了 pane 的组件（如语音）的独立设置页
   renderSkillsPanel();
   renderExpertsPanel();
   renderCCPluginPanel();
@@ -294,6 +297,7 @@ function mountComponentSections() {
   if (!box) return;
   box.innerHTML = '';
   for (const sec of CX.settingsSections()) {
+    if (sec.pane) continue; // 声明了 pane 的组件走独立分区页（见 mountComponentPanes）
     const wrap = document.createElement('div');
     wrap.className = 'prov-section jx-section';
     const h = document.createElement('h4');
@@ -306,10 +310,80 @@ function mountComponentSections() {
   }
 }
 
-// 组件激活状态或设置区有变（注册 / 设置页热开关）→ 重挂；设置弹窗没开就等下次打开
+/* ---------- 组件设置页（CX.registerSettings 且带 pane 字段的组件 → 独立分区页）
+   组件在注册时声明 pane:{label, icon}，设置页左侧一级菜单出现专属入口（插在
+   「内置组件」之后）、右侧出现专属分区页；组件停用/卸载时导航项与页面一并撤掉，
+   正停在该页时退回默认页。导航状态机（setNav/renderNav/navGoto）按 data-pane
+   寻址，动态项与静态项同一条路径，窄屏翻页/返回手势天然兼容。 */
+function syncComponentPanePresence() {
+  const nav = document.querySelector('.set-nav');
+  const panes = document.querySelector('.settings-body .set-panes') || document.querySelector('.settings-body');
+  if (!nav || !panes) return;
+  const defs = CX.settingsSections().filter((s) => s.pane && s.pane.label);
+  const live = new Set(defs.map((d) => d.id));
+  // 撤掉失活组件的导航项与页面
+  document.querySelectorAll('[data-cx-pane]').forEach((el) => {
+    const id = el.dataset.cxPane;
+    if (live.has(id)) return;
+    const paneName = 'component-' + id;
+    if (setNav.pane === paneName) { // 正停在被撤的页：退回默认页
+      setNav.pane = 'general';
+      renderNav();
+    }
+    el.remove();
+  });
+  for (const d of defs) {
+    const paneName = 'component-' + d.id;
+    if (nav.querySelector('.set-nav-item[data-pane="' + paneName + '"]')) continue;
+    const navBtn = document.createElement('button');
+    navBtn.type = 'button';
+    navBtn.className = 'set-nav-item';
+    navBtn.dataset.pane = paneName;
+    navBtn.dataset.cxPane = d.id;
+    navBtn.innerHTML = (d.pane.icon || '') + esc(d.pane.label);
+    navBtn.onclick = () => navGoto(paneName);
+    // 插在「内置组件」之后；没有该入口（页面结构变动）就退到「关于」之前
+    const anchor = nav.querySelector('.set-nav-item[data-pane="components"]') ||
+      nav.querySelector('.set-nav-item[data-pane="about"]');
+    if (anchor && anchor.nextSibling) nav.insertBefore(navBtn, anchor.nextSibling);
+    else nav.appendChild(navBtn);
+    const paneEl = document.createElement('div');
+    paneEl.className = 'set-pane';
+    paneEl.id = 'set-pane-' + paneName;
+    paneEl.dataset.cxPane = d.id;
+    const anchorPane = document.getElementById('set-pane-components');
+    if (anchorPane && anchorPane.parentNode === panes && anchorPane.nextSibling) panes.insertBefore(paneEl, anchorPane.nextSibling);
+    else panes.appendChild(paneEl);
+  }
+}
+
+// 内容挂载（设置弹窗打开时与热开关时）：标题 + 组件交出的设置区
+function mountComponentPanes() {
+  syncComponentPanePresence();
+  for (const d of CX.settingsSections()) {
+    if (!d.pane || !d.pane.label) continue;
+    const paneEl = document.getElementById('set-pane-component-' + d.id);
+    if (!paneEl) continue;
+    paneEl.innerHTML = '';
+    const h = document.createElement('h3');
+    h.textContent = d.title;
+    paneEl.appendChild(h);
+    const inner = document.createElement('div');
+    paneEl.appendChild(inner);
+    try { d.mount(inner); } catch (e) { inner.textContent = '组件设置加载失败：' + e.message; }
+  }
+}
+
+// 组件激活状态或设置区有变（注册 / 设置页热开关）→ 重挂；设置弹窗没开就只同步
+// 导航项在位情况（内容等下次打开再挂，免得后台空跑组件自己的请求）
 window.addEventListener('cx:change', () => {
   const set = $('settings');
-  if (set && !set.classList.contains('hidden')) mountComponentSections();
+  if (set && !set.classList.contains('hidden')) {
+    mountComponentSections();
+    mountComponentPanes();
+  } else {
+    syncComponentPanePresence();
+  }
 });
 
 /* ---------- 插件清单与分区（/api/plugins + JX 注册的分区） ---------- */
@@ -1288,6 +1362,12 @@ makeSelect('sel-midrun', 'midrun', [
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
   { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
 ], (v) => lsSet('jx.midrun', v));
+// 交付文件打开方式：默认「右侧浏览器优先」（可展示类型进右栏面板，其余系统
+// 应用）；makeSelect 以第一项为初始值，与 openSettings 里 lsGet 的兜底一致。
+makeSelect('sel-fileopen', 'fileopen', [
+  { v: 'panel', label: '右侧浏览器优先（默认）' },
+  { v: 'shell', label: '系统默认应用' },
+], (v) => lsSet('jx.fileopen', v));
 makeSelect('sel-compact-mode', 'compactMode', [
   { v: 'rule', label: '规则压缩（零成本，默认）' },
   { v: 'llm', label: '模型摘要（达阈值自动+手动）' },

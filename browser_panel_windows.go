@@ -358,10 +358,9 @@ func (p *browserPanel) createOnUI() error {
 }
 
 // applyRectOnUI 把缓存的矩形应用到子窗口与控件（仅 UI 线程调用）。
-// 收起≠停渲染：visible=false 时把控件挪到屏外并保持 IsVisible=true——
-// 实测 IsVisible=false 会让合成器停帧，Page.captureScreenshot 挂起；屏外
-// +可见仍出帧，用户收起右栏后 AI 的 browser_screenshot 照常可用，且视口
-// 保持最后一次矩形，截图视野一致。
+// 隐藏统一走「屏外 + 保持 IsVisible=true」：实测 IsVisible=false 会让合成器
+// 停帧，且恢复 true 后不保证续帧——「地址栏与标题都正常、画面纯白空白」的
+// 根源正是旧的 w<8 分支（零矩形上报触发的 PutIsVisible(false)）。
 func (p *browserPanel) applyRectOnUI() {
 	p.stateMu.Lock()
 	x, y, w, h, visible := p.rectX, p.rectY, p.rectW, p.rectH, p.visible
@@ -377,24 +376,24 @@ func (p *browserPanel) applyRectOnUI() {
 		y = 0
 	}
 	if w < 8 || h < 8 {
-		// 尚无有效矩形（创建后首个矩形未到）：保持真隐藏
-		_, _, _ = procPanelShowWindow.Call(hwnd, swHide)
-		_ = ctl.PutIsVisible(false)
-	} else if visible {
-		_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
-			swpNoZOrder|swpNoActivate)
-		_, _, _ = procPanelShowWindow.Call(hwnd, swShow)
-		r := panelRect{0, 0, int32(w), int32(h)}
-		_, _, _ = ctlVtblOf(ctl).putBounds.Call(uintptr(unsafe.Pointer(ctl)), uintptr(unsafe.Pointer(&r)))
-		_ = ctl.PutIsVisible(true)
-	} else {
-		_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(^uintptr(31999)), uintptr(^uintptr(31999)),
-			uintptr(w), uintptr(h), swpNoZOrder|swpNoActivate)
-		_, _, _ = procPanelShowWindow.Call(hwnd, swShow)
-		r := panelRect{0, 0, int32(w), int32(h)}
-		_, _, _ = ctlVtblOf(ctl).putBounds.Call(uintptr(unsafe.Pointer(ctl)), uintptr(unsafe.Pointer(&r)))
-		_ = ctl.PutIsVisible(true)
+		// 尚无有效矩形（创建后首个矩形未到）：占位尺寸，反正在屏外
+		w, h = 64, 64
 	}
+	if !visible {
+		x, y = -32001, -32001 // 屏外；控件保持 IsVisible=true 继续出帧
+	}
+	// 强制一次真实位移（x+1 → x）：SetWindowPos 对相同坐标会被系统优化掉，
+	// 合成器偶发停帧（画面纯白、标题正常）后，没有真实的窗口位置事件就唤
+	// 不回来——实测同矩形重发不重绘，挪 1px 立即恢复。两步都在同一条 UI
+	// 消息里完成，中间不会发生绘制，肉眼不可见。
+	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(x+1), uintptr(y), uintptr(w), uintptr(h),
+		swpNoZOrder|swpNoActivate)
+	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		swpNoZOrder|swpNoActivate)
+	_, _, _ = procPanelShowWindow.Call(hwnd, swShow)
+	r := panelRect{0, 0, int32(w), int32(h)}
+	_, _, _ = ctlVtblOf(ctl).putBounds.Call(uintptr(unsafe.Pointer(ctl)), uintptr(unsafe.Pointer(&r)))
+	_ = ctl.PutIsVisible(true)
 	_ = ctl.NotifyParentWindowPositionChanged()
 }
 
@@ -418,7 +417,11 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 		}
 	}
 	p.stateMu.Lock()
-	p.rectX, p.rectY, p.rectW, p.rectH = x, y, w, h
+	// 只采纳合法矩形：隐藏上报只带 visible 字段（x/y/w/h 全零），清掉旧尺寸
+	// 会让屏外分支退化成 64x64 占位，回来时还得等一次完整矩形
+	if w >= 8 && h >= 8 {
+		p.rectX, p.rectY, p.rectW, p.rectH = x, y, w, h
+	}
 	p.dpr, p.visible = dpr, visible
 	if visible {
 		p.cssW = clampInt(int(float64(w)/dpr+0.5), 1, 65535)
@@ -534,6 +537,10 @@ func (p *browserPanel) onNavCompleted() {
 	p.url, p.title = u, t
 	p.stateMu.Unlock()
 	p.app.broadcast(Event{Type: "browser_nav", URL: u, Title: t})
+	// 后端自 kick：导航完成即按缓存矩形重排一次（applyRectOnUI 带 1px 强制
+	// 位移，能唤醒偶发停帧的合成器）。前端在 browser_nav 事件上也会补报，
+	// 这里不依赖它——双保险，任何一端到即可恢复画面。
+	p.applyRectOnUI()
 	if ch != nil {
 		close(ch)
 	}

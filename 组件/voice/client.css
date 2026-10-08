@@ -69,15 +69,19 @@
 .sp-row .sp-label { flex: 0 0 104px; color: var(--text-2); }
 .sp-row .sp-value { color: var(--text-3); font-size: 12px; }
 .sp-range { width: 220px; accent-color: var(--accent); cursor: pointer; }
-.sp-select, .sp-num {
+.sp-select, .sp-num, .sp-input {
   font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--bg); color: inherit;
 }
 .sp-select { flex: 1; max-width: 340px; }
 .sp-num { width: 84px; }
+.sp-input { flex: 1; max-width: 340px; }
 .sp-btn {
   font-size: 12px; padding: 4px 12px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--border); background: transparent; color: var(--text-2);
 }
+.sp-btn:disabled { opacity: .55; cursor: default; }
+.sp-btn + .sp-btn { margin-left: 8px; }
 .sp-btn:hover { color: var(--accent); border-color: var(--accent); }
+.sp-btn:disabled:hover { color: var(--text-2); border-color: var(--border); }
 .sp-note { font-size: 12px; color: var(--text-3); margin: 6px 0; line-height: 1.6; }

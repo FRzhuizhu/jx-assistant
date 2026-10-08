@@ -1373,14 +1373,47 @@ function fmtBytes(n) {
   return n + ' B';
 }
 
-// 交付卡片的两个动作：都用系统外壳处理（用户主动操作，不经模型权限门控）。
-// 「打开」= 用系统默认程序打开该文件（双击它是什么程序就是什么程序）；
-// 「在文件夹中查看」= 资源管理器里定位并选中该文件。
-// SSH 远程会话的文件在本机没有对应路径：打开改为在右栏浏览器里查看内容，
-// 定位则明确提示不可用（服务端也会拒绝，这里先给更直白的说法）。
-function deliveryOpenFile(view, sid, d) {
+// 交付卡片的两个动作（用户主动操作，不经模型权限门控）。「打开」按文件类型
+// 分三路（设置·常规「交付文件打开方式」可整体改回系统应用）：
+//   * 代码/文本/图片/PDF → 右栏「文件」查看页（openInFileViewer，/api/fileview
+//     自包含页：等宽+行号，桌面/网页/远程三端一致——不依赖原生面板 overlay）；
+//   * 网页（html/htm）→ 右栏「浏览器」（桌面=原生 WebView2 面板，网页=新标签）；
+//   * 其余（Word/Excel/压缩包/exe 等）→ 系统默认程序（远程会话没有本机路径，
+//     尽力进「文件」查看页，二进制会给引导提示）。
+// 「在文件夹中查看」= 资源管理器里定位并选中该文件（远程不可用，给直白提示）。
+
+// 走「文件」查看页的后缀：文本/代码 + 图片 + PDF（查看页能渲染的全部）
+const FILE_VIEWER_EXT = new Set(['txt', 'md', 'markdown', 'log', 'csv', 'tsv',
+  'json', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'properties', 'env',
+  'js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'css', 'scss', 'less', 'go', 'py', 'rb',
+  'rs', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'php', 'swift', 'kt', 'sh', 'bat',
+  'cmd', 'ps1', 'sql', 'lua', 'r', 'vue', 'http', 'diff', 'patch',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'pdf']);
+// 走右栏「浏览器」的后缀：真网页（原生面板/新标签里的完整浏览体验）
+const BROWSER_PANEL_EXT = new Set(['html', 'htm']);
+
+function fileExtOf(p) {
+  const m = String(p).toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+
+// 三路路由：'file'（查看页）/ 'panel'（浏览器）/ 'shell'（系统应用）。
+// 用户在设置里选了「系统默认应用」时本地一律 shell；远程会话没有系统应用，
+// 始终尽力进查看页（html 除外——走浏览器流式渲染）。
+function deliveryOpenRoute(view, path) {
   const cur = view === subView ? subState.cur : state.cur;
-  if (cur && cur.remote) { openInPanelBrowser({ session: sid, path: d.path }); return Promise.resolve(); }
+  const remote = !!(cur && cur.remote);
+  if (!remote && lsGet('jx.fileopen', 'panel') === 'shell') return 'shell';
+  const ext = fileExtOf(path);
+  if (BROWSER_PANEL_EXT.has(ext)) return 'panel';
+  if (FILE_VIEWER_EXT.has(ext)) return 'file';
+  return remote ? 'file' : 'shell';
+}
+
+function deliveryOpenFile(view, sid, d) {
+  const route = deliveryOpenRoute(view, d.path);
+  if (route === 'file') { openInFileViewer(sid, d.path); return Promise.resolve(); }
+  if (route === 'panel') { openInPanelBrowser({ session: sid, path: d.path }); return Promise.resolve(); }
   return api('/api/sessions/' + encodeURIComponent(sid) + '/delivery/open', {
     method: 'POST', body: JSON.stringify({ path: d.path }),
   }).catch((e) => alert('打开失败：' + e.message));
@@ -1424,11 +1457,14 @@ function deliveryCard(dvs, sid, view) {
     }
     const acts = document.createElement('span');
     acts.className = 'dc-acts';
+    const route = deliveryOpenRoute(view, d.path);
     const ov = document.createElement('button');
     ov.type = 'button';
     ov.className = 'dc-btn';
     ov.textContent = '打开';
-    ov.title = '用系统默认程序打开这个文件';
+    ov.title = route === 'file' ? '在右侧「文件」查看页打开（代码样式；设置·常规可改）'
+      : route === 'panel' ? '在右侧「浏览器」面板中打开（设置·常规可改为系统应用）'
+        : '用系统默认程序打开这个文件';
     const rv = document.createElement('button');
     rv.type = 'button';
     rv.className = 'dc-btn';
@@ -1471,6 +1507,7 @@ async function openInPanelBrowser(body) {
     return;
   }
   rpOpen('browser'); // 面板未开自动开；已开只是切页签（不重播动画）
+  setTimeout(() => { if (bpwDesktop() && bpwActive()) bpwReport(true, true); }, 350); // 开合动画落定后强制补报（自愈，不吃去重）
 }
 
 // 委托接管（主对话/子对话通用）：左键点 ext-link 在右栏打开；Ctrl/中键等放行默认
@@ -1482,8 +1519,9 @@ document.addEventListener('click', (e) => {
 });
 
 // 文件路径链接（file-link，正文/反引号里的路径渲染而来）：按消息所在视图
-// 解析出会话，右栏预览该文件（本地转 file://，同目录相对资源可用；远程走
-// 流式渲染）。后端边界=会话工作区内已存在的文件，越界/不存在给明确报错。
+// 解析出会话，右栏预览该文件——代码/文本/图片/PDF 进「文件」查看页（三端
+// 一致），网页进「浏览器」，其余也交给查看页（二进制给引导提示）。
+// 后端边界=会话工作区内已存在的文件，越界/不存在给明确报错。
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a.file-link');
   if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -1492,7 +1530,8 @@ document.addEventListener('click', (e) => {
   const view = a.closest('#sub-msg-col') ? subView : mainView;
   const sid = view.state.cur && view.state.cur.id;
   if (!sid || !path) return;
-  openInPanelBrowser({ session: sid, path });
+  if (deliveryOpenRoute(view, path) === 'panel') openInPanelBrowser({ session: sid, path });
+  else openInFileViewer(sid, path);
 });
 
 /* 渲染契约（性能与滚动）：
@@ -1932,9 +1971,12 @@ function handleGlobalEvent(ev) {
       break;
     // 浏览器面板（桌面原生 WebView2）：browser_nav 同步工具栏地址/标题
     // （AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
-    // （X/Y 复用为宽高），两个处理函数都在 app-right.js
+    // （X/Y 复用为宽高），两个处理函数都在 app-right.js。nav 事件顺带强制
+    // 重报矩形：面板曾因矩形上报失联被留在隐藏态（地址已填、舞台空白），
+    // 每次导航到达都补一次上报，让面板自愈显示
     case 'browser_nav':
       bpwOnNav(ev);
+      if (typeof bpwDesktop === 'function' && bpwDesktop() && typeof bpwActive === 'function' && bpwActive()) bpwReport(true, true);
       break;
     case 'browser_resize':
       bpwApplyViewport(ev.x);

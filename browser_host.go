@@ -794,10 +794,9 @@ func insideWorkspace(tctx *toolContext, abs string) bool {
 //   * url：http/https 直接在内嵌实例打开；
 //   * path：会话工作区内已存在的文件——本地工作区转 file://（同目录相对
 //     资源可用），SSH 远程工作区转 /api/browser/view 流式地址。
-// 一律经 browserFor("") 打开：内嵌实例成为工具作用目标（active），用户开启
-// 「操作浏览器」能力后 browser_screenshot / browser_content 看到的就是这页；
-// 有会话时注入【网页查看】report（origin=webview，注入与能力无关——无能力时
-// 模型也知道用户在看什么，只是看不到画面）。
+// 一律经 browserFor("") 打开：内嵌实例成为工具作用目标（active）。不注入
+// 任何对话回报（用户打开什么不经模型；需要看画面时用户会说，模型用
+// panel_screenshot 截右侧栏）。
 func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		Session string `json:"session"`
@@ -847,17 +846,9 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "打开失败: "+err.Error())
 		return
 	}
-	if m != nil {
-		what := target
-		if viewedPath != "" {
-			what = viewedPath + "（" + target + "）"
-		}
-		note := fmt.Sprintf("【网页查看】用户在右栏打开了 %s。需要查看画面时可用 browser_screenshot / browser_content；若提示需要「操作浏览器」能力，请引导用户在权限芯片勾选。", what)
-		_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "webview", CreatedAt: now()})
-		m.UpdatedAt = now()
-		_ = a.Store.SaveMeta(m)
-		a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
-	}
+	// 不再注入【网页查看】回报：对话里不显示、模型也不看（用户口径：打开
+	// 什么是个人的事，需要时用户会自己说）。模型要看画面走 panel_screenshot
+	// 工具（对右侧栏截图，浏览器页/文件查看页通用），见 panelshot_windows.go。
 	writeJSON(w, http.StatusOK, map[string]string{"url": target})
 }
 

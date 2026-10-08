@@ -355,9 +355,15 @@ function bpwActive() {
 }
 
 let bpwRectTimer = null, bpwLastKey = '';
-function bpwReport(immediate) {
+// force=true 跳过「尺寸没变不上报」去重：导航事件/链接打开的补报是「确保
+// 可见」信号——后端面板可能被另一页面实例或异常时序藏在暗处，矩形没变也
+// 必须重发一次让它显示（自愈路径不吃去重）。
+function bpwReport(immediate, force) {
   clearTimeout(bpwRectTimer);
-  const run = () => {
+  // attempt：开合动画期间舞台宽 <8 是常态（onOpen 的立即上报跑在动画中段），
+  // 旧版只早退一次、之后全靠 ResizeObserver——RO 偶发不触发时原生面板就被
+  // 永久留在隐藏态（地址栏有内容、舞台空白）。改为短周期重试兜底。
+  const run = (attempt) => {
     const stage = $('bpw-stage');
     if (!stage) return;
     if (!bpwDesktop() || !bpwActive()) {
@@ -368,14 +374,17 @@ function bpwReport(immediate) {
       return;
     }
     const r = stage.getBoundingClientRect();
-    if (r.width < 8 || r.height < 8) return; // 布局未就绪（开合动画中），别用脏矩形
+    if (r.width < 8 || r.height < 8) { // 布局未就绪（开合动画中），别用脏矩形
+      if (attempt < 10) bpwRectTimer = setTimeout(() => run(attempt + 1), 120);
+      return;
+    }
     const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true };
     const key = JSON.stringify(payload);
-    if (key === bpwLastKey) return; // 尺寸没变不上报
+    if (key === bpwLastKey && !force) return; // 尺寸没变不上报（强制补报除外）
     bpwLastKey = key;
     api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify(payload) }).catch(() => {});
   };
-  if (immediate) run(); else bpwRectTimer = setTimeout(run, 80);
+  if (immediate) run(0); else bpwRectTimer = setTimeout(() => run(0), 80);
 }
 
 // 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开
@@ -404,9 +413,18 @@ $('bpw-url').addEventListener('keydown', (e) => {
   if (!/^https?:\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
   bpwNav({ url: u });
 });
+// 桌面壳里 window.open 只会弹 WebView2 扄件的窗口（不是用户浏览器）；
+// 「在系统浏览器打开」桌面形态走后端 /api/open-url（ShellExecute 真默认
+// 浏览器），网页形态保持新标签页
 $('bpw-external').onclick = () => {
   const u = $('bpw-url').value.trim();
-  if (u) window.open(u, '_blank');
+  if (!u) return;
+  if (bpwDesktop()) {
+    api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: u }) })
+      .catch((e) => alert('打开失败：' + e.message));
+  } else {
+    window.open(u, '_blank');
+  }
 };
 
 // AI 的 browser_viewport 请求（browser_resize 事件，X/Y 复用为宽高）：
@@ -429,6 +447,20 @@ rpRegister('browser', {
     bpwReport(true); // 打开即上报矩形：宿主据此显示并定位原生控件
   },
 });
+
+/* ---------- 文件视图（代码/文本查看页，桌面/网页/远程三端一致） ---------- */
+/* iframe 挂 /api/fileview（fileview.go 渲染的自包含页：等宽 + 行号 + 截断保护），
+ * 不依赖右栏原生 WebView2 面板与 file://——原生面板是 overlay 子窗口，矩形同步
+ * 偶发失联时用户只看到空白；查看页是普通 HTML，网页端与远程手机端同样能看。 */
+rpRegister('file', { title: '文件', type: 'iframe', order: 2 });
+
+function openInFileViewer(sid, path) {
+  const u = '/api/fileview?sid=' + encodeURIComponent(sid) + '&path=' + encodeURIComponent(path);
+  rpOpen('file');
+  const cont = $('rp-view-file');
+  const f = cont && cont.querySelector('iframe');
+  if (f && f.src !== new URL(u, location.href).href) f.src = u; // 同文件不重载
+}
 // 矩形变化监听：舞台尺寸（开合动画、拖分割条、窗口缩放都会传导到这里）
 if (window.ResizeObserver) {
   new ResizeObserver(() => bpwReport()).observe($('bpw-stage'));
