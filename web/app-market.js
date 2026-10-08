@@ -3,7 +3,7 @@
      · 全部操作走 /api/market（挂在 /api/ 下，远程手机端经中继隧道天然可用）；
      · 组件装/卸后调 CX.refresh() 热加载/热卸载，不刷新页面；
      · 插件 tab 底部保留「管理外部 Claude 市场」入口（复用设置页 ccplugins 分区）；
-     · 未配置市场服务器时给出建议地址一键填入（与中继网关同 host 的 jx-server）。
+     · 未配置市场服务器时给出建议地址一键填入（与中继网关同 host 的 jxai-server）。
    样式在 style.css 尾部 mk-* 前缀；复用 app-core.js 的 $ / api / esc / confirmCenter。 */
 
 /* ---------- 视图开关（body.market-mode 占领主区，回收站 bin-mode 同款机制） ---------- */
@@ -91,7 +91,7 @@ function renderUnconfigured() {
   if (!list) return;
   const sug = mkData.suggested || '';
   list.innerHTML =
-    '<div class="mk-hint">还没配置市场服务器。市场由 jx-server 提供（部署一次，技能/组件/插件装这一处）。' +
+    '<div class="mk-hint">还没配置市场服务器。市场由 jxai-server 提供（部署一次，技能/组件/插件装这一处）。' +
     (sug
       ? '<br>检测到远程接入网关，推荐直接用同一台服务器：' +
         '<div class="mk-suggest"><code>' + esc(sug) + '</code></div>' +
@@ -135,7 +135,7 @@ function renderTab() {
   if (count) count.textContent = q ? (all.length ? `匹配 ${items.length}/${all.length} 项` : '') : (all.length ? `共 ${all.length} 项` : '');
   if (!all.length) {
     list.innerHTML = '<div class="mk-hint">' + ({
-      skill: '市场里还没有技能。让服务器管理员用 jx-server publish 发布（或检查市场地址）。',
+      skill: '市场里还没有技能。让服务器管理员用 jxai-server publish 发布（或检查市场地址）。',
       component: '市场里还没有组件。',
       plugin: '市场里还没有插件。也可以添加外部 Claude Code 插件市场（右上角入口）。',
     })[mkTab] + '</div>';

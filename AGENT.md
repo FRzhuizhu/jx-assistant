@@ -1090,12 +1090,13 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `adapters.go` | 插件兼容层：扫描、开关联查、资产清单、Go 半边注册点 |
 | `adapter_dsh_speech.go` | dsh-speech 的 Go 半边：润色端点（复用已配置模型）+ 听写提示词段 |
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务、`Rescan`（市场装卸后重扫） |
-| `market.go` | 市场客户端半边：拉 jx-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问） |
+| `update.go` | 更新检查：定期拉发布源（updateURL，Gitea releases/latest 或 jxai-server 的 /updates/latest，两者同格式），tag_name 比当前新就经事件流推横幅；versionCompare 双体系（日期+V序号 恒新于 旧点分号） |
+| `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问） |
 | `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行 / 模型工具 |
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页、市场页（`app-market.js`：左侧栏底部入口、主区整页视图 body.market-mode、三 tab+搜索+一键装卸；组件装卸后 `CX.refresh()` 热生效） |
-| `jxserver/` | **一体化服务端（独立子包，单二进制 jx-server，部署在 210 的 /opt/jx-server，端口 2228 与现有 Node 网关 2227 并行）**：①远程访问中继——deploy-210 网关 server.js 的 Go 移植，协议逐字节兼容（/hub WS 注册 15s 窗口/新顶旧/30s ping×2、/relay NDJSON 密文透传 150s/70MB/每 IP 8 并发/abort 三触发、/a/<设备号> 配对页内嵌注入 _forceRelay，不移植 PeerJS）；②技能/组件/插件市场——`/market/manifest.json`+zip 下发（匿名只读），发布走子命令 `jx-server publish|unpublish`（服务器上经 SSH）；出包 `打包/出服务端包.ps1`（交叉编译 Linux 静态二进制）；部署与发布门槛见 `jxserver/部署/README.md`；三期预留：模型中转子命令（优先复用服务器上已部署的 /opt/new-api） |
+| `jxaiserver/` | **一体化服务端（独立子包，单二进制 jxai-server，部署在 210 的 /opt/jxai-server，端口 2228 与现有 Node 网关 2227 并行）**：①远程访问中继——deploy-210 网关 server.js 的 Go 移植，协议逐字节兼容（/hub WS 注册 15s 窗口/新顶旧/30s ping×2、/relay NDJSON 密文透传 150s/70MB/每 IP 8 并发/abort 三触发、/a/<设备号> 配对页内嵌注入 _forceRelay，不移植 PeerJS）；②技能/组件/插件市场——`/market/manifest.json`+zip 下发（匿名只读），发布走子命令 `jxai-server publish|unpublish`（服务器上经 SSH）；出包 `打包/出服务端包.ps1`（交叉编译 Linux 静态二进制）；部署与发布门槛见 `jxaiserver/部署/README.md`；③软件更新分发（两级拉取式）——总服务端 jxai-server publish-update 发布（版本号=日期+V序号，如 20261008V1），客户公司服务端 -update-upstream 定期拉上游镜像，客户端 config.updateURL 指向本服务端 /updates/latest（Gitea releases/latest 兼容 JSON，附件直链按请求 Host 现场生成，现有轮询/横幅零改动）；三期预留：模型中转子命令（优先复用服务器上已部署的 /opt/new-api） |
 
 ## 前后端接口
 
@@ -1127,7 +1128,7 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
 | `GET /api/components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供；挂 `/api/` 下让中继隧道覆盖，cx.js fetch 文本注入） |
-| `GET /api/market` | 市场清单视图（jx-server 清单 + 本机安装态；`?refresh=1` 绕过 60s 缓存；未配置时给建议地址） |
+| `GET /api/market` | 市场清单视图（jxai-server 清单 + 本机安装态；`?refresh=1` 绕过 60s 缓存；未配置时给建议地址） |
 | `POST /api/market/install` `/uninstall` | 一键安装/更新/卸载 `{type: skill\|component\|plugin, id}`（下载 zip+sha256 校验后路由到三套体系；组件装卸后前端 `CX.refresh()` 热生效） |
 | `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `progress_write` 的进度清单是两回事**） |
 | `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |

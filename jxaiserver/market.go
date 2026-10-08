@@ -7,8 +7,8 @@
 //
 // 发布走子命令（服务器上经 SSH 使用，市场本身匿名只读——公司内部够用）：
 //
-//	jx-server publish   skill|component|plugin <目录|zip> [-id -name -version -desc -tags -data]
-//	jx-server unpublish skill|component|plugin <id> [-data]
+//	jxai-server publish   skill|component|plugin <目录|zip> [-id -name -version -desc -tags -data]
+//	jxai-server unpublish skill|component|plugin <id> [-data]
 //
 // 发布校验（三类型各自的最低门槛）：
 //
@@ -590,7 +590,7 @@ func runPublish(args []string) int {
 	_ = fs.Parse(flagsFirst(args))
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fmt.Fprintln(os.Stderr, "用法: jx-server publish <skill|component|plugin> <目录|zip> [-id -name -version -desc -tags -data]")
+		fmt.Fprintln(os.Stderr, "用法: jxai-server publish <skill|component|plugin> <目录|zip> [-id -name -version -desc -tags -data]")
 		return 2
 	}
 	s := newMarketStore(*data, "坚祥内部市场")
@@ -609,7 +609,7 @@ func runUnpublish(args []string) int {
 	_ = fs.Parse(flagsFirst(args))
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fmt.Fprintln(os.Stderr, "用法: jx-server unpublish <skill|component|plugin> <id> [-data]")
+		fmt.Fprintln(os.Stderr, "用法: jxai-server unpublish <skill|component|plugin> <id> [-data]")
 		return 2
 	}
 	s := newMarketStore(*data, "坚祥内部市场")

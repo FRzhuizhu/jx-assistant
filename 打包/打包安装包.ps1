@@ -3,7 +3,7 @@
 # 用法（在仓库根目录）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File 打包\打包安装包.ps1
 # 可选参数：
-#   -Version     版本号（默认 1.0.0，同时写入安装包文件名与元数据）
+#   -Version     版本号（默认=今天日期+V1，如 20261008V1；同日重出多版手动传 V2 V3）
 #   -ExeSource   使用已构建好的发行 exe（默认现场 go build；
 #                需要排除工作区未完成改动时，先在干净 worktree 里构建再传入）
 #   -SkillsSource 技能目录来源（默认仓库根的 技能\，含 _runtime 便携运行时）
@@ -11,10 +11,13 @@
 # 前置条件：本机装有 Inno Setup 6（winget install JRSoftware.InnoSetup）。
 
 param(
-  [string]$Version = "1.0.0",
+  [string]$Version = "",
+
   [string]$ExeSource = "",
   [string]$SkillsSource = ""
 )
+if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "V1" }
+
 $ErrorActionPreference = "Stop"
 $packDir = $PSScriptRoot
 $root = Split-Path -Parent $packDir

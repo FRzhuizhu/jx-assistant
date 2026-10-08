@@ -84,7 +84,7 @@ type Config struct {
 	// 手机等外部设备经网关的加密中继访问本服务；端到端 AES-256-GCM（密钥由
 	// pairKey 派生），网关只见密文。与聊天服务的 p2p.js 同协议，共用同一网关。
 	RemoteAccess RemoteAccessCfg `json:"remoteAccess"`
-	// 市场（技能/组件/插件）服务器清单地址：指向 jx-server 的
+	// 市场（技能/组件/插件）服务器清单地址：指向 jxai-server 的
 	// /market/manifest.json；空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
 	MarketURL string `json:"marketURL"`
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的

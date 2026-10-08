@@ -23,7 +23,7 @@ import (
 // newTestServer 起一个完整路由的 httptest 服务。
 func newTestServer(t *testing.T, hub *relayHub) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(buildMux(hub, newMarketStore(t.TempDir(), "测试市场")))
+	srv := httptest.NewServer(buildMux(hub, newMarketStore(t.TempDir(), "测试市场"), newUpdateStore(t.TempDir(), "")))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -444,7 +444,7 @@ func TestHealthz(t *testing.T) {
 	defer resp.Body.Close()
 	var m map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&m)
-	if m["ok"] != true || m["service"] != "jx-server" {
+	if m["ok"] != true || m["service"] != "jxai-server" {
 		t.Fatalf("healthz 形状不对: %v", m)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,32 +41,71 @@ var (
 
 func updateStatePath(a *App) string { return filepath.Join(a.Cfg.DataDir, "update.json") }
 
-// versionCompare 比较点分版本号（忽略 v 前缀与忽略后缀段）：a>b 返 1，a<b 返 -1，相等 0。
-// 非数字段按 0 处理，长度不齐补零——"0.2" == "0.2.0"。
+// versionCompare 版本号两套体系：新的「日期+V序号」（20261008V1，同日发多版用
+// V2 V3）与旧的点分号（0.1.9）。日期体系恒新于旧体系（体系切换只升不降）；同为
+// 日期体系先比 8 位日期再比 V 序号（V10 > V9）；同为旧体系按点分数字段比较
+// （非数字段按 0 处理，长度不齐补零——"0.2" == "0.2.0"）。
 func versionCompare(a, b string) int {
-	nums := func(s string) []int {
-		s = strings.TrimPrefix(strings.TrimSpace(s), "v")
-		parts := strings.Split(s, ".")
-		out := make([]int, 0, 3)
-		for _, p := range parts {
-			n, _ := strconv.Atoi(strings.TrimSpace(p))
-			out = append(out, n)
+	ad, an, aok := parseDateVersion(a)
+	bd, bn, bok := parseDateVersion(b)
+	switch {
+	case aok && bok:
+		if ad != bd {
+			if ad > bd {
+				return 1
+			}
+			return -1
 		}
-		for len(out) < 3 {
-			out = append(out, 0)
+		if an != bn {
+			if an > bn {
+				return 1
+			}
+			return -1
+		}
+		return 0
+	case aok:
+		return 1 // 新体系 > 旧体系
+	case bok:
+		return -1
+	}
+	nums := func(s string) [3]int {
+		s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+		var out [3]int
+		for i, p := range strings.Split(s, ".") {
+			if i >= 3 {
+				break
+			}
+			n, _ := strconv.Atoi(strings.TrimSpace(p))
+			out[i] = n
 		}
 		return out
 	}
-	an, bn := nums(a), nums(b)
+	an2, bn2 := nums(a), nums(b)
 	for i := 0; i < 3; i++ {
-		if an[i] > bn[i] {
+		if an2[i] > bn2[i] {
 			return 1
 		}
-		if an[i] < bn[i] {
+		if an2[i] < bn2[i] {
 			return -1
 		}
 	}
 	return 0
+}
+
+// parseDateVersion 解析「日期+V序号」版本号（20261008V10 → 20261008, 10）。
+var dateVersionRe = regexp.MustCompile(`^(\d{8})[Vv](\d+)$`)
+
+func parseDateVersion(s string) (date, serial int64, ok bool) {
+	m := dateVersionRe.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
+		return 0, 0, false
+	}
+	d, err1 := strconv.ParseInt(m[1], 10, 64)
+	n, err2 := strconv.ParseInt(m[2], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return d, n, true
 }
 
 // StartUpdateChecker 启动后台轮询：启动 30s 后首查（不拖慢启动），之后每 6h。

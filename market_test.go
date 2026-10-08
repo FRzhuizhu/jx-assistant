@@ -19,7 +19,7 @@ import (
 	"testing"
 )
 
-// zipDirForTest 把目录打成 zip 字节（与 jxserver 的 zipTree 等价的最小实现）。
+// zipDirForTest 把目录打成 zip 字节（与 jxaiserver 的 zipTree 等价的最小实现）。
 func zipDirForTest(t *testing.T, src string) []byte {
 	t.Helper()
 	var buf bytes.Buffer

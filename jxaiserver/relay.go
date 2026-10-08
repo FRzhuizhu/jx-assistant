@@ -102,7 +102,7 @@ func (h *relayHub) healthz(extra map[string]int) string {
 	h.mu.Lock()
 	n, p := len(h.conns), len(h.pending)
 	h.mu.Unlock()
-	m := map[string]any{"ok": true, "service": "jx-server", "hub": n, "pending": p}
+	m := map[string]any{"ok": true, "service": "jxai-server", "hub": n, "pending": p}
 	for k, v := range extra {
 		m[k] = v
 	}

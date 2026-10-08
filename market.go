@@ -1,6 +1,6 @@
 package main
 
-// 技能/组件/插件市场（客户端半边）：从市场服务器（jxserver，见 jxserver/）拉
+// 技能/组件/插件市场（客户端半边）：从市场服务器（jxaiserver，见 jxaiserver/）拉
 // 清单，一键安装/更新/卸载，按类型路由到三套既有体系：
 //
 //	skill     → addUserSkill / deleteUserSkill（技能/user/<id>/；更新=先删再装）
@@ -10,7 +10,7 @@ package main
 // 安装记账 data/market_installed.json：技能与组件本体没有可靠的版本来源，
 // 安装时记账是「已装版本 / 可更新」判定的唯一事实；插件的版本以 ccplugin
 // 安装记录为准。市场地址在 config.marketURL（设置页「网络」分区填写），
-// 未配置时返回建议值（与中继网关同 host 时市场就在同一台 jx-server 上）。
+// 未配置时返回建议值（与中继网关同 host 时市场就在同一台 jxai-server 上）。
 
 import (
 	"crypto/sha256"
