@@ -346,8 +346,10 @@ rpRegister('subs', { title: '子对话', order: 1, onOpen: () => { refreshDrawer
 /* ---------- 浏览器视图（桌面=原生 WebView2 面板 / 网页=占位提示） ---------- */
 /* 工具栏与状态条由本界面渲染；网页区域是 #bpw-stage 占位 div，桌面模式下
  * 原生 WebView2 控件精确覆盖该矩形（宿主 browser_panel_windows.go），网页
- * 本身不进 HTML。矩形（CSS px × devicePixelRatio = 物理像素）防抖后上报
- * /api/browser/panel-rect，窗口缩放/拖分割条/侧栏开合都触发重算。 */
+ * 本身不进 HTML。矩形以 CSS px 原值上报 /api/browser/panel-rect（宿主进程
+ * 的子窗口坐标与 CSS px 同尺度，乘 devicePixelRatio 会把面板推出窗口——
+ * 显示缩放 ≠100% 的机器上就是「永远白屏」的根源，见 handleBrowserPanelRect），
+ * 窗口缩放/拖分割条/侧栏开合都触发重算。 */
 function bpwDesktop() { return document.documentElement.classList.contains('desktop-shell'); }
 
 function bpwActive() {
@@ -379,7 +381,8 @@ function bpwReport(immediate, force) {
       if (attempt < 10) bpwRectTimer = setTimeout(() => run(attempt + 1), 120);
       return;
     }
-    const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true };
+    const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true,
+      iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 }; // 临时诊断字段
     const key = JSON.stringify(payload);
     if (key === bpwLastKey && !force) return; // 尺寸没变不上报（强制补报除外）
     bpwLastKey = key;

@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -689,7 +690,7 @@ func (a *App) handleBrowserState(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBrowserPanelRect 桌面右栏原生面板的矩形同步端点：前端把网页占位区
-// 的矩形（CSS px）与 devicePixelRatio 上报，宿主换算物理像素后移动 WebView2
+// 的矩形（CSS px 原值）上报，宿主直接以同尺度的子窗口坐标移动 WebView2
 // 子窗口。网页模式没有原生面板，忽略。
 func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 	var p struct {
@@ -699,11 +700,16 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 		H       float64 `json:"h"`
 		Dpr     float64 `json:"dpr"`
 		Visible bool    `json:"visible"`
+		IW      float64 `json:"iw"` // 临时诊断字段（前端视口宽）
+		IH      float64 `json:"ih"` // 临时诊断字段（前端视口高）
+		OZ      float64 `json:"oz"` // 临时诊断字段（visualViewport.scale）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
 		return
 	}
+	log.Printf("[panel-rect-diag] 收到 x=%.1f y=%.1f w=%.1f h=%.1f dpr=%.2f visible=%v iw=%.0f ih=%.0f oz=%.0f",
+		p.X, p.Y, p.W, p.H, p.Dpr, p.Visible, p.IW, p.IH, p.OZ) // 临时诊断日志
 	ps, ok := a.nativePanel.(interface {
 		SetRect(x, y, w, h int, dpr float64, visible bool) error
 	})
@@ -715,8 +721,16 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 	if dpr <= 0 {
 		dpr = 1
 	}
+	// 坐标换算：前端给的 x/y/w/h 是 CSS px，而本进程对 Win32 是系统 DPI 感知
+	// （manifest dpiAware，窗口单位=系统单位），实测主 WebView2 的 CSS 视口宽
+	// 与客户区窗口单位宽一致（CSS px 与子窗口坐标 1:1 同尺度）。此前这里乘
+	// dpr 是把 CSS px 当逻辑单位换算“物理像素”——但 SetWindowPos 的子窗口
+	// 坐标并非物理像素，乘完在 125%/150%/160% 缩放的面板会整体飞出客户区
+	// 右缘（实测 160%：x=1079×1.6=1727 > 客户宽 1264），WebView2 在窗外照常
+	// 导航——用户看到的就是「地址栏/标题正常、网页区永远白屏」。100% 缩放
+	// 乘 1 无感，故只在非 100% 缩放的机器上必现。直接用 CSS 原值即可。
 	if err := ps.SetRect(
-		int(p.X*dpr+0.5), int(p.Y*dpr+0.5), int(p.W*dpr+0.5), int(p.H*dpr+0.5),
+		int(p.X+0.5), int(p.Y+0.5), int(p.W+0.5), int(p.H+0.5),
 		dpr, p.Visible); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

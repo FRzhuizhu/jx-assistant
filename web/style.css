@@ -996,6 +996,13 @@ body.rp-open .w-handle { display: none; }
 #perm-chip > svg.caret, #sub-perm-chip > svg.caret { width: 13px; height: 13px; color: var(--accent); }
 .chip-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-btn:hover { border-color: rgba(77, 107, 254, .4); color: var(--accent); }
+/* 手机端（窄视口）：权限胶囊只留护盾图标——文字与下拉箭头都收起，
+   胶囊缩成圆形图标按钮（点开仍有完整权限菜单，title 保留提示） */
+@media (max-width: 500px) {
+  #perm-chip, #sub-perm-chip { padding: 5px 7px; max-width: none; }
+  #perm-chip > span, #sub-perm-chip > span,
+  #perm-chip > svg.caret, #sub-perm-chip > svg.caret { display: none; }
+}
 .mode-flags { display: flex; gap: 4px; }
 .mode-flags.hidden { display: none; }
 .mflag {

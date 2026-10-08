@@ -14,10 +14,11 @@
  *    识别接口，音频由浏览器直接发给它的识别服务）——即本组件一直以来的实现，
  *    逻辑与样式原样保留：连接中/录音中三态、灰色暂定层（未定稿转写叠在输入框
  *    上显示为灰字、静置 2.5 秒落成正文）、断线退避重连、时长上限倒计时徽标、
- *    一次性轻提示。桌面 WebView2 可用；远程手机端受手机浏览器识别服务可达性
- *    限制（安卓 Chrome 走谷歌服务，国内不通）——后端化听写的可行性结论见
- *    语音后端化-研究与改动说明.md（无头 Edge 假麦克风试验：音频能进
- *    getUserMedia，但 SR 不消费假设备，路不通）。
+ *    一次性轻提示。桌面 WebView2 可用（注意：该能力随运行时版本波动，153 系
+ *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）；远程手机端
+ *    受手机浏览器识别服务可达性限制（安卓 Chrome 走谷歌服务，国内不通）——后端
+ *    化听写的可行性结论见 语音后端化-研究与改动说明.md（无头 Edge 假麦克风试验：
+ *    音频能进 getUserMedia，但 SR 不消费假设备，路不通）。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
  *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
@@ -202,10 +203,8 @@
     const mode = voiceShortcutMode();
 
     if (action === 'press') {
-      if (micHiddenByEnv()) {
-        voiceToast('远程手机端页面已隐藏听写：手机浏览器多不支持语音识别');
-        return;
-      }
+      if (micHiddenByEnv()) return; // 远程手机端：静默——按钮已隐藏，不弹任何提示
+                                     //（提示曾放在快捷键匹配之前，手机上每次点按都弹，扰人）
       // 1) 非独按修饰键的备选：完整按住即触发
       for (const alt of alts) {
         if (alt.length === 1 && isModKey(alt[0])) continue; // 独按修饰键走 2)
@@ -491,6 +490,29 @@
 
   const voiceOn = { main: false, sub: false };
   const voiceSess = { main: null, sub: null };
+
+  // 桌面壳判定（runDesktop 导航的 URL 带 shell=desktop，app-core 据此给 <html>
+  // 挂 desktop-shell 类）与 WebView2/Edge 运行时版本（UA 的 Edg/ 段）。听写走
+  // WebView2 内置的浏览器识别，该能力随运行时版本波动（微软 153 系运行时有官方
+  // 回归、152 正常），失败提示里带上版本，在出问题的机器上好对号入座。
+  function desktopShell() {
+    return document.documentElement.classList.contains('desktop-shell');
+  }
+  function edgeRuntimeVer() {
+    const m = navigator.userAgent.match(/Edg\w*\/([\d.]+)/);
+    return m ? m[1] : '';
+  }
+  function dictationFailMsg(err) {
+    const code = err ? '（' + err + '）' : '';
+    if (desktopShell()) {
+      const v = edgeRuntimeVer();
+      return '语音识别连接失败' + code + '：桌面壳的听写依赖 WebView2 运行时内置的识别通道，'
+        + '部分运行时版本存在故障' + (v ? '（当前 ' + v + '）' : '')
+        + '。可更新 WebView2 运行时后重试，或以 -browser 参数启动、用 Edge 浏览器打开本页使用语音';
+    }
+    return '语音识别连接失败（连续 ' + VOICE_MAX_RETRY + ' 次）：浏览器可能不支持或识别服务不可达，建议换用 Microsoft Edge 浏览器' + code;
+  }
+
   const VOICE_MAX_RETRY = 3;          // 连续连不上/没结果的重试上限（任一次拿到文字即清零）
   const VOICE_RETRY_BASE = 400;       // 首次重试等待（毫秒），此后线性退避
   const VOICE_RETRY_STEP = 400;       // 每多一次重试多等这么久
@@ -723,9 +745,9 @@
     const scheduleRetry = () => {
       if (!sess.active || sess.done || sess.stopping || sess.restartTimer) return;
       if (sess.retries >= VOICE_MAX_RETRY) {
-        // 带上最后一次的错误码（network / no-speech / aborted / language-not-supported…）
-        finish('语音识别已停止', '语音识别连接失败（连续 ' + VOICE_MAX_RETRY + ' 次）：浏览器可能不支持或识别服务不可达，建议换用 Microsoft Edge 浏览器' +
-          (sess.lastErr ? '（' + sess.lastErr + '）' : ''));
+        // 带上最后一次的错误码（network / no-speech / aborted / language-not-supported…）；
+        // 桌面壳与浏览器形态给不同指引（桌面壳指向 WebView2 运行时，见 dictationFailMsg）
+        finish('语音识别已停止', dictationFailMsg(sess.lastErr));
         return;
       }
       const wait = Math.min(VOICE_RETRY_BASE + sess.retries * VOICE_RETRY_STEP, VOICE_RETRY_MAX);
@@ -810,7 +832,14 @@
         sess.lastErr = code; // 记下现场：3 次重试都失败时把它写进浮层提示
         // 只有重试也救不回来的错误直接收场；network / no-speech / aborted 等
         // 一律按瞬时故障处理，交给重试机制自愈
-        if (code === 'not-allowed' || code === 'service-not-allowed') { finish('麦克风未授权：请在浏览器里允许麦克风权限'); return; }
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          // 桌面壳里点不出浏览器授权界面：麦克风授权来自启动参数自动放行，
+          // 还失败多半是 Windows 系统级麦克风开关（隐私设置）在拦
+          finish(desktopShell()
+            ? '麦克风未授权：请检查 Windows 设置 → 隐私 → 麦克风（含「允许桌面应用访问麦克风」）'
+            : '麦克风未授权：请在浏览器里允许麦克风权限');
+          return;
+        }
         if (code === 'audio-capture') { finish('没有可用的麦克风（可能被其他程序占用）'); return; }
         commitAll();
         scheduleRetry();
@@ -831,7 +860,7 @@
 
     btn.onclick = () => {
       if (!SR) { setHint('当前浏览器不支持语音识别（建议 Edge / Chrome）', 4000); return; }
-      if (micHiddenByEnv()) { setHint('远程手机端页面已隐藏听写：手机浏览器多不支持语音识别', 4000); return; }
+      if (micHiddenByEnv()) return; // 远程手机端：按钮已隐藏，静默
       if (sess.active) { stopByUser(); return; } // 再点一次 = 结束听写（连接中/录音中都一样）
       sess.active = true;
       sess.done = false;
@@ -1000,7 +1029,10 @@
     note('听写用浏览器自带的语音识别（WebView2 / Edge / Chrome——微软的识别服务，'
       + '音频由浏览器直接发给它的识别服务）：链路抖动会自动退避重连；输入框上方浮出'
       + '的灰字是未定稿的转写，停下约 2.5 秒才落成正文。连接失败时多半是浏览器不支持'
-      + '或识别服务不可达，换用 Microsoft Edge 通常可解。');
+      + '或识别服务不可达，换用 Microsoft Edge 通常可解；桌面壳同理——识别通道随'
+      + ' WebView2 运行时版本波动（部分版本有故障），更新 WebView2 运行时'
+      + '（https://go.microsoft.com/fwlink/p/?LinkId=2124703）或以 -browser 参数'
+      + '启动、改用 Edge 打开可解。');
 
     /* ----- 快捷键 ----- */
     group('语音快捷键');

@@ -13,7 +13,8 @@ package main
 // WebView2（Chromium 136 起）已封禁该参数，chromedp 直连不可靠。
 //
 // 布局同步：右栏地址栏工具栏由主界面渲染（HTML），网页区域是占位 div；前端
-// 把占位矩形（CSS px × devicePixelRatio = 物理像素）POST /api/browser/panel-rect，
+// 把占位矩形（CSS px 原值——本进程对 Win32 系统级 DPI 感知，子窗口坐标与
+// CSS px 同尺度，不得再乘 dpr，见 handleBrowserPanelRect）POST /api/browser/panel-rect，
 // 宿主在 UI 线程移动子窗口并 PutBounds。HTML 元素无法浮于原生子窗口之上，
 // 弹层需自行避让该矩形。
 //
@@ -31,6 +32,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -55,6 +57,7 @@ var (
 	procPanelCreateWindow    = panelUser32.NewProc("CreateWindowExW")
 	procPanelDestroyWindow   = panelUser32.NewProc("DestroyWindow")
 	procPanelSetWindowPos    = panelUser32.NewProc("SetWindowPos")
+	procPanelGetWindowRect   = panelUser32.NewProc("GetWindowRect") // 临时诊断用
 	procPanelShowWindow      = panelUser32.NewProc("ShowWindow")
 	panelKernel32            = windows.NewLazySystemDLL("kernel32.dll")
 	procPanelGetModuleHandle = panelKernel32.NewProc("GetModuleHandleW")
@@ -251,9 +254,9 @@ type browserPanel struct {
 	wv      *edge.ICoreWebView2
 	hwnd    uintptr
 	visible bool
-	rectX, rectY, rectW, rectH int // 物理像素（前端 CSS px × dpr）
+	rectX, rectY, rectW, rectH int // 舞台矩形（与 CSS px 同尺度的窗口单位）
 	dpr     float64
-	cssW, cssH int                 // 面板视口的 CSS px 估算（物理 ÷ dpr）
+	cssW, cssH int                 // 面板视口的 CSS px（= 舞台矩形宽高）
 	url, title string
 	navCh   chan struct{} // 最近一次导航的完成信号（NavigationCompleted 关闭）
 
@@ -390,6 +393,13 @@ func (p *browserPanel) applyRectOnUI() {
 		swpNoZOrder|swpNoActivate)
 	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		swpNoZOrder|swpNoActivate)
+	if procPanelGetWindowRect.Find() == nil { // 临时诊断回读：SetWindowPos 之后窗口真实落在哪
+		var rr panelRect
+		if rb, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rr))); rb != 0 {
+			log.Printf("[panel-rect-diag] apply 目标=(%d,%d,%dx%d) 实际落位=(%d,%d)-(%d,%d) %dx%d",
+				x, y, w, h, rr.Left, rr.Top, rr.Right, rr.Bottom, rr.Right-rr.Left, rr.Bottom-rr.Top)
+		}
+	}
 	_, _, _ = procPanelShowWindow.Call(hwnd, swShow)
 	r := panelRect{0, 0, int32(w), int32(h)}
 	_, _, _ = ctlVtblOf(ctl).putBounds.Call(uintptr(unsafe.Pointer(ctl)), uintptr(unsafe.Pointer(&r)))
@@ -397,7 +407,8 @@ func (p *browserPanel) applyRectOnUI() {
 	_ = ctl.NotifyParentWindowPositionChanged()
 }
 
-// SetRect 前端矩形同步入口（物理像素）；visible=true 时确保面板已创建。
+// SetRect 前端矩形同步入口（CSS px 原值，见 handleBrowserPanelRect 的换算
+// 注释）；visible=true 时确保面板已创建。
 func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error {
 	if dpr <= 0 {
 		dpr = 1
@@ -424,8 +435,10 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 	}
 	p.dpr, p.visible = dpr, visible
 	if visible {
-		p.cssW = clampInt(int(float64(w)/dpr+0.5), 1, 65535)
-		p.cssH = clampInt(int(float64(h)/dpr+0.5), 1, 65535)
+		// w/h 已是 CSS px（见 handleBrowserPanelRect 的换算注释：CSS px 与
+		// 子窗口坐标 1:1），面板视口即舞台尺寸，不再除 dpr。
+		p.cssW = clampInt(w, 1, 65535)
+		p.cssH = clampInt(h, 1, 65535)
 	}
 	created := p.ctl != nil
 	p.stateMu.Unlock()
