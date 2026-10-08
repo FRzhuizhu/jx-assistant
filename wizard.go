@@ -38,7 +38,7 @@ type wizardServer struct {
 	Src     string `json:"src"`            // lan=局域网发现 / registry=总服务器查询
 }
 
-// provisionPayload /provision 的响应结构（jxaiserver/provision.go 下发）。
+// provisionPayload /provision 的响应结构（服务端 jxai-server 的 /provision 下发，独立仓库）。
 type provisionPayload struct {
 	Company string `json:"company"`
 	User    string `json:"user"`

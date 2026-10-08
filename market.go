@@ -1,6 +1,6 @@
 package main
 
-// 技能/组件/插件市场（客户端半边）：从市场服务器（jxaiserver，见 jxaiserver/）拉
+// 技能/组件/插件市场（客户端半边）：从市场服务器（jxai-server，独立仓库 D:\智能体工作区\jxaiserver）拉
 // 清单，一键安装/更新/卸载，按类型路由到三套既有体系：
 //
 //	skill     → addUserSkill / deleteUserSkill（技能/user/<id>/；更新=先删再装）
