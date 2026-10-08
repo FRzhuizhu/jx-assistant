@@ -377,6 +377,28 @@
   </div>
 </div>
 
+<!-- 首次接入向导（app-wizard.js）：填公司名（局域网自动发现）或服务器地址 二选一 +
+     本人称呼 → 一键接通公司服务端：自动配置内部模型通道（含服务端分配的 API key 与
+     公司默认模型）、技能/组件市场、软件更新。机制照 confirm-modal（hidden 切换/点遮罩
+     关闭/Enter 提交）；首次启动自动弹出，设置·网络访问可随时重开 -->
+<div id="welcome-modal" class="modal hidden">
+  <div class="modal-card welcome-card">
+    <h2 id="wz-title">欢迎使用坚祥数字助理</h2>
+    <p class="wz-sub">接入公司服务端后即可开箱使用（模型、技能市场、软件更新全自动配置）。<br>两项地址填其中一项即可。</p>
+    <div class="wz-form">
+      <label>公司名称<input id="wz-company" placeholder="局域网内自动发现（配对口令）" autocomplete="off"></label>
+      <label>服务器地址<input id="wz-server" placeholder="如 192.168.1.10:PORT（与上项二选一）" autocomplete="off" spellcheck="false"></label>
+      <label>本人称呼<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
+    </div>
+    <div id="wz-result" class="remote-result hidden"></div>
+    <div class="modal-actions">
+      <button id="wz-skip">跳过，手动配置</button>
+      <span class="spacer"></span>
+      <button id="wz-go" class="accent">连 接</button>
+    </div>
+  </div>
+</div>
+
 <div id="settings" class="modal hidden">
   <div class="modal-card settings-card">
     <!-- 手机二级页的返回头（桌面与一级列表隐藏；标题随所选分区更新） -->
@@ -545,6 +567,26 @@
               <div class="sf-label">市场服务器</div>
               <input id="set-market-url" class="pf-input" placeholder="http://网关地址:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
               <p class="sf-desc">jxai-server 市场的清单地址（同一台服务器上与中继网关共用端口）；填好即用，改动即时生效。留空则市场页显示未配置。</p>
+            </div>
+          </div>
+          <div class="gen-section">
+            <h4>公司接入与更新</h4>
+            <div class="set-field">
+              <div class="sf-label">接入向导</div>
+              <div class="sf-inline">
+                <button id="btn-wizard-rerun" class="pf-add" type="button">重新运行接入向导</button>
+                <span class="sf-desc">填公司名即可在局域网自动发现公司服务端，一键配好内部模型通道、市场与更新（首次启动会自动弹出）。</span>
+              </div>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">总服务器地址</div>
+              <input id="set-registry-url" class="pf-input" placeholder="http://总服务器:PORT（可选，公司名发现不到时兜底）" autocomplete="off" spellcheck="false">
+              <p class="sf-desc">公司总服务器的地址：局域网广播被隔离时，向导按公司名到这里查询贵公司服务端的内网地址。留空则只走局域网发现。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">更新检查源</div>
+              <input id="set-update-url" class="pf-input" placeholder="http://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
+              <p class="sf-desc">软件更新检查地址（jxai-server 的 /updates/latest，或 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。</p>
             </div>
           </div>
           <p class="tip">网络访问设置保存在服务端；远程接入改动即时生效，局域网绑定改动重启程序后生效。</p>
@@ -918,6 +960,7 @@
 <script src="/app-ccplugins.js"></script>
 <script src="/app-market.js"></script>
 <script src="/app-settings.js"></script>
+<script src="/app-wizard.js"></script>
 <script src="/app.js"></script>
 <script src="/cx.js"></script>
 </body>

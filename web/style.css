@@ -2528,3 +2528,18 @@ body.market-mode #composer-wrap { display: none; }
   #mk-search { max-width: none; }
   .mk-list { grid-template-columns: 1fr; }
 }
+
+/* ============================================================
+   首次接入向导（app-wizard.js，wizard.go 的浏览器半边）：
+   居中欢迎卡（机制照 confirm-modal，样式收窄为表单三件套）。
+   ============================================================ */
+.welcome-card { width: min(440px, calc(100vw - 32px)); }
+.welcome-card h2 { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+.wz-sub { font-size: 12.5px; color: var(--text-2); line-height: 1.7; margin-bottom: 14px; white-space: normal; }
+.wz-form { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.wz-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--text-2); }
+.wz-form input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13.5px; background: var(--bg); color: var(--text); outline: none; }
+.wz-form input:focus { border-color: var(--accent); }
+.welcome-card .modal-actions { margin-top: 14px; }
+.welcome-card .remote-result { white-space: normal; line-height: 1.7; }
+.remote-result.busy { color: var(--text-2); }

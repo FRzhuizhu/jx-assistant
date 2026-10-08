@@ -20,6 +20,9 @@ loadModels();
 connectEvents();
 loadApprovals();
 loadQuestions();
+// 首次接入向导（app-wizard.js）：未完成过（!wizardDone）时自动弹——公司名局域网
+// 发现 / 服务器地址二选一，接通即配好模型通道、市场与更新
+maybeShowWizard();
 // 审批 / 提问的兜底轮询：只在事件流没连上时才真的去拉（SSE 正常时它就是多余的）。
 // 前端渲染本身也已经是增量的——数据没变就不动 DOM，用户打进卡片的字不会被冲掉。
 setInterval(() => {

@@ -23,7 +23,7 @@ import (
 // newTestServer 起一个完整路由的 httptest 服务。
 func newTestServer(t *testing.T, hub *relayHub) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(buildMux(hub, newMarketStore(t.TempDir(), "测试市场"), newUpdateStore(t.TempDir(), "")))
+	srv := httptest.NewServer(buildMux(hub, newMarketStore(t.TempDir(), "测试市场"), newUpdateStore(t.TempDir(), ""), newRegistryStore(t.TempDir()), newProvisionStore(t.TempDir(), "")))
 	t.Cleanup(srv.Close)
 	return srv
 }

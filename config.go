@@ -87,6 +87,10 @@ type Config struct {
 	// 市场（技能/组件/插件）服务器清单地址：指向 jxai-server 的
 	// /market/manifest.json；空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
 	MarketURL string `json:"marketURL"`
+	// 公司接入（向导，wizard.go）：wizardDone=已完成/跳过首启向导（不再自动弹）；
+	// registryURL=总服务器地址（公司名发现不到时的查询兜底，空=只走局域网广播）。
+	WizardDone  bool   `json:"wizardDone"`
+	RegistryURL string `json:"registryURL"`
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`

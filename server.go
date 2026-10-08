@@ -257,6 +257,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/market", a.handleMarketView)
 	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
 	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
+	// 公司接入向导（wizard.go）：局域网发现 + 总服务器查询 + 一键应用配置
+	mux.HandleFunc("POST /api/wizard/discover", a.handleWizardDiscover)
+	mux.HandleFunc("POST /api/wizard/connect", a.handleWizardConnect)
 	// 语音组件（voice）宿主半边（voiceapi.go）：朗读走微软 Edge「大声朗读」
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
@@ -667,6 +670,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"android":    isAndroidRuntime, // 前端按平台隐藏「操作手机」权限芯片
 		"model":      t.Model,
 		"hasKey":     t.APIKey != "",
+		"wizardDone": a.Cfg.WizardDone, // 首启向导（app-wizard.js 据此自动弹出）
 		"mock":       t.BaseURL == "mock",
 		"workspace":  a.Cfg.Workspace,
 		"allowShell": a.Cfg.AllowShell,
@@ -936,6 +940,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"lanIPs":           lanIPv4s(),
 		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
 		"marketURL":        a.Cfg.MarketURL,
+		"wizardDone":       a.Cfg.WizardDone,
+		"registryURL":      a.Cfg.RegistryURL,
 		"updateURL":        a.Cfg.UpdateURL,
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
@@ -960,6 +966,8 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		RemoteHost      *string `json:"remoteHost"`    // 中继网关地址（域名或 IP，不带协议与端口）
 		RemotePort      *int    `json:"remotePort"`    // 中继网关端口
 		MarketURL       *string `json:"marketURL"`     // 市场（技能/组件/插件）服务器清单地址
+		WizardDone      *bool   `json:"wizardDone"`    // 首启向导：完成/跳过（不再自动弹）
+		RegistryURL     *string `json:"registryURL"`   // 总服务器地址（向导发现不到公司时的查询兜底）
 		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
@@ -1073,6 +1081,17 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.marketMu.Lock()
 		a.marketCache = marketCacheEntry{} // 换市场源：缓存作废
 		a.marketMu.Unlock()
+	}
+	if v := body.WizardDone; v != nil {
+		a.Cfg.WizardDone = *v
+	}
+	if v := body.RegistryURL; v != nil {
+		u := strings.TrimSpace(*v)
+		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			writeErr(w, 400, "总服务器地址需为 http(s)（jxai-server 的地址）")
+			return
+		}
+		a.Cfg.RegistryURL = u
 	}
 	if v := body.UpdateURL; v != nil {
 		u := strings.TrimSpace(*v)
@@ -1408,8 +1427,8 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			notes = append(notes, ctxNote{ctxModel, "模型：" + old + " → " + m.Model})
 		}
 	}
-	permWas := permModeOf(m)                                  // 权限旧值：SaveMeta 后生成【权限变更】注入用
-	permWasTools := append([]string(nil), m.Tools...)        //（须在 Permission/Tools 两个分支改动之前捕获）
+	permWas := permModeOf(m)                          // 权限旧值：SaveMeta 后生成【权限变更】注入用
+	permWasTools := append([]string(nil), m.Tools...) //（须在 Permission/Tools 两个分支改动之前捕获）
 	if body.Permission != nil {
 		was := permModeOf(m)
 		wasTools := m.Tools

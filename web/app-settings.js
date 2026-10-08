@@ -1015,8 +1015,10 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
   if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
-  // 市场服务器（market.go）：与远程接入字段同一套「回显+单字段 PATCH」
+  // 市场服务器（market.go）与公司接入（wizard.go）：与远程接入字段同一套「回显+单字段 PATCH」
   if (document.activeElement !== $('set-market-url')) $('set-market-url').value = c.marketURL || '';
+  if (document.activeElement !== $('set-registry-url')) $('set-registry-url').value = c.registryURL || '';
+  if (document.activeElement !== $('set-update-url')) $('set-update-url').value = (c.updateURL === 'off' ? 'off' : (c.updateURL || ''));
   // 开关一动连接就异步建立（一般一两秒）：未连上时定时重拉状态刷新文案；
   // 连上或设置页收起即停，不做长轮询
   clearTimeout(remotePollTimer);
@@ -1076,6 +1078,10 @@ bindRemoteInput('set-remote-host', 'remoteHost');
 bindRemoteInput('set-remote-port', 'remotePort', (v) => parseInt(v, 10) || 0);
 // 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
 bindRemoteInput('set-market-url', 'marketURL');
+bindRemoteInput('set-registry-url', 'registryURL');
+bindRemoteInput('set-update-url', 'updateURL');
+// 重新运行接入向导（app-wizard.js 的 openWizard）
+$('btn-wizard-rerun').onclick = () => { if (typeof openWizard === 'function') openWizard(); };
 
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;

@@ -106,6 +106,35 @@ ssh 主机 "cd /opt/jxai-server && ./jxai-server publish-update /tmp/坚祥数�
   ExecStart 后 `systemctl restart jxai-server`）；拉取失败保留现有版本。
 - 旧版本包在发新版/同步新版时自动清理，存储不随版本累积。
 
+## 公司接入（客户端零配置）
+
+三级结构：**总服务器（公司总部）→ 客户公司服务端 → 员工客户端**。客户端首次启动
+只填「公司名称（或服务器地址）+ 本人称呼」，其余全自动（内部模型通道含 API key、
+技能/组件市场、软件更新）。
+
+```
+总服务器      jxai-server company-add <公司名> [-key 口令]        # 登记客户公司
+              （把生成的口令交给该公司；lookup 端点供客户端按名查内网地址）
+客户公司服务端 jxai-server -company <公司名> -company-key <口令>                            -register-to http://总服务器:PORT                            -update-upstream http://总服务器:PORT   # 可选：连更新分发一起
+              jxai-server set-api -newapi http://127.0.0.1:3000                            -user root -pass <new-api管理员密码>                            [-default 模型id] [-models a,b,c]        # 模型通道（接同机 new-api）
+员工客户端    首启向导：公司名（局域网自动发现）或服务器地址 + 本人称呼 → 一键接入
+```
+
+- **局域网发现**：公司名即配对口令。服务端监听 UDP 2228 只应答公司名匹配的探测；
+  回应地址用收包源 IP（客户端可达哪个网段就回哪个）。**服务端需放行 UDP 2228 入站**
+  （Windows 首次会弹防火墙，点允许；Linux 照 iptables 2227 的规则抄一条 udp）。
+- **总服务器查询兜底**：客户服务端启动 10s 后向总服务器登记（内网 IP 枚举，
+  `-advertise` 可覆盖），每 6h 心跳；广播被隔离（访客 Wi-Fi/跨 VLAN）时客户端按
+  公司名查 `GET /registry/lookup` 拿内网地址。客户端在 设置·网络访问·总服务器地址
+  填总服务器地址后启用该兜底。
+- **模型通道（new-api 受控发令牌）**：`set-api` 配好后，`POST /provision {user}` 按
+  人名在 new-api 建/复用 `jxai-<人名>` 令牌（用量统计直接用 new-api 自带的按令牌
+  日志，令牌名=人名），并下发它可见的模型清单与默认模型。**注意 new-api 的模型必须
+  有价格或开启「自用模式」（系统设置→运营设置），否则不定价模型既不列出也不可调**。
+- 客户端点「跳过」后不再自动弹（设置·网络访问·重新运行接入向导 可重开）；重跑会
+  替换内部提供方（company-internal）并保留其它提供方。
+- 未配 set-api 时向导降级：市场/更新照配，模型提示手动配置。
+
 ## 与 Node 网关的差异（有意为之）
 
 - **不提供 /peerjs 信令**：Go 客户端（remoteaccess.go）本就不走 PeerJS 直连；
