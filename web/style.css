@@ -2543,3 +2543,5 @@ body.market-mode #composer-wrap { display: none; }
 .welcome-card .modal-actions { margin-top: 14px; }
 .welcome-card .remote-result { white-space: normal; line-height: 1.7; }
 .remote-result.busy { color: var(--text-2); }
+.wz-either { font-size: 12.5px; color: var(--text-2); padding: 2px 0 0; }
+.wz-either b { color: var(--text); font-weight: 600; }

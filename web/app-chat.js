@@ -33,8 +33,7 @@ function resetEmpty() {
     '<div class="home">' +
       '<div class="hero">' +
         '<img class="logo-img" src="/logo.png" alt="坚祥数字助理">' +
-        '<h1>更人性化的数字助手</h1>' +
-        '<span class="pill preview">预览版</span>' +
+        '<h1>更懂制造业的数字助理</h1>' +
       '</div>' +
       '<p class="home-sub">描述你想做的事，或直接在左上角进入数字助理主对话。</p>' +
       '<div id="home-composer"></div>' +

@@ -384,11 +384,12 @@
 <div id="welcome-modal" class="modal hidden">
   <div class="modal-card welcome-card">
     <h2 id="wz-title">欢迎使用坚祥数字助理</h2>
-    <p class="wz-sub">接入公司服务端后即可开箱使用（模型、技能市场、软件更新全自动配置）。<br>两项地址填其中一项即可。</p>
+    <p class="wz-sub">接入公司服务端后即可开箱使用（模型、技能市场、软件更新全自动配置）。</p>
     <div class="wz-form">
+      <label>本人称呼<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
+      <div class="wz-either"><b>公司名称与服务器地址，两项填其中一项即可</b></div>
       <label>公司名称<input id="wz-company" placeholder="局域网内自动发现（配对口令）" autocomplete="off"></label>
       <label>服务器地址<input id="wz-server" placeholder="如 192.168.1.10:PORT（与上项二选一）" autocomplete="off" spellcheck="false"></label>
-      <label>本人称呼<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
     </div>
     <div id="wz-result" class="remote-result hidden"></div>
     <div class="modal-actions">
