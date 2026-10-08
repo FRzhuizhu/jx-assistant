@@ -51,6 +51,8 @@ type provisionPayload struct {
 			Name string `json:"name"`
 		} `json:"models"`
 		DefaultModel string `json:"defaultModel"`
+		// 每月额度（积分，1 积分 = 0.001 元；仅展示用，扣减在 new-api 侧）
+		MonthlyQuotaPoints int64 `json:"monthlyQuotaPoints,omitempty"`
 	} `json:"api"`
 	APIError  string `json:"apiError,omitempty"`
 	MarketURL string `json:"marketURL"`
