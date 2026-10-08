@@ -45,12 +45,6 @@ body {
   background: var(--bg); color: var(--text); font-size: 14px;
 }
 svg { width: 16px; height: 16px; flex: none; }
-/* 文本插入符（caret）颜色：全站所有可输入控件显式取主题文字色。
-   浏览器默认 caret-color:auto 跟随元素自身的 color；而表单控件在作者没有给 color 时，
-   取的是 UA 系统色（fieldtext，随浏览器/系统配色解析、与本站主题无关）——某些配色组合下
-   插入符会解析成浅色，压在浅色底上就看不见。显式声明后深浅两套主题都清晰可读：
-   浅色主题 --text=#1f2328 → 白底黑插入符；深色主题 --text=#e6e8eb → 深底浅插入符。 */
-input, textarea, select, [contenteditable] { caret-color: var(--text); }
 
 #app { display: flex; height: 100vh; }
 
@@ -909,27 +903,29 @@ body.rp-open .w-handle { display: none; }
 /* 新建对话的两枚胶囊：工作模式在前（左），工作目录紧随其后（右邻，间距同 gap） */
 #draft-chips { display: flex; align-items: center; gap: 8px; margin: 0 0 7px 2px; }
 
-/* ---------- 附件区（输入框上方那条"本轮带进来的文件"轨道） ---------- */
-/* 没有附件时整块带 .hidden（= display:none，全局规则）——不占高度、不留白条，
-   也没有空状态提示；有附件才上屏。横向排卡片、溢出把竖向滚轮平移成横向滚动
-   （滚动条隐藏，滚轮处理见 app-chat.js 的 setupAttachDrop）。
-   常态（有附件）下它是输入卡上方的一层白底「第二层条带」：与输入卡同宽
-   （#composer-area 的 --content-w 口径）、同底色同圆角、边缘 1px 描边——用户上传
-   文件或图片时这层在白底上「扩展」出来，视觉上就是输入卡上面的第二条白边。
-   没有附件时它整块不参与布局，两道闸保证：渲染层给 .hidden（renderAttachments
-   按附件条数切换），CSS 层再兜 .attach-rail:empty（卡全被移除后即便漏了 hidden
-   也绝不留一条空白边）——手机端「没附件却多一条白边」就是缺了这条兜底才冒的。 */
+/* ---------- 附件区（输入卡内部第一层"本轮带进来的文件"轨道） ---------- */
+/* 挂在 .composer-card 内部、引用胶囊之上（HTML 见 index.html）：有附件时白卡
+   自身向上长高「展开」，与下方输入区同底色同圆角、连为一体，底部一条细分隔线
+   ——不做浮在卡外的「第二层条带」（与卡断开、间距里漏背景色，视觉很难看）。
+   没有附件时整块带 .hidden（= display:none，全局规则）——不占高度、不留白条、
+   不画分隔线，也没有空状态提示。两道闸保证零占位：渲染层 .hidden
+   （renderAttachments 按附件条数切换），CSS 层再兜 .attach-rail:empty（卡全被
+   移除后即便漏了 hidden 也绝不留一条空白边）——手机端「没附件却多一条白边」
+   就是缺了这条兜底才冒的。
+   横向排卡片、溢出把竖向滚轮平移成横向滚动（滚动条隐藏，滚轮处理见
+   app-chat.js 的 setupAttachDrop）。padding-top 5px 是给图片缩略图右上角
+   ✕ 角标（.attach-item.image .attach-x 的 top:-5px）留的：本轨道是滚动
+   容器，按 padding box 裁剪，上内边距不足会把角标裁掉一截。 */
 .attach-rail {
   display: flex; align-items: center; gap: 8px;
-  margin: 0 0 8px; padding: 6px 8px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
-  box-sizing: border-box;
+  margin: 0 0 9px; padding: 5px 0 9px;
+  border-bottom: 1px solid var(--border); /* 与下方输入区（引用胶囊/文本框）的分隔线 */
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none; -ms-overflow-style: none;
 }
 .attach-rail::-webkit-scrollbar { height: 0; display: none; }
 .attach-rail.busy { opacity: .75; } /* 落盘中：整条略淡，卡片自己再标「上传中…」 */
-/* 空轨道＝彻底收起：不占高度、不画白边（无附件时的零占位兜底，见上方注释） */
+/* 空轨道＝彻底收起：不占高度、不画分隔线（无附件时的零占位兜底，见上方注释） */
 .attach-rail:empty { display: none; }
 .attach-item {
   flex: 0 0 auto; position: relative;
@@ -2355,8 +2351,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   .w-handle { display: none; } /* 对话区已占满全宽 */
   /* 悬浮输入卡贴边留缝（含 iPhone 底部手势条安全区） */
   .composer-wrap { padding: 0 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
-  /* 附件区：窄屏再收紧一点（一行仍放得下两三枚卡片） */
-  .attach-rail { margin-left: 0; padding: 5px 6px; }
+  /* 附件区：窄屏再收紧一点（一行仍放得下两三枚卡片；卡内区块，见桌面段注释） */
+  .attach-rail { margin-bottom: 7px; padding-bottom: 7px; }
   .attach-name { max-width: 118px; }
   .attach-thumb { width: 40px; height: 40px; }
   /* 回收站红边（桌面规则 body.bin-mode #sidebar{position:relative}）特异性更高，

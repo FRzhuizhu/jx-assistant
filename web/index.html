@@ -177,12 +177,12 @@
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
           </div>
         </div>
+        <div id="composer" class="composer-card"><!-- composer-card -->
         <!-- 附件区：本轮要带进对话的文件（选择/粘贴/拖拽先暂存在这里，点发送才写入工作区）。
-             这层就是输入卡上方的「第二层」白底条带（style.css 的 .attach-rail：与输入
-             卡同宽同底色同圆角、1px 描边，有附件才扩展出来）。
+             挂在输入卡内部第一层（引用胶囊之上）：有附件时白卡自身向上长高「展开」，
+             与下方输入区连为一体（同底色同圆角，一条细分隔线），不是浮在卡外的第二层；
              没有附件时带 hidden，整块不参与布局（零占位、不留白边）；渲染见 app-chat.js 的 renderAttachments -->
         <div id="attachments" class="attach-rail hidden"></div>
-        <div id="composer" class="composer-card"><!-- composer-card -->
         <!-- 引用胶囊：对话区选文「引用到输入框」挂在这里（灰底胶囊、双引号包裹、
              截断显示、✕ 移除）；发送时组装为「用户引用：”…“」+ 正文完整发给模型。
              没有引用时带 hidden 零占位；状态与渲染见 app-chat.js 的「引用胶囊」节 -->
@@ -265,9 +265,9 @@
             <div id="sub-run-error" class="run-error hidden" role="alert"></div>
             <!-- 待决定的浮窗：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
             <div id="sub-ask-bar" class="ask-bar hidden"></div>
-            <!-- 附件区：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
-            <div id="sub-attachments" class="attach-rail hidden"></div>
             <div id="sub-composer" class="sub-composer-card composer-card">
+              <!-- 附件区：与主对话区同款——输入卡内部第一层（id 加 sub- 前缀，由同一批函数按视图渲染） -->
+              <div id="sub-attachments" class="attach-rail hidden"></div>
               <!-- 引用胶囊：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
               <div id="sub-quote-bar" class="quote-bar hidden">
                 <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
