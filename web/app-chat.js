@@ -4291,7 +4291,7 @@ function appendQuotedBody(b, raw) {
   if (qm.quote) {
     const q = document.createElement('span');
     q.className = 'msg-quote';
-    q.textContent = quoteClip(qm.quote);
+    q.textContent = '\u201c' + quoteClip(qm.quote) + '\u201d';
     q.title = qm.quote;
     b.appendChild(q);
   }
@@ -4307,7 +4307,7 @@ function renderQuote(view) {
   bar.classList.toggle('hidden', !q);
   if (q) {
     const tx = bar.querySelector('.q-text');
-    if (tx) tx.textContent = quoteClip(q);
+    if (tx) tx.textContent = '\u201c' + quoteClip(q) + '\u201d';
     bar.title = '引用的内容（随下一条消息发出）：\n' + q;
   } else {
     bar.title = '';
