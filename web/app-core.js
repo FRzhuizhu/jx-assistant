@@ -623,17 +623,18 @@ function persistMainDraftLS() {
 }
 
 function clearSessionDraftLS(id) {
-  try { localStorage.removeItem(sessionDraftKey(id)); } catch (e) {}
+  try { localStorage.removeItem(sessionDraftKey(id)); localStorage.removeItem('jx.q.' + id); } catch (e) {}
 }
 
 // 首页草稿只清 text，保留工作目录/模式等选择项
 function clearHomeDraftLS() {
   homeDraft.text = '';
+  homeDraft.quote = ''; // 发出即清：引用随消息走了
   try { localStorage.setItem('jx.homeDraft', JSON.stringify({ ...homeDraft, text: '' })); } catch (e) {}
 }
 
 function clearSubDraftLS(id) {
-  try { localStorage.removeItem(subDraftKey(id)); } catch (e) {}
+  try { localStorage.removeItem(subDraftKey(id)); localStorage.removeItem('jx.subq.' + id); } catch (e) {}
 }
 
 // 会话彻底删除时连带清掉它的本地痕迹（主草稿/子草稿与内存里的过程缓存）
@@ -641,6 +642,8 @@ function removeSessionLocalData(id) {
   try {
     localStorage.removeItem(sessionDraftKey(id));
     localStorage.removeItem(subDraftKey(id));
+    localStorage.removeItem('jx.q.' + id); // 会话删除：引用草稿的本地痕迹一并清掉
+    localStorage.removeItem('jx.subq.' + id);
   } catch (e) {}
   delete subActs[id];
   delete subDone[id];
@@ -669,6 +672,7 @@ function restoreHomeDraftLS() {
     if (homeDraft.planMode && homeDraft.goalMode) homeDraft.goalMode = false;
     homeDraft.remote = (d.remote && d.remote.host) ? d.remote : null;
     homeDraft.text = typeof d.text === 'string' ? d.text : '';
+    homeDraft.quote = typeof d.quote === 'string' ? d.quote : ''; // 引用胶囊的暂存文本
   } catch (e) {}
 }
 
@@ -685,7 +689,7 @@ const dotDone = {};     // 会话id -> 完成未查看（绿点）
 // tools 默认带 'browser'：权限档位＝工作区内读写时默认开启「操作浏览器」（后端
 // perm.go 的 capDefaultsForMode 是同一策略的唯一权威）。芯片上默认就是勾选态，
 // 用户取消后前端显式传空数组，后端尊重用户、不再覆盖。
-const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: ['browser'], planMode: false, goalMode: false, goalText: '', remote: null };
+const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: ['browser'], planMode: false, goalMode: false, goalText: '', remote: null, quote: '' };
 
 function closePopovers() {
   document.querySelectorAll('.popover').forEach((p) => p.classList.add('hidden'));

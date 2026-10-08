@@ -183,6 +183,14 @@
              没有附件时带 hidden，整块不参与布局（零占位、不留白边）；渲染见 app-chat.js 的 renderAttachments -->
         <div id="attachments" class="attach-rail hidden"></div>
         <div id="composer" class="composer-card"><!-- composer-card -->
+        <!-- 引用胶囊：对话区选文「引用到输入框」挂在这里（灰底胶囊、双引号包裹、
+             截断显示、✕ 移除）；发送时组装为「用户引用：”…“」+ 正文完整发给模型。
+             没有引用时带 hidden 零占位；状态与渲染见 app-chat.js 的「引用胶囊」节 -->
+        <div id="quote-bar" class="quote-bar hidden">
+          <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
+          <span class="q-text"></span>
+          <button class="q-x" type="button" title="移除引用">✕</button>
+        </div>
         <textarea id="input" class="composer-input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
         <div class="composer-bar">
           <div class="composer-left">
@@ -260,6 +268,12 @@
             <!-- 附件区：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
             <div id="sub-attachments" class="attach-rail hidden"></div>
             <div id="sub-composer" class="sub-composer-card composer-card">
+              <!-- 引用胶囊：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
+              <div id="sub-quote-bar" class="quote-bar hidden">
+                <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
+                <span class="q-text"></span>
+                <button class="q-x" type="button" title="移除引用">✕</button>
+              </div>
               <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
               <div class="composer-bar">

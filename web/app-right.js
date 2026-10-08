@@ -300,6 +300,7 @@ async function openSubSession(id) {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
     autoGrow($('sub-input'));
+    restoreQuoteLS(subView); // 这个子对话挂着的引用胶囊也一并回来
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
     if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
   } catch (e) {

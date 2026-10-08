@@ -45,6 +45,7 @@ function resetEmpty() {
   placeComposer();
   // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
   $('input').value = homeDraft.text || '';
+  restoreQuoteLS(mainView); // 首页草稿里的引用也一并回来（state.cur 为空 → 取 homeDraft.quote）
   autoGrow();
   syncComposer();
 }
@@ -150,6 +151,7 @@ function applySessionChrome(view) {
     ) || '';
   } catch (e) { viewEl(view, 'input').value = ''; }
   autoGrow(viewEl(view, 'input'));
+  restoreQuoteLS(view); // 引用胶囊跟输入草稿一起换到目标会话（不残留上一个的）
 }
 
 // 顶栏标题与模式徽标（主对话区；乐观阶段与数据落地共用）
@@ -743,7 +745,7 @@ function userBubble(m, view) {
   wrap.dataset.seq = m.seq; // 搜索命中定位用
   const b = document.createElement('div');
   b.className = 'bubble';
-  b.textContent = String(m.content ?? '');
+  appendQuotedBody(b, String(m.content ?? '')); // 带引用前缀的消息拆成灰色引用行 + 正文
   wrap.appendChild(b);
   if (m.kind === 'chat' && view) {
     const acts = document.createElement('div');
@@ -1592,7 +1594,7 @@ function pendingSendBubble(content) {
   badge.className = 'q-badge q-badge-steer';
   badge.textContent = '发送中';
   b.appendChild(badge);
-  b.appendChild(document.createTextNode(content));
+  appendQuotedBody(b, content); // 引用段同样拆成灰色引用行（与正式气泡一致）
   wrap.appendChild(b);
   return wrap;
 }
@@ -3675,6 +3677,7 @@ async function editPendingMsg(view, pm) {
     if (!view.state.cur || view.state.cur.id !== sid) return;
     applyPending(view, d.pending);
     view.input.value = pm.content;
+    clearQuote(view); // 退回的消息文本里已带「用户引用：」段：别在胶囊上再叠一层
     autoGrow(view.input);
     if (view === mainView) persistMainDraftLS(); else persistSubDraftLS(); // 程序化填入也要落盘，切走/重启不丢
     view.input.focus();
@@ -3723,7 +3726,7 @@ async function sendMidrun(content, viaInput, view) {
     return;
   }
   if (viaInput) {
-    view.input.value = ''; autoGrow(view.input);
+    view.input.value = ''; clearQuote(view); autoGrow(view.input);
     if (view === mainView) clearSessionDraftLS(view.state.cur.id); else clearSubDraftLS(view.state.cur.id);
   }
 }
@@ -3736,7 +3739,9 @@ async function send(forceContent, view) {
   if (window.JXVoicePause) window.JXVoicePause();
   const input = view.input;
   const fromInput = typeof forceContent !== 'string';
-  const content = (fromInput ? input.value : forceContent).trim();
+  // 从输入框发出的消息组装引用段（引用胶囊 →「用户引用：”…“」前缀）；forceContent
+  // 路径（编辑重发/降级补发）内容已完整，不再叠加当前胶囊
+  const content = (fromInput ? composeQuoted(view, input.value) : forceContent).trim();
   const staged = attachmentsOf(view);
   if (!content) {
     // 只挂了附件、没写字：不替用户编消息，提示补齐再发（附件留在输入框上方）
@@ -3793,7 +3798,7 @@ async function send(forceContent, view) {
   }
 
   if (fromInput) {
-    input.value = '';
+    input.value = ''; clearQuote(view); // 引用已组装进这条消息：输入框与胶囊一起退场
     autoGrow(input);
     // 发出即清：首页清 homeDraft 的 text，主对话清 jx.st.<id>，子对话清 jx.subst.<id>
     if (view === mainView) {
@@ -4241,6 +4246,138 @@ function renderCtxTip(view) {
 
 let selKeepText = '';
 
+/* ---------- 引用胶囊：对话区选文引用进输入框（显示截断、发送完整） ----------
+   「引用到输入框 / 在右侧辅助问答」不再把全文塞进输入框——与用户自己打的字混在
+   一起，模型分不清哪段是引用。引用挂到输入卡内的胶囊条上：灰底胶囊、双引号
+   包裹、最多显示前 10 个字符加省略号（悬停 title 看全文）、✕ 可移除。发送时组装
+   为「用户引用：“完整文本”\n\n正文」——前端看到的是胶囊，模型收到的是带标记的
+   完整引用。引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
+   jx.subq.<id>），切走再回来、刷新页面都不丢。 */
+
+const QUOTE_HEAD = '用户引用：';
+const QUOTE_SNIP = 10; // 胶囊与气泡里最多显示的字符数（按 Unicode 码点截，不劈中文）
+
+// 按码点截断：前 N 字符 + 省略号（够短就原样返回）
+function quoteClip(t) {
+  const cps = Array.from(String(t || '').trim());
+  if (cps.length <= QUOTE_SNIP) return cps.join('');
+  return cps.slice(0, QUOTE_SNIP).join('').replace(/\s+$/, '') + '…';
+}
+
+// 发送时组装：引用段在前、正文在后，空行隔开（正文为空就只有引用段）
+function composeQuoted(view, text) {
+  const q = String(((view || mainView).state.quote) || '').trim();
+  const body = String(text || '').trim();
+  if (!q) return body;
+  const head = QUOTE_HEAD + '“' + q + '”';
+  return body ? head + '\n\n' + body : head;
+}
+
+// 反向拆解（渲染用户气泡用）：识别「用户引用：“…”」前缀，拆出引用与正文
+function splitQuoted(raw) {
+  const pre = QUOTE_HEAD + '“';
+  if (typeof raw !== 'string' || raw.indexOf(pre) !== 0) return null;
+  const body = raw.slice(pre.length);
+  const cut = body.indexOf('”\n\n');
+  if (cut >= 0) return { quote: body.slice(0, cut), rest: body.slice(cut + 3) };
+  if (body.slice(-1) === '”') return { quote: body.slice(0, -1), rest: '' };
+  return null;
+}
+
+// 气泡正文渲染：带引用前缀的消息拆成「灰色引用行（截断 + title 全文） + 正文」
+function appendQuotedBody(b, raw) {
+  const qm = splitQuoted(raw);
+  if (!qm) { b.appendChild(document.createTextNode(raw)); return; }
+  if (qm.quote) {
+    const q = document.createElement('span');
+    q.className = 'msg-quote';
+    q.textContent = quoteClip(qm.quote);
+    q.title = qm.quote;
+    b.appendChild(q);
+  }
+  if (qm.rest) b.appendChild(document.createTextNode(qm.rest));
+}
+
+// 胶囊条渲染：有引用才出现（hidden 零占位）；文本截断、title 放全文
+function renderQuote(view) {
+  view = view || mainView;
+  const bar = viewEl(view, 'quote-bar');
+  if (!bar) return;
+  const q = String(view.state.quote || '').trim();
+  bar.classList.toggle('hidden', !q);
+  if (q) {
+    const tx = bar.querySelector('.q-text');
+    if (tx) tx.textContent = quoteClip(q);
+    bar.title = '引用的内容（随下一条消息发出）：\n' + q;
+  } else {
+    bar.title = '';
+  }
+}
+
+// 挂上引用（各引用入口统一走这里）：设置、落盘、聚焦输入框并把光标放到最末尾
+function setQuote(view, text) {
+  view = view || mainView;
+  const t = String(text || '').trim();
+  if (!t) return;
+  view.state.quote = t;
+  renderQuote(view);
+  persistQuoteLS(view);
+  const inp = view.input;
+  inp.focus();
+  const p = inp.value.length; // 引用加在输入的最末尾位置：接着打字即追加在后面
+  inp.setSelectionRange(p, p);
+  syncComposerPad(view); // 胶囊出现改变输入区高度：重算悬浮垫高
+}
+
+// 移除引用（胶囊 ✕ / 发送清理）
+function clearQuote(view) {
+  view = view || mainView;
+  if (!view.state.quote) return;
+  view.state.quote = '';
+  renderQuote(view);
+  persistQuoteLS(view);
+  syncComposerPad(view);
+}
+
+// 引用随草稿落盘：首页并入 jx.homeDraft，主对话 jx.q.<id>，子对话 jx.subq.<id>
+function persistQuoteLS(view) {
+  view = view || mainView;
+  try {
+    if (view === mainView && !view.state.cur) { homeDraft.quote = view.state.quote || ''; persistHomeDraftLS(); return; }
+    if (!view.state.cur) return;
+    const key = view === mainView ? 'jx.q.' + view.state.cur.id : 'jx.subq.' + view.state.cur.id;
+    if (view.state.quote) localStorage.setItem(key, view.state.quote);
+    else localStorage.removeItem(key);
+  } catch (e) { /* 隐私模式下忽略 */ }
+}
+
+// 从草稿恢复引用（切换会话 / 回首页 / 刷新启动；子对话落地处也手动调）
+function restoreQuoteLS(view) {
+  view = view || mainView;
+  let q = '';
+  try {
+    if (view === mainView) {
+      q = view.state.cur ? (localStorage.getItem('jx.q.' + view.state.cur.id) || '')
+        : String(homeDraft.quote || '');
+    } else if (view.state.cur) {
+      q = localStorage.getItem('jx.subq.' + view.state.cur.id) || '';
+    }
+  } catch (e) {}
+  view.state.quote = q;
+  renderQuote(view);
+}
+
+// 引用胶囊的移除按钮（主对话与子对话各一条）
+[mainView, subView].forEach((v) => {
+  const bar = viewEl(v, 'quote-bar');
+  if (!bar) return;
+  bar.addEventListener('click', (e) => {
+    if (!e.target.closest('.q-x')) return;
+    clearQuote(v);
+    v.input.focus();
+  });
+});
+
 // 仅识别主对话区与右栏子对话区里的文字选区
 function chatSelection() {
   const sel = window.getSelection();
@@ -4293,11 +4430,7 @@ async function askInAux(text) {
     }
   }
   await openSubSession(aux.id);
-  const inp = $('sub-input');
-  inp.value = inp.value ? inp.value + '\n\n' + text : text;
-  autoGrow(inp);
-  persistSubDraftLS(); // 程序化填入也要落盘，切走/重启不丢
-  inp.focus();
+  setQuote(subView, text); // 挂成右栏输入卡的引用胶囊：显示截断、发送组装完整
 }
 
 /* ---------- 模型选择（发送按钮左侧的芯片 + 弹出面板） ---------- */
@@ -5350,15 +5483,8 @@ $('sel-pop').addEventListener('click', (e) => {
   if (b.dataset.act === 'copy') {
     navigator.clipboard.writeText(text).catch(() => {});
   } else if (b.dataset.act === 'compose') {
-    // 插入到主对话输入框光标处
-    const inp = $('input');
-    const st = inp.selectionStart ?? inp.value.length;
-    const en = inp.selectionEnd ?? st;
-    inp.value = inp.value.slice(0, st) + text + inp.value.slice(en);
-    inp.selectionStart = inp.selectionEnd = st + text.length;
-    autoGrow(inp);
-    persistMainDraftLS(); // 程序化插入也要落盘，切走/重启不丢
-    inp.focus();
+    // 挂成引用胶囊（显示截断、发送时才组装完整引用；见「引用胶囊」节）
+    setQuote(mainView, text);
   } else if (b.dataset.act === 'aux') {
     askInAux(text);
   }

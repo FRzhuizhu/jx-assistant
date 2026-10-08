@@ -1066,7 +1066,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if v := body.MarketURL; v != nil {
 		u := strings.TrimSpace(*v)
 		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			writeErr(w, 400, "市场地址需为 http(s) 的清单地址（jx-server 的 /market/manifest.json）")
+			writeErr(w, 400, "市场地址需为 http(s) 的清单地址（jxai-server 的 /market/manifest.json）")
 			return
 		}
 		a.Cfg.MarketURL = u

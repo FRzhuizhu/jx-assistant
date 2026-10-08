@@ -192,7 +192,7 @@ function editMenuItems(ed) {
 function selectionMenuItems(text) {
   return [
     { label: '复制', fn: () => navigator.clipboard.writeText(text).catch(() => {}) },
-    { label: '引用到输入框', fn: () => insertTextUndoable($('input'), text) },
+    { label: '引用到输入框', fn: () => setQuote(mainView, text) },
     { label: '问AI', fn: () => askInAux(text) },
     { sep: true },
     ttsSpeaking() ? { label: '停止朗读', fn: ttsStop } : { label: '朗读', fn: () => ttsSpeak(text) },

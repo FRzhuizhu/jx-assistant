@@ -1163,6 +1163,32 @@ body.rp-open .w-handle { display: none; }
   background: transparent;
 }
 .composer-input::placeholder { color: var(--text-3); }
+/* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——灰底胶囊、双引号
+   包裹、截断显示（悬停 title 看全文）、✕ 移除；有引用才出现（hidden 零占位）。
+   发送时组装为「用户引用：”…“」+ 正文完整发给模型（app-chat.js「引用胶囊」节） */
+.quote-bar {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 6px; padding: 3px 6px 3px 8px;
+  background: var(--chip); border-radius: 8px;
+  color: var(--text-2); font-size: 12px; line-height: 1.6;
+}
+.quote-bar .q-ic { width: 12px; height: 12px; flex: none; color: var(--text-3); }
+.quote-bar .q-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quote-bar .q-x {
+  flex: none; width: 18px; height: 18px; padding: 0; border: none; border-radius: 5px;
+  background: none; color: var(--text-3); cursor: pointer; font-size: 11px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.quote-bar .q-x:hover { background: var(--hover); color: var(--danger); }
+/* 用户气泡里的引用行：发出的消息开头「用户引用：”…“」段的展示形态（灰色、
+   截断 + title 全文；模型收到的始终是完整文本，这里只是前端的视觉层） */
+.msg.user .bubble .msg-quote {
+  display: block; max-width: 100%;
+  margin: 0 0 4px; padding: 1px 0 1px 8px;
+  border-left: 2px solid var(--border);
+  color: var(--text-2); font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* 工具栏排布：右侧按钮组用 display:contents 展平——麦克风/圆环/模型/发送以
    个体身份参与整栏换行，能与左侧控件共享第一行（不再被组盒子挤成独立中行）。
    整栏右对齐 + 左组 margin-right:auto 靠左：单行＝左组靠左、按钮贴右，空隙在中间；
