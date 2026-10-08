@@ -74,17 +74,17 @@
     return 'HTTP ' + res.status;
   }
 
-  /* ================= 语音快捷键 =================
+  /* ================= 语音快捷键（主副双快捷键） =================
      表示：**备选数组**——shortcutAlternatives() 返回 [[键…], …]，每个元素是一种
      可触发的组合（组合内全按住才触发，任一组合触发即可）。
+     · 默认＝**主副双快捷键，永久并存**：鼠标侧键（主）+ Alt 键（副），两者都
+       可触发——有侧键的用侧键，没有的自然用 Alt。
      · 用户自定义（设置页录制）：单组合，元素为 'ctrl'|'alt'|'shift'|'meta' |
        单个字母/数字 | 'f1'..'f12' | 'space' | 'mouse-side'（侧键，前后两枚都算）
        | 'mouse-left' | 'mouse-right'。
-     · 默认（未自定义）：**鼠标侧键优先**——浏览器无法枚举鼠标按键，用「是否
-       见过侧键事件」学习判定（sawSide）：见过 → 只用侧键；从没见过 → 侧键与
-       Alt 键**两者皆可**（没有侧键的机器自然用 Alt，按过一次侧键后 Alt 退役）。
-     · 独按修饰键（如默认的 Alt）：按住期间又按了别的键（用户在按 Alt+X 组合）
-       → 解除不触发；点按模式在**独按松开**时触发，避免任何 Alt 组合误触。
+     · 清空（设置页「清空」按钮）：存空数组＝停用快捷键（只点按钮听写）。
+     · 独按修饰键（如默认副键 Alt）：按住期间又按了别的键（用户在按 Alt+X
+       组合）→ 解除不触发；点按模式在**独按松开**时触发，避免任何 Alt 组合误触。
      · 校验：不允许只剩单独的 mouse-left 或单独的 mouse-right（废掉正常点击/菜单）。
      · 模式：tap=点按切换；hold=长按输入（按住说话、松开/失焦结束）。
      仅窗口聚焦时激活；失焦自动清空按键状态并结束长按会话。纯字母/数字单键在
@@ -97,17 +97,35 @@
 
   function isModKey(k) { return k === 'ctrl' || k === 'alt' || k === 'shift' || k === 'meta'; }
 
-  // 默认备选：侧键优先；没见过侧键前 Alt 也可用（见上注释的学习式判定）
+  // 主/副两个独立快捷键槽（设置页各有一个键帽框，可分别录制）：
+  // 槽值＝null（跟默认：主=鼠标侧键，副=Alt）| 数组（自定义组合）| 空数组（停用）。
+  // 旧版单快捷键偏好（cx:voice:shortcut）一次性迁移：非空→主槽；空（清空过）→两槽停用。
+  function shortcutSlot(which) {
+    if (!pref.get('scMigrated', false)) {
+      const old = pref.get('shortcut', null);
+      if (Array.isArray(old)) {
+        pref.set('scMain', old.length ? old : []);
+        pref.set('scSub', old.length ? null : []);
+      }
+      pref.set('scMigrated', true);
+    }
+    const v = pref.get(which === 'main' ? 'scMain' : 'scSub', null);
+    if (Array.isArray(v)) return v.length ? v : [];
+    return which === 'main' ? ['mouse-side'] : ['alt'];
+  }
+  function setShortcutSlot(which, v) { pref.set(which === 'main' ? 'scMain' : 'scSub', v); }
+
+  // 触发备选＝两个槽里没被停用的那些
   function shortcutAlternatives() {
-    const v = pref.get('shortcut', null);
-    if (Array.isArray(v) && v.length) return [v];
-    return pref.get('sawSide', false) ? [['mouse-side']] : [['mouse-side'], ['alt']];
+    return [shortcutSlot('main'), shortcutSlot('sub')].filter((a) => a.length > 0);
   }
   function voiceShortcutMode() {
     return pref.get('shortcutMode', 'tap') === 'hold' ? 'hold' : 'tap';
   }
   function shortcutLabel() {
-    return shortcutAlternatives().map((alt) => alt.map((k) => KEY_NAMES[k] || k.toUpperCase()).join('+')).join('或');
+    const alts = shortcutAlternatives();
+    if (!alts.length) return '无（已清空）';
+    return alts.map((alt) => alt.map((k) => KEY_NAMES[k] || k.toUpperCase()).join('+')).join('或');
   }
   function validShortcut(keys) {
     if (!Array.isArray(keys) || keys.length === 0) return false;
@@ -141,6 +159,7 @@
   let holdSession = false;     // 长按会话进行中
   let firedLatch = false;      // 点按已触发，等快捷键全部松开后复位
   let captureMode = false;     // 设置页录制快捷键时暂停引擎
+  let captureCtl = null;       // 当前录制会话（重复点击录制按钮时作废旧会话）
   const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
   let onResize = null;         // 远程窄屏隐藏的窗口尺寸联动
 
@@ -279,12 +298,6 @@
     };
     scMouseDown = (e) => {
       if (!active || captureMode) return;
-      // 侧键学习：见过一次侧键，默认备选里的 Alt 就退役（浏览器枚举不了鼠标按键，
-      // 这是"有没有侧键"的实际可得判定）
-      if ((e.button === 3 || e.button === 4) && !pref.get('sawSide', false)) {
-        pref.set('sawSide', true);
-        refreshShortcutPlaceholders();
-      }
       const m = normMouse(e);
       if (!m) return;
       // 侧键在快捷键里时拦掉默认的后退/前进导航
@@ -343,6 +356,7 @@
   let subBasePH = null; // 子输入框原始占位文案
 
   function voiceHintText() {
+    if (!shortcutAlternatives().length) return ''; // 已清空：占位提示不带语音段
     const mode = voiceShortcutMode();
     return '；语音输入：' + shortcutLabel() + (mode === 'hold' ? '（按住说话）' : '（点按）');
   }
@@ -848,12 +862,21 @@
       voiceOn[key] = false;
     };
 
-    // 交给快捷键引擎的控制器（点按=toggle，长按=start/stop）
+    // 交给快捷键引擎的控制器（点按=toggle，长按=start/stop；pauseForSend=发送前
+    // 同步落定灰字并硬收尾，见 window.JXVoicePause）
     return {
       active: () => sess.active,
       toggle: () => btn.onclick(),
       start: () => { if (!sess.active) btn.onclick(); },
       stop: () => { if (sess.active) btn.onclick(); },
+      pauseForSend: () => {
+        if (!sess.active) return;
+        commitAll(); // 未定稿转写同步落进输入框（随本条消息一起发出）
+        const rec = sess.rec;
+        sess.stopping = true;
+        try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+        finish(''); // 硬收尾：不等引擎尾包（迟到的定稿会在发送后污染下一条草稿）
+      },
     };
   }
 
@@ -998,79 +1021,159 @@
     };
     row('触发方式', modeSel);
 
-    // 快捷键录制：按下组合 → 全部松开时落定；Esc 取消
-    const scBtn = btn('', '点击后按下想要的组合键（支持鼠标侧键、键盘组合、鼠标左右键同按）');
-    const resetBtn = btn('恢复默认', '恢复为鼠标侧键');
-    const renderScBtn = () => { scBtn.textContent = '录制：' + shortcutLabel(); };
-    renderScBtn();
-    const scWrap = document.createElement('span');
-    scWrap.appendChild(scBtn);
-    scWrap.appendChild(resetBtn);
-    row('快捷键', scWrap);
-    note('默认鼠标侧键（前后两枚都算）。可自定义键盘单键/组合键、鼠标左右键同时按'
-      + '（不支持单独的左键或右键）；仅在本窗口聚焦时生效，失焦自动松手。纯字母/'
-      + '数字单键在输入框里打字时不会触发（字符留给打字），加修饰键或换功能键即可。');
-
-    scBtn.onclick = () => {
-      if (captureMode) return;
-      captureMode = true;
-      const got = new Set();
-      scBtn.textContent = '请按下组合键，全部松开后保存（Esc 取消）…';
-      let finished = false;
-      const cleanup = () => {
-        finished = true;
-        captureMode = false;
-        document.removeEventListener('keydown', kd);
-        document.removeEventListener('keyup', ku);
-        document.removeEventListener('mousedown', md);
-        document.removeEventListener('mouseup', mu);
-        renderScBtn();
-      };
-      const finalize = () => {
-        if (finished) return;
-        const keys = Array.from(got);
-        cleanup();
-        if (!keys.length) return;
-        if (!validShortcut(keys)) {
-          voiceToast('不支持这个组合：不能只用单独的鼠标左键或右键');
-          return;
+    // 快捷键：主/副两个独立的键帽框（各自录制），外加 恢复默认 / 清空。
+    // 录制：按下组合 → 全部松开时落定；Esc/失焦/硬超时取消。侧键在窗口外松开
+    // 收不到 mouseup，曾有录制态永久挂死的坑——重复点击直接作废旧会话重新
+    // 开始（自愈），外加 12 秒无条件硬超时兜底。
+    const resetBtn = btn('恢复默认', '主=鼠标侧键、副=Alt 键');
+    const clearBtn = btn('清空', '停用全部快捷键：只能点麦克风按钮听写');
+    // 单个键帽框的渲染（keys 空＝该槽已停用）
+    const renderScBox = (box, keys) => {
+      box.innerHTML = '';
+      box.classList.remove('rec');
+      if (!keys || !keys.length) {
+        const n = document.createElement('span');
+        n.className = 'sc-none';
+        n.textContent = '无（已停用，点此录制）';
+        box.appendChild(n);
+        return;
+      }
+      const combo = document.createElement('span');
+      combo.className = 'sc-combo';
+      keys.forEach((k, j) => {
+        if (j > 0) {
+          const plus = document.createElement('span');
+          plus.className = 'sc-plus';
+          plus.textContent = '+';
+          combo.appendChild(plus);
         }
-        pref.set('shortcut', keys);
-        firedLatch = false;
-        refreshShortcutPlaceholders();
-        renderScBtn();
-      };
-      const kd = (e) => {
-        if (e.key === 'Escape') { cleanup(); return; }
-        const k = normKey(e);
-        if (k) { got.add(k); e.preventDefault(); }
-      };
-      const ku = (e) => {
-        const k = normKey(e);
-        if (k) got.delete(k);
-        if (got.size === 0) finalize();
-      };
-      const md = (e) => {
-        const m = normMouse(e);
-        if (m) { got.add(m); e.preventDefault(); }
-      };
-      const mu = (e) => {
-        const m = normMouse(e);
-        if (m) got.delete(m);
-        if (got.size === 0) setTimeout(finalize, 60); // 键盘松完的收尾也走这里
-      };
-      document.addEventListener('keydown', kd);
-      document.addEventListener('keyup', ku);
-      document.addEventListener('mousedown', md);
-      document.addEventListener('mouseup', mu);
-      // 8 秒没录成自动取消
-      setTimeout(() => { if (!finished && got.size === 0) cleanup(); }, 8000);
+        const cap = document.createElement('kbd');
+        cap.className = 'sc-key';
+        cap.textContent = KEY_NAMES[k] || k.toUpperCase();
+        combo.appendChild(cap);
+      });
+      box.appendChild(combo);
     };
+    const mkScBox = (slot) => {
+      const box = document.createElement('button');
+      box.type = 'button';
+      box.className = 'sc-box';
+      box.title = '点击后按下想要的组合键（支持鼠标侧键、键盘组合、鼠标左右键同按）';
+      box.dataset.slot = slot;
+      renderScBox(box, shortcutSlot(slot));
+      box.onclick = () => {
+        if (captureCtl) captureCtl.cancel(); // 上一个会话（可能已挂死）直接作废
+        const got = new Set();  // 本次录制**按过**的键（累积，不随松开删除——
+                                // 落定时取它；曾只用"当前按住"集合，全部松开时
+                                // 恰好清空，录出来永远是空组合，这就是录制不成功的根因）
+        const held = new Set(); // 当前仍按住的键（清空即落定）
+        let finished = false;
+        captureMode = true;
+        box.classList.add('rec');
+        box.innerHTML = '';
+        const tip = document.createElement('span');
+        tip.className = 'sc-rec-tip';
+        tip.textContent = '请按下组合键，松开后保存（Esc 取消）…';
+        box.appendChild(tip);
+        const ctl = {};
+        captureCtl = ctl;
+        const stop = () => {
+          if (finished) return;
+          finished = true;
+          captureMode = false;
+          document.removeEventListener('keydown', kd);
+          document.removeEventListener('keyup', ku);
+          document.removeEventListener('mousedown', md);
+          document.removeEventListener('mouseup', mu);
+          window.removeEventListener('blur', onBlur);
+          clearTimeout(hardTimer);
+          if (captureCtl === ctl) captureCtl = null;
+          renderScBox(box, shortcutSlot(slot));
+        };
+        ctl.cancel = stop;
+        const finalize = () => {
+          if (finished) return;
+          const keys = Array.from(got);
+          stop();
+          if (!keys.length) return;
+          if (!validShortcut(keys)) {
+            voiceToast('不支持这个组合：不能只用单独的鼠标左键或右键');
+            return;
+          }
+          setShortcutSlot(slot, keys);
+          firedLatch = false;
+          cancelSolo();
+          refreshShortcutPlaceholders();
+          renderScBox(box, keys);
+        };
+        const kd = (e) => {
+          if (e.key === 'Escape') { stop(); return; }
+          const k = normKey(e);
+          if (k) {
+            if (!e.repeat) { got.add(k); held.add(k); }
+            e.preventDefault();
+          }
+        };
+        const ku = (e) => {
+          const k = normKey(e);
+          if (k) held.delete(k);
+          if (held.size === 0) finalize();
+        };
+        const md = (e) => {
+          const m = normMouse(e);
+          if (m) { got.add(m); held.add(m); e.preventDefault(); }
+        };
+        const mu = (e) => {
+          const m = normMouse(e);
+          if (m) held.delete(m);
+          if (held.size === 0) setTimeout(finalize, 60); // 键盘松完的收尾也走这里
+        };
+        const onBlur = () => stop();
+        document.addEventListener('keydown', kd);
+        document.addEventListener('keyup', ku);
+        document.addEventListener('mousedown', md);
+        document.addEventListener('mouseup', mu);
+        window.addEventListener('blur', onBlur);
+        const hardTimer = setTimeout(stop, 12000); // 无条件硬超时：不依赖 got 是否清空
+      };
+      return box;
+    };
+    const mainBox = mkScBox('main');
+    const subBox = mkScBox('sub');
+    const refreshAllScBoxes = () => {
+      renderScBox(mainBox, shortcutSlot('main'));
+      renderScBox(subBox, shortcutSlot('sub'));
+    };
+    row('主快捷键', mainBox);
+    const subWrap = document.createElement('span');
+    subWrap.className = 'sc-wrap';
+    subWrap.appendChild(subBox);
+    subWrap.appendChild(resetBtn);
+    subWrap.appendChild(clearBtn);
+    row('副快捷键', subWrap);
+    note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
+      + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键）。'
+      + '「清空」＝停用全部快捷键（只点按钮听写）；「恢复默认」＝主侧键、副 Alt。'
+      + '仅在本窗口聚焦时生效，失焦自动松手。纯字母/数字单键在输入框里打字时不会'
+      + '触发，加修饰键或换功能键即可。');
+
     resetBtn.onclick = () => {
-      pref.set('shortcut', DEFAULT_SHORTCUT.slice());
+      if (captureCtl) captureCtl.cancel();
+      setShortcutSlot('main', null);
+      setShortcutSlot('sub', null);
       firedLatch = false;
+      cancelSolo();
       refreshShortcutPlaceholders();
-      renderScBtn();
+      refreshAllScBoxes();
+    };
+    clearBtn.onclick = () => {
+      if (captureCtl) captureCtl.cancel();
+      setShortcutSlot('main', []);
+      setShortcutSlot('sub', []);
+      firedLatch = false;
+      cancelSolo();
+      refreshShortcutPlaceholders();
+      refreshAllScBoxes();
     };
   }
 
@@ -1105,6 +1208,15 @@
       installShortcutEngine();
       refreshShortcutPlaceholders();
 
+      // 发送前先停听写：app-core 的回车发送路径调用（同步落定灰字后硬收尾，
+      // 让随说的内容随本条消息一起发出）
+      window.JXVoicePause = () => {
+        for (const k of ['main', 'sub']) {
+          const c = voiceCtl[k];
+          if (c && c.pauseForSend) c.pauseForSend();
+        }
+      };
+
       // 设置区以独立分区页呈现（设置 → 语音，位于「内置组件」之后）：
       // pane 字段交给 app-settings.js 动态挂导航项与页面容器，组件关掉即撤
       CX.registerSettings({
@@ -1123,6 +1235,7 @@
 
       // 快捷键引擎与占位提示收尾
       removeShortcutEngine();
+      try { delete window.JXVoicePause; } catch (e) { window.JXVoicePause = undefined; }
       window.JXVoiceHint = '';
       if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
       restoreSubPlaceholder();

@@ -219,6 +219,7 @@ async function loadSessionInto(id, tok) {
   refreshCtxChip();
   loadProgress();
   planSid = id;
+  planSel = ''; planPinned = ''; planWantSeq = 0; planWantQid = ''; // 换了对话：右栏计划的选择重置
   if (rpActive === 'plan') loadPlanView();
   maybeAutoOpenPlan();
   renderMessages(state.msgs, mainView, { jump: true });
@@ -241,7 +242,6 @@ async function loadSessionInto(id, tok) {
 const TAIL_ROWS = 10;
 const LONG_TEXT_LINES = 3;
 const LONG_TEXT_CHARS = 85;
-
 
 // 旧库兼容判定（只读旧数据用，新行一律带显式 kind，见《消息类型规范.md》§5）：
 // 历史库里系统注入的通知曾是 kind=chat 的 user 行，只能按正文前缀识别。
@@ -404,7 +404,6 @@ function summaryRow(text, origin, covers, seq) {
   bindProcToggle(row);
   return row;
 }
-
 
 // 思考行：标题带字数，点开看原文
 function thinkRow(text, seq, opts = {}) {
@@ -634,7 +633,8 @@ const ROW_ITEM_BUILDERS = {
     for (const tc of m.tool_calls || []) {
       const n = (tc.function && tc.function.name) || '';
       st.cur.items.push({
-        k: (n === 'dispatch_task' || n === 'dispatch_sub' || n === 'send_to_session') ? 'subtask' : 'tool',
+        k: (n === 'dispatch_task' || n === 'dispatch_sub' || n === 'send_to_session') ? 'subtask'
+          : (n === 'exit_plan_mode' ? 'plancard' : 'tool'),
         seq: m.seq, tc, result: st.resultOf[tc.id],
       });
     }
@@ -855,6 +855,7 @@ function renderItem(it, opts) {
   if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
   if (it.k === 'think') return thinkRow(it.text, it.seq);
   if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
+  if (it.k === 'plancard') return planCardRow(it.tc, it.seq, it.result);
   if (it.k === 'subtask') {
     const w = document.createElement('div');
     if (it.seq != null) w.dataset.seq = it.seq;
@@ -882,7 +883,6 @@ function renderItem(it, opts) {
   wrap.appendChild(b);
   return wrap;
 }
-
 
 // 【派发回报】消息中出现过的子会话 id（渲染期间有效）：子任务卡据此在刷新/
 // 重新打开会话后也能正确显示「已完成」，不依赖内存里的 subDone 标记
@@ -1761,7 +1761,7 @@ function renderFinishedTurn(box, turn, key) {
   if (answerIdx >= 0) anchors.add(answerIdx);
   items.forEach((it, i) => {
     if (i === answerIdx) return;
-    if (it.k === 'note' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
+    if (it.k === 'note' || it.k === 'plancard' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
   });
   let seg = [];
   const flushSeg = () => {
@@ -1777,35 +1777,41 @@ function renderFinishedTurn(box, turn, key) {
 }
 
 // 进行中回合：过程行只露最近 TAIL_ROWS 行（尾部窗口），上方折叠成一条"已折叠 N 行"折叠条；
-// 运行中的子任务卡钉在窗口上方常显（实时进度不中断）；上下文材料行落在回合
+// 运行中的子任务卡与系统通知钉住常显（实时进度/派发通知不中断）；上下文材料行落在回合
 // 开头、不占窗口——与完成态一致折进折叠段（否则刚发完消息满屏都是变更行）；
 // 手动展开过则全部显示
 function renderStreamingTurn(box, turn, key) {
   const items = turn.items;
   const mat = items.filter(isMatItem);
   const flow = items.filter((it) => !isMatItem(it));
+  const open = turnOpen[key] === true;
   if (flow.length <= TAIL_ROWS) {
     // 回合刚开头：材料行单独折成顶部一段，过程行照常显示
-    if (mat.length) box.appendChild(foldSection(mat, key, { open: turnOpen[key] === true }));
+    if (mat.length) box.appendChild(foldSection(mat, key, { open: open }));
     flow.forEach((it) => box.appendChild(renderItem(it)));
     return;
   }
   const foldFrom = flow.length - TAIL_ROWS;
-  const segItems = mat.slice(); // 材料行在回合最前，并入头部折叠段（只有一条折叠条）
-  const pinned = [];
-  flow.forEach((it, i) => {
-    if (i >= foldFrom) return;
-    if (it.k === 'subtask' && !it.result) pinned.push(it);
-    else segItems.push(it);
-  });
-  if (segItems.length) {
-    box.appendChild(foldSection(segItems, key, {
-      open: turnOpen[key] === true,
+  // 钉住常显、绝不折进过程段的两类：系统通知（note＝「数字助理派发」这类灰底气泡，
+  // 正在执行时它正是"这次派发到底要我做什么"的唯一线索）与运行中的子任务卡（实时进度）。
+  // 完成态把两者当 anchors 常显（见 renderFinishedTurn 的 note 分支），流式这里同一口径——
+  // 否则派发通知会在执行期间跟着上下文材料一起被折起来，跑完才重新露出来。
+  const pinned = (it) => it.k === 'note' || it.k === 'plancard' || (it.k === 'subtask' && !it.result);
+  let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段
+  const flush = () => {
+    if (!seg.length) return;
+    box.appendChild(foldSection(seg, key, {
+      open: open,
       prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.think || c.tool || c.mat) ? ' · ' + foldLabel(c) : ''),
     }));
-  }
-  pinned.forEach((it) => box.appendChild(renderItem(it)));
-  flow.slice(foldFrom).forEach((it) => box.appendChild(renderItem(it)));
+    seg = [];
+  };
+  // 常显项就地渲染（必要时把折叠段切开），其余过程行折进段里；尾部窗口内一律常显
+  flow.forEach((it, i) => {
+    if (i >= foldFrom || pinned(it)) { flush(); box.appendChild(renderItem(it)); return; }
+    seg.push(it);
+  });
+  flush();
 }
 
 let rafPending = false;
@@ -1885,8 +1891,9 @@ function handleGlobalEvent(ev) {
   const viewing = state.cur && ev.sessionId === state.cur.id;
   // 子对话视图并行接收同一事件流：右栏正看这个子对话且它没有本地流在跑（后台自动汇报）
   const subViewing = subState.cur && ev.sessionId === subState.cur.id;
-  if (ev.type === 'approval_required') { dotApproval[ev.sessionId] = true; loadSessions(); }
-  if (ev.type === 'approval_resolved') { delete dotApproval[ev.sessionId]; loadSessions(); }
+  // 侧栏「⏸ 待确认」标记与橙点直接由 state.approvals / state.questions 推导（见
+  // app-left.js 的 sessionPendingAsk）：下面的 push/remove 更新清单后 renderPanels
+  // 会顺带刷新会话列表，不再单独维护事件驱动的 dotApproval 影子表。
   switch (ev.type) {
     case 'sub_start':
       subActs[ev.sessionId] = [];
@@ -1910,8 +1917,9 @@ function handleGlobalEvent(ev) {
       if (state.cur && !state.streaming && subActNode(ev.sessionId)) renderMessages(state.msgs);
       break;
     case 'message':
-      // 待办派发等后台落库的用户消息（todo.go 广播）：正看着这个会话就整体翻新
-      if (viewing && !state.streaming && ev.message && ev.message.role === 'user') refreshCurrent();
+      // 后台落库的用户消息（todo.go 广播）与环境快照行（权限等 PATCH 后立即
+      // 落库的 env 行，role=system）：正看着这个会话就整体翻新
+      if (viewing && !state.streaming && ev.message && (ev.message.role === 'user' || ev.kind === 'env')) refreshCurrent();
       break;
     case 'pending':
       // 插话/排队队列变化：只更新对应的那个视图（自己窗口的操作也会推回来，天然多端一致）
@@ -2076,6 +2084,7 @@ function askJumpTo(sid) {
 function askFreeRow(id, placeholder, btnText, onSend) {
   const row = document.createElement('div');
   row.className = 'q-free';
+  row.onclick = (e) => e.stopPropagation(); // 输入区不触发整卡点击（计划卡：整张卡点开计划）
   const input = document.createElement('input');
   input.type = 'text';
   input.placeholder = placeholder;
@@ -2097,6 +2106,52 @@ function askFreeRow(id, placeholder, btnText, onSend) {
   row.appendChild(input);
   row.appendChild(btn);
   return row;
+}
+
+/* ---------- 对话流里的计划卡（exit_plan_mode 提交过的计划） ----------
+   输入区上方那张审批卡批了/驳了就收走了，但计划本身得在对话里留个常住的入口：
+   这条卡跟着提交它的那一轮常显（不会被折进过程段），点一下就再打开右栏「计划」
+   视图看全文——刷新、切走、关掉软件重开，它都还在（正文从会话历史里读回）。 */
+
+// 这份计划还在等审批吗：按正文与 /api/questions 里 kind=plan 的提问配对
+// （审批卡与计划卡拿的是同一份正文），配得上就给「待审批」徽章。
+function planPendingIdOf(plan) {
+  const head = String(plan || '').trim().replace(/…$/, '');
+  if (!head) return '';
+  const q = (state.questions || []).find((x) => x.kind === 'plan'
+    && (x.plan === plan || String(x.plan || '').startsWith(head)));
+  return q ? q.id : '';
+}
+
+// 计划卡：标题 + 首段 + 「查看计划」（打开右栏并定位到这一份）。正文取不到
+// （参数是坏行）时退回普通工具行，别造一张空卡。
+function planCardRow(tc, seq, result) {
+  let plan = '';
+  try { plan = String(JSON.parse((tc && tc.function && tc.function.arguments) || '{}').plan || '').trim(); } catch (e) { plan = ''; }
+  if (!plan) return toolRow(tc, result, { seq });
+  const info = planSummaryOf(plan);
+  const pendingId = planPendingIdOf(plan);
+  const sid = (result && result.sessionId) || (state.cur && state.cur.id) || '';
+  const card = document.createElement('div');
+  card.className = 'plan-card' + (pendingId ? ' pending' : '');
+  if (seq != null) card.dataset.seq = seq;
+  const head = document.createElement('div');
+  head.className = 'pc-head';
+  head.innerHTML = '<b>计划已提交</b>' +
+    (pendingId ? '<span class="pc-badge">待审批</span>' : '');
+  const body = document.createElement('div');
+  body.className = 'pc-body';
+  body.innerHTML = '<p class="pc-title">' + esc(info.title) + '</p>' +
+    (info.desc ? '<p class="pc-desc">' + esc(info.desc) + '</p>' : '');
+  const acts = document.createElement('div');
+  acts.className = 'pc-acts';
+  acts.textContent = pendingId ? '等待你的审批 · 点击这张卡看计划全文' : '点击这张卡看计划全文';
+  card.appendChild(head);
+  card.appendChild(body);
+  card.appendChild(acts);
+  card.onclick = () => openPlanView(sid, seq); // 整张卡可点：点哪儿都能打开那份计划
+  card._plan = plan; // 徽章翻新用（refreshPlanCards 据此重算「待审批」）
+  return card;
 }
 
 // 计划摘要（输入区那张卡只显示这一段，全文去右栏看）
@@ -2167,6 +2222,7 @@ function pushQuestion(ev) {
     options: ev.options || [],
   });
   renderPanels();
+  noteFreshPlanQuestions(); // 新到达的计划：右栏切到这一份（别停在上次看的那版）
   maybeAutoOpenPlan(); // 计划：右栏「计划」视图自动打开（本对话的才自动开）
 }
 
@@ -2186,6 +2242,7 @@ async function loadQuestions() {
       kind: q.kind || 'ask', question: q.question || '', plan: q.plan || '', options: q.options || [],
     }));
     renderPanels();
+    noteFreshPlanQuestions(); // 新到达的计划（含重启后拉回的待审批）：右栏切到这一份
     maybeAutoOpenPlan();
   } catch (e) { /* 服务离线时忽略 */ }
 }
@@ -2193,7 +2250,9 @@ async function loadQuestions() {
 async function decideQuestion(id, answer) {
   const q = state.questions.find((x) => x.id === id);
   if (q && q.kind === 'plan') stashPlanDoc(q); // 先留一份副本，批/驳之后右栏仍看得到
-  removeQuestion(id); // 先乐观移除，避免双击
+  // 「忽略计划」= 搁置：后端要保留这份计划（它仍在等处置），所以这里不做乐观移除
+  // ——移除早了会让用户以为计划没了；批/驳才移除（后端也会确认）。
+  if (answer !== '__ignore__') removeQuestion(id); // 先乐观移除，避免双击
   try {
     await api('/api/questions/' + id, { method: 'POST', body: JSON.stringify({ answer }) });
   } catch (e) {
@@ -2307,21 +2366,27 @@ function buildQuestionCard(e, own) {
     body.className = 'ap-body';
     body.innerHTML = '<p class="q-plan-title">' + esc(info.title) + '</p>' +
       (info.desc ? '<p class="q-plan-desc">' + esc(info.desc) + '</p>' : '') +
-      '<p class="q-plan-hint">计划全文在右侧边栏「计划」里按 Markdown 查看（随时可再打开）</p>';
+      '<p class="q-plan-hint">点这张卡看计划全文（右侧边栏「计划」，Markdown 渲染）：除输入框与三个按钮外，卡片任何位置都可以点</p>';
     card.appendChild(body);
     card.appendChild(askFreeRow(q.id, '反馈修改意见后点「驳回」，或直接批准', '驳回',
       (v) => decideQuestion(q.id, v || '（未填写具体意见）')));
     const acts = document.createElement('div');
     acts.className = 'ap-actions';
-    const view = document.createElement('button');
-    view.className = 'ghost';
-    view.textContent = '查看计划';
-    view.onclick = () => openPlanView(q.sessionId);
+    // 三个动作：驳回（带反馈文本）、忽略计划（本轮就此停下、计划仍留着）、批准执行。
+    const ig = document.createElement('button');
+    ig.className = 'ghost';
+    ig.textContent = '忽略计划';
+    ig.title = '搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留在这里，随时可以再批准或驳回';
+    ig.onclick = (e) => { e.stopPropagation(); decideQuestion(q.id, '__ignore__'); };
+    // 整张卡可点 → 打开这份计划（输入框与按钮自己拦下冒泡，不误触）
+    card.classList.add('clickable');
+    card.title = '点击查看这份计划的全文';
+    card.onclick = () => openPlanView(q.sessionId, 0, q.id);
     const ok = document.createElement('button');
     ok.className = 'ok';
     ok.textContent = '批准并开始执行';
-    ok.onclick = () => decideQuestion(q.id, '__approve__');
-    acts.appendChild(view);
+    ok.onclick = (e) => { e.stopPropagation(); decideQuestion(q.id, '__approve__'); };
+    acts.appendChild(ig);
     acts.appendChild(ok);
     card.appendChild(acts);
     return card;
@@ -2360,7 +2425,7 @@ function buildQuestionCard(e, own) {
     const ok = document.createElement('button');
     ok.className = 'ok';
     ok.textContent = '同意，进入计划模式';
-    ok.onclick = () => decideQuestion(q.id, '__approve__');
+    ok.onclick = (e) => { e.stopPropagation(); decideQuestion(q.id, '__approve__'); };
     acts.appendChild(ok);
     card.appendChild(acts);
   }
@@ -2513,13 +2578,36 @@ function setAskDockMin(min) {
   renderPanels();
 }
 
+// 计划卡上的「待审批」徽章随待办翻新：审批卡批了/驳了、或重启后重新拉回待审批
+// 计划时，消息流里那张卡立刻跟上（不整列重渲染，阅读位置不跳）。
+function refreshPlanCards() {
+  document.querySelectorAll('.plan-card').forEach((card) => {
+    const pendingId = planPendingIdOf(card._plan || '');
+    card.classList.toggle('pending', !!pendingId);
+    const head = card.querySelector('.pc-head');
+    const badge = card.querySelector('.pc-badge');
+    if (pendingId && !badge && head) {
+      const b = document.createElement('span');
+      b.className = 'pc-badge';
+      b.textContent = '待审批';
+      head.appendChild(b);
+    } else if (!pendingId && badge) {
+      badge.remove();
+    }
+    const tip = card.querySelector('.pc-acts');
+    if (tip) tip.textContent = pendingId ? '等待你的审批 · 点击这张卡看计划全文' : '点击这张卡看计划全文';
+  });
+}
+
 // 三处一起重画（主对话区 / 右栏子对话 / 右下角角标堆，加右栏「计划」视图联动）；
 // 所有入口统一走它
 function renderPanels() {
+  refreshPlanCards(); // 计划卡上的「待审批」徽章随待办状态翻新
   renderAskBar(mainView);
   renderAskBar(subView);
   renderAskDock(otherAskItems());
   if (rpActive === 'plan') drawPlanView();
+  loadSessions(); // 待办清单变了：侧栏的「⏸ 待确认」标记/橙点跟着翻新（自身带合并去抖）
 }
 
 // 角标堆的两个交互：整块收起成胶囊 / 胶囊点开（点开＝用户显式要展开）
@@ -2558,7 +2646,10 @@ if (window.ResizeObserver) {
 
 let planSid = '';      // 视图绑定的会话（默认跟随主对话；从别的对话的卡点进来则绑那个会话）
 let planDocs = [];     // 历史文档（新的在后）
-let planSel = '';      // 当前展示的文档 key
+let planSel = '';      // 当前展示的文档 key（渲染结果，回填下拉）
+let planPinned = '';   // 用户在下拉里显式选过的那份：优先显示，直到它消失或来了新计划
+let planWantSeq = 0;   // 一次性定位：消息流里的计划卡被点击（按提交序号）
+let planWantQid = '';  // 一次性定位：刚到达的待审批计划（按提问 id）
 let planCur = null;    // 当前展示的文档（复制按钮用）
 let planFetching = false;
 const planTried = {};  // 计划提问 id → 已补拉过历史（只补一次）
@@ -2566,10 +2657,28 @@ const planTried = {};  // 计划提问 id → 已补拉过历史（只补一次�
 function planKeyOf(d) { return d.pendingId ? 'q:' + d.pendingId : 'h:' + d.seq; }
 
 // 打开计划视图（sid 省略 = 跟随主对话）
-function openPlanView(sid) {
+// 打开计划视图（sid 省略 = 跟随主对话；给 seq/qid 就是「直接定位到某一份」）
+function openPlanView(sid, seq, qid) {
   if (sid) planSid = sid;
   if (!planSid && state.cur) planSid = state.cur.id;
+  // 一次性定位：点的是哪一份就看哪一份（右栏清单加载完自动选中，配不上就退回默认）
+  if (seq) planWantSeq = seq;
+  if (qid) planWantQid = qid;
+  if (seq || qid) planPinned = ''; // 显式定位优先于「上次在下拉里选过的那份」
   rpOpen('plan');
+}
+
+// 只在「新出现的」待审批计划上把右栏切过去（首次打开、重启后拉回、本轮新提交）：
+// 后续重复拉取不再打断用户在右栏里翻看旧版计划的选择。
+const planSeenQids = {};
+function noteFreshPlanQuestions() {
+  let fresh = '';
+  for (const q of state.questions || []) {
+    if (q.kind !== 'plan' || planSeenQids[q.id]) continue;
+    planSeenQids[q.id] = true;
+    fresh = q.id;
+  }
+  if (fresh) { planWantQid = fresh; planPinned = ''; }
 }
 
 // 计划提问到达/本对话切换时自动打开一次（用户手动关掉后不再自动弹）
@@ -2627,8 +2736,22 @@ function drawPlanView() {
   const docEl = $('plan-doc');
   if (!docEl) return;
   const list = planDocsWithPending();
-  let cur = list.find((d) => planKeyOf(d) === planSel);
-  if (!cur) cur = list.find((d) => d.pendingId) || list[list.length - 1];
+  // 选中规则（优先级从高到低）：
+  //   1) 一次性定位：点了某张计划卡 / 本回合新到达的待审批计划；
+  //   2) 用户在下拉里显式选过的那份（它消失、或又来了新计划就作废）；
+  //   3) 最新的那份「待审批」计划——新计划提交后默认露出新的，不再停在上一版；
+  //   4) 上次显示的那份；5) 最新一份。有「待审批」时永远优先看它。
+  let cur = null;
+  if (planWantSeq) { const hit = list.find((d) => d.seq === planWantSeq); if (hit) { cur = hit; planWantSeq = 0; } }
+  if (!cur && planWantQid) { const hit = list.find((d) => d.pendingId === planWantQid); if (hit) { cur = hit; planWantQid = ''; } }
+  if (!cur && planPinned) cur = list.find((d) => planKeyOf(d) === planPinned) || null;
+  if (!cur) {
+    const pend = list.filter((d) => d.pendingId);
+    cur = pend.length ? pend[pend.length - 1] : null;
+  }
+  if (!cur) cur = list.find((d) => planKeyOf(d) === planSel) || null;
+  if (!cur) cur = list[list.length - 1] || null;
+  // （旧的「有待审批就直接跳过去」兜底已并进上面的规则 3）
   planSel = cur ? planKeyOf(cur) : '';
   planCur = cur || null;
 
@@ -2678,7 +2801,10 @@ function drawPlanView() {
 }
 
 // 右栏「计划」视图的控件（只绑一次；展示对象从 planCur 取）
-$('plan-pick').addEventListener('change', (e) => { planSel = e.target.value; planNoteHide(); drawPlanView(); });
+$('plan-pick').addEventListener('change', (e) => {
+  planPinned = e.target.value; planWantSeq = 0; planWantQid = ''; // 用户显式选择：优先显示它
+  planNoteHide(); drawPlanView();
+});
 $('plan-copy').onclick = () => {
   if (!planCur) return;
   navigator.clipboard.writeText(planCur.markdown).catch(() => {});
@@ -2730,6 +2856,7 @@ $('plan-note-open').onclick = async () => {
 $('plan-feedback').addEventListener('input', (e) => {
   if (planCur && planCur.pendingId) askDraftSet(planCur.pendingId, e.target.value);
 });
+$('plan-ignore').onclick = () => { if (planCur && planCur.pendingId) decideQuestion(planCur.pendingId, '__ignore__'); };
 $('plan-approve').onclick = () => { if (planCur && planCur.pendingId) decideQuestion(planCur.pendingId, '__approve__'); };
 $('plan-reject').onclick = () => {
   if (!planCur || !planCur.pendingId) return;
@@ -3284,7 +3411,6 @@ $('update-banner').addEventListener('click', (e) => {
   }
 });
 
-
 // retryRun 重试上一轮：直接启动新一轮执行（用户消息已在库里），并跟随输出
 async function retryRun(view) {
   view = view || mainView;
@@ -3604,6 +3730,10 @@ async function sendMidrun(content, viaInput, view) {
 
 async function send(forceContent, view) {
   view = view || mainView;
+  // 发送前先停语音听写（语音组件交出的钩子：把未定稿的灰字转写同步落进输入框
+  // 再硬收尾，随本条消息一起发出）。挂在 send 执行点：回车 / Ctrl+回车 / 发送
+  // 按钮 / 子对话，所有发送路径都会经过这里；没在听写时是空操作。
+  if (window.JXVoicePause) window.JXVoicePause();
   const input = view.input;
   const fromInput = typeof forceContent !== 'string';
   const content = (fromInput ? input.value : forceContent).trim();
@@ -4326,7 +4456,7 @@ function applyDraftMode(v) {
   } else if (v !== 'skill-create' && fullByAuto) {
     homeDraft._fullFromMode = false;
     homeDraft.permission = 'workspace-write';
-    homeDraft.tools = (homeDraft.tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t));
+    homeDraft.tools = applyCapDefaults((homeDraft.tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t)), v, 'workspace-write');
   }
   homeDraft.mode = v;
 }
@@ -4352,7 +4482,6 @@ function renderModePop() {
     box.appendChild(b);
   }
 }
-
 
 function sessionOrDraftFor(view) {
   view = view || mainView;
@@ -4460,6 +4589,17 @@ function openPlusMenu(view) {
 
 // 完全访问预设捆绑的能力：切到完全访问即强制勾选、置灰不可关闭（后端权限引擎同样视为开启）
 const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer', 'device'];
+
+// 默认能力（后端 perm.go 的 capDefaultsForMode 是同一策略的唯一权威，这里是镜像）：
+// 「工作区内读写」默认开启「操作浏览器」，只对真会注册 browser_* 的四种模式生效；
+// 只读 / 完全访问不带默认项。用在「切档时把默认项补回」——完全访问 ⇄ 工作区内读写、
+// 创建技能模式 ⇄ 普通模式往返，都不能把默认能力丢掉（与后端 strip+merge 对齐）。
+const CAP_DEFAULT_MODES = ['task', 'office', 'coding', 'skill-create'];
+function applyCapDefaults(tools, mode, perm) {
+  const out = [...(tools || [])];
+  if (perm === 'workspace-write' && CAP_DEFAULT_MODES.includes(mode) && !out.includes('browser')) out.push('browser');
+  return out;
+}
 
 function renderPermPop(view) {
   view = view || popView || mainView;
@@ -5158,8 +5298,9 @@ $('perm-pop').addEventListener('change', (e) => {
     } else {
       const fields = { permission: e.target.value };
       if (sessionOrDraftFor(v).permission === 'full') {
-        // 从完全访问切回：捆绑点亮的三项能力随之自动取消
-        fields.tools = (sessionOrDraftFor(v).tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t));
+        // 从完全访问切回：捆绑点亮的三项能力随之自动取消，但默认能力要补回来（工作区内读写默认开启「操作浏览器」——切回时同时打开它）
+        const _cur = sessionOrDraftFor(v);
+        fields.tools = applyCapDefaults((_cur.tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t)), _cur.mode, e.target.value);
       }
       patchDraftOrSession(fields, v).then(() => renderPermPop(v));
     }

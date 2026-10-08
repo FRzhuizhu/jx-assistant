@@ -129,6 +129,58 @@ func stripFullAccessCaps(tools []string) []string {
 	return out
 }
 
+// capDefaultsForMode 返回某模式/权限档位下新会话的**默认能力开关**（唯一权威，
+// 前端 web/app-chat.js 的 applyCapDefaults 与它同一策略）。现行策略只有一条：
+// 「工作区内读写」默认开启「操作浏览器」——模型看网页是常态动作，默认给上；
+// 用户随时可在权限芯片里取消，显式取消不被覆盖（见各调用点的 tools 是否为 nil）。
+// 只对真会注册 browser_* 的四种模式生效（toolsFor：task/office/coding/
+// skill-create）；只读、完全访问、aux/assistant 不在默认之列——完全访问走
+// bundleFullAccessCaps 捆绑点亮，语义不同。
+func capDefaultsForMode(mode, perm string) []string {
+	if perm != permWorkspace {
+		return nil
+	}
+	switch mode {
+	case "task", "office", "coding", "skill-create":
+		return []string{capBrowser}
+	}
+	return nil
+}
+
+// mergeCapDefaults 把默认能力并入 tools（纯内存合并，不落库）：会话创建、以及
+// 「从完全访问切回工作区内读写」（捆绑项被 strip 掉之后，默认项照旧要在）。
+func mergeCapDefaults(tools []string, mode, perm string) []string {
+	def := capDefaultsForMode(mode, perm)
+	if len(def) == 0 {
+		return tools
+	}
+	have := make(map[string]bool, len(tools))
+	for _, c := range tools {
+		have[c] = true
+	}
+	out := tools
+	for _, c := range def {
+		if !have[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// syncRunPerms 把库里最新的权限模式与能力开关合并进运行指针：用户在流式
+// 执行中改权限芯片（PATCH 处理器写的是自己的副本并落库），运行中的会话每步
+// 从这里取新值——下一步的 authorize、环境快照、【权限变更】公告三者即时一致。
+// 只合并权限两字段：用量计数等运行态在指针上持续累加，不能用库里的旧值覆盖。
+// 运行指针由执行体单协程持有（PATCH/审批写的是各自副本），无数据竞态。
+func (a *App) syncRunPerms(sess *SessionMeta) {
+	fresh, err := a.Store.Get(sess.ID)
+	if err != nil || fresh == nil {
+		return // 读失败保持现权（维持现状，不阻断执行）
+	}
+	sess.Permission = fresh.Permission
+	sess.Tools = fresh.Tools
+}
+
 // switchToFullAccess 把会话权限切到完全访问并点亮捆绑能力（工作区外写入
 // 「始终允许」用）：持久化并广播，前端权限面板随之刷新。
 func (a *App) switchToFullAccess(s *SessionMeta) {
@@ -160,6 +212,197 @@ func permModeLabel(mode string) string {
 	default:
 		return "工作区内读写"
 	}
+}
+
+// permSrcPanel / permSrcApproval 是【权限变更】公告的两处来源文案。
+const (
+	permSrcPanel    = "用户在权限面板调整"
+	permSrcApproval = "用户在审批卡上点「始终允许」"
+)
+
+// modeGrantDesc 返回某权限模式「允许什么」的一句话描述（新增/取消授权行的
+// 正文用——降档时同一句话即「被取消的东西」）。
+func modeGrantDesc(mode string) string {
+	switch mode {
+	case permReadOnly:
+		return "可读文件、检索内容、抓取网页，禁止任何写入"
+	case permFull:
+		return "文件读写与命令执行不再受沙箱限制（助手自身配置/数据仍受保护）"
+	default:
+		return "文件写入仅限工作区，命令在 OS 级沙箱内执行（只能写工作区与沙箱临时目录，联网不限）"
+	}
+}
+
+// capZh 返回能力开关的中文展示名（权限面板右侧多选同款文案）。
+func capZh(cap string) string {
+	switch cap {
+	case capUnsandboxed:
+		return "允许工作区外执行命令"
+	case capSandboxWrite:
+		return "只读档下允许沙箱内写入"
+	case capBrowser:
+		return "操作浏览器"
+	case capComputer:
+		return "操作电脑"
+	case capDevice:
+		return "操作手机"
+	}
+	return cap
+}
+
+// capEffectDesc 返回能力开关后的效果说明（开=on）。
+func capEffectDesc(cap string, on bool) string {
+	onDesc := map[string]string{
+		capUnsandboxed:  "沙箱外执行命令不再逐次审批（常设授权）",
+		capSandboxWrite: "只读档下命令可在沙箱内写入",
+		capBrowser:      "browser_* 工具现在可用",
+		capComputer:     "computer_* 工具现在可用",
+		capDevice:       "device_* / adb_* 工具现在可用",
+	}
+	offDesc := map[string]string{
+		capUnsandboxed:  "命令升级恢复逐次审批",
+		capSandboxWrite: "只读档下命令恢复禁止写入",
+		capBrowser:      "browser_* 工具调用将被拒绝",
+		capComputer:     "computer_* 工具调用将被拒绝",
+		capDevice:       "device_* / adb_* 工具调用将被拒绝",
+	}
+	if on {
+		return onDesc[cap]
+	}
+	return offDesc[cap]
+}
+
+// capCanonicalOrder 是能力开关的公告排序（输出确定性）。
+var capCanonicalOrder = []string{capUnsandboxed, capSandboxWrite, capBrowser, capComputer, capDevice}
+
+// effCaps 返回会话的生效能力集合（完全访问档捆绑能力视为开启，与
+// hasCapability 同口径）。
+func effCaps(mode string, tools []string) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range tools {
+		out[c] = true
+	}
+	if mode == permFull {
+		for _, c := range fullAccessCaps {
+			out[c] = true
+		}
+	}
+	return out
+}
+
+// permChangeNote 生成「权限变更」注记（单行，追加在新环境快照尾部，形如
+// 「（权限变更：…）」——与技能变更注记同通道）：告诉模型权限发生了什么变化、
+// 现在允许什么、取消了什么。wasMode/wasTools 是变更前的权限模式与能力表，
+// s 是变更后的会话；src 是来源文案（面板/审批）。纯函数，归一化后无实际变化
+// 时返回空串。
+func permChangeNote(src, wasMode string, wasTools []string, s *SessionMeta) string {
+	nowMode := permModeOf(s)
+	wasCaps, nowCaps := effCaps(wasMode, wasTools), effCaps(nowMode, s.Tools)
+	var added, removed []string
+	for _, c := range capCanonicalOrder {
+		if nowCaps[c] && !wasCaps[c] {
+			added = append(added, c)
+		}
+		if wasCaps[c] && !nowCaps[c] {
+			removed = append(removed, c)
+		}
+	}
+	if wasMode == nowMode && len(added) == 0 && len(removed) == 0 {
+		return ""
+	}
+	var parts []string
+	if wasMode != nowMode {
+		parts = append(parts,
+			"权限模式："+permModeLabel(wasMode)+" → "+permModeLabel(nowMode),
+			"新增授权："+permModeLabel(nowMode)+"——"+modeGrantDesc(nowMode),
+			"取消授权："+permModeLabel(wasMode)+"——「"+modeGrantDesc(wasMode)+"」的旧规则不再适用")
+	} else {
+		parts = append(parts, "权限模式不变（"+permModeLabel(nowMode)+"）")
+	}
+	// 档位切换带来的捆绑能力增删已在授权行说明，这里只公告档位之外的手动增删
+	if nowMode == permFull || wasMode == permFull {
+		added, removed = filterBundled(added), filterBundled(removed)
+	}
+	if len(added) > 0 {
+		parts = append(parts, "新增能力："+joinCapEffects(added, true))
+	}
+	if len(removed) > 0 {
+		parts = append(parts, "取消能力："+joinCapEffects(removed, false))
+	}
+	parts = append(parts, "来源："+src+"，立即生效，后续工具调用按新权限执行")
+	return "权限变更：" + strings.Join(parts, "；")
+}
+
+// joinCapEffects 把能力增删清单拼成「名字（效果）、名字（效果）」。
+func joinCapEffects(caps []string, on bool) string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, "「"+capZh(c)+"」"+capEffectDesc(c, on))
+	}
+	return strings.Join(out, "、")
+}
+
+// capZhList 批量取能力中文名。
+func capZhList(caps []string) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, capZh(c))
+	}
+	return out
+}
+
+// filterBundled 从能力增删清单里剔掉完全访问捆绑项（档位切换已说明，不重复公告）。
+func filterBundled(caps []string) []string {
+	bundled := map[string]bool{}
+	for _, c := range fullAccessCaps {
+		bundled[c] = true
+	}
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		if !bundled[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// stashPermNote / takePermNote 暂存与取走「权限变更」注记：权限变化时
+// （面板 PATCH / 审批「始终允许」）写入，maybeAppendEnvSnapshot 组装下一次
+// 环境快照时取走、追加为新快照尾部的「（权限变更：…）」行——与技能变更
+// 注记同走 env 差分通道，同一事实不重复记账。取走即清：注记只随变化后的
+// 第一份快照落一次。permMu 保护；App 可能被测试直接构造，map 惰性建。
+func (a *App) stashPermNote(sessionID, note string) {
+	if note == "" {
+		return
+	}
+	a.permMu.Lock()
+	if a.permNotes == nil {
+		a.permNotes = map[string]string{}
+	}
+	a.permNotes[sessionID] = note
+	a.permMu.Unlock()
+}
+
+func (a *App) takePermNote(sessionID string) string {
+	a.permMu.Lock()
+	note := a.permNotes[sessionID]
+	delete(a.permNotes, sessionID)
+	a.permMu.Unlock()
+	return note
+}
+
+// landPermChange 权限变更的即时落地：算出变更后的环境快照并立刻经
+// maybeAppendEnvSnapshot 落库（注记随这份快照携带）。env「重发只由真实变化
+// 驱动」约束的是发给模型的差分重发，不约束落库时机——变更瞬间即进时间线与
+// 下一次组装的上下文，不等下一次模型调用；下一次组装做等值比较，不会重复落。
+// 审批「始终允许」发生在工具执行中间时用这条路径（emit 传运行通道）。
+func (a *App) landPermChange(sess *SessionMeta, src, wasMode string, wasTools []string, emit func(Event)) {
+	note := permChangeNote(src, wasMode, wasTools, sess)
+	if note == "" {
+		return
+	}
+	a.stashPermNote(sess.ID, note)
+	a.maybeAppendEnvSnapshot(sess, a.envPrompt(sess), emit)
 }
 
 // ---------- 授权凭证 ----------
@@ -585,7 +828,11 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 				return nil, fmt.Errorf("用户未批准该写入，未执行。请停止并如实说明，不要绕过")
 			}
 			if always {
+				wasMode, wasTools := permModeOf(t.sess), t.sess.Tools
 				t.app.switchToFullAccess(t.sess)
+				// 「权限变更」即时落地：注记随新环境快照落库（env 通道），
+				// 下一步组装的差分自然带上
+				t.app.landPermChange(t.sess, permSrcApproval, wasMode, wasTools, t.emit)
 			}
 			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, permFull), nil
 		}
@@ -639,7 +886,10 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 				if always {
 					// 「始终允许」= 点亮这类升级对应的能力开关（权限面板
 					// 可见），之后该类动作不再逐次审批（常设授权）。
+					wasMode, wasTools := permModeOf(t.sess), t.sess.Tools
 					t.app.addCapability(t.sess, capID)
+					// 「权限变更」即时落地：注记随新环境快照落库（env 通道）
+					t.app.landPermChange(t.sess, permSrcApproval, wasMode, wasTools, t.emit)
 				}
 			}
 			policy = req

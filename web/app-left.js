@@ -447,43 +447,56 @@ function openSessionMenu(s, rect) {
   ], rect.right - 8, rect.bottom + 4);
 }
 
-// 「进行态」标记的完整定义：运行中与已中断共用同一个结构、同一套 class 与 title
-// 写法，只有字符、颜色类与悬停文案不同——所以两个标记天然同位同款，改一个是改两个。
-// 已中断的类型码由服务端给（Store.SetLastStop），话术留在前端；打开会话不清
-// （「最近一轮没跑完」这个事实没变），重跑一轮或重试成功即自动消失。
+// 「进行态」标记的完整定义：待确认、运行中与已中断共用同一个结构、同一套 class
+// 与 title 写法，只有字符、颜色类与悬停文案不同——所以几个标记天然同位同款，
+// 改一个是改全部。已中断的类型码由服务端给（Store.SetLastStop），话术留在前端；
+// 打开会话不清（「最近一轮没跑完」这个事实没变），重跑一轮或重试成功即自动消失。
 const STATUS_CELLS = {
+  wait: { cls: 'wait', text: '⏸ 待确认', tip: '这轮停在等你确认（审批／提问／计划），点开对话处理即继续' },
   running: { cls: 'running', text: '⟳ 运行中', tip: '正在执行（切走不影响，切回来会接上）' },
   step: { cls: 'stop', text: '⚠ 已中断', tip: '已达最大步数自动停止（可在设置里调大「最大步数」），可点开重试' },
   error: { cls: 'stop', text: '⚠ 已中断', tip: '本轮执行出错中断（模型／网络／网关等），点开可看原因并重试' },
   restart: { cls: 'stop', text: '⚠ 已中断', tip: '服务重启导致本轮中断，可发「继续」接续' },
 };
 
-// 会话状态标记（行末时间那一格）：运行中与已中断都从这一个函数取，没有标记则返回
-// 空串、由调用方回落相对时间。这里只出字符与颜色类——位置、字号、悬停行为全部
-// 交给 .s-time 那套公共规则，别给某个状态单独写位置规则（写歪了两个状态就对不齐）。
+// 这个会话是否挂着等用户操作的卡（越权审批／提问／计划审批）。权威清单就是
+// state.approvals / state.questions——启动时拉取、事件流实时更新、含重启后仍在
+// 等的待审批计划——直接查它们，不另维护事件驱动的影子表（那种表刷新后会丢、
+// 且提问/计划本来就不覆盖）。
+function sessionPendingAsk(id) {
+  if (!id) return false;
+  return (state.approvals || []).some((a) => a.sessionId === id)
+    || (state.questions || []).some((q) => q.sessionId === id);
+}
+
+// 会话状态标记（行末时间那一格）：待确认 > 运行中 > 已中断都从这一个函数取，
+// 没有标记则返回空串、由调用方回落相对时间。这里只出字符与颜色类——位置、字号、
+// 悬停行为全部交给 .s-time 那套公共规则，别给某个状态单独写位置规则（写歪了几个
+// 状态就对不齐）。
 function sessionStatusCell(s) {
-  const st = STATUS_CELLS[s.status === 'running' ? 'running' : s.lastStop];
+  const key = sessionPendingAsk(s.id) ? 'wait' : s.status === 'running' ? 'running' : s.lastStop;
+  const st = STATUS_CELLS[key];
   return st ? `<span class="s-time ${st.cls}" title="${esc(st.tip)}">${st.text}</span>` : '';
 }
 
 function sessionItem(s) {
   const item = document.createElement('div');
   item.className = 'session-item' + (state.cur && state.cur.id === s.id ? ' active' : '');
-  // 圆点：平时不显示；橙=待审批，绿=完成未查看，红=标为未读
+  // 圆点：平时不显示；橙=待确认（审批/提问/计划），绿=完成未查看，红=标为未读
   let dot = '';
-  if (dotApproval[s.id]) dot = ' ap';
+  if (sessionPendingAsk(s.id)) dot = ' ap';
   else if (dotDone[s.id]) dot = ' done';
   else if (s.unread) dot = ' unread';
+  // 有卡等用户操作的会话：时间位换成橙色「⏸ 待确认」，优先级最高——用户不
+  // 处理这轮就一直停着，得让人一眼看出是哪个对话在等（含重启后遗留的待审批
+  // 计划：会话不在跑也一样标）
   // 正在执行的会话（含切走后仍在后台跑的那一轮）：时间位换成「⟳ 运行中」，
   // 让用户知道切走不等于停掉
   // 异常中断的会话（步数上限／执行失败／服务重启）：同一格换成「⚠ 已中断」——
-  // 两个标记都出自 sessionStatusCell，字符与颜色不同、位置与悬停行为完全一致
-  //（打开会话不清，重跑一轮即消失）
-  const timeCell = s.status === 'running'
-    ? sessionStatusCell(s)
-    : s.lastStop
-      ? sessionStatusCell(s)
-      : `<span class="s-time">${esc(relTime(s.updatedAt))}</span>`;
+  // 三个标记都出自 sessionStatusCell，字符与颜色不同、位置与悬停行为完全一致
+  //（已中断的打开会话不清，重跑一轮即消失）
+  const statusCell = sessionStatusCell(s);
+  const timeCell = statusCell || `<span class="s-time">${esc(relTime(s.updatedAt))}</span>`;
   // 时间线视图：条目脱离了工作区分组的语境，行首补一枚工作目录小胶囊
   //（取目录名开头两三个字，塞不下的从右缘直接裁掉——不用省略号，固定宽一列对齐）
   let wsChip = '';

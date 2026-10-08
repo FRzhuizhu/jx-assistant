@@ -350,15 +350,16 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
 	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截
 	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "skill-create" {
+		b.WriteString("- 能力开关与命令沙箱是两套门：browser_* / computer_* / device_* 由助手进程直接驱动本机浏览器/桌面/手机，不经过命令沙箱；sandbox_permissions 升级只放宽命令沙箱，不会打开能力开关。别用命令行去拉浏览器（沙箱内起不来，见下方能力项）。下面逐项列出当前开关状态：\n")
 		if hasCapability(sess, capBrowser) {
-			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图\n")
+			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图（助手进程直接驱动本机 Edge/Chrome，不经命令沙箱）\n")
 		} else {
-			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
+			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拒绝。此能力是沙箱外的独立通道：关着时你在命令沙箱里启动浏览器**一定失败**（受限令牌下报 access denied / 进程直接崩），不要用 shell 去试，也不要申请 sandbox_permissions（升级只放宽命令沙箱，打不开能力开关）。需要看网页时，请让用户在权限芯片里勾选「允许操作浏览器」后再试（模型无法自行开启该能力）\n")
 		}
 		if hasCapability(sess, capComputer) {
-			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准）\n")
+			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准；同样不经命令沙箱）\n")
 		} else {
-			b.WriteString("- 能力：未开启「操作电脑」——computer_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
+			b.WriteString("- 能力：未开启「操作电脑」——computer_* 工具的调用会被拒绝；关着时命令沙箱里的命令也替代不了它（截不了屏、模拟不了键鼠），需要时请让用户在权限芯片中勾选\n")
 		}
 		// 手机操控（仅安卓注册）：device_* 走无障碍桥，adb_* 走引擎内置 ADB
 		// 客户端。就绪状态是易变信息（用户开关无障碍/连 ADB），归环境快照正管。
@@ -375,7 +376,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 				}
 				b.WriteString(line + "\n")
 			} else {
-				b.WriteString("- 能力：未开启「操作手机」——device_* / adb_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试\n")
+				b.WriteString("- 能力：未开启「操作手机」——device_* / adb_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试（沙箱里的命令替代不了它）\n")
 			}
 		}
 	}
@@ -575,11 +576,20 @@ func detectOSDescAndroid() string {
 }
 
 // maybeAppendEnvSnapshot 环境快照 diff：与最近一条 kind=env 快照比较（比较时
-// 剔除历史快照尾部的技能变更行，避免变更说明自我累积、每步重复落快照），
-// 内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条），并实时推给前端。
-// 用户技能清单有增减时，在新快照尾部追加一行「（技能变更：…）」——上文历史
-// 快照一律不动。快照按**追加式**进上下文（buildContext 首条整份、后续按行差分
-// 为短更新，已发送前缀绝不改写）。返回最终落库的快照内容（Assembly.Env 口径）。
+// 剔除历史快照尾部的变更注记行——技能/权限变更说明，避免注记自我累积、每步
+// 重复落快照），内容有变化才落库新的一条（时间戳粒度为分钟，通常每轮一条），
+// 并实时推给前端。**落库时机与发送时机分离**：落库由两类事件驱动——各次组装
+// 前的例行检查（这里），以及环境条目变更的瞬间（PATCH 权限/计划/目标/工作区
+// 落库后、审批「始终允许」升级后，都直接调用本函数立即落）；「变化驱动」约束
+// 的只是发给模型的差分重发（buildContext 按行差分，已发送前缀绝不改写），
+// 不约束什么时候可以落库——等值比较保证两条驱动路径不会重复落行。
+// 两类事件说明随新快照尾部追加（上文历史快照一律不动）：
+//   - 技能清单有增减 → 追加一行「（技能变更：…）」（skillChangeNote 现算）；
+//   - 权限/能力开关变更 → 取走变更时暂存的注记（stashPermNote），追加一行
+//     「（权限变更：…）」——权限是环境快照正管的条目，同一事实不重复记账，
+//     不另发 report 公告。注记待落时即使快照正文没变也落一条（正文相同+注记
+//     新行仍是真实变化），模型经「环境更新」差分看到它。
+// 返回最终落库的快照内容（Assembly.Env 口径）。
 func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Event)) string {
 	var prev string
 	havePrev := false
@@ -592,13 +602,17 @@ func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Ev
 			}
 		}
 	}
-	if havePrev && stripSkillChangeNote(prev) == env {
+	permNote := a.takePermNote(sess.ID)
+	if havePrev && stripEnvNotes(prev) == env && permNote == "" {
 		return env
 	}
 	if havePrev {
-		if note := skillChangeNote(stripSkillChangeNote(prev), env); note != "" {
+		if note := skillChangeNote(stripEnvNotes(prev), env); note != "" {
 			env = env + "\n（" + note + "）"
 		}
+	}
+	if permNote != "" {
+		env = env + "\n（" + permNote + "）"
 	}
 	// 上下文材料行（env/摘要/快照）一律存 role=system：它们不是用户发言，
 	// 只是入库归档；真实发送时由 buildContext 现场构造（env 走 user 尾消息）
@@ -609,13 +623,20 @@ func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Ev
 	return env
 }
 
-// stripSkillChangeNote 去掉快照尾部的技能变更行，得到用于比较的规范内容。
-func stripSkillChangeNote(env string) string {
-	i := strings.LastIndex(env, "\n（技能变更：")
-	if i < 0 || !strings.HasSuffix(env, "）") {
-		return env
+// stripEnvNotes 去掉快照尾部的变更注记行（「（技能变更：…）」「（权限变更：…）」），
+// 得到用于比较的规范内容——注记是事件说明，不参与快照等值比较。
+func stripEnvNotes(env string) string {
+	for {
+		i := strings.LastIndex(env, "\n（")
+		if i < 0 || !strings.HasSuffix(env, "）") {
+			return env
+		}
+		tail := env[i+1:]
+		if !strings.HasPrefix(tail, "（技能变更：") && !strings.HasPrefix(tail, "（权限变更：") {
+			return env
+		}
+		env = env[:i]
 	}
-	return env[:i]
 }
 
 // skillChangeNote 对比新旧环境快照里的用户技能名单，生成一行变更说明；
@@ -708,7 +729,7 @@ func (a *App) appendMessage(sess *SessionMeta, m Message) *StoredMessage {
 	if sm.touchesActivity() {
 		sess.UpdatedAt = now()
 	}
-	_ = a.Store.SaveMeta(sess)
+	_ = a.Store.TouchRunMeta(sess) // 只回写运行列（用量/时间），不覆盖并发的权限等配置改动
 	return sm
 }
 
@@ -720,7 +741,7 @@ func (a *App) appendRow(sess *SessionMeta, sm StoredMessage) *StoredMessage {
 	if sm.touchesActivity() {
 		sess.UpdatedAt = now()
 	}
-	_ = a.Store.SaveMeta(sess)
+	_ = a.Store.TouchRunMeta(sess) // 只回写运行列（用量/时间），不覆盖并发的权限等配置改动
 	return &sm
 }
 
@@ -733,7 +754,7 @@ func (a *App) appendMessageThinking(sess *SessionMeta, m Message, thinking strin
 	if sm.touchesActivity() {
 		sess.UpdatedAt = now()
 	}
-	_ = a.Store.SaveMeta(sess)
+	_ = a.Store.TouchRunMeta(sess) // 只回写运行列（用量/时间），不覆盖并发的权限等配置改动
 	return sm
 }
 
@@ -807,6 +828,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	defer a.requeueSteer(sess.ID) // 正常/异常退出后残留插话转为排队，由执行体接着发
 
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
+		a.syncRunPerms(sess) // 面板中途改权限：每步从库合并，下一步即按新权限执行
 		interjectsBefore(emit)
 		// 上下文引擎组装本步全部请求材料与测量口径（系统提示词/环境快照/工具
 		// 目录/消息视图/视觉内联/env 快照留痕/token 估算/前缀指纹都归引擎）
@@ -858,7 +880,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					sess.UsageCacheHit += int64(u.PromptCacheHit)
 					sess.UsageOutput += int64(u.CompletionTokens)
 					sess.UsageCalls++
-					_ = a.Store.SaveMeta(sess)
+					_ = a.Store.TouchRunMeta(sess) // 只回写用量列，不覆盖并发的权限等配置改动
 				},
 			})
 			// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时（重试的每次尝试各一条）

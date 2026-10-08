@@ -45,6 +45,12 @@ body {
   background: var(--bg); color: var(--text); font-size: 14px;
 }
 svg { width: 16px; height: 16px; flex: none; }
+/* 文本插入符（caret）颜色：全站所有可输入控件显式取主题文字色。
+   浏览器默认 caret-color:auto 跟随元素自身的 color；而表单控件在作者没有给 color 时，
+   取的是 UA 系统色（fieldtext，随浏览器/系统配色解析、与本站主题无关）——某些配色组合下
+   插入符会解析成浅色，压在浅色底上就看不见。显式声明后深浅两套主题都清晰可读：
+   浅色主题 --text=#1f2328 → 白底黑插入符；深色主题 --text=#e6e8eb → 深底浅插入符。 */
+input, textarea, select, [contenteditable] { caret-color: var(--text); }
 
 #app { display: flex; height: 100vh; }
 
@@ -677,6 +683,33 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   font-size: .86em; white-space: pre-wrap; word-break: break-all;
   max-height: 300px; overflow-y: auto; line-height: 1.55;
 }
+
+/* 对话流里的计划卡（exit_plan_mode 提交过的计划）：常显在提交它的那一轮里，
+   左侧一条主题色边条标出它是「一份计划」，点整张卡或按钮打开右栏计划视图看全文；
+   待审批时徽章与边条转琥珀色（与输入区上方那张审批卡的提醒口径一致）。 */
+.plan-card {
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 10px; margin: 4px 0; background: var(--bg);
+  overflow: hidden; font-size: .93em; cursor: pointer;
+}
+.plan-card:hover { border-color: rgba(77, 107, 254, .45); border-left-color: var(--accent); }
+.plan-card.pending { border-color: rgba(214, 158, 46, .45); border-left-color: var(--amber); }
+.pc-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  border-bottom: 1px solid var(--border-2);
+}
+.pc-badge {
+  font-size: .82em; padding: 1px 8px; border-radius: 999px; flex-shrink: 0;
+  color: var(--amber); background: rgba(214, 158, 46, .12);
+  border: 1px solid rgba(214, 158, 46, .4);
+}
+.pc-body { padding: 8px 12px 0; }
+.pc-title { margin: 0; font-weight: 600; }
+.pc-desc { margin: 4px 0 0; color: var(--text-2); line-height: 1.6; }
+.pc-acts { padding: 6px 12px 10px; font-size: .86em; color: var(--text-3); }
+/* 整张卡可点（打开计划全文）；输入框与动作按钮自己拦下冒泡 */
+.ap-card.clickable { cursor: pointer; }
+.ap-card.clickable:hover { border-color: rgba(77, 107, 254, .45); }
 
 /* 侧栏：数字助理派生的子会话标记 */
 .s-sub { color: var(--text-3); font-size: 12px; margin-right: 2px; }
@@ -1702,7 +1735,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   flex-shrink: 0; background: var(--bg);
 }
-.set-footer .modal-actions { justify-content: flex-end; margin: 0; }
+/* 底栏左侧长提示允许收缩（min-width:0），右侧按钮组不可压：长提示曾把按钮挤窄、
+   「取消/保存」在按钮内竖排成两行 */
+.set-footer .tip { min-width: 0; }
+.set-footer .modal-actions { justify-content: flex-end; margin: 0; flex-shrink: 0; }
+.set-footer .modal-actions button { white-space: nowrap; }
 .about-block { font-size: 13px; color: var(--text-2); }
 .about-block .logo-img { width: 42px; }
 .about-block b { font-size: 15px; color: var(--text); }
@@ -2153,10 +2190,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 :root[data-theme='dark'] .run-error .re-retry { border-color: rgba(255, 130, 115, .45); }
 
 /* 执行中 / 异常中断的会话：侧栏时间位显示状态标记，切走也能一眼看出还在跑、
-   或者这一轮停在了半路。两个状态走同一套结构（sessionStatusCell）与同一条位置/
+   或者这一轮停在了半路。三个状态走同一套结构（sessionStatusCell）与同一条位置/
    悬停规则——只有颜色不同，别给某一个单独写位置规则，否则两者就对不齐了 */
 .session-item .s-time.running { color: var(--accent); font-weight: 600; }
 .session-item .s-time.stop { color: var(--danger); font-weight: 600; }
+/* 等用户确认（审批/提问/计划）：橙色，与行首待审批橙点同一语义；亮色沿用应用
+   琥珀（计划卡「待审批」徽章同色），暗色提亮一档保证深底可读 */
+.session-item .s-time.wait { color: var(--amber); font-weight: 600; }
+:root[data-theme='dark'] .session-item .s-time.wait { color: #e8a33d; }
 
 /* 技能面板：行样式复用「内置组件/插件」的 plugin-row + pr-toggle，仅补本页专属组件 */
 /* 分组标题的弱化后缀（自带技能 · 常开 等） */
@@ -2374,7 +2415,7 @@ html.desktop-shell .bpw-hint { display: none; }
 
 /* ---------- Claude 插件兼容层（app-ccplugins.js） ---------- */
 .ccp-install-row { display: flex; gap: 8px; margin: 0 0 8px; }
-.ccp-install-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg2, #fff); color: inherit; }
+.ccp-install-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg); color: var(--text); }
 .ccp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
 .ccp-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg-tag, #eef0f4); color: var(--fg-dim, #666); }
 .ccp-comps { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 0; }
@@ -2383,10 +2424,10 @@ html.desktop-shell .bpw-hint { display: none; }
 .ccp-config { margin-top: 6px; display: grid; gap: 6px; }
 .ccp-config-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .ccp-config-row span { flex-shrink: 0; min-width: 88px; }
-.ccp-config-row input { flex: 1; min-width: 0; padding: 5px 9px; border: 1px solid var(--bd, #d8d8de); border-radius: 7px; font-size: 12px; background: var(--bg2, #fff); color: inherit; }
+.ccp-config-row input { flex: 1; min-width: 0; padding: 5px 9px; border: 1px solid var(--bd, #d8d8de); border-radius: 7px; font-size: 12px; background: var(--bg); color: var(--text); }
 .ccp-uninstall { align-self: flex-start; margin-top: 6px; font-size: 11px; padding: 3px 10px; border: 1px solid #e2b4b4; border-radius: 7px; background: transparent; color: #b04a4a; cursor: pointer; }
 .ccp-uninstall:hover { background: #fbecec; }
-.ccp-market-select { max-width: 100%; margin: 2px 0 8px; padding: 6px 8px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg2, #fff); color: inherit; }
+.ccp-market-select { max-width: 100%; margin: 2px 0 8px; padding: 6px 8px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg); color: var(--text); }
 .ccp-market-list { display: grid; gap: 6px; margin: 0 0 10px; max-height: 260px; overflow: auto; }
 .ccp-market-item { border: 1px solid var(--bd, #d8d8de); border-radius: 9px; padding: 8px 10px; }
 .ccp-market-item.installed { opacity: .6; }

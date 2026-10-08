@@ -332,7 +332,7 @@
             <input id="plan-feedback" type="text" placeholder="反馈修改意见（可留空）">
             <button id="plan-reject" class="ghost">驳回</button>
           </div>
-          <div class="ap-actions"><button id="plan-approve" class="ok">批准并开始执行</button></div>
+          <div class="ap-actions"><button id="plan-ignore" class="ghost" title="搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留着，随时可以再批准或驳回">忽略计划</button><button id="plan-approve" class="ok">批准并开始执行</button></div>
         </div>
       </div>
       <div class="rp-view" id="rp-view-browser">
@@ -759,7 +759,7 @@
       <div class="perm-col-title">能力</div>
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
-        允许操作浏览器</span><input type="checkbox" data-tool="browser" title="开启后模型可打开网页、读取内容、点击、输入、截图（需要本机装有 Chrome 或 Edge）"></label>
+        允许操作浏览器</span><input type="checkbox" data-tool="browser" title="开启后模型可打开网页、读取内容、点击、输入、截图（走本机 Edge/Chrome 的内建通道，不经命令沙箱；命令行里起浏览器会被沙箱拒绝）"></label>
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         允许操作电脑</span><input type="checkbox" data-tool="computer" title="开启后模型可截屏、点击、键入、切换窗口；坐标以 computer_screenshot 的图片为准"></label>

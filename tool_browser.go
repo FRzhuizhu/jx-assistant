@@ -15,9 +15,22 @@ import (
 )
 
 // requireCapability 是能力门控的统一提示；能力清单与开关在 perm.go / 权限芯片。
+// 这段文案要两头都读得懂：对模型明说「别绕路」——能力关着时命令沙箱里也做不到
+// （受限令牌），改用 run_command 只会白费一轮；以及「正确出路」——在回复里向
+// 用户申请开启该能力（用户在权限芯片里勾选）。用户在工具卡片里同样会看到这句，
+// 所以措辞要能直接照做。关着时一律 fail closed（不降级、不猜测用户意图）。
 func requireCapability(t *toolContext, capID, title string) error {
 	if !hasCapability(t.sess, capID) {
-		return fmt.Errorf("需要「%s」能力：请让用户在权限芯片中勾选后再试", title)
+		var road string // 该能力的"别绕路"那句：各能力能绕的路不同，分开说
+		switch capID {
+		case capBrowser:
+			road = "不要改用 run_command 启动浏览器：命令在 OS 沙箱里执行，沙箱里启动浏览器一定失败（受限令牌，access denied），只会白费一轮。"
+		case capComputer:
+			road = "不要改用 run_command 模拟键鼠或截屏：命令在 OS 沙箱里执行，做不到这些，只会白费一轮。"
+		case capDevice:
+			road = "不要改用 adb_* 或 shell 命令绕行：它们同属这条能力，关着时一律被拦。"
+		}
+		return fmt.Errorf("需要「%s」能力：本会话未开启，该工具已被能力门控拦下。%s如果确实需要，请在回复里向用户申请开启（请用户点权限芯片 → 勾选「允许%s」），用户勾选后即可正常调用。", title, road, title)
 	}
 	return nil
 }

@@ -644,7 +644,6 @@ function removeSessionLocalData(id) {
   } catch (e) {}
   delete subActs[id];
   delete subDone[id];
-  delete dotApproval[id];
   delete dotDone[id];
   Object.keys(turnOpen).forEach((k) => { if (k.indexOf(id + ':') === 0) delete turnOpen[k]; });
 }
@@ -680,11 +679,13 @@ const turnOpen = {};
 /* 数字助理派发/转达的子任务卡片：后台执行期间显示实时工具活动，完成后标已完成 */
 const subActs = {}; // 子会话id -> 最近几条工具活动
 const subDone = {}; // 子会话id -> 是否已完成（内存态；跨刷新由回报消息补判，见 reportedSubs）
-const dotApproval = {}; // 会话id -> 待审批（橙点）
 const dotDone = {};     // 会话id -> 完成未查看（绿点）
 
 /* ---------- 首页草稿与弹层开合（弹出面板系统的共享半边） ---------- */
-const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: [], planMode: false, goalMode: false, goalText: '', remote: null };
+// tools 默认带 'browser'：权限档位＝工作区内读写时默认开启「操作浏览器」（后端
+// perm.go 的 capDefaultsForMode 是同一策略的唯一权威）。芯片上默认就是勾选态，
+// 用户取消后前端显式传空数组，后端尊重用户、不再覆盖。
+const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: ['browser'], planMode: false, goalMode: false, goalText: '', remote: null };
 
 function closePopovers() {
   document.querySelectorAll('.popover').forEach((p) => p.classList.add('hidden'));
@@ -740,7 +741,8 @@ function autoGrow(t) {
    · ctrl 档：Ctrl/Cmd+回车发送；回车、Shift+回车都是换行。
    两种组合键都支持换行（Ctrl+回车在浏览器里没有任何保留绑定，不冲突）；
    换行优先 execCommand 插入（保留原生撤销），引擎不接则回落浏览器默认插入。
-   输入法组字中的回车是「确认候选」，必须放行给 IME，不能当成发送。 */
+   输入法组字中的回车是「确认候选」，必须放行给 IME，不能当成发送。
+   发送前停语音听写的钩子在 send() 执行点（app-chat.js），本函数不用管。 */
 function composerEnterKeydown(e, doSend) {
   if (e.key !== 'Enter' || e.isComposing) return;
   if (lsGet('jx.sendkey', 'enter') === 'ctrl') {

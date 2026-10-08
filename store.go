@@ -476,6 +476,73 @@ func (s *Store) GetSessionData(sessionID, key string) string {
 	return v
 }
 
+// ---------- 待审批计划（计划审批不设时限：关软件重开也还挂着等审批） ----------
+
+// PendingPlan 是一份已提交、还没被用户批准/驳回的计划。存 meta 表
+// （键 sessdata:pendingplan:<会话id>，一个会话只留最新一份：新计划覆盖旧的）。
+//
+// 为什么必须落库：计划审批与普通审批（perm.go 的 approvalTTL）/提问
+// （interact.go 的 questionTTL）不一样——它**不设时限**。用户可能过一会儿才
+// 回来，甚至关掉软件第二天再打开。内存里的等待者（App.questions）一重启就没了，
+// 但计划本身要一直在，所以提交那一刻就落库；重启后由 pendingQuestions 读回来
+// 重新挂成待审批卡，用户批准/驳回走「恢复执行」那条分支（见 interact.go 的
+// resolveQuestion / resolvePersistedPlan）。
+type PendingPlan struct {
+	ID        string `json:"id"`        // 提问 id：与内存等待者同一个 id，前后端靠它配对
+	SessionID string `json:"sessionId"` // 提交计划的会话
+	Plan      string `json:"plan"`      // 计划全文（Markdown）
+	CreatedAt string `json:"createdAt"` // 提交时间
+}
+
+// SetPendingPlan 落一份待审批计划（同会话只留最新一份）。
+func (s *Store) SetPendingPlan(p PendingPlan) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.SetSessionData(p.SessionID, "pendingplan", string(b))
+}
+
+// PendingPlanOf 取某会话的待审批计划；没有则 ok=false。
+func (s *Store) PendingPlanOf(sessionID string) (PendingPlan, bool) {
+	var p PendingPlan
+	raw := s.GetSessionData(sessionID, "pendingplan")
+	if raw == "" || json.Unmarshal([]byte(raw), &p) != nil || p.ID == "" {
+		return PendingPlan{}, false
+	}
+	return p, true
+}
+
+// ClearPendingPlan 撤掉某会话的待审批计划（批准/驳回、或判定过期时调用；幂等）。
+func (s *Store) ClearPendingPlan(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM meta WHERE k=?`, "sessdata:pendingplan:"+sessionID)
+	return err
+}
+
+// PendingPlans 一次取齐所有待审批计划（/api/questions 的「重启后遗留」分支用）。
+// 出错就当没有：少一张待审批卡，不该把提问接口带崩。
+func (s *Store) PendingPlans() []PendingPlan {
+	rows, err := s.db.Query(`SELECT v FROM meta WHERE k LIKE 'sessdata:pendingplan:%' AND v<>''`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := []PendingPlan{}
+	for rows.Next() {
+		var raw string
+		if rows.Scan(&raw) != nil {
+			continue
+		}
+		var p PendingPlan
+		if json.Unmarshal([]byte(raw), &p) == nil && p.ID != "" && p.SessionID != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // ---------- 会话异常中断标记（左侧栏时间位的「⚠ 已中断」） ----------
 
 // 异常中断的类型码（存 meta 表，前端按码给悬停文案）。
@@ -655,6 +722,19 @@ func permOf(m *SessionMeta) string {
 		return "workspace-write"
 	}
 	return m.Permission
+}
+
+// TouchRunMeta 只回写运行期会变化的列（用量计数与 updated_at）。列所有权约定
+//（同 SaveMeta 之于 status 的先例）：配置列（权限/能力/模型/思考档位等）只归
+// 配置写入口（PATCH / 权限升级函数）全量写；运行体热路径（appendMessage 系列、
+// 流尾用量回调）只碰运行列——否则拿着陈旧内存对象的全列回写会把用户刚在面板上
+// 改好的权限静默覆盖回旧值（运行中改权限丢失的根因）。
+func (s *Store) TouchRunMeta(m *SessionMeta) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE sessions SET usage_prompt=?, usage_cache_hit=?, usage_output=?, usage_calls=?, updated_at=? WHERE id=?`,
+		m.UsagePrompt, m.UsageCacheHit, m.UsageOutput, m.UsageCalls, m.UpdatedAt, m.ID)
+	return err
 }
 
 func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) {

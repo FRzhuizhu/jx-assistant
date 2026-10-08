@@ -25,6 +25,43 @@
   font-size: 15px; padding: 4px 7px; border-radius: 7px; flex-shrink: 0;
 }
 .gitp-icon-btn:hover { background: var(--hover); color: var(--text); }
+.gitp-icon-btn:disabled { opacity: .5; cursor: default; }
+.gitp-icon-btn:disabled:hover { background: none; color: var(--text-2); }
+.gitp-icon-btn.busy { animation: gitp-spin 1s linear infinite; }
+@keyframes gitp-spin { to { transform: rotate(360deg); } }
+
+/* 「?」帮助：悬停向下展开的功能清单（纯提示，不响应功能点击） */
+.gitp-helpwrap { position: relative; flex-shrink: 0; }
+.gitp-helpdrop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 80;
+  width: 330px; max-width: calc(100vw - 24px); padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--border-2); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .16);
+}
+.gitp-helpdrop.hidden { display: none; }
+.gitp-helpdrop-title { font-weight: 600; font-size: 12.5px; color: var(--text-2); margin-bottom: 7px; line-height: 1.5; }
+.gitp-helpdrop-item { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 3.5px 0; }
+.gitp-helpdrop-name { font-size: 12.5px; color: var(--text); }
+.gitp-helpdrop-cmd {
+  font-size: 11px; color: var(--text-3); background: var(--chip);
+  padding: 1px 6px; border-radius: 5px; white-space: nowrap;
+}
+.gitp-helpdrop-tip {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-2);
+  font-size: 12px; color: var(--text-2); line-height: 1.55;
+}
+
+/* 文件行右键菜单（移出跟踪） */
+.gitp-ctxmenu {
+  position: fixed; z-index: 90; min-width: 216px; padding: 4px;
+  background: var(--bg); border: 1px solid var(--border-2); border-radius: 9px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .16);
+}
+.gitp-ctxitem {
+  padding: 7px 10px; border-radius: 6px; font-size: 12.5px;
+  cursor: pointer; color: var(--text); white-space: nowrap;
+}
+.gitp-ctxitem:hover { background: var(--hover); }
 
 /* ---------- 状态条（错误 / 提示 / 未连仓库） ---------- */
 .gitp-strip {

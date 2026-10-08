@@ -7,15 +7,18 @@ package main
 // 浏览器能影响的只有四样，且各自有独立校验：
 //   session（经 Store 查会话拿工作区）、repo（必须在本服务自己扫描出的候选列表里）、
 //   paths（safePathspecs 逐项校验后放在 -- 之后）、hash（4..40 位十六进制）。
-// 写边界：只做 add（暂存）/ restore --staged（取消暂存，空仓库回退 rm --cached）/
-// commit（提交）——全部只动 index 与本地历史；不做 push/pull/reset/checkout/
-// discard 任何远端或工作区内容的操作。
+// 写边界：只动 index 与本地历史的操作——add（暂存）/ restore --staged（取消暂存，
+// 空仓库回退 rm --cached）/ rm --cached（移出跟踪变未跟踪）/ commit（提交）/
+// checkout（切换本地分支）/ sync（fetch + 快进或无冲突自动合并 + push 当前分支，
+// 任何需要决策或无法自动完成的情形一律原样退回并提示交给对话）。不做
+// reset/revert/discard/stash/rebase 等会改写工作区或历史的操作。
 // 组件未启用时全部接口一律 404（与 todo-scheduler 同一语义）。
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,11 +35,13 @@ import (
 const gitComponentID = "git-panel"
 
 // 单条 git 命令的超时：只读 15 秒（大仓库 status 可能接近秒级，兜底即可），
-// 提交 60 秒（用户可能配了提交钩子），AI 摘要 45 秒。
+// 提交 60 秒（用户可能配了提交钩子），AI 摘要 45 秒；同步（fetch/push）走网络，
+// 给到 2 分钟。
 const (
 	gitReadTimeout    = 15 * time.Second
 	gitCommitTimeout  = 60 * time.Second
 	gitSummaryTimeout = 45 * time.Second
+	gitSyncTimeout    = 120 * time.Second
 )
 
 // stdout 保留上限（超过即截断并标记）；diff 给浏览器的展示上限更小；
@@ -927,6 +932,29 @@ func (a *App) gitUnstage(ctx context.Context, session, repo string, paths []stri
 	return len(spec), nil
 }
 
+// gitUntrack 把一批已跟踪文件移出跟踪（git rm --cached -q：只删 index 里的
+// 记录，工作区文件原样保留），之后它们出现在「未跟踪」组。不写 .gitignore——
+// 要不要忽略由用户自己决定（可在对话里让数字助理加）。
+func (a *App) gitUntrack(ctx context.Context, session, repo string, paths []string) (int, error) {
+	spec := gitSafePathspecs(paths)
+	if len(spec) == 0 {
+		return 0, errors.New("没有可移出跟踪的路径（列表为空或全部未通过校验）")
+	}
+	root, _, reason := a.gitResolve(ctx, session, repo)
+	if root == "" {
+		return 0, errors.New(reason)
+	}
+	args := append([]string{"rm", "--cached", "-q", "--"}, spec...)
+	if _, _, err := a.gitRun(ctx, root, gitReadTimeout, args...); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "did not match any files") {
+			return 0, errors.New("这些文件不在跟踪里（可能已被移出），请刷新后重试")
+		}
+		return 0, gitErr("移出跟踪失败", err)
+	}
+	return len(spec), nil
+}
+
 // gitCommit 用给定信息提交已暂存的改动（git commit -m）。
 func (a *App) gitCommit(ctx context.Context, session, repo, message string) (string, error) {
 	text := gitSanitizeMessage(message)
@@ -998,6 +1026,85 @@ func (a *App) gitCheckout(ctx context.Context, session, repo, branch string) (st
 		summary = "已切换到 " + branch
 	}
 	return strings.SplitN(summary, "\n", 2)[0], nil
+}
+
+// ---------- 远程同步（「⟲ 同步」按钮） ----------
+
+// gitAheadBehind 读 HEAD 相对 upstream 的领先/落后提交数（left=ahead 右=behind）。
+func (a *App) gitAheadBehind(ctx context.Context, root, upstream string) (ahead, behind int) {
+	raw, _, err := a.gitRun(ctx, root, gitReadTimeout, "rev-list", "--left-right", "--count", "HEAD..."+upstream)
+	if err != nil {
+		return 0, 0
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 2 {
+		ahead, _ = strconv.Atoi(fields[0])
+		behind, _ = strconv.Atoi(fields[1])
+	}
+	return ahead, behind
+}
+
+// gitSync 与远程同步：fetch → 落后则合并（先快进；分叉时自动合并，一旦冲突
+// 立即 --abort 恢复现场）→ 领先则推送当前分支。面板只做"机器能自动完成"的
+// 部分；凡是需要人（或数字助理）决策/外部条件的情形——无上游、历史分叉有
+// 冲突、未提交改动挡住合并、推送被拒、凭据缺失——一律不动手，返回
+// needHelp=true，由前端引导用户去对话里派工作任务处理。
+func (a *App) gitSync(ctx context.Context, session, repo string) (summary string, needHelp bool, err error) {
+	root, _, reason := a.gitResolve(ctx, session, repo)
+	if root == "" {
+		return "", false, errors.New(reason)
+	}
+	raw, _, err := a.gitRun(ctx, root, gitReadTimeout, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	upstream := strings.TrimSpace(raw)
+	if err != nil || upstream == "" {
+		return "当前分支没有配置上游（远程跟踪分支）：需要先配置远程仓库并设置上游（git remote add / git push -u），面板不代做这一步", true, nil
+	}
+	remote := strings.SplitN(upstream, "/", 2)[0]
+
+	// 1) fetch：网络/凭据问题交给对话（AI 可以先诊断 remote 配置与凭据）
+	if _, _, err := a.gitRun(ctx, root, gitSyncTimeout, "fetch", "--no-tags", remote); err != nil {
+		return "拉取远程更新失败：" + gitTail(err.Error(), 200), true, nil
+	}
+
+	// 2) 落后则合并：快进优先（不产生提交）；分叉再试自动合并（普通 merge
+	//    提交）；有任何冲突立即中止恢复，工作区保持原样
+	pulled := ""
+	if _, behind := a.gitAheadBehind(ctx, root, upstream); behind > 0 {
+		if _, _, err := a.gitRun(ctx, root, gitSyncTimeout, "merge", "--ff-only", upstream); err != nil {
+			if _, _, err2 := a.gitRun(ctx, root, gitSyncTimeout, "merge", "--no-edit", upstream); err2 != nil {
+				// 冲突时恢复现场；若 merge 因未提交改动被 git 直接拒绝，现场本就未动
+				_, _, _ = a.gitRun(ctx, root, gitReadTimeout, "merge", "--abort")
+				return "本地与远程无法自动同步（历史分叉有冲突，或未提交的改动挡住了合并），已恢复原状、未做任何改动", true, nil
+			}
+			pulled = "已自动合并远程分支"
+		} else {
+			pulled = fmt.Sprintf("已快进拉取 %d 个提交", behind)
+		}
+	}
+
+	// 3) 领先则推送当前分支（显式 refspec，不受 push.default 影响）
+	pushed := ""
+	if ahead, _ := a.gitAheadBehind(ctx, root, upstream); ahead > 0 {
+		if _, _, err := a.gitRun(ctx, root, gitSyncTimeout, "push", remote, "HEAD"); err != nil {
+			if pulled != "" {
+				return "本地已拉取到最新，但推送失败：" + gitTail(err.Error(), 200), true, nil
+			}
+			return "推送失败：" + gitTail(err.Error(), 200), true, nil
+		}
+		pushed = fmt.Sprintf("已推送 %d 个提交", ahead)
+	}
+
+	if pulled == "" && pushed == "" {
+		return "已是最新：与远程一致", false, nil
+	}
+	parts := []string{}
+	if pulled != "" {
+		parts = append(parts, pulled)
+	}
+	if pushed != "" {
+		parts = append(parts, pushed)
+	}
+	return "已同步：" + strings.Join(parts, "，"), false, nil
 }
 
 // ---------- AI 提交摘要 ----------
@@ -1216,4 +1323,21 @@ func (a *App) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": 1, "summary": summary})
+}
+
+func (a *App) handleGitUntrack(w http.ResponseWriter, r *http.Request) {
+	a.gitWrite(w, r, a.gitUntrack)
+}
+
+func (a *App) handleGitSync(w http.ResponseWriter, r *http.Request) {
+	if !a.gitGuard(w) {
+		return
+	}
+	body := decodeGitRequest(r)
+	summary, needHelp, err := a.gitSync(r.Context(), body.Session, body.Repo)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": 1, "summary": summary, "needHelp": needHelp})
 }

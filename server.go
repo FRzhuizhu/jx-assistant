@@ -46,6 +46,7 @@ type App struct {
 	permMu          sync.Mutex
 	grants          map[string]*Grant        // 授权凭证（perm.go）
 	approvals       map[string]*Approval     // 等待用户决定的越权审批（perm.go）
+	permNotes       map[string]string        // 待落快照的「权限变更」注记（perm.go，env 通道）
 	observedFiles   sync.Map                 // 会话内已观察文件集（观察策略，perm.go）
 	questions       map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
 	jobsMu          sync.Mutex
@@ -123,6 +124,7 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a := &App{Cfg: cfg, CfgPath: cfgPath, Store: store, Plugins: plugins, Components: components, static: static,
 		sessLocks: map[string]*sync.Mutex{},
 		grants:    map[string]*Grant{}, approvals: map[string]*Approval{},
+		permNotes: map[string]string{},
 		questions: map[string]*UserQuestion{}, jobs: map[string]*jobRun{},
 		remotes: map[string]*remoteClient{}}
 	a.Ctx = &ContextEngine{app: a} // 上下文引擎：所有会话经它组装与记事件
@@ -290,8 +292,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/todos/missed", a.handleTodoMissed)
 	mux.HandleFunc("GET /api/todos/workspaces", a.handleTodoWorkspaces)
 	// Git 面板（组件 git-panel 的宿主半边）：组件未启用时这些接口一律 404。
-	// 读 status/diff/graph/commit/branches，写只有 stage/unstage/commit/summarize
-	// （summarize 只生成提交信息不提交）；不做 push/pull/reset/checkout/discard。
+	// 读 status/diff/graph/commit/branches，写有 stage/unstage/untrack（移出
+	// 跟踪变未跟踪）/commit/summarize（只生成提交信息不提交）/checkout（切
+	// 本地分支）/sync（fetch + 快进或无冲突自动合并 + push 当前分支；任何
+	// 需要决策的情形原样退回）。不做 reset/revert/discard/stash/rebase。
 	mux.HandleFunc("GET /api/git/status", a.handleGitStatus)
 	mux.HandleFunc("GET /api/git/diff", a.handleGitDiff)
 	mux.HandleFunc("GET /api/git/graph", a.handleGitGraph)
@@ -299,9 +303,11 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/git/branches", a.handleGitBranches)
 	mux.HandleFunc("POST /api/git/stage", a.handleGitStage)
 	mux.HandleFunc("POST /api/git/unstage", a.handleGitUnstage)
+	mux.HandleFunc("POST /api/git/untrack", a.handleGitUntrack)
 	mux.HandleFunc("POST /api/git/commit", a.handleGitCommitMsg)
 	mux.HandleFunc("POST /api/git/summarize", a.handleGitSummarize)
 	mux.HandleFunc("POST /api/git/checkout", a.handleGitCheckout)
+	mux.HandleFunc("POST /api/git/sync", a.handleGitSync)
 	a.Plugins.MountRoutes(a, mux)
 	mux.HandleFunc("GET /", a.handleStatic)
 	return mux
@@ -1245,6 +1251,10 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if permModeOf(m) == permFull {
 		m.Tools = bundleFullAccessCaps(m.Tools) // 完全访问：预设捆绑能力一并点亮
+	} else if body.Tools == nil {
+		// 请求没带能力开关（tools 字段缺席）：按「工作区内读写默认开启「操作浏览器」」
+		// 补默认（capDefaultsForMode）。显式传空数组 = 用户主动取消勾选，尊重用户。
+		m.Tools = mergeCapDefaults(m.Tools, m.Mode, permModeOf(m))
 	}
 	if m.GoalMode {
 		m.GoalStatus = "active" // 创建即带目标模式：状态从 active 起步
@@ -1398,6 +1408,8 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			notes = append(notes, ctxNote{ctxModel, "模型：" + old + " → " + m.Model})
 		}
 	}
+	permWas := permModeOf(m)                                  // 权限旧值：SaveMeta 后生成【权限变更】注入用
+	permWasTools := append([]string(nil), m.Tools...)        //（须在 Permission/Tools 两个分支改动之前捕获）
 	if body.Permission != nil {
 		was := permModeOf(m)
 		wasTools := m.Tools
@@ -1406,7 +1418,9 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		case permModeOf(m) == permFull:
 			m.Tools = bundleFullAccessCaps(m.Tools) // 切到完全访问：捆绑能力联动点亮
 		case was == permFull && body.Tools == nil:
-			m.Tools = stripFullAccessCaps(m.Tools) // 从完全访问切回：捆绑能力随之取消
+			// 从完全访问切回：捆绑能力随之取消，但默认能力要补回来
+			//（工作区内读写默认开启「操作浏览器」——切回时同时打开它）
+			m.Tools = mergeCapDefaults(stripFullAccessCaps(m.Tools), m.Mode, permModeOf(m))
 		}
 		if was != permModeOf(m) {
 			notes = append(notes, ctxNote{ctxPerm, "权限模式：" + was + " → " + permModeOf(m)})
@@ -1469,6 +1483,23 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, n := range notes {
 		a.ctxEngine().Notify(m, n.kind, n.detail)
+	}
+	// 环境快照正管的条目（权限/能力/计划目标/工作目录）在 PATCH 落库后立即
+	// 重算并按需落新快照——变更瞬间即进时间线与下一次组装的上下文，不等下一
+	// 次模型调用；下一次组装做等值比较，不会重复落。env「变化驱动」约束的是
+	// 发给模型的差分重发，不约束落库时机。权限变更注记随这份快照落库；
+	// emit 广播带 SessionID：空闲会话的前端也能实时翻新「运行环境更新」。
+	envTouched := false
+	for _, n := range notes {
+		if n.kind == ctxPerm || n.kind == ctxMode || n.kind == ctxWorkspace {
+			envTouched = true
+		}
+	}
+	if envTouched {
+		if note := permChangeNote(permSrcPanel, permWas, permWasTools, m); note != "" {
+			a.stashPermNote(m.ID, note)
+		}
+		a.maybeAppendEnvSnapshot(m, a.envPrompt(m), func(ev Event) { ev.SessionID = m.ID; a.broadcast(ev) })
 	}
 	writeJSON(w, 200, m)
 }
@@ -1993,6 +2024,12 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 		ParentID: m.ParentID, Provider: m.Provider, Model: m.Model, Permission: m.Permission,
 		PlanMode: m.PlanMode, GoalMode: m.GoalMode, Tools: m.Tools,
 		CreatedAt: now(), UpdatedAt: now(),
+	}
+	if permModeOf(fork) == permFull {
+		fork.Tools = bundleFullAccessCaps(fork.Tools) // 分支照抄父会话；完全访问照捆绑点亮
+	} else {
+		// 分支也是"新建的会话"：按默认策略补回默认能力（与创建路径同一函数）
+		fork.Tools = mergeCapDefaults(fork.Tools, fork.Mode, permModeOf(fork))
 	}
 	if err := a.Store.Create(fork); err != nil {
 		writeErr(w, 500, err.Error())

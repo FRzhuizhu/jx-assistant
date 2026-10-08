@@ -240,6 +240,9 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		UpdatedAt: now(),
 	}
 	t.dispatchExtras(sub, model)
+	// 派发出来的子对话同样是「新建的会话」：按默认策略补默认能力
+	//（工作区内读写默认开启「操作浏览器」，与 HTTP 创建路径同一函数）
+	sub.Tools = mergeCapDefaults(sub.Tools, sub.Mode, permModeOf(sub))
 	if err := t.app.Store.Create(sub); err != nil {
 		return "", err
 	}
@@ -307,6 +310,8 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		UpdatedAt: now(),
 	}
 	t.dispatchExtras(sub, p.Model)
+	// 派发出来的工作任务同样是「新建的会话」：按默认策略补默认能力
+	sub.Tools = mergeCapDefaults(sub.Tools, sub.Mode, permModeOf(sub))
 	if err := t.app.Store.Create(sub); err != nil {
 		return "", err
 	}
