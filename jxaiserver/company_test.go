@@ -175,17 +175,19 @@ func discoveryServe(pc net.PacketConn, company, serverName string, port int) {
 
 /* ---------- provision（假 new-api） ---------- */
 
-// fakeNewAPI 最小实现本集成用到的四个端点。
+// fakeNewAPI 最小实现本集成用到的端点（含令牌记录的 GET/PUT 供额度重置测试）。
 type fakeNewAPI struct {
 	srv       *httptest.Server
-	tokens    map[string]string // name → full key（无 sk- 前缀）
+	tokens    map[string]string         // name → full key（无 sk- 前缀）
+	recs      map[string]map[string]any // name → 令牌记录（remain_quota/status/…）
+	putHits   map[string]int            // name → PUT 更新次数
 	nextID    int
 	loginHits int
 	tokenHits map[string]int // name → 取明文次数
 }
 
 func newFakeNewAPI(t *testing.T, models []string) *fakeNewAPI {
-	f := &fakeNewAPI{tokens: map[string]string{}, nextID: 100, tokenHits: map[string]int{}}
+	f := &fakeNewAPI{tokens: map[string]string{}, recs: map[string]map[string]any{}, putHits: map[string]int{}, nextID: 100, tokenHits: map[string]int{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/user/login", func(w http.ResponseWriter, r *http.Request) {
 		f.loginHits++
@@ -218,7 +220,9 @@ func newFakeNewAPI(t *testing.T, models []string) *fakeNewAPI {
 		switch {
 		case len(parts) == 2 && r.Method == "POST":
 			var body struct {
-				Name string `json:"name"`
+				Name           string `json:"name"`
+				UnlimitedQuota bool   `json:"unlimited_quota"`
+				RemainQuota    int64  `json:"remain_quota"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body.Name == "" {
@@ -226,7 +230,42 @@ func newFakeNewAPI(t *testing.T, models []string) *fakeNewAPI {
 				return
 			}
 			f.tokens[body.Name] = fmt.Sprintf("key-%s-%d", body.Name, f.nextID)
+			f.recs[body.Name] = map[string]any{
+				"id": f.nextIDFor(body.Name), "name": body.Name,
+				"remain_quota": body.RemainQuota, "unlimited_quota": body.UnlimitedQuota, "status": 1,
+			}
 			f.nextID++
+			_, _ = w.Write([]byte(`{"success":true}`))
+		case len(parts) == 3 && r.Method == "GET": // /api/token/<id>：完整记录（key 打码）
+			var id int
+			_, _ = fmt.Sscanf(parts[2], "%d", &id)
+			for name, rec := range f.recs {
+				if f.idByName(name) == id {
+					out := map[string]any{}
+					for k, v := range rec {
+						out[k] = v
+					}
+					out["key"] = "masked"
+					_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": out})
+					return
+				}
+			}
+			w.WriteHeader(404)
+		case len(parts) == 2 && r.Method == "PUT": // /api/token/：更新记录（不动 key）
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			name, _ := body["name"].(string)
+			if _, ok := f.recs[name]; !ok {
+				_, _ = w.Write([]byte(`{"success":false,"message":"令牌不存在"}`))
+				return
+			}
+			f.putHits[name]++
+			for k, v := range body {
+				if k == "key" {
+					continue // 真实接口忽略 key 字段（实测）
+				}
+				f.recs[name][k] = v
+			}
 			_, _ = w.Write([]byte(`{"success":true}`))
 		case len(parts) == 4 && parts[3] == "key" && r.Method == "POST": // /api/token/<id>/key
 			var id int
@@ -389,5 +428,52 @@ func TestProvisionModelFilter(t *testing.T) {
 	models := p["api"].(map[string]any)["models"].([]any)
 	if len(models) != 1 || models[0].(map[string]any)["id"] != "m2" {
 		t.Fatalf("allowModels 过滤不对: %v", models)
+	}
+}
+
+// 每月额度：建令牌按额度设限；月度重置补满额度并恢复被停用的令牌；同月不重复。
+func TestMonthlyQuota(t *testing.T) {
+	fake := newFakeNewAPI(t, []string{"m1"})
+	dir := t.TempDir()
+	s := newProvisionStore(dir, "测试公司")
+	_ = s.saveAPI(&apiConfig{
+		NewapiURL: fake.srv.URL, AdminUser: "root", AdminPass: "x",
+		MonthlyQuotaUSD: 10, // $10 = 5,000,000 quota
+	})
+	if q := s.loadAPI().monthlyQuota(); q != 5000000 {
+		t.Fatalf("额度换算不对: %d", q)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /provision", s.handleProvision)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// 首次下发：限额令牌
+	_, body := postJSON(t, srv.URL+"/provision", `{"user":"张三"}`)
+	var p map[string]any
+	_ = json.Unmarshal([]byte(body), &p)
+	if p["api"].(map[string]any)["monthlyQuotaUSD"] != 10.0 {
+		t.Fatalf("下发应带月额度: %#v", p["api"])
+	}
+	rec := fake.recs["jxai-张三"]
+	if rec["unlimited_quota"] != false || rec["remain_quota"] != int64(5000000) {
+		t.Fatalf("令牌应按额度设限: %#v", rec)
+	}
+	// 模拟额度耗尽被自动停用
+	rec["status"] = 2
+	rec["remain_quota"] = int64(3)
+	// 伪造「上月已重置」标记 → 触发本月重置
+	_ = writeFileAtomic(s.quotaResetPath(), mustJSONIndent(map[string]string{"month": "2000-01"}), 0644)
+	s.resetQuotaIfNewMonth()
+	rec2 := fake.recs["jxai-张三"]
+	if rec2["remain_quota"] != float64(5000000) || rec2["status"] != float64(1) {
+		t.Fatalf("重置应补满额度并恢复启用: %#v", rec2)
+	}
+	if _, ok := fake.tokens["jxai-张三"]; !ok {
+		t.Fatal("key 记录不应被 PUT 清掉")
+	}
+	// 同月再触发：无操作
+	s.resetQuotaIfNewMonth()
+	if fake.putHits["jxai-张三"] != 1 {
+		t.Fatalf("同月不应重复重置: %d", fake.putHits["jxai-张三"])
 	}
 }

@@ -99,6 +99,7 @@ set-api flags：
   -newapi string      new-api 根地址（如 http://127.0.0.1:3000）
   -user/-pass string  new-api 管理员账号（受控发令牌用）
   -default string     默认模型 id（缺省取清单第一个）
+  -monthly-quota float 每人每月额度（美元；0=不限量仅记账；到量拦截、月初自动补满）
   -models string      允许下发的模型（逗号分隔，缺省不限制）
   -public string      new-api 对客户端的可达地址（缺省按请求 Host 自动推导）`)
 }
@@ -128,6 +129,7 @@ func runServer(args []string) int {
 	updates.startUpdateSyncer()
 	registry := newRegistryStore(*dataDir)
 	provision := newProvisionStore(*dataDir, strings.TrimSpace(*company))
+	provision.startQuotaResetter()
 	if pub := strings.TrimSpace(*apiPublic); pub != "" { // -api-public 兜底写进 api.json（flag 与 set-api -public 二选一即可）
 		if cfg := provision.loadAPI(); cfg != nil && cfg.PublicBase == "" {
 			cfg.PublicBase = pub

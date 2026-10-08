@@ -15,7 +15,7 @@ function openWizard() {
   go.textContent = '连 接';
   go.onclick = wzConnect; // 上次成功后会被换成「完成即关」，重开时必须复位
   m.classList.remove('hidden');
-  setTimeout(() => ($('wz-company').value ? $('wz-user') : $('wz-company')).focus(), 60);
+  setTimeout(() => ($('wz-user').value ? $('wz-company') : $('wz-user')).focus(), 60); // 称呼在最上：先填它
 }
 
 function closeWizard() {
@@ -77,7 +77,8 @@ async function wzConnect() {
     if (typeof loadStatus === 'function') { try { loadStatus(); } catch (e) {} }
     const bits = ['<b>' + esc(res.company || '公司') + '</b> 已接入（' + esc(target) + '）'];
     if (res.api) {
-      bits.push('模型通道：默认 <b>' + esc(res.defaultModel || '') + '</b>（共 ' + (res.modelCount || 0) + ' 个模型，API key 已按「' + esc(user) + '」分配）');
+      const api = res.apiDetail || {};
+      bits.push('模型通道：默认 <b>' + esc(res.defaultModel || '') + '</b>（共 ' + (res.modelCount || 0) + ' 个模型，API key 已按「' + esc(user) + '」分配' + (api.monthlyQuotaUSD ? '，每月额度 $' + api.monthlyQuotaUSD : '') + '）');
     } else {
       bits.push('<span style="color:var(--amber)">模型通道未配置：' + esc(res.apiError || '服务端未接 new-api') + '（市场/更新已配好，模型可到 设置·模型 手动填）</span>');
     }

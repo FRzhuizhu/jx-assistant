@@ -41,6 +41,20 @@ type apiConfig struct {
 	PublicBase   string   `json:"publicBase,omitempty"`   // 客户端可达的 new-api 地址（缺省按请求 Host 换主机名）
 	DefaultModel string   `json:"defaultModel,omitempty"` // 公司选定的默认模型（缺省取清单第一个）
 	AllowModels  []string `json:"allowModels,omitempty"`  // 允许下发的模型（空=不限制）
+	// 每人每月额度（美元；0=不限量）。用量本身由 new-api 按令牌（=人）记账——不设
+	// 额度也有完整消耗记录；设了额度则到量拦截（new-api 还会把耗尽的令牌自动停用），
+	// jxai-server 在每月首次检查时把全部 jxai-* 令牌额度补满并重新启用（startQuotaResetter）。
+	MonthlyQuotaUSD float64 `json:"monthlyQuotaUSD,omitempty"`
+}
+
+// newapiQuotaPerUnit new-api 的额度换算：500000 quota = 1 美元（默认 QuotaPerUnit）。
+const newapiQuotaPerUnit = 500000
+
+func (c *apiConfig) monthlyQuota() int64 {
+	if c == nil || c.MonthlyQuotaUSD <= 0 {
+		return 0
+	}
+	return int64(c.MonthlyQuotaUSD * newapiQuotaPerUnit)
 }
 
 // provisionUser 已发过令牌的用户（data/provision.json：同人复用同一把 key）。
@@ -238,9 +252,11 @@ func (s *provisionStore) ensureUserToken(cfg *apiConfig, user string) (string, s
 	}
 	id, ok := find()
 	if !ok {
+		quota := s.cfgMonthlyQuota() // 配了月度额度则建为限额令牌，否则不限量（仅记账）
 		payload, _ := json.Marshal(map[string]any{
-			"name": tokenName, "unlimited_quota": true, "expired_time": -1,
-			"remain_quota": 500000, "model_limits_enabled": false, "model_limits": "", "allow_ips": "", "group": "",
+			"name": tokenName, "expired_time": -1,
+			"unlimited_quota": quota == 0, "remain_quota": maxI64(quota, 500000),
+			"model_limits_enabled": false, "model_limits": "", "allow_ips": "", "group": "",
 		})
 		if err := s.newapiCall(cfg, "POST", "/api/token/", strings.NewReader(string(payload)), nil); err != nil {
 			return "", "", fmt.Errorf("创建令牌失败: %w", err)
@@ -358,6 +374,9 @@ func (s *provisionStore) handleProvision(w http.ResponseWriter, r *http.Request)
 				"models":       modelObjs,
 				"defaultModel": firstNonEmpty(cfg.DefaultModel, models[0]),
 			}
+			if q := cfg.monthlyQuota(); q > 0 {
+				resp["api"].(map[string]any)["monthlyQuotaUSD"] = cfg.MonthlyQuotaUSD
+			}
 		} else if rec.Key == "" && resp["apiError"] == nil {
 			resp["apiError"] = "服务端未配置模型通道（管理员运行 set-api）"
 		}
@@ -414,6 +433,109 @@ func truncateStr(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+/* ---------- 每月额度重置 ---------- */
+
+// cfgMonthlyQuota 每次现读配置（set-api 改了额度即刻生效于新建令牌）。
+func (s *provisionStore) cfgMonthlyQuota() int64 { return s.loadAPI().monthlyQuota() }
+
+func maxI64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// startQuotaResetter 每月首次检查时把全部 jxai-* 令牌的额度补满并重新启用
+// （额度耗尽时 new-api 会把令牌自动停用，只补 remain 不恢复 status 仍然 401）。
+// 失败不落「已重置」标记，下轮（6h）重试；未配额度则空转。
+func (s *provisionStore) startQuotaResetter() {
+	go func() {
+		for {
+			s.resetQuotaIfNewMonth()
+			time.Sleep(6 * time.Hour)
+		}
+	}()
+}
+
+func (s *provisionStore) quotaResetPath() string {
+	return filepath.Join(s.dir, "quota-reset.json")
+}
+
+func (s *provisionStore) resetQuotaIfNewMonth() {
+	quota := s.cfgMonthlyQuota()
+	if quota <= 0 {
+		return
+	}
+	month := time.Now().Format("2006-01")
+	var mark struct {
+		Month string `json:"month"`
+	}
+	if data, err := os.ReadFile(s.quotaResetPath()); err == nil {
+		_ = json.Unmarshal(data, &mark)
+	}
+	if mark.Month == month {
+		return
+	}
+	users := s.loadUsers()
+	if len(users) == 0 {
+		_ = writeFileAtomic(s.quotaResetPath(), mustJSONIndent(map[string]string{"month": month}), 0644)
+		return
+	}
+	for _, rec := range users {
+		if err := s.resetTokenQuota(rec.TokenName, quota); err != nil {
+			log.Printf("[额度] %s 的月度重置失败（下轮重试）: %v", rec.TokenName, err)
+			return
+		}
+	}
+	if err := writeFileAtomic(s.quotaResetPath(), mustJSONIndent(map[string]string{"month": month}), 0644); err != nil {
+		log.Printf("[额度] 重置标记落盘失败: %v", err)
+		return
+	}
+	log.Printf("[额度] 已为 %d 人补满本月额度（每人 %d quota ≈ $%.2f）", len(users), quota, float64(quota)/newapiQuotaPerUnit)
+}
+
+// resetTokenQuota 取完整令牌记录 → 补额度、恢复启用 → PUT。
+// （实测：PUT 带打码 key 不会破坏明文 key——new-api 的更新接口忽略 key 字段。）
+func (s *provisionStore) resetTokenQuota(tokenName string, quota int64) error {
+	cfg := s.loadAPI()
+	if cfg == nil {
+		return fmt.Errorf("未配置模型通道")
+	}
+	id, ok := s.findTokenID(cfg, tokenName)
+	if !ok {
+		return fmt.Errorf("new-api 里找不到令牌 %s", tokenName)
+	}
+	var t map[string]any
+	if err := s.newapiCall(cfg, "GET", fmt.Sprintf("/api/token/%d", id), nil, &t); err != nil {
+		return err
+	}
+	t["remain_quota"] = quota
+	t["unlimited_quota"] = false
+	if st, _ := t["status"].(float64); st != 1 {
+		t["status"] = 1 // 额度耗尽被自动停用的：一并恢复启用
+	}
+	return s.newapiCall(cfg, "PUT", "/api/token/", strings.NewReader(string(mustJSONIndent(t))), nil)
+}
+
+// findTokenID 按名字精确查令牌 id（search 是模糊匹配，需再比对）。
+func (s *provisionStore) findTokenID(cfg *apiConfig, tokenName string) (int64, bool) {
+	var out struct {
+		Items []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := s.newapiCall(cfg, "GET", "/api/token/search?keyword="+url.QueryEscape(tokenName), nil, &out); err != nil {
+		return 0, false
+	}
+	for _, t := range out.Items {
+		if t.Name == tokenName {
+			return t.ID, true
+		}
+	}
+	return 0, false
+}
+
 /* ---------- CLI：set-api ---------- */
 
 func runSetAPI(args []string) int {
@@ -424,6 +546,7 @@ func runSetAPI(args []string) int {
 	pass := fs.String("pass", "", "new-api 管理员密码")
 	pub := fs.String("public", "", "客户端可达的 new-api 地址（缺省按请求方 Host 自动推导）")
 	def := fs.String("default", "", "默认模型 id（缺省取清单第一个）")
+	monthly := fs.Float64("monthly-quota", -1, "每人每月额度（美元；0=不限量；缺省不改）")
 	models := fs.String("models", "", "允许下发的模型（逗号分隔，缺省不限制）")
 	_ = fs.Parse(flagsFirst(args))
 
@@ -450,6 +573,9 @@ func runSetAPI(args []string) int {
 	if *models != "" {
 		cfg.AllowModels = splitTags(*models)
 	}
+	if *monthly >= 0 {
+		cfg.MonthlyQuotaUSD = *monthly
+	}
 	if cfg.NewapiURL == "" || cfg.AdminUser == "" || cfg.AdminPass == "" {
 		fmt.Fprintln(os.Stderr, "用法: jxai-server set-api -newapi http://127.0.0.1:3000 -user root -pass 密码 [-default 模型] [-models a,b] [-public 地址] [-data data]")
 		return 2
@@ -463,6 +589,10 @@ func runSetAPI(args []string) int {
 		fmt.Printf("已保存，但连通性验证失败：%v（服务启动后 /provision 会再试）\n", err)
 		return 0
 	}
-	fmt.Printf("模型通道已配置（new-api=%s 默认模型=%s 允许=%d 个）\n", cfg.NewapiURL, firstNonEmpty(cfg.DefaultModel, "清单第一个"), len(cfg.AllowModels))
+	quotaNote := "不限量（仅记账）"
+	if q := cfg.monthlyQuota(); q > 0 {
+		quotaNote = fmt.Sprintf("每人每月 $%.2f（到量拦截，月初自动补满）", cfg.MonthlyQuotaUSD)
+	}
+	fmt.Printf("模型通道已配置（new-api=%s 默认模型=%s 允许=%d 个；额度：%s）\n", cfg.NewapiURL, firstNonEmpty(cfg.DefaultModel, "清单第一个"), len(cfg.AllowModels), quotaNote)
 	return 0
 }

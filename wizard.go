@@ -274,7 +274,9 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 	// ③ 应用到运行配置：内部提供方置顶（即默认），市场/更新一键配好
 	respBody := map[string]any{
 		"ok": 1, "company": payload.Company, "server": server, "user": user,
-		"api": payload.API != nil, "apiError": payload.APIError,
+		"api":       payload.API != nil,
+		"apiDetail": payload.API, // 明细（含 monthlyQuotaUSD）供向导成功页展示
+		"apiError":  payload.APIError,
 		"marketURL": payload.MarketURL, "updateURL": payload.UpdateURL,
 	}
 	if payload.API != nil && len(payload.API.Models) > 0 {
