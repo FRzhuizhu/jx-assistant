@@ -124,6 +124,12 @@ func buildMux(hub *relayHub, market *marketStore, updates *updateStore) *http.Se
 	mux.Handle("GET /market/items/", http.HandlerFunc(market.handleItem))
 	mux.HandleFunc("GET /updates/latest", updates.handleLatest)
 	mux.Handle("GET /updates/file/", http.HandlerFunc(updates.handleUpdateFile))
+	// 市场管理页（admin.go）：无公开入口、暂无鉴权（用户/角色体系后续接入），
+	// 知道网址即达——仅 IT 内部使用
+	mux.HandleFunc("GET /admin", market.handleAdminPage)
+	mux.HandleFunc("GET /admin/api/list", market.handleAdminList)
+	mux.HandleFunc("POST /admin/api/publish", market.handleAdminPublish)
+	mux.HandleFunc("POST /admin/api/unpublish", market.handleAdminUnpublish)
 	mux.HandleFunc("GET /", hub.handleGate)
 	return mux
 }

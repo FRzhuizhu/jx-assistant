@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>坚祥市场管理</title>
+<style>
+  :root {
+    --bg: #ffffff; --border: #e6e8eb; --text: #1f2328; --text-2: #57606a; --text-3: #8b949e;
+    --hover: #f5f6f8; --chip: #f2f3f5; --code-bg: #f6f8fa;
+    --accent: #4d6bfe; --danger: #c0392b; --green: #1f9d55; --green-bg: #e6f6ec; --amber: #9a6700; --amber-bg: #fff3d6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px;
+    display: flex; flex-direction: column; padding: 18px 26px 22px; gap: 0;
+  }
+  .head { display: flex; align-items: center; gap: 12px; flex: none; flex-wrap: wrap; }
+  .head h1 { font-size: 18px; font-weight: 600; }
+  .warn { font-size: 12px; color: var(--amber); background: var(--amber-bg); border-radius: 999px; padding: 3px 10px; }
+  .head input[type="search"] { margin-left: auto; width: 300px; max-width: 40vw; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; outline: none; }
+  .head input[type="search"]:focus { border-color: var(--accent); }
+  .head button { border: none; border-radius: 9px; background: none; color: var(--text-2); cursor: pointer; padding: 8px 10px; font-size: 13px; }
+  .head button:hover { background: var(--hover); color: var(--text); }
+
+  .tabs { display: flex; align-items: center; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--border); flex: none; }
+  .tab { padding: 8px 14px 9px; border: none; background: none; font-size: 13.5px; color: var(--text-2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .count { margin-left: auto; font-size: 12px; color: var(--text-3); padding-bottom: 6px; }
+
+  .pub-bar { margin-top: 12px; border: 1px dashed var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none; }
+  .pub-bar b { font-size: 13px; margin-right: 4px; }
+  .pub-bar select, .pub-bar input { padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; background: var(--bg); color: var(--text); }
+  .pub-bar input[type="text"] { width: 130px; }
+  .pub-bar input::placeholder { color: var(--text-3); }
+  .pub-go { border: none; background: var(--accent); color: #fff; border-radius: 8px; padding: 6px 16px; cursor: pointer; font-size: 12.5px; }
+  .pub-go:hover { filter: brightness(.95); }
+  .pub-go:disabled { opacity: .6; cursor: default; }
+  .msg { font-size: 12.5px; }
+  .msg.ok { color: var(--green); }
+  .msg.err { color: var(--danger); }
+
+  .list { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; align-content: start; padding-top: 12px; }
+  .hint { grid-column: 1 / -1; color: var(--text-3); font-size: 13px; line-height: 1.9; padding: 22px 4px; }
+  .card { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .card-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .card-head b { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ver { margin-left: auto; flex: none; font-size: 11.5px; color: var(--text-3); }
+  .id-line { font-size: 11px; color: var(--text-3); font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desc { font-size: 12px; color: var(--text-2); line-height: 1.55; max-height: 54px; overflow: hidden; }
+  .meta { font-size: 11px; color: var(--text-3); }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--text-2); }
+  .foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+  .foot .sp { flex: 1; }
+  .btn { flex: none; font-size: 12px; padding: 5px 14px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+  .btn.off { background: transparent; border-color: #e2b4b4; color: var(--danger); }
+  .btn.off:hover { background: #fbecec; }
+  .btn:disabled { opacity: .6; cursor: default; }
+  @media (max-width: 640px) {
+    body { padding: 10px 12px 14px; }
+    .head input[type="search"] { max-width: none; width: 100%; margin-left: 0; }
+    .list { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>坚祥市场管理</h1>
+    <span class="warn" title="用户/角色体系上线前的过渡形态">内部管理页 · 暂无访问控制 · 仅 IT 使用</span>
+    <input id="q" type="search" placeholder="搜索名称 / id / 描述 / 标签…" autocomplete="off">
+    <button id="refresh" title="重新拉取清单">刷新</button>
+  </div>
+  <div class="tabs">
+    <button class="tab active" data-t="skill">技能</button>
+    <button class="tab" data-t="component">组件</button>
+    <button class="tab" data-t="plugin">插件</button>
+    <span class="count" id="count"></span>
+  </div>
+  <form class="pub-bar" id="pub">
+    <b>发布</b>
+    <select id="p-type">
+      <option value="skill">技能</option>
+      <option value="component">组件</option>
+      <option value="plugin">插件</option>
+    </select>
+    <input type="file" id="p-file" accept=".zip" required>
+    <input type="text" id="p-id" placeholder="id（可空=自动推导，须英文）">
+    <input type="text" id="p-name" placeholder="名称（可空）">
+    <input type="text" id="p-version" placeholder="版本（可空）">
+    <input type="text" id="p-desc" placeholder="一句话描述（可空）" style="width:200px">
+    <input type="text" id="p-tags" placeholder="标签,逗号分隔（可空）">
+    <button type="submit" class="pub-go" id="p-go">上传发布</button>
+    <span class="msg" id="p-msg"></span>
+  </form>
+  <div class="list" id="list"><div class="hint">正在加载…</div></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const TYPES = { skill: 'skills', component: 'components', plugin: 'plugins' };
+  const TYPE_LABEL = { skill: '技能', component: '组件', plugin: '插件' };
+  let cur = 'skill', data = null;
+
+  async function load() {
+    $('list').innerHTML = '<div class="hint">正在加载…</div>';
+    try {
+      const r = await fetch('/admin/api/list', { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      data = await r.json();
+    } catch (e) {
+      data = null;
+      $('list').innerHTML = '<div class="hint">清单读取失败：' + esc(e.message) + '</div>';
+      return;
+    }
+    render();
+  }
+
+  function entries() {
+    if (!data) return [];
+    return data[TYPES[cur]] || [];
+  }
+
+  function render() {
+    const q = ($('q').value || '').trim().toLowerCase();
+    const all = entries();
+    const items = q ? all.filter(e =>
+      ((e.name||'') + ' ' + (e.id||'') + ' ' + (e.description||'') + ' ' + (e.tags||[]).join(' ')).toLowerCase().includes(q)
+    ) : all;
+    $('count').textContent = q ? `匹配 ${items.length}/${all.length} 项` : (all.length ? `共 ${all.length} 项` : '');
+    if (!all.length) {
+      $('list').innerHTML = '<div class="hint">市场里还没有' + TYPE_LABEL[cur] + '。用上方「发布」上传一个 zip 试试（' +
+        ({skill:'包里要有 SKILL.md', component:'包里要有 manifest.json + client 资产', plugin:'包里要有 .claude-plugin/plugin.json'})[cur] + '）。</div>';
+      return;
+    }
+    if (!items.length) { $('list').innerHTML = '<div class="hint">没有匹配「' + esc(q) + '」的条目</div>'; return; }
+    const list = $('list');
+    list.innerHTML = '';
+    for (const e of items) list.appendChild(card(e));
+  }
+
+  function card(e) {
+    const c = document.createElement('div');
+    c.className = 'card';
+    const tags = (e.tags || []).slice(0, 4).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+    const kb = e.size ? (e.size / 1024).toFixed(1) + ' KB' : '';
+    const date = (e.updatedAt || '').slice(0, 10);
+    c.innerHTML =
+      `<div class="card-head"><b title="${esc(e.id)}">${esc(e.name || e.id)}</b><span class="ver">v${esc(e.version || '?')}</span></div>` +
+      `<div class="id-line" title="${esc(e.id)}">${esc(e.id)} · ${esc(e.sha256 ? e.sha256.slice(0, 12) : '')}</div>` +
+      `<p class="desc">${esc(e.description || '')}</p>` +
+      (tags ? `<div class="tags">${tags}</div>` : '') +
+      `<div class="meta">${esc(kb)}${kb && date ? ' · ' : ''}${esc(date)} 更新</div>` +
+      `<div class="foot"><span class="sp"></span><button class="btn off">下架</button></div>`;
+    const btn = c.querySelector('button');
+    btn.onclick = async () => {
+      if (!confirm(`下架${TYPE_LABEL[cur]}「${e.name || e.id}」（${e.id}）？\n客户端市场将立即看不到它；已安装的用户不受影响。`)) return;
+      btn.disabled = true; btn.textContent = '下架中…';
+      try {
+        const r = await fetch('/admin/api/unpublish', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: cur, id: e.id }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+        await load();
+      } catch (err) { alert('下架失败：' + err.message); btn.disabled = false; btn.textContent = '下架'; }
+    };
+    return c;
+  }
+
+  $('pub').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = $('p-file').files[0];
+    const msg = $('p-msg');
+    if (!f) { msg.className = 'msg err'; msg.textContent = '先选择 zip 包'; return; }
+    const fd = new FormData();
+    fd.append('type', $('p-type').value);
+    fd.append('file', f);
+    for (const k of ['id', 'name', 'version', 'desc', 'tags']) {
+      const v = $('p-' + k).value.trim();
+      if (v) fd.append(k, v);
+    }
+    const go = $('p-go');
+    go.disabled = true; go.textContent = '发布中…';
+    msg.className = 'msg'; msg.textContent = '';
+    try {
+      const r = await fetch('/admin/api/publish', { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      const e = d.entry || {};
+      msg.className = 'msg ok';
+      msg.textContent = `已发布 ${e.id} v${e.version || '?'}`;
+      $('pub').reset();
+      cur = fd.get('type') || cur;
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.t === cur));
+      await load();
+    } catch (err) {
+      msg.className = 'msg err';
+      msg.textContent = err.message;
+    } finally {
+      go.disabled = false; go.textContent = '上传发布';
+    }
+  };
+
+  document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+    cur = t.dataset.t;
+    render();
+  });
+  $('q').oninput = render;
+  $('refresh').onclick = load;
+  load();
+})();
+</script>
+</body>
+</html>
