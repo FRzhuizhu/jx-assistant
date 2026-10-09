@@ -2374,38 +2374,39 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
      （桌面侧 .foot-grid 的 display:contents 在这里被覆盖成网格） */
   .foot-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
 
-  /* 输入工具栏恒一行：任务执行中多出停止键后总宽超限，原来靠换行兜底——
-     中缝还剩着三四十像素的空隙、发送键却掉到第二行，观感割裂。窄屏整栏
-     与左组都改成不换行：塞不下时权限/模型芯片的文字省略号收缩，加号/语音/
-     圆环/停止/发送固定尺寸不缩。两个关键细节：
-     ① 芯片标签 span 要 min-width:0——「deepseek-flash」是一整个不可断词，
-        不给的话模型芯片收不动，超限压力全砸到左组头上（左组会溢出叠到
-        语音键上）；芯片自身保持默认内容下限，图标+箭头不会被挤没。
-     ② 左组恢复 min-width:auto（桌面规则的 min-width:0 在窄屏撤回）——
-        有了内容下限，极端塞不下时整行向左溢出进卡片留白，而不是左组
-        内容叠到右侧按钮上。
-     左组靠左、按钮贴右的结构不变：富余时中缝自然变宽，紧张时收紧到接近
-     按钮间距，发送键永远钉在最右 */
-  .composer-bar, .composer-left { flex-wrap: nowrap; }
-  .composer-left { min-width: auto; }
-  .composer-bar .cbtn, .composer-bar .send-btn, .composer-bar .ctx-ring,
-  .composer-bar .mode-flags { flex: none; }
-  .composer-bar .chip-btn { min-width: 46px; }
-  .composer-bar .chip-btn span { min-width: 0; }
-  /* 带短名的芯片（权限：JS 在 syncComposer 里同步 data-short，同左侧栏机制）：
-     长标签藏起、短字经 ::after 顶上——「工作区内读写」六七个字在一行排版里
-     会把模型标签挤没 */
+  /* 输入工具栏（用户敲定的排布）：左组（加号+权限）恒为标准形状不参与收缩，
+     权限右侧留 8px 固定间距（与其他按钮间距一致）后紧跟右组；右组是整体
+     （麦克风/圆环/模型/停止/发送），空间不够先缩模型芯片（省略号，下限 46px
+     保住胶囊壳），实在不够整组换行到第二行（换行阈值＝右组的 min-width，
+     即各按钮下限之和）。右组 grow 吸收富余空间、模型芯片顶到最右，发送键
+     贴右缘。权限芯片窄屏换短名（只读/读写/完全，JS 在 syncComposer 同步
+     data-short，同左侧栏机制），箭头纯装饰隐掉；执行态（停止键在场）圆环
+     让位——它的价值主要在发送前 */
+  .composer-bar { flex-wrap: wrap; justify-content: flex-start; }
+  .composer-left { margin-right: 0; flex: none; flex-wrap: nowrap; }
+  .composer-left > * { flex: none; }
+  .composer-right {
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
+    flex: 1 1 0; min-width: 164px;
+  }
+  .composer-right > .cbtn, .composer-right > .send-btn, .composer-right > .ctx-ring,
+  .composer-right > .mode-flags { flex: none; }
+  .composer-right > .chip-btn { flex: 1 1 auto; min-width: 46px; }
+  .composer-right .chip-btn span { min-width: 0; }
   .composer-bar .chip-btn[data-short] span { display: none; }
   .composer-bar .chip-btn[data-short]::after {
     content: attr(data-short);
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  /* 芯片下拉小箭头窄屏隐掉：触屏上整颗胶囊就是点按目标，箭头纯装饰；
-     隐掉省出的 2×18px 让权限/模型标签在执行态（多出停止键）还能留两三个字 */
   .composer-bar .chip-btn .caret { display: none; }
-  /* 执行态（停止键在场）隐掉上下文圆环：圆环的价值在发送前，执行中让位——
-     省出的 38px 让两颗芯片的标签不至于全被挤光 */
   .composer-bar:has(.stop:not(.hidden)) .ctx-ring { display: none; }
+
+  /* 首页输入卡与对话页同宽：对话页输入卡在 #composer-wrap（#main 直下，左右
+     各留 10px，卡片宽 = 视口 - 20）；首页槽位在 .home 里，外面隔着 .msg-col
+     的左右 24px 内边距、自身又只有 96% 宽——比对话页窄一截。负外边距各抵
+     14px、宽度加回 28px、对齐改回起点（.home 的 align-items:center 会把
+     超宽子项往两边挤偏），卡片边缘与对话页完全一致（桌面 96% 布局不动） */
+  #home-composer { width: calc(100% + 28px); margin-left: -14px; align-self: flex-start; }
 
   /* 右栏：整屏浮层，从右侧滑入；宽度推导冻结（rpApply 窄屏直接返回），拖拽条退场 */
   #rpanel {
@@ -2518,7 +2519,7 @@ html.desktop-shell .bpw-hint { display: none; }
 html.electron-shell #bpw-webview { display: block; }
 html.electron-shell .bpw-hint { display: none; }
 
-/* ---------- Claude 插件兼容层（app-ccplugins.js） ---------- */
+/* ---------- Claude 插件兼容层（app-ccplugins.js：统一「插件」页的 Claude 行/安装区/市场面板/命令弹层） ---------- */
 .ccp-install-row { display: flex; gap: 8px; margin: 0 0 8px; }
 .ccp-install-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg); color: var(--text); }
 .ccp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
