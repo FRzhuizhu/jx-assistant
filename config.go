@@ -152,12 +152,12 @@ func DefaultConfig() *Config {
 		Experts:             defaultExperts(),
 		RemoteAccess: RemoteAccessCfg{
 			Enabled: false,
-			Host:    "nas.example.org",
+			Host:    "example.com",
 			Port:    2227,
 			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
 			RegKey:  "chat_p2p_v1",
 		},
-		UpdateURL: "http://nas.example.org:3000/api/v1/repos/your-org/your-repo/releases/latest",
+		UpdateURL: "http://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
 	}
 }
 

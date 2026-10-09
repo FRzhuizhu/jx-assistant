@@ -168,7 +168,7 @@ func writeTestPluginSrc(t *testing.T) string {
 
 func TestMarketViewUnconfigured(t *testing.T) {
 	a := newMarketTestApp(t, "")
-	a.Cfg.RemoteAccess = RemoteAccessCfg{Host: "nas.example.org", Port: 2228}
+	a.Cfg.RemoteAccess = RemoteAccessCfg{Host: "example.com", Port: 2228}
 	code, out := callHandler(t, a.handleMarketView, "GET", "/api/market", "")
 	if code != 200 {
 		t.Fatalf("期待 200，收到 %d", code)
