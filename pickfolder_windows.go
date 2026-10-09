@@ -26,6 +26,7 @@ var (
 	shell32                         = syscall.NewLazyDLL("shell32.dll")
 	kernel32                        = syscall.NewLazyDLL("kernel32.dll")
 	user32                          = syscall.NewLazyDLL("user32.dll")
+	comdlg32                        = syscall.NewLazyDLL("comdlg32.dll")
 	procCoInitializeEx              = ole32.NewProc("CoInitializeEx")
 	procCoUninitialize              = ole32.NewProc("CoUninitialize")
 	procCoCreateInstance            = ole32.NewProc("CoCreateInstance")
@@ -38,6 +39,8 @@ var (
 	procSetForegroundWindow         = user32.NewProc("SetForegroundWindow")
 	procBringWindowToTop            = user32.NewProc("BringWindowToTop")
 	procGetWindowThreadProcessId    = user32.NewProc("GetWindowThreadProcessId")
+	procGetOpenFileNameW            = comdlg32.NewProc("GetOpenFileNameW")
+	procCommDlgExtendedError        = comdlg32.NewProc("CommDlgExtendedError")
 )
 
 const (
@@ -98,9 +101,127 @@ func pickFolderNative(startDir, title string) (string, error) {
 // pickFileNative 同款 IFileOpenDialog，但选择文件而非文件夹。
 // allFilter=false 时限定 ZIP 压缩包（技能安装场景，附「所有文件」兜底）；
 // allFilter=true 时不设过滤器（任意文件，聊天上传场景）。
-// multi=true 允许多选（FOS_ALLOWMULTISELECT + GetResults）。
+// multi=true 的多选走 pickFilesComDlg（见其头注：IFileOpenDialog 的多选提取
+// 链 GetResults→GetCount 在真机上原生层空指针写，进程级硬死拦不住）。
 func pickFileNative(startDir, title string, allFilter, multi bool) ([]string, error) {
-	return pickDialogNative(startDir, title, false, allFilter, multi)
+	if multi {
+		return pickDialogComDlg(startDir, title, allFilter)
+	}
+	return pickDialogNative(startDir, title, false, allFilter, false)
+}
+
+// pickDialogComDlg 用 comdlg32 的 GetOpenFileNameW 弹「打开」对话框（多选）。
+//
+// 为什么弃用 IFileOpenDialog 的多选路径（FOS_ALLOWMULTISELECT + GetResults
+// 取 IShellItemArray → GetCount/GetItemAt）：确认选择后在 GetCount 调用处
+// 发生原生层空指针写（Exception 0xC0000005 write 0x0，stderr 转储定位到
+// pickDialogSTA 的 GetCount 行）——syscall 内的硬件异常 defer/recover 拦不住，
+// 整个进程直接死掉，桌面壳表现为「选完文件点打开就闪退」。同一对话框的单选
+// 提取（GetResult，选目录/装技能 ZIP 在用）长期稳定，问题只出在多选提取链。
+// GetOpenFileNameW 是微软自带的完整实现（现代系统上内部同样托管新式对话框），
+// 结果经缓冲区回传，没有手工 vtable 调用，多选语义由系统自己解析。
+// 取消返回 nil；缓冲区不够时给出可读错误。
+func pickDialogComDlg(startDir, title string, allFilter bool) ([]string, error) {
+	const (
+		ofnHideReadOnly  = 0x4
+		ofnNoChangeDir   = 0x8
+		ofnAllowMulti    = 0x200
+		ofnFileMustExist = 0x1000
+		ofnExplorer      = 0x80000
+	)
+	const bufLen = 1 << 16 // 多选路径串都装进来，64KB ≈ 数百个文件
+	buf := make([]uint16, bufLen)
+	// 过滤器串：目标段 + 「所有文件」兜底段，每段 名\0模式\0，整体双 NUL 收尾
+	name1, spec1 := "所有文件", "*.*"
+	if !allFilter {
+		name1, spec1 = "ZIP 压缩包", "*.zip"
+	}
+	var flt []uint16
+	for _, s := range []string{name1, spec1, "所有文件", "*.*"} {
+		u, _ := syscall.UTF16FromString(s) // 自带结尾 NUL
+		flt = append(flt, u...)
+	}
+	flt = append(flt, 0)
+	titleP, _ := syscall.UTF16PtrFromString(title)
+	var dirP uintptr
+	if startDir != "" {
+		if p, err := syscall.UTF16PtrFromString(startDir); err == nil {
+			dirP = uintptr(unsafe.Pointer(p))
+		}
+	}
+	ofn := openFileNameW{
+		lStructSize:     uint32(unsafe.Sizeof(openFileNameW{})),
+		lpstrFilter:     uintptr(unsafe.Pointer(&flt[0])),
+		nFilterIndex:    1,
+		lpstrFile:       uintptr(unsafe.Pointer(&buf[0])),
+		nMaxFile:        uint32(bufLen),
+		lpstrInitialDir: dirP,
+		lpstrTitle:      uintptr(unsafe.Pointer(titleP)),
+		Flags:           ofnExplorer | ofnAllowMulti | ofnFileMustExist | ofnHideReadOnly | ofnNoChangeDir,
+	}
+	raiseDialogToForeground(title) // 同款后台进程置前（comdlg 对话框也是 #32770）
+	r, _, _ := procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	if r == 0 {
+		if e, _, _ := procCommDlgExtendedError.Call(); e != 0 {
+			// 0x3003=FNERR_BUFFERTOOOSMALL 等
+			return nil, fmt.Errorf("文件选择框错误 (0x%x)", e)
+		}
+		return nil, nil // 用户取消
+	}
+	// 解析缓冲区：单个字符串 = 完整路径；多选 = 目录\0文件1\0文件2\0\0
+	var strs []string
+	for cur := buf; len(cur) > 0; {
+		n := 0
+		for n < len(cur) && cur[n] != 0 {
+			n++
+		}
+		if n == 0 {
+			break // 到达双 NUL 终点
+		}
+		strs = append(strs, syscall.UTF16ToString(cur[:n]))
+		if n == len(cur) {
+			break
+		}
+		cur = cur[n+1:]
+	}
+	if len(strs) == 0 {
+		return nil, nil
+	}
+	if len(strs) == 1 {
+		return []string{strs[0]}, nil
+	}
+	paths := make([]string, 0, len(strs)-1)
+	for _, f := range strs[1:] {
+		paths = append(paths, strs[0]+"\\"+f)
+	}
+	return paths, nil
+}
+
+// openFileNameW 即 Win32 OPENFILENAMEW（x64 布局，Go 自动对齐与 C 一致）。
+type openFileNameW struct {
+	lStructSize       uint32
+	HwndOwner         uintptr
+	hInstance         uintptr
+	lpstrFilter       uintptr
+	lpstrCustomFilter uintptr
+	nMaxCustFilter    uint32
+	nFilterIndex      uint32
+	lpstrFile         uintptr
+	nMaxFile          uint32
+	lpstrFileTitle    uintptr
+	nMaxFileTitle     uint32
+	lpstrInitialDir   uintptr
+	lpstrTitle        uintptr
+	Flags             uint32
+	nFileOffset       uint16
+	nFileExtension    uint16
+	lpstrDefExt       uintptr
+	lCustData         uintptr
+	lpfnHook          uintptr
+	lpTemplateName    uintptr
+	pvReserved        uintptr
+	dwReserved        uint32
+	FlagsEx           uint32
 }
 
 func pickDialogNative(startDir, title string, pickFolder, allFilter, multi bool) ([]string, error) {
@@ -314,8 +435,8 @@ func parseGUID(s string) (syscall.GUID, error) {
 // 必须在调用 Show 的同一线程执行（KeybdEvent 部分影响的是本线程输入状态）。
 func raiseDialogToForeground(title string) {
 	const (
-		vkMenu          = 0x12
-		keyeventfKeyUp  = 0x0002
+		vkMenu         = 0x12
+		keyeventfKeyUp = 0x0002
 	)
 	procKeybdEvent.Call(vkMenu, 0, 0, 0)
 	procKeybdEvent.Call(vkMenu, 0, keyeventfKeyUp, 0)
