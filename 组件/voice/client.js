@@ -17,7 +17,7 @@
  *    一次性轻提示。桌面 WebView2 可用（注意：该能力随运行时版本波动，153 系
  *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）。远程手机端（安卓 Chrome 的识别服务国内不可达）与 Electron 壳（Chromium
  *    无免费识别通道）自动落到本地离线模型（/api/voice/asr/transcribe，voiceasr.go）：
- *    16k 单声道采集 → 按停上传 → 整段落进输入框，音频不出本机/服务器。引擎与
+ *    本机/桌面走 WebSocket 流式（说话出灰字、停顿即离线精修落黑字，复用浏览器引擎同款两段式体验）；远程 https 页面自动回退整段识别。音频不出本机/服务器。引擎与
  *    引擎在设置页可选（默认自动）；按句即时出字（能量 VAD 切句）。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
@@ -880,18 +880,29 @@
      * 整段说完才识别。噪声底自适应跟踪（长时最低能量），阈值 = max(固定下限,
      * 噪声底×3.5)；句间长静音不入段；单句超 18s 强切；点停时未发的尾段补发。
      * 多段在途由服务端 worker 排队串行（X-ASR 约 60 倍实时，队列秒清）。 */
+    const wsHint = () => (location.protocol !== 'https:'
+      ? '录音中·实时转写：说话出灰字，停顿约 1 秒落成正文；点麦克风结束'
+      : '录音中…说完点一下麦克风（远程走整段识别）');
+    /* ---------- 本地引擎：流式听写（灰字实时 → 停顿精修黑字） ----------
+     * 本机/桌面形态（http 页面）：WebSocket 流式——说话期间实时出灰色增量字
+     * （复用浏览器引擎的 segs/灰字层机制），检测到停顿（~1s）即由服务端用
+     * 离线 X-ASR 精修该段（标点/大小写完整），回 final 事件落成黑色正文，
+     * 录音无缝继续。远程 https 页面开不了 ws（浏览器混合内容拦截，中继隧道
+     * 也未覆盖 WebSocket）：自动回退「整段录音→点停→一次性识别」。 */
     const makeLocalRec = (stream) => {
       const ctx = new AudioContext({ sampleRate: 16000 });
       const src = ctx.createMediaStreamSource(stream);
       const node = ctx.createScriptProcessor(4096, 1, 1);
-      const SPEECH_MIN_MS = 350;   // 短于此视为噪声毛刺，丢弃
-      const SILENCE_CUT_MS = 700;  // 语音后静音到该时长即出句
-      const SEG_MAX_MS = 18000;    // 单句超长强切
-      let seg = [];                // 当前句的帧（从首个语音帧起收）
-      let speechMs = 0, silenceMs = 0;
-      let noiseFloor = 0.004;      // 环境噪声底（RMS，自适应）
-      let segCount = 0, failCount = 0;
-      let ended = false;
+      const canStream = location.protocol !== 'https:';
+      let ws = null, wsReady = false, wsFail = false;
+      const chunks = [];          // 回退模式：整段样本
+      let ended = false, segCount = 0, doneCb = null;
+      const i16ToB64 = (i16) => {
+        const u8 = new Uint8Array(i16.buffer);
+        let bin = '';
+        for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+        return btoa(bin);
+      };
       const teardownMic = () => {
         if (ended) return true;
         ended = true;
@@ -899,63 +910,96 @@
         try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
         return false;
       };
-      const recognize = (floats) => {
-        voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, ctx.sampleRate)).then((d) => {
-          if (!active) return; // 组件已卸载：迟到的文字不再落
-          if (d.text) {
-            commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
-            segCount += 1;
-            if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
+      if (canStream) {
+        try {
+          ws = new WebSocket('ws://' + location.host + '/api/voice/asr/stream');
+        } catch (e) { ws = null; }
+      }
+      if (ws) {
+        ws.onopen = () => { wsReady = true; ws.send('{"cmd":"stream_start"}'); };
+        ws.onmessage = (ev) => {
+          let d = null;
+          try { d = JSON.parse(ev.data); } catch (e) { return; }
+          if (!d.ok) { voiceToast('识别通道错误：' + (d.err || '')); return; }
+          if (d.event === 'partial') {
+            // 实时灰字：当前句的增量（复用浏览器引擎同款灰字层）
+            sess.segs.set(0, { text: d.text || '', final: false, changedAt: Date.now() });
+            sess.retries = 0;
+            renderShadow();
+          } else if (d.event === 'final') {
+            // 停顿精修：灰字撤下、黑字落定（离线模型转写，标点完整）
+            sess.segs.delete(0);
+            sess.committed.delete(0);
+            renderShadow();
+            if (d.text) {
+              commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
+              segCount += 1;
+              if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
+            }
+          } else if (d.event === 'done') {
+            if (doneCb) doneCb();
           }
-        }).catch(() => {
-          if (!active || sess.done) return;
-          failCount += 1;
-          if (failCount === 1) voiceToast('有一句识别失败（网络/服务波动），继续说即可');
-        });
-      };
-      const cutSeg = () => {
-        const spoken = speechMs;
-        const total = seg.reduce((n, c) => n + c.length, 0);
-        if (spoken < SPEECH_MIN_MS || total < 1600) { // 毛刺/太短：丢
-          seg = []; speechMs = 0; silenceMs = 0;
-          return;
-        }
-        const floats = new Float32Array(total);
-        let off = 0;
-        for (const c of seg) { floats.set(c, off); off += c.length; }
-        seg = []; speechMs = 0; silenceMs = 0;
-        recognize(floats);
-      };
+        };
+        ws.onclose = () => {
+          wsReady = false;
+          if (!ended) wsFail = true; // 意外断开：后续帧转投整段缓冲
+          if (doneCb) doneCb();
+        };
+        ws.onerror = () => { };
+      }
       node.onaudioprocess = (ev) => {
         if (ended) return;
-        const f = new Float32Array(ev.inputBuffer.getChannelData(0));
-        let sum = 0;
-        for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
-        const rms = Math.sqrt(sum / f.length);
-        const frameMs = (f.length / ctx.sampleRate) * 1000;
-        const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
-        if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
-        if (isSpeech || speechMs > 0) seg.push(f); // 句首静音不入段
-        if (isSpeech) { speechMs += frameMs; silenceMs = 0; }
-        else if (speechMs > 0) silenceMs += frameMs;
-        if (speechMs >= SPEECH_MIN_MS && silenceMs >= SILENCE_CUT_MS) cutSeg();
-        else if (speechMs >= SEG_MAX_MS) cutSeg();
+        const f = ev.inputBuffer.getChannelData(0);
+        if (ws && wsReady && !wsFail) {
+          const i16 = new Int16Array(f.length);
+          for (let i = 0; i < f.length; i++) {
+            const s = Math.max(-1, Math.min(1, f[i]));
+            i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          if (ws.bufferedAmount < 262144) ws.send(JSON.stringify({ cmd: 'stream_chunk', pcm_b64: i16ToB64(i16) }));
+        } else {
+          chunks.push(new Float32Array(f)); // 无流式通道（或已断）：攒整段
+        }
       };
       src.connect(node);
       node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
+      const stopAll = () => {
+        if (teardownMic()) return 'ended';
+        try { ctx.close(); } catch (e) { /* 已关 */ }
+        return 'ok';
+      };
       return {
         isLocal: true,
-        // 正常按停：停麦 → 尾段补发 → 收尾（尾段文字稍后落到输入框）
+        // 正常按停：流式=通知收尾等 done；回退=整段一次性识别
         stop() {
-          if (teardownMic()) return;
-          try { ctx.close(); } catch (e) { /* 已关 */ }
-          cutSeg();
-          finish(segCount > 0 ? '' : '未识别到语音内容');
+          if (stopAll() === 'ended') return;
+          if (ws && wsReady && !wsFail) {
+            const finishUp = () => { try { ws.close(); } catch (e) { /* */ } finish(segCount > 0 ? '' : '未识别到语音内容'); };
+            doneCb = () => { doneCb = null; setTimeout(finishUp, 0); };
+            try { ws.send('{"cmd":"stream_end"}'); } catch (e) { finishUp(); }
+            setTimeout(() => { if (doneCb) { doneCb = null; finishUp(); } }, 3000); // done 不来的兜底
+            return;
+          }
+          const total = chunks.reduce((n, c) => n + c.length, 0);
+          if (total < 1600) { finish('未识别到语音内容'); return; }
+          const floats = new Float32Array(total);
+          let off = 0;
+          for (const c of chunks) { floats.set(c, off); off += c.length; }
+          voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000)).then((d) => {
+            if (d.text) commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
+            finish(d.text ? '' : '未识别到内容');
+          }).catch((e) => {
+            finish('识别失败：' + (e && e.message ? e.message : e));
+          });
         },
-        // 放弃（发送前暂停/组件卸载）：停麦不发，迟到的结果不污染下一条草稿
-        abort() { teardownMic(); },
+        // 放弃（发送前暂停/组件卸载）：停麦即止，迟到的结果不污染下一条草稿
+        abort() {
+          teardownMic();
+          if (ws) { doneCb = null; try { ws.close(); } catch (e) { /* */ } }
+        },
       };
     };
+
     const startLocal = () => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         finish('当前页面无法访问麦克风（需 https 或本机地址）');
@@ -973,7 +1017,7 @@
         clearT('connectTimer');
         setSpin(false);
         btn.classList.add('on');
-        setHint('录音中·按句识别：说完一句停顿即出字，点麦克风结束', 0);
+        setHint(wsHint(), 0);
       }).catch((e) => {
         const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
         finish(desktopShell() && !denied

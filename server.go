@@ -291,6 +291,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
 	// 本地语音识别通道（voiceasr.go）：听写组件的本地引擎用（16k mono WAV base64）
 	mux.HandleFunc("POST /api/voice/asr/transcribe", a.handleASRTranscribe)
+	// 流式听写通道（voiceasr.go）：WebSocket 一行一答哑桥——partial=实时灰字、
+	// final=端点（停顿）后离线精修的黑字。本机/桌面形态直连；远程 https 页面
+	// 开不了 ws，前端自动回退整段模式
+	mux.HandleFunc("GET /api/voice/asr/stream", a.handleASRStream)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
 	mux.HandleFunc("GET /api/device/poll", a.handleDevicePoll)

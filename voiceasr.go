@@ -24,17 +24,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 )
 
 type asrModelDef struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Engine string `json:"engine"` // sherpa-onnx | qwen-gguf
-	Note   string `json:"note"`
-	Dir    string // data/asr-models 下的目录名
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Engine string   `json:"engine"` // sherpa-onnx | qwen-gguf
+	Note   string   `json:"note"`
+	Dir    string   // data/asr-models 下的目录名
 	Globs  []string // 就绪判定：每个 glob 至少命中一个文件
 }
 
@@ -71,6 +75,9 @@ type asrManager struct {
 	app *App
 	mu  sync.Mutex
 	w   *asrWorker
+
+	streamMu sync.Mutex // 流式会话互斥（单人单麦，同时只一路）
+	sw       *asrWorker // 流式专用 worker（与离线转写互不阻塞）
 }
 
 type asrWorker struct {
@@ -167,6 +174,69 @@ func (w *asrWorker) call(req map[string]any) (map[string]any, error) {
 	return resp, nil
 }
 
+// callRaw 发一行原始请求、读一行原始应答（流式桥用：透传不做 JSON 解释）。
+func (w *asrWorker) callRaw(line string) (string, error) {
+	if _, err := w.stdin.Write([]byte(line + "\n")); err != nil {
+		return "", fmt.Errorf("worker 管道已断: %w", err)
+	}
+	if !w.out.Scan() {
+		if err := w.out.Err(); err != nil {
+			return "", fmt.Errorf("读 worker 应答失败: %v", err)
+		}
+		return "", fmt.Errorf("worker 无应答（已退出）")
+	}
+	return string(w.out.Bytes()), nil
+}
+
+// getStream 惰性拉起流式专用 worker（与离线 worker 分离：流式会话长时间占用
+// stdin/stdout，不能堵住逐句转写）。调用方须持有 streamMu。
+func (m *asrManager) getStream() (*asrWorker, error) {
+	if m.sw != nil && m.sw.cmd.ProcessState == nil {
+		return m.sw, nil
+	}
+	root, err := m.workerRoot()
+	if err != nil {
+		return nil, err
+	}
+	py, err := m.pythonExe(root)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(py, filepath.Join("asr", "asr_worker.py"))
+	cmd.Dir = root
+	cmd.Stderr = pipeLineLogger{prefix: "[asr-stream-worker] "}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	hideConsoleWindow(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("启动流式 worker 失败: %w", err)
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 1<<20), 16<<20)
+	w := &asrWorker{cmd: cmd, stdin: stdin, out: sc}
+	go func() {
+		_ = cmd.Wait()
+		_ = stdout.Close()
+	}()
+	m.sw = w
+	return w, nil
+}
+
+func (m *asrManager) killStreamLocked() {
+	if m.sw != nil {
+		if p := m.sw.cmd.Process; p != nil {
+			_ = p.Kill()
+		}
+		m.sw = nil
+	}
+}
+
 // Transcribe 加载（按需/换模型）并转录一段 16k mono WAV。
 func (m *asrManager) Transcribe(model, device string, wav []byte) (map[string]any, error) {
 	def := asrModelByID(model)
@@ -248,4 +318,44 @@ func (a *App) handleASRTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	resp["total_ms"] = time.Since(t0).Milliseconds()
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---------- 流式听写（WebSocket ↔ worker 的一行一答哑桥） ----------
+
+// handleASRStream GET /api/voice/asr/stream：浏览器经 WebSocket 逐块送 16k
+// int16 PCM，本端把每条消息原样转发给流式 worker（asr/asr_worker.py 的
+// stream_* 命令），worker 每请求恰好回一行 JSON（partial=实时灰字 /
+// final=端点后离线精修的黑字 / done），原样写回浏览器。同时只允许一路
+// 流式会话（听写本来就是单人单麦）。
+func (a *App) handleASRStream(w http.ResponseWriter, r *http.Request) {
+	conn, _, _, err := ws.UpgradeHTTP(r, w)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	m := a.asr
+	m.streamMu.Lock()
+	defer m.streamMu.Unlock()
+	worker, err := m.getStream()
+	if err != nil {
+		_ = wsutil.WriteServerText(conn, []byte(`{"ok":false,"err":`+strconv.Quote(err.Error())+`}`))
+		return
+	}
+	for {
+		msg, err := wsutil.ReadClientText(conn)
+		if err != nil {
+			break // 连接关闭/出错：会话结束
+		}
+		line, err := worker.callRaw(string(msg))
+		if err != nil {
+			_ = wsutil.WriteServerText(conn, []byte(`{"ok":false,"err":`+strconv.Quote(err.Error())+`}`))
+			m.killStreamLocked()
+			return
+		}
+		if err := wsutil.WriteServerText(conn, []byte(line)); err != nil {
+			break
+		}
+	}
+	// 断开即收尾：通知 worker 结束当前流（下次 stream_start 会整体重置）
+	_, _ = worker.callRaw(`{"cmd":"stream_end"}`)
 }
