@@ -39,21 +39,9 @@ type asrModelDef struct {
 }
 
 var asrModels = []asrModelDef{
-	{ID: "paraformer", Name: "Paraformer-large int8", Engine: "sherpa-onnx",
-		Note: "约 230MB；CPU 十几倍实时；标点经 CT-Transformer 后处理补齐", Dir: "paraformer",
-		Globs: []string{"model.int8.onnx", "tokens.txt"}},
-	{ID: "sensevoice", Name: "SenseVoice-Small int8", Engine: "sherpa-onnx",
-		Note: "约 160MB；CPU 十几倍实时；标点经 CT-Transformer 后处理补齐", Dir: "sensevoice",
-		Globs: []string{"model.int8.onnx", "tokens.txt"}},
 	{ID: "xasr", Name: "X-ASR int8（小米·中英双语·原生标点）", Engine: "sherpa-onnx",
-		Note: "约 170MB；CPU 约 60 倍实时（实测 RTF 0.017）；Zipformer2 transducer，离线/流式一体；中英混说友好", Dir: "xasr",
+		Note: "约 170MB；CPU 约 60 倍实时；Zipformer2 transducer，离线/流式一体；中英混说友好", Dir: "xasr",
 		Globs: []string{"encoder*.int8.onnx", "decoder*.onnx", "joiner*.int8.onnx", "tokens.txt"}},
-	{ID: "qwen0.6", Name: "Qwen3-ASR-0.6B int4/q4_k", Engine: "qwen-gguf",
-		Note: "约 560MB；LLM 架构；自带标点；22 种中文方言；核显自动加速", Dir: "qwen-0.6b",
-		Globs: []string{"*encoder*frontend*.onnx", "*llm*.gguf"}},
-	{ID: "qwen1.7", Name: "Qwen3-ASR-1.7B int4/q4_k", Engine: "qwen-gguf",
-		Note: "约 1.4GB；精度最高的 LLM 档；自带标点；核显自动加速", Dir: "qwen-1.7b",
-		Globs: []string{"*encoder*frontend*.onnx", "*llm*.gguf"}},
 }
 
 func asrModelByID(id string) *asrModelDef {
@@ -91,14 +79,6 @@ type asrWorker struct {
 	out    *bufio.Scanner
 	loaded string // 已加载模型（换模型即重载）
 	device string
-}
-
-func (m *asrManager) modelsRoot() (string, error) {
-	root, err := m.workerRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "data", "asr-models"), nil
 }
 
 // workerRoot asr_worker.py 与模型目录的仓库根：桌面/安装版锚在 exe 旁，
@@ -238,40 +218,6 @@ func (m *asrManager) Shutdown() {
 }
 
 // ---------- HTTP 端点 ----------
-
-// asrReady 就绪判定：文件在模型目录根或一级子目录（解包布局两种都有）。
-// 注意 Go 的 filepath.Glob 不支持 ** 递归。
-func asrReady(root string, d asrModelDef) bool {
-	for _, g := range d.Globs {
-		found := false
-		for _, base := range []string{d.Dir, filepath.Join(d.Dir, "*")} {
-			hits, _ := filepath.Glob(filepath.Join(root, "data", "asr-models", base, g))
-			if len(hits) > 0 {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func (a *App) handleASRModels(w http.ResponseWriter, r *http.Request) {
-	root, err := a.asr.workerRoot()
-	type item struct {
-		asrModelDef
-		Ready bool `json:"ready"`
-	}
-	out := []item{}
-	if err == nil {
-		for _, d := range asrModels {
-			out = append(out, item{asrModelDef: d, Ready: asrReady(root, d)})
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": out})
-}
 
 func (a *App) handleASRTranscribe(w http.ResponseWriter, r *http.Request) {
 	var p struct {

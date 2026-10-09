@@ -18,7 +18,7 @@
  *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）。远程手机端（安卓 Chrome 的识别服务国内不可达）与 Electron 壳（Chromium
  *    无免费识别通道）自动落到本地离线模型（/api/voice/asr/transcribe，voiceasr.go）：
  *    16k 单声道采集 → 按停上传 → 整段落进输入框，音频不出本机/服务器。引擎与
- *    算力在设置页可选（默认自动）；效果对比见设置页「本地识别测试」面板。
+ *    引擎在设置页可选（默认自动）；按句即时出字（能量 VAD 切句）。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
  *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
@@ -164,13 +164,13 @@
   let onResize = null;         // 设置页尺寸联动（旧版曾用于远程窄屏隐藏按钮，已撤）
 
   /* ---------- 听写引擎选择：浏览器识别（微软）｜本地离线模型 ----------
-   * pref.engine：auto（默认）| browser | paraformer | sensevoice | qwen0.6 | qwen1.7。
+   * pref.engine：auto（默认）| browser | xasr。
    * auto = 环境里有 SpeechRecognition 用浏览器识别（微软服务），否则本地 Paraformer
    * 兜底——远程手机端（Android Chrome 无国内可达的识别服务）与 Electron 壳
    * （无免费识别通道）从此都有可用的听写，不再隐藏按钮。 */
   function dictationEngine() {
     const p = String(pref.get('engine', 'auto'));
-    const valid = p === 'browser' || p === 'xasr' || p === 'paraformer' || p === 'sensevoice' || p === 'qwen0.6' || p === 'qwen1.7';
+    const valid = p === 'browser' || p === 'xasr';
     const fallback = 'xasr'; // 双语+原生标点+CPU 最快，综合默认
     if (!valid) {
       // auto：Electron 壳与远程端直接走本地——两处 SpeechRecognition 对象虽存在，
@@ -829,8 +829,7 @@
       if (toast) voiceToast(toast);
     };
     // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾。
-    // 本地引擎例外：stop() 里含「上传+识别」（可能数秒），不设兜底定时器，
-    // 由上传回调负责 finish。
+    // 本地引擎例外：按句即时出字，stop() 直接收尾（未发尾段异步补落）。
     const stopByUser = () => {
       if (sess.stopping || sess.done) return;
       sess.stopping = true;
@@ -839,7 +838,7 @@
       const rec = sess.rec;
       const local = !!(rec && rec.isLocal);
       try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
-      if (local) { setHint('识别中…', 0); return; }
+      if (local) return; // 本地引擎按句即时出字：stop() 里直接收尾，尾段稍后落
       clearT('stopTimer');
       sess.stopTimer = setTimeout(() => { finish(''); }, VOICE_STOP_GRACE);
     };
@@ -875,17 +874,23 @@
       if (remain <= 0) { stopByUser(); return; }
       setCount(remain <= 9000 ? Math.ceil(remain / 1000) : null);
     };
-    /* ---------- 本地引擎：麦克风采集 →（按停）上传转写 → 整段落进输入框 ----------
-     * 与浏览器引擎不同：无实时灰字（本地模型按句出全文），体验为
-     * 「录音中 → 点停 → 识别中（模型延迟）→ 文字落定」。 */
+    /* ---------- 本地引擎：按停顿逐句识别（客户端能量 VAD 切句） ----------
+     * 录音期间做音量活动检测：说完一句停顿约 0.7 秒即切出该段、异步上传
+     * X-ASR 转写、文字落进输入框，录音继续——「一小段一小段地出」，不必
+     * 整段说完才识别。噪声底自适应跟踪（长时最低能量），阈值 = max(固定下限,
+     * 噪声底×3.5)；句间长静音不入段；单句超 18s 强切；点停时未发的尾段补发。
+     * 多段在途由服务端 worker 排队串行（X-ASR 约 60 倍实时，队列秒清）。 */
     const makeLocalRec = (stream) => {
       const ctx = new AudioContext({ sampleRate: 16000 });
       const src = ctx.createMediaStreamSource(stream);
       const node = ctx.createScriptProcessor(4096, 1, 1);
-      const chunks = [];
-      node.onaudioprocess = (ev) => { chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
-      src.connect(node);
-      node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
+      const SPEECH_MIN_MS = 350;   // 短于此视为噪声毛刺，丢弃
+      const SILENCE_CUT_MS = 700;  // 语音后静音到该时长即出句
+      const SEG_MAX_MS = 18000;    // 单句超长强切
+      let seg = [];                // 当前句的帧（从首个语音帧起收）
+      let speechMs = 0, silenceMs = 0;
+      let noiseFloor = 0.004;      // 环境噪声底（RMS，自适应）
+      let segCount = 0, failCount = 0;
       let ended = false;
       const teardownMic = () => {
         if (ended) return true;
@@ -894,28 +899,60 @@
         try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
         return false;
       };
+      const recognize = (floats) => {
+        voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, ctx.sampleRate)).then((d) => {
+          if (!active) return; // 组件已卸载：迟到的文字不再落
+          if (d.text) {
+            commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
+            segCount += 1;
+            if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
+          }
+        }).catch(() => {
+          if (!active || sess.done) return;
+          failCount += 1;
+          if (failCount === 1) voiceToast('有一句识别失败（网络/服务波动），继续说即可');
+        });
+      };
+      const cutSeg = () => {
+        const spoken = speechMs;
+        const total = seg.reduce((n, c) => n + c.length, 0);
+        if (spoken < SPEECH_MIN_MS || total < 1600) { // 毛刺/太短：丢
+          seg = []; speechMs = 0; silenceMs = 0;
+          return;
+        }
+        const floats = new Float32Array(total);
+        let off = 0;
+        for (const c of seg) { floats.set(c, off); off += c.length; }
+        seg = []; speechMs = 0; silenceMs = 0;
+        recognize(floats);
+      };
+      node.onaudioprocess = (ev) => {
+        if (ended) return;
+        const f = new Float32Array(ev.inputBuffer.getChannelData(0));
+        let sum = 0;
+        for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
+        const rms = Math.sqrt(sum / f.length);
+        const frameMs = (f.length / ctx.sampleRate) * 1000;
+        const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
+        if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
+        if (isSpeech || speechMs > 0) seg.push(f); // 句首静音不入段
+        if (isSpeech) { speechMs += frameMs; silenceMs = 0; }
+        else if (speechMs > 0) silenceMs += frameMs;
+        if (speechMs >= SPEECH_MIN_MS && silenceMs >= SILENCE_CUT_MS) cutSeg();
+        else if (speechMs >= SEG_MAX_MS) cutSeg();
+      };
+      src.connect(node);
+      node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
       return {
         isLocal: true,
-        // 正常按停：停麦 → 上传 → 文字落进输入框（完成后 finish）
+        // 正常按停：停麦 → 尾段补发 → 收尾（尾段文字稍后落到输入框）
         stop() {
-          const sr = ctx.sampleRate;
           if (teardownMic()) return;
           try { ctx.close(); } catch (e) { /* 已关 */ }
-          const total = chunks.reduce((n, c) => n + c.length, 0);
-          if (total < 1600) { finish('录音太短，再试一次'); return; } // <0.1s
-          const floats = new Float32Array(total);
-          let off = 0;
-          for (const c of chunks) { floats.set(c, off); off += c.length; }
-          const model = dictationEngine();
-          const device = String(pref.get('asrDevice', 'cpu')) === 'auto' ? 'auto' : 'cpu';
-          voiceASRTranscribe(model, device, voicePcmToWavB64(floats, sr)).then((d) => {
-            if (d.text) commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ''));
-            finish(d.text ? '' : '未识别到内容', d.text ? '' : undefined);
-          }).catch((e) => {
-            finish('识别失败：' + (e && e.message ? e.message : e));
-          });
+          cutSeg();
+          finish(segCount > 0 ? '' : '未识别到语音内容');
         },
-        // 放弃（发送前暂停/组件卸载）：停麦不上传，迟到的结果不该污染下一条草稿
+        // 放弃（发送前暂停/组件卸载）：停麦不发，迟到的结果不污染下一条草稿
         abort() { teardownMic(); },
       };
     };
@@ -936,7 +973,7 @@
         clearT('connectTimer');
         setSpin(false);
         btn.classList.add('on');
-        setHint('本地识别录音中…说完点一下麦克风', 0);
+        setHint('录音中·按句识别：说完一句停顿即出字，点麦克风结束', 0);
       }).catch((e) => {
         const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
         finish(desktopShell() && !denied
@@ -1207,11 +1244,7 @@
       ['auto', '自动（有浏览器识别用微软，否则本地 X-ASR）'],
       ['browser', '浏览器识别（微软服务，需 Edge/WebView2/Chrome）'],
       ['xasr', '本地·X-ASR（小米·中英双语·带标点·最快）'],
-      ['paraformer', '本地·Paraformer（快，标点后处理补齐）'],
-      ['sensevoice', '本地·SenseVoice（快，标点后处理补齐）'],
-      ['qwen0.6', '本地·Qwen3-ASR 0.6B（带标点，延迟数秒）'],
-      ['qwen1.7', '本地·Qwen3-ASR 1.7B（带标点，最准，核显快）'],
-    ];
+          ];
     for (const [v, t] of engOpts) {
       const o = document.createElement('option');
       o.value = v; o.textContent = t;
@@ -1221,159 +1254,12 @@
     engSel.onchange = () => { pref.set('engine', engSel.value); };
     row('听写引擎', engSel);
 
-    const devSel = document.createElement('select');
-    devSel.className = 'sp-select';
-    const d1 = document.createElement('option');
-    d1.value = 'cpu'; d1.textContent = 'CPU（任何机器）';
-    const d2 = document.createElement('option');
-    d2.value = 'auto'; d2.textContent = '自动加速（核显 Vulkan，仅本地 Qwen 系有效）';
-    devSel.append(d1, d2);
-    devSel.value = String(pref.get('asrDevice', 'cpu'));
-    devSel.onchange = () => { pref.set('asrDevice', devSel.value); };
-    row('本地模型算力', devSel);
 
     note('两种听写引擎：「浏览器识别」走 WebView2/Edge 内置的微软服务（音频直发'
       + '它的识别服务，边说边出灰字）；「本地模型」离线转写（音频不出本机/服务器，'
       + '按句出全文——说完一句点停，稍候文字落进输入框），手机远程端与 Electron 壳'
-      + '会自动落到本地引擎。首次用本地引擎需加载模型（几秒到十几秒），效果与'
-      + '延迟可在下方「本地识别测试」里对比。');
-
-    /* ----- 本地识别测试（模型评估面板，后端 voiceasr.go） ----- */
-    group('本地识别测试（离线模型评估）');
-    note('对麦克风说几秒话，用所选本地模型离线转写（音频不出本机）。'
-      + '首次切换模型需加载几十秒；Qwen 系列自带标点，另两个模型无标点输出。');
-
-    const asrModelSel = document.createElement('select');
-    asrModelSel.className = 'sp-select';
-    const asrDevSel = document.createElement('select');
-    asrDevSel.className = 'sp-select';
-    const dCpu = document.createElement('option');
-    dCpu.value = 'cpu'; dCpu.textContent = 'CPU（任何机器）';
-    const dAuto = document.createElement('option');
-    dAuto.value = 'auto'; dAuto.textContent = '自动加速（核显 Vulkan/DML，回退 CPU）';
-    asrDevSel.append(dCpu, dAuto);
-    asrDevSel.value = 'auto';
-    row('识别模型', asrModelSel);
-    row('算力', asrDevSel);
-
-    const asrRec = btn('● 录音', '点我开始录音，再点结束并发给所选模型');
-    const asrStatus = document.createElement('span');
-    asrStatus.className = 'sp-value';
-    const asrOut = document.createElement('div');
-    asrOut.className = 'asr-result';
-    row('测试', asrRec).appendChild(asrStatus);
-    el.appendChild(asrOut);
-
-    const fillModels = (models) => {
-      asrModelSel.innerHTML = '';
-      if (!models || !models.length) {
-        const o = document.createElement('option');
-        o.value = ''; o.textContent = '（不可用：未找到 asr/asr_worker.py）';
-        asrModelSel.appendChild(o);
-        return;
-      }
-      for (const m of models) {
-        const o = document.createElement('option');
-        o.value = m.id;
-        o.textContent = m.name + (m.ready ? '' : '（未就绪：模型文件缺失）');
-        if (!m.ready) o.disabled = true;
-        asrModelSel.appendChild(o);
-      }
-      const first = models.find((m) => m.ready);
-      if (first) asrModelSel.value = first.id;
-    };
-    fillModels([]);
-    fetch('/api/voice/asr/models').then(async (res) => {
-      if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
-      const d = await res.json();
-      if (!el.isConnected) return;
-      fillModels(d.models || []);
-    }).catch(() => {});
-
-    // 录音：16k 单声道 PCM 采集（AudioContext 直接重采样），停录后封 WAV 走后端
-    let recStream = null, recCtx = null, recNode = null, recChunks = [], recT0 = 0;
-    const pcmToWavB64 = (floats, sr) => {
-      const len = floats.length;
-      const buf = new ArrayBuffer(44 + len * 2);
-      const v = new DataView(buf);
-      const wstr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-      wstr(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); wstr(8, 'WAVE');
-      wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-      v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-      wstr(36, 'data'); v.setUint32(40, len * 2, true);
-      for (let i = 0; i < len; i++) {
-        const s = Math.max(-1, Math.min(1, floats[i]));
-        v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-      }
-      let bin = '';
-      const u8 = new Uint8Array(buf);
-      for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
-      return btoa(bin);
-    };
-    asrRec.onclick = async () => {
-      if (recStream) { // 停录 → 转录
-        try { recNode && recNode.disconnect(); } catch (e) {}
-        try { recStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
-        const sr = recCtx ? recCtx.sampleRate : 16000;
-        try { recCtx && await recCtx.close(); } catch (e) {}
-        recStream = null; recCtx = null; recNode = null;
-        const secs = ((Date.now() - recT0) / 1000).toFixed(1);
-        const total = recChunks.reduce((n, c) => n + c.length, 0);
-        const floats = new Float32Array(total);
-        let off = 0;
-        for (const c of recChunks) { floats.set(c, off); off += c.length; }
-        recChunks = [];
-        if (total < 1600) { asrOut.textContent = '录音太短（' + secs + 's），请说长一点再停'; return; }
-        const model = asrModelSel.value;
-        if (!model) { asrOut.textContent = '没有可用模型（见下拉框提示）'; return; }
-        asrRec.textContent = '● 录音';
-        asrStatus.textContent = '识别中…（首次加载模型可能要等）';
-        asrOut.textContent = '';
-        const t0 = Date.now();
-        try {
-          const res = await fetch('/api/voice/asr/transcribe', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model, device: asrDevSel.value, wavB64: pcmToWavB64(floats, sr) }),
-          });
-          if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
-          const d = await res.json();
-          asrStatus.textContent = '';
-          asrOut.innerHTML = '';
-          const txt = document.createElement('div');
-          txt.className = 'asr-text';
-          txt.textContent = d.text || '（未识别到内容）';
-          const stat = document.createElement('div');
-          stat.className = 'asr-stat';
-          stat.textContent = `音频 ${d.audio_ms}ms ｜ 推理 ${d.infer_ms}ms ｜ 端到端 ${d.total_ms}ms`
-            + ` ｜ RTF ${d.rtf}（<1 即快于实时） ｜ ${model} @ ${asrDevSel.value === 'cpu' ? 'CPU' : '自动'}`;
-          asrOut.append(txt, stat);
-        } catch (e) {
-          asrStatus.textContent = '';
-          asrOut.textContent = '识别失败：' + (e && e.message ? e.message : e) + '（耗时 ' + (Date.now() - t0) + 'ms）';
-        }
-        return;
-      }
-      // 开始录音
-      try {
-        recStream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-        });
-      } catch (e) {
-        asrOut.textContent = '麦克风不可用：' + (e && e.message ? e.message : e);
-        return;
-      }
-      recCtx = new AudioContext({ sampleRate: 16000 });
-      const src = recCtx.createMediaStreamSource(recStream);
-      recNode = recCtx.createScriptProcessor(4096, 1, 1);
-      recChunks = [];
-      recNode.onaudioprocess = (ev) => { recChunks.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
-      src.connect(recNode);
-      recNode.connect(recCtx.destination);
-      recT0 = Date.now();
-      asrRec.textContent = '■ 停止并识别';
-      asrStatus.textContent = '录音中…';
-      asrOut.textContent = '';
-    };
+      + '会自动落到本地引擎。首次用本地引擎需加载模型（几秒到十几秒），按句识别：说完一句'
+      + '停顿即出字。');
 
     /* ----- 快捷键 ----- */
     group('语音快捷键');

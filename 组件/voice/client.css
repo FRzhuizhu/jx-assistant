@@ -114,10 +114,3 @@
 .sc-none { color: var(--text-3); font-size: 12px; }
 .sp-note { font-size: 12px; color: var(--text-3); margin: 6px 0; line-height: 1.6; }
 
-/* 本地识别测试面板（模型评估） */
-.asr-result { margin: 6px 0 4px; min-height: 20px; }
-.asr-result .asr-text {
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.6; white-space: pre-wrap;
-}
-.asr-result .asr-stat { margin-top: 4px; color: var(--text-3); font-size: 11.5px; }

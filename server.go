@@ -289,9 +289,7 @@ func (a *App) Routes() http.Handler {
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
-	// 本地语音识别测试通道（voiceasr.go）：模型清单/就绪态 + 转录（16k mono WAV
-	// 的 base64，前端语音设置页「本地识别测试」面板用）
-	mux.HandleFunc("GET /api/voice/asr/models", a.handleASRModels)
+	// 本地语音识别通道（voiceasr.go）：听写组件的本地引擎用（16k mono WAV base64）
 	mux.HandleFunc("POST /api/voice/asr/transcribe", a.handleASRTranscribe)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
