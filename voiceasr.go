@@ -39,12 +39,15 @@ type asrModelDef struct {
 }
 
 var asrModels = []asrModelDef{
-	{ID: "paraformer", Name: "Paraformer-large int8（流式变体可后续接入）", Engine: "sherpa-onnx",
-		Note: "约 230MB；CPU 15 倍实时；无标点输出（待加标点模型）", Dir: "paraformer",
+	{ID: "paraformer", Name: "Paraformer-large int8", Engine: "sherpa-onnx",
+		Note: "约 230MB；CPU 十几倍实时；标点经 CT-Transformer 后处理补齐", Dir: "paraformer",
 		Globs: []string{"model.int8.onnx", "tokens.txt"}},
 	{ID: "sensevoice", Name: "SenseVoice-Small int8", Engine: "sherpa-onnx",
-		Note: "约 160MB；CPU 17 倍实时；无标点；带情感/事件标签", Dir: "sensevoice",
+		Note: "约 160MB；CPU 十几倍实时；标点经 CT-Transformer 后处理补齐", Dir: "sensevoice",
 		Globs: []string{"model.int8.onnx", "tokens.txt"}},
+	{ID: "xasr", Name: "X-ASR int8（小米·中英双语·原生标点）", Engine: "sherpa-onnx",
+		Note: "约 170MB；CPU 约 60 倍实时（实测 RTF 0.017）；Zipformer2 transducer，离线/流式一体；中英混说友好", Dir: "xasr",
+		Globs: []string{"encoder*.int8.onnx", "decoder*.onnx", "joiner*.int8.onnx", "tokens.txt"}},
 	{ID: "qwen0.6", Name: "Qwen3-ASR-0.6B int4/q4_k", Engine: "qwen-gguf",
 		Note: "约 560MB；LLM 架构；自带标点；22 种中文方言；核显自动加速", Dir: "qwen-0.6b",
 		Globs: []string{"*encoder*frontend*.onnx", "*llm*.gguf"}},

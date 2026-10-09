@@ -170,15 +170,16 @@
    * （无免费识别通道）从此都有可用的听写，不再隐藏按钮。 */
   function dictationEngine() {
     const p = String(pref.get('engine', 'auto'));
-    const valid = p === 'browser' || p === 'paraformer' || p === 'sensevoice' || p === 'qwen0.6' || p === 'qwen1.7';
+    const valid = p === 'browser' || p === 'xasr' || p === 'paraformer' || p === 'sensevoice' || p === 'qwen0.6' || p === 'qwen1.7';
+    const fallback = 'xasr'; // 双语+原生标点+CPU 最快，综合默认
     if (!valid) {
       // auto：Electron 壳与远程端直接走本地——两处 SpeechRecognition 对象虽存在，
       // 但识别服务必然不可达（Electron 无厂商标识、安卓 Chrome 走谷歌服务国内不通）；
       // 桌面/本机浏览器有 SR 才用微软服务
-      if (window.JX_ELECTRON || window.JX_REMOTE) return 'paraformer';
-      return SR ? 'browser' : 'paraformer';
+      if (window.JX_ELECTRON || window.JX_REMOTE) return fallback;
+      return SR ? 'browser' : fallback;
     }
-    if (p === 'browser' && !SR) return 'paraformer'; // 选了浏览器但环境没有 → 本地兜底
+    if (p === 'browser' && !SR) return fallback; // 选了浏览器但环境没有 → 本地兜底
     return p;
   }
   function dictationIsLocal() { return dictationEngine() !== 'browser'; }
@@ -1203,10 +1204,11 @@
     const engSel = document.createElement('select');
     engSel.className = 'sp-select';
     const engOpts = [
-      ['auto', '自动（有浏览器识别用微软，否则本地 Paraformer）'],
+      ['auto', '自动（有浏览器识别用微软，否则本地 X-ASR）'],
       ['browser', '浏览器识别（微软服务，需 Edge/WebView2/Chrome）'],
-      ['paraformer', '本地·Paraformer（最快，约 0.1 秒级，无标点）'],
-      ['sensevoice', '本地·SenseVoice（快，无标点）'],
+      ['xasr', '本地·X-ASR（小米·中英双语·带标点·最快）'],
+      ['paraformer', '本地·Paraformer（快，标点后处理补齐）'],
+      ['sensevoice', '本地·SenseVoice（快，标点后处理补齐）'],
       ['qwen0.6', '本地·Qwen3-ASR 0.6B（带标点，延迟数秒）'],
       ['qwen1.7', '本地·Qwen3-ASR 1.7B（带标点，最准，核显快）'],
     ];

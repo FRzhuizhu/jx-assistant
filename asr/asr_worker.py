@@ -82,6 +82,22 @@ def main():
                 raise RuntimeError(f"sensevoice 模型文件不完整：{d}")
             engine = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=asr_model[0], tokens=tokens[0], use_itn=True, num_threads=4)
+        elif model == "xasr":
+            # 小米 X-ASR：Zipformer2 transducer，中英双语、自带标点与大小写，
+            # 离线/流式一体（这里用离线档），int8 约 170MB
+            import sherpa_onnx
+            d = models_root / "xasr"
+
+            def one(pattern):
+                hits = sorted(glob.glob(str(d / "**" / pattern), recursive=True))
+                return hits[0] if hits else None
+
+            enc, dec, joi, tok = (one("encoder*.int8.onnx"), one("decoder*.onnx"),
+                                  one("joiner*.int8.onnx"), one("tokens.txt"))
+            if not (enc and dec and joi and tok):
+                raise RuntimeError(f"xasr 模型文件不完整：{d}")
+            engine = sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=enc, decoder=dec, joiner=joi, tokens=tok, num_threads=4)
         elif model in ("qwen0.6", "qwen1.7"):
             gguf_repo = root / "asr" / "Qwen3-ASR-GGUF"
             sys.path.insert(0, str(gguf_repo))
@@ -113,6 +129,33 @@ def main():
         state["model"] = model
         reply({"ok": True, "event": "loaded", "model": model, "load_ms": int((time.time() - t0) * 1000)})
 
+    # ---------- 标点后处理（paraformer/sensevoice 无标点输出，用 CT-Transformer 补） ----------
+    punct_state = {"engine": None, "tried": False}
+
+    def apply_punct(text):
+        if not text:
+            return text
+        if not punct_state["tried"]:
+            punct_state["tried"] = True
+            try:
+                import sherpa_onnx
+                d = models_root / "punct"
+                if os.path.exists(d / "model.onnx"):
+                    mc = sherpa_onnx.OfflinePunctuationModelConfig(
+                        ct_transformer=str(d / "model.onnx"), num_threads=1)
+                    punct_state["engine"] = sherpa_onnx.OfflinePunctuation(
+                        sherpa_onnx.OfflinePunctuationConfig(model=mc))
+            except Exception as e:  # noqa: BLE001 —— 标点失败不挡转写，返回原文
+                print(f"[punct] 标点模型加载失败（不启用后处理）: {e}", file=sys.stderr)
+        eng = punct_state["engine"]
+        if eng is None:
+            return text
+        try:
+            return eng.add_punctuation(text).strip()
+        except Exception as e:  # noqa: BLE001
+            print(f"[punct] 加标点失败（返回原文）: {e}", file=sys.stderr)
+            return text
+
     # ---------- 转录 ----------
     def transcribe(wav_b64):
         engine = state.get("engine")
@@ -132,11 +175,14 @@ def main():
             samples = samples.reshape(-1, ch).mean(axis=1).astype(np.int16)
         t0 = time.time()
 
-        if state["model"] in ("paraformer", "sensevoice"):
+        if state["model"] in ("paraformer", "sensevoice", "xasr"):
             stream = engine.create_stream()
             stream.accept_waveform(sr, samples.astype(np.float32) / 32768.0)
             engine.decode_stream(stream)
             text = (stream.result.text or "").strip()
+            # X-ASR 原生带标点；paraformer/sensevoice 用 CT-Transformer 后处理补
+            if state["model"] in ("paraformer", "sensevoice"):
+                text = apply_punct(text)
         else:
             tmp = models_root / f"_tmp_{os.getpid()}.wav"
             with wave.open(str(tmp), "wb") as w:
