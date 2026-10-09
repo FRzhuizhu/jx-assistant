@@ -15,17 +15,16 @@
  *    逻辑与样式原样保留：连接中/录音中三态、灰色暂定层（未定稿转写叠在输入框
  *    上显示为灰字、静置 2.5 秒落成正文）、断线退避重连、时长上限倒计时徽标、
  *    一次性轻提示。桌面 WebView2 可用（注意：该能力随运行时版本波动，153 系
- *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）；远程手机端
- *    受手机浏览器识别服务可达性限制（安卓 Chrome 走谷歌服务，国内不通）——后端
- *    化听写的可行性结论见 语音后端化-研究与改动说明.md（无头 Edge 假麦克风试验：
- *    音频能进 getUserMedia，但 SR 不消费假设备，路不通）。
+ *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）。远程手机端（安卓 Chrome 的识别服务国内不可达）与 Electron 壳（Chromium
+ *    无免费识别通道）自动落到本地离线模型（/api/voice/asr/transcribe，voiceasr.go）：
+ *    16k 单声道采集 → 按停上传 → 整段落进输入框，音频不出本机/服务器。引擎与
+ *    算力在设置页可选（默认自动）；效果对比见设置页「本地识别测试」面板。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
  *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
  *    仅在窗口聚焦时激活（失焦自动松手）。主输入框的占位灰字会像发送快捷键
  *    一样带上语音快捷键提示（app-core 的 sendKeyHint 追加 window.JXVoiceHint，
- *    子输入框由本组件自己拼）。远程页面且视口宽度 <500（手机端）时隐藏听筒
- *    按钮（window.JX_REMOTE 区分远程；手机浏览器多不支持语音识别）。
+ *    子输入框由本组件自己拼）。远程端没有桌面级全局快捷键，占位提示自动省略。
  *
  * 全程零配置（不需要任何密钥）。按钮 DOM 在 web/index.html（位置与样式不变），
  * 默认带 .hidden——按钮属于本组件，组件关掉（设置 → 内置组件）或没加载到页面
@@ -162,10 +161,55 @@
   let captureMode = false;     // 设置页录制快捷键时暂停引擎
   let captureCtl = null;       // 当前录制会话（重复点击录制按钮时作废旧会话）
   const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
-  let onResize = null;         // 远程窄屏隐藏的窗口尺寸联动
+  let onResize = null;         // 设置页尺寸联动（旧版曾用于远程窄屏隐藏按钮，已撤）
 
-  function micHiddenByEnv() {
-    return !!window.JX_REMOTE && window.innerWidth < 500; // 远程手机端页面
+  /* ---------- 听写引擎选择：浏览器识别（微软）｜本地离线模型 ----------
+   * pref.engine：auto（默认）| browser | paraformer | sensevoice | qwen0.6 | qwen1.7。
+   * auto = 环境里有 SpeechRecognition 用浏览器识别（微软服务），否则本地 Paraformer
+   * 兜底——远程手机端（Android Chrome 无国内可达的识别服务）与 Electron 壳
+   * （无免费识别通道）从此都有可用的听写，不再隐藏按钮。 */
+  function dictationEngine() {
+    const p = String(pref.get('engine', 'auto'));
+    const valid = p === 'browser' || p === 'paraformer' || p === 'sensevoice' || p === 'qwen0.6' || p === 'qwen1.7';
+    if (!valid) {
+      // auto：Electron 壳与远程端直接走本地——两处 SpeechRecognition 对象虽存在，
+      // 但识别服务必然不可达（Electron 无厂商标识、安卓 Chrome 走谷歌服务国内不通）；
+      // 桌面/本机浏览器有 SR 才用微软服务
+      if (window.JX_ELECTRON || window.JX_REMOTE) return 'paraformer';
+      return SR ? 'browser' : 'paraformer';
+    }
+    if (p === 'browser' && !SR) return 'paraformer'; // 选了浏览器但环境没有 → 本地兜底
+    return p;
+  }
+  function dictationIsLocal() { return dictationEngine() !== 'browser'; }
+
+  /* ---------- 本地引擎的采集与上传（16k 单声道 PCM → WAV base64） ---------- */
+  function voicePcmToWavB64(floats, sr) {
+    const len = floats.length;
+    const buf = new ArrayBuffer(44 + len * 2);
+    const v = new DataView(buf);
+    const wstr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    wstr(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); wstr(8, 'WAVE');
+    wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    wstr(36, 'data'); v.setUint32(40, len * 2, true);
+    for (let i = 0; i < len; i++) {
+      const s = Math.max(-1, Math.min(1, floats[i]));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    let bin = '';
+    const u8 = new Uint8Array(buf);
+    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  async function voiceASRTranscribe(model, device, wavB64) {
+    const res = await fetch('/api/voice/asr/transcribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, device, wavB64 }),
+    });
+    if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+    return res.json();
   }
 
   function activeVoiceCtl() {
@@ -203,8 +247,6 @@
     const mode = voiceShortcutMode();
 
     if (action === 'press') {
-      if (micHiddenByEnv()) return; // 远程手机端：静默——按钮已隐藏，不弹任何提示
-                                     //（提示曾放在快捷键匹配之前，手机上每次点按都弹，扰人）
       // 1) 非独按修饰键的备选：完整按住即触发
       for (const alt of alts) {
         if (alt.length === 1 && isModKey(alt[0])) continue; // 独按修饰键走 2)
@@ -242,7 +284,7 @@
           holdSession = false;
           if (ctl.active()) ctl.stop();
         } else if (mode === 'tap') {
-          if (!micHiddenByEnv()) ctl.toggle();
+          ctl.toggle();
         }
         armedSolo = null;
         firedLatch = false;
@@ -326,16 +368,6 @@
     document.addEventListener('mouseup', scMouseUp);
     document.addEventListener('contextmenu', scContextMenu);
     window.addEventListener('blur', scBlur);
-    // 远程窄屏隐藏的窗口尺寸联动（旋转/分屏跨过 500 阈值时即时显隐）
-    onResize = () => {
-      if (!active) return;
-      for (const view of [mainView, subView]) {
-        const b = viewEl(view, 'btn-voice');
-        if (!b) continue;
-        b.classList.toggle('hidden', micHiddenByEnv());
-      }
-    };
-    window.addEventListener('resize', onResize);
   }
 
   function removeShortcutEngine() {
@@ -355,7 +387,7 @@
   let subBasePH = null; // 子输入框原始占位文案
 
   function voiceHintText() {
-    if (window.JX_ELECTRON) return ''; // Electron 壳无听写（见按钮解禁处注释），不占位提示
+    if (window.JX_REMOTE) return ''; // 远程端无全局快捷键（那是桌面端的钩子），不占位提示
     if (!shortcutAlternatives().length) return ''; // 已清空：占位提示不带语音段
     const mode = voiceShortcutMode();
     return '；语音输入：' + shortcutLabel() + (mode === 'hold' ? '（按住说话）' : '（点按）');
@@ -726,18 +758,22 @@
       btn.classList.remove('on');
       setSpin(false);
       setCount(null);
-      try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+      try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
       if (msg) setHint(msg, 4000); else clearT('hintTimer');
       if (toast) voiceToast(toast);
     };
-    // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾
+    // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾。
+    // 本地引擎例外：stop() 里含「上传+识别」（可能数秒），不设兜底定时器，
+    // 由上传回调负责 finish。
     const stopByUser = () => {
       if (sess.stopping || sess.done) return;
       sess.stopping = true;
       clearT('restartTimer');
       clearT('connectTimer');
       const rec = sess.rec;
+      const local = !!(rec && rec.isLocal);
       try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+      if (local) { setHint('识别中…', 0); return; }
       clearT('stopTimer');
       sess.stopTimer = setTimeout(() => { finish(''); }, VOICE_STOP_GRACE);
     };
@@ -773,8 +809,79 @@
       if (remain <= 0) { stopByUser(); return; }
       setCount(remain <= 9000 ? Math.ceil(remain / 1000) : null);
     };
+    /* ---------- 本地引擎：麦克风采集 →（按停）上传转写 → 整段落进输入框 ----------
+     * 与浏览器引擎不同：无实时灰字（本地模型按句出全文），体验为
+     * 「录音中 → 点停 → 识别中（模型延迟）→ 文字落定」。 */
+    const makeLocalRec = (stream) => {
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      const src = ctx.createMediaStreamSource(stream);
+      const node = ctx.createScriptProcessor(4096, 1, 1);
+      const chunks = [];
+      node.onaudioprocess = (ev) => { chunks.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
+      src.connect(node);
+      node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
+      let ended = false;
+      const teardownMic = () => {
+        if (ended) return true;
+        ended = true;
+        try { node.disconnect(); } catch (e) { /* 已断 */ }
+        try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
+        return false;
+      };
+      return {
+        isLocal: true,
+        // 正常按停：停麦 → 上传 → 文字落进输入框（完成后 finish）
+        stop() {
+          const sr = ctx.sampleRate;
+          if (teardownMic()) return;
+          try { ctx.close(); } catch (e) { /* 已关 */ }
+          const total = chunks.reduce((n, c) => n + c.length, 0);
+          if (total < 1600) { finish('录音太短，再试一次'); return; } // <0.1s
+          const floats = new Float32Array(total);
+          let off = 0;
+          for (const c of chunks) { floats.set(c, off); off += c.length; }
+          const model = dictationEngine();
+          const device = String(pref.get('asrDevice', 'cpu')) === 'auto' ? 'auto' : 'cpu';
+          voiceASRTranscribe(model, device, voicePcmToWavB64(floats, sr)).then((d) => {
+            if (d.text) commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ''));
+            finish(d.text ? '' : '未识别到内容', d.text ? '' : undefined);
+          }).catch((e) => {
+            finish('识别失败：' + (e && e.message ? e.message : e));
+          });
+        },
+        // 放弃（发送前暂停/组件卸载）：停麦不上传，迟到的结果不该污染下一条草稿
+        abort() { teardownMic(); },
+      };
+    };
+    const startLocal = () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        finish('当前页面无法访问麦克风（需 https 或本机地址）');
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      }).then((stream) => {
+        if (!sess.active || sess.done) { // 会话已被收掉（快速点按）：直接放掉麦克风
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        sess.rec = makeLocalRec(stream);
+        sess.live = true;
+        clearT('connectTimer');
+        setSpin(false);
+        btn.classList.add('on');
+        setHint('本地识别录音中…说完点一下麦克风', 0);
+      }).catch((e) => {
+        const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
+        finish(desktopShell() && !denied
+          ? '麦克风不可用：请检查 Windows 设置 → 隐私 → 麦克风'
+          : (denied ? '麦克风未授权：请在浏览器里允许麦克风权限' : '麦克风不可用：' + (e && e.message ? e.message : e)));
+      });
+    };
+
     const startOnce = () => {
       if (!sess.active || sess.done) return;
+      if (dictationIsLocal()) { startLocal(); return; }
       let rec;
       try { rec = new SR(); } catch (e) { scheduleRetry(); return; }
       sess.rec = rec;
@@ -860,8 +967,6 @@
     };
 
     btn.onclick = () => {
-      if (!SR) { setHint('当前浏览器不支持语音识别（建议 Edge / Chrome）', 4000); return; }
-      if (micHiddenByEnv()) return; // 远程手机端：按钮已隐藏，静默
       if (sess.active) { stopByUser(); return; } // 再点一次 = 结束听写（连接中/录音中都一样）
       sess.active = true;
       sess.done = false;
@@ -875,7 +980,7 @@
       voiceOn[key] = true;
       btn.classList.remove('on');
       setSpin(true); // 先转圈：连上了再变蓝
-      setProgressHint('正在连接语音服务…');
+      setProgressHint(dictationIsLocal() ? '正在打开麦克风…' : '正在连接语音服务…');
       if (sess.sweepTimer) clearInterval(sess.sweepTimer);
       sess.sweepTimer = setInterval(sweep, VOICE_SWEEP_MS);
       startOnce();
@@ -904,7 +1009,8 @@
         commitAll(); // 未定稿转写同步落进输入框（随本条消息一起发出）
         const rec = sess.rec;
         sess.stopping = true;
-        try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+        // 本地引擎：放弃这次录音（迟到的识别结果不该污染下一条草稿）
+        try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
         finish(''); // 硬收尾：不等引擎尾包（迟到的定稿会在发送后污染下一条草稿）
       },
     };
@@ -1027,13 +1133,43 @@
     unit.className = 'sp-value';
     unit.textContent = '秒（30–600，默认 240）';
     row('单次听写时长上限', sec).appendChild(unit);
-    note('听写用浏览器自带的语音识别（WebView2 / Edge / Chrome——微软的识别服务，'
-      + '音频由浏览器直接发给它的识别服务）：链路抖动会自动退避重连；输入框上方浮出'
-      + '的灰字是未定稿的转写，停下约 2.5 秒才落成正文。连接失败时多半是浏览器不支持'
-      + '或识别服务不可达，换用 Microsoft Edge 通常可解；桌面壳同理——识别通道随'
-      + ' WebView2 运行时版本波动（部分版本有故障），更新 WebView2 运行时'
-      + '（https://go.microsoft.com/fwlink/p/?LinkId=2124703）或以 -browser 参数'
-      + '启动、改用 Edge 打开可解。');
+
+    // 听写引擎：浏览器识别（微软服务）或本地离线模型（voiceasr.go 通道）
+    const engSel = document.createElement('select');
+    engSel.className = 'sp-select';
+    const engOpts = [
+      ['auto', '自动（有浏览器识别用微软，否则本地 Paraformer）'],
+      ['browser', '浏览器识别（微软服务，需 Edge/WebView2/Chrome）'],
+      ['paraformer', '本地·Paraformer（最快，约 0.1 秒级，无标点）'],
+      ['sensevoice', '本地·SenseVoice（快，无标点）'],
+      ['qwen0.6', '本地·Qwen3-ASR 0.6B（带标点，延迟数秒）'],
+      ['qwen1.7', '本地·Qwen3-ASR 1.7B（带标点，最准，核显快）'],
+    ];
+    for (const [v, t] of engOpts) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = t;
+      engSel.appendChild(o);
+    }
+    engSel.value = String(pref.get('engine', 'auto'));
+    engSel.onchange = () => { pref.set('engine', engSel.value); };
+    row('听写引擎', engSel);
+
+    const devSel = document.createElement('select');
+    devSel.className = 'sp-select';
+    const d1 = document.createElement('option');
+    d1.value = 'cpu'; d1.textContent = 'CPU（任何机器）';
+    const d2 = document.createElement('option');
+    d2.value = 'auto'; d2.textContent = '自动加速（核显 Vulkan，仅本地 Qwen 系有效）';
+    devSel.append(d1, d2);
+    devSel.value = String(pref.get('asrDevice', 'cpu'));
+    devSel.onchange = () => { pref.set('asrDevice', devSel.value); };
+    row('本地模型算力', devSel);
+
+    note('两种听写引擎：「浏览器识别」走 WebView2/Edge 内置的微软服务（音频直发'
+      + '它的识别服务，边说边出灰字）；「本地模型」离线转写（音频不出本机/服务器，'
+      + '按句出全文——说完一句点停，稍候文字落进输入框），手机远程端与 Electron 壳'
+      + '会自动落到本地引擎。首次用本地引擎需加载模型（几秒到十几秒），效果与'
+      + '延迟可在下方「本地识别测试」里对比。');
 
     /* ----- 本地识别测试（模型评估面板，后端 voiceasr.go） ----- */
     group('本地识别测试（离线模型评估）');
@@ -1357,16 +1493,13 @@
 
       // 语音输入按钮（主对话与右栏子对话各一套）：按钮 DOM 在主程序 index.html 里
       //（位置与样式不变），默认带 .hidden——按钮属于本组件，由组件揭开并接管行为；
-      // 组件关掉/没加载 = 按钮整组不出现。远程手机端（JX_REMOTE 且视口 <500）
-      // 不揭开听筒按钮（手机浏览器多不支持语音识别；resize 跨过阈值时即时显隐）。
-      // Electron 壳（JX_ELECTRON，app-core.js 按 URL 参数置位）同样不揭开：
-      // Web Speech API 在 Electron 没有免费识别通道（缺浏览器厂商标识），
-      // 听写会直接 network 失败——等本地 ASR（SenseVoice 路线）落地再放开。
+      // 组件关掉/没加载 = 按钮整组不出现。本地 ASR 落地后所有形态都揭开：浏览器
+      // 识别可用的走微软服务，不可用的（远程手机端、Electron 壳）自动落到本地模型。
       for (const view of [mainView, subView]) {
         const b = viewEl(view, 'btn-voice');
         if (!b) continue;
         voiceCtl[view.key] = bindVoiceButton(view);
-        if (!micHiddenByEnv() && !window.JX_ELECTRON) b.classList.remove('hidden');
+        b.classList.remove('hidden');
       }
 
       // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）
