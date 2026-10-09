@@ -355,6 +355,7 @@
   let subBasePH = null; // 子输入框原始占位文案
 
   function voiceHintText() {
+    if (window.JX_ELECTRON) return ''; // Electron 壳无听写（见按钮解禁处注释），不占位提示
     if (!shortcutAlternatives().length) return ''; // 已清空：占位提示不带语音段
     const mode = voiceShortcutMode();
     return '；语音输入：' + shortcutLabel() + (mode === 'hold' ? '（按住说话）' : '（点按）');
@@ -1220,12 +1221,15 @@
       // 语音输入按钮（主对话与右栏子对话各一套）：按钮 DOM 在主程序 index.html 里
       //（位置与样式不变），默认带 .hidden——按钮属于本组件，由组件揭开并接管行为；
       // 组件关掉/没加载 = 按钮整组不出现。远程手机端（JX_REMOTE 且视口 <500）
-      // 不揭开听筒按钮（手机浏览器多不支持语音识别；resize 跨过阈值时即时显隐）
+      // 不揭开听筒按钮（手机浏览器多不支持语音识别；resize 跨过阈值时即时显隐）。
+      // Electron 壳（JX_ELECTRON，app-core.js 按 URL 参数置位）同样不揭开：
+      // Web Speech API 在 Electron 没有免费识别通道（缺浏览器厂商标识），
+      // 听写会直接 network 失败——等本地 ASR（SenseVoice 路线）落地再放开。
       for (const view of [mainView, subView]) {
         const b = viewEl(view, 'btn-voice');
         if (!b) continue;
         voiceCtl[view.key] = bindVoiceButton(view);
-        if (!micHiddenByEnv()) b.classList.remove('hidden');
+        if (!micHiddenByEnv() && !window.JX_ELECTRON) b.classList.remove('hidden');
       }
 
       // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）

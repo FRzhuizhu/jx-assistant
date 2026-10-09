@@ -343,14 +343,16 @@ $('sub-input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => 
 $('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
 rpRegister('subs', { title: '子对话', order: 1, onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
 
-/* ---------- 浏览器视图（桌面=原生 WebView2 面板 / 网页=占位提示） ---------- */
-/* 工具栏与状态条由本界面渲染；网页区域是 #bpw-stage 占位 div，桌面模式下
- * 原生 WebView2 控件精确覆盖该矩形（宿主 browser_panel_windows.go），网页
- * 本身不进 HTML。矩形以 CSS px 原值上报 /api/browser/panel-rect（宿主进程
- * 的子窗口坐标与 CSS px 同尺度，乘 devicePixelRatio 会把面板推出窗口——
- * 显示缩放 ≠100% 的机器上就是「永远白屏」的根源，见 handleBrowserPanelRect），
- * 窗口缩放/拖分割条/侧栏开合都触发重算。 */
+/* ---------- 浏览器视图（桌面=原生 WebView2 面板 / Electron=<webview> / 网页=占位提示） ---------- */
+/* 工具栏与状态条由本界面渲染；旧桌面壳的网页区域是 #bpw-stage 占位 div，原生
+ * WebView2 控件精确覆盖该矩形（宿主 browser_panel_windows.go），网页本身不进
+ * HTML。矩形以 CSS px 原值上报 /api/browser/panel-rect（宿主进程的子窗口坐标
+ * 与 CSS px 同尺度，乘 devicePixelRatio 会把面板推出窗口——显示缩放 ≠100% 的
+ * 机器上就是「永远白屏」的根源，见 handleBrowserPanelRect），窗口缩放/拖分
+ * 割条/侧栏开合都触发重算。Electron 壳（electron-shell 类）网页区是页面内
+ * <webview> 元素：参与 CSS 布局与 z-order，整套矩形上报在这里整体短路。 */
 function bpwDesktop() { return document.documentElement.classList.contains('desktop-shell'); }
+function bpwElectron() { return document.documentElement.classList.contains('electron-shell'); }
 
 function bpwActive() {
   const panel = $('rpanel');
@@ -362,6 +364,7 @@ let bpwRectTimer = null, bpwLastKey = '';
 // 可见」信号——后端面板可能被另一页面实例或异常时序藏在暗处，矩形没变也
 // 必须重发一次让它显示（自愈路径不吃去重）。
 function bpwReport(immediate, force) {
+  if (bpwElectron()) return; // Electron 壳：webview 是 DOM 元素，无矩形同步
   clearTimeout(bpwRectTimer);
   // attempt：开合动画期间舞台宽 <8 是常态（onOpen 的立即上报跑在动画中段），
   // 旧版只早退一次、之后全靠 ResizeObserver——RO 偶发不触发时原生面板就被

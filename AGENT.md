@@ -255,6 +255,41 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   里构建，再以 `-ExeSource <exe路径>` 传入。打包产物（stage/、输出/）
   已 gitignore，`config.json` 与 `data/` 永不进包。
 
+## Electron 壳（jx-desktop，迁移期新形态）
+
+仓库 `electron-migration` 分支上的第三种桌面形态：壳是独立目录
+`D:\智能体工作区\jx-desktop`（Electron 44，自带 Chromium，版本随安装包
+锁定——不再被 WebView2 Evergreen 运行时回归偷袭）。Go 仓库只加了薄薄一层：
+
+- **sidecar 模式**：`-electron` 参数＝桌面模式的环境准备（cwd 锚定/默认
+  工作区迁移/禁开浏览器）但不开任何窗口，纯当本地 HTTP 服务跑，由 Electron
+  主进程拉起（`-port` 随机分配）；`main.go` 的 `anchored` 汇总两形态。
+  端口被占时**硬失败**（不静默回退随机端口——Electron 要感知失败换端口重拉）。
+- **右栏面板桥**：`browser_panel_electron.go` 实现 browserTarget 的第三个
+  形态（chromedp 宿主 / 原生 WebView2 面板 / 本桥）。Electron 主进程的
+  `panel-bridge.js` 在 127.0.0.1 随机端口起带令牌 HTTP 服务驱动页面内
+  `<webview id="bpw-webview" partition="persist:webview-browser">`；地址与
+  令牌经 `JX_ELECTRON_BRIDGE`/`JX_ELECTRON_BRIDGE_TOKEN` 环境变量注入，
+  `main.go` 发现即挂 `App.nativePanel`（缺省＝旧形态，互不影响）。工具栏
+  路径不变（仍走 /api/browser/*）；导航到达由桥 POST
+  `/api/browser/electron-report` → `onReport` 广播 browser_nav（与旧壳
+  onNavCompleted 同一事件面）。
+- **前端分支**：URL 带 `&electron=1` 时 app-core.js 给 `<html>` 加
+  `electron-shell` 类并置 `window.JX_ELECTRON`；app-right.js 的 bpwReport
+  矩形上报整体短路（webview 是 DOM 元素，无矩形同步）；style.css 控制
+  webview 仅在该形态显示。**语音听写暂缺**（Web Speech API 在 Electron
+  无免费识别通道）：按钮与快捷键提示在 electron 形态隐藏，`-browser` 与
+  旧壳不受影响，等本地 ASR（SenseVoice 路线，《语音后端化》§七）落地放开。
+- 已知 Electron webview 坑：**无 `src` 的 `<webview>` 不会创建 guest 进程**
+  （did-attach-webview 不触发），标签必须带 `src="about:blank"`。
+- 开发/打包：`打包\开发桌面版-Electron.ps1`（编引擎+npm+启动，含
+  npmmirror 二进制补装）；jx-desktop\`打包-Electron.ps1` 出 NSIS 安装包
+  （resources\go\ 是引擎自包含世界，与旧安装版同口径）。GUI 回归测试：
+  壳加 `--remote-debugging-port=9223`，gui-test 的 CDP 脚本直接可用
+  （Electron 不封调试端口），参考 electron-smoke.mjs / electron-panel.mjs。
+- **旧 WebView2 壳保留不删**（回退与语音过渡载体）；Electron 版稳定 +
+  语音落地后再清理 desktop_windows.go / browser_panel_windows.go。
+
 ## 自带的 MD 查看器（md-viewer/）
 
 项目自带一个独立小应用「MD 查看器」：双击 .md 文件弹出独立窗口，用系统

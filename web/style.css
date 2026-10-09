@@ -2441,6 +2441,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 /* 桌面模式下原生子窗口盖住舞台：提示文字只在网页模式可见（原生控件创建后
    舞台被覆盖；网页模式无控件，提示常驻） */
 html.desktop-shell .bpw-hint { display: none; }
+/* Electron 壳：网页区是页面内 <webview>（默认 display:none，仅此形态显示），
+   提示文字同样隐藏 */
+#bpw-webview { display: none; }
+html.electron-shell #bpw-webview { display: block; }
+html.electron-shell .bpw-hint { display: none; }
 
 /* ---------- Claude 插件兼容层（app-ccplugins.js） ---------- */
 .ccp-install-row { display: flex; gap: 8px; margin: 0 0 8px; }

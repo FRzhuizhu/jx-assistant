@@ -359,6 +359,12 @@
         </div>
         <div class="bpw-stage" id="bpw-stage">
           <div class="bpw-hint" id="bpw-hint">浏览器面板仅在桌面版可用</div>
+          <!-- Electron 桌面壳：右栏网页区是真正的 DOM 内嵌浏览器（独立持久
+               partition，登录态与主界面隔离）。地址栏/工具栏逻辑不变——仍经
+               Go 的 /api/browser/* 走，Go 再经壳的 panel-bridge 驱动本元素，
+               AI 工具与用户操作同一控件。旧 WebView2 壳不用它：默认
+               display:none（style.css），仅 .electron-shell 下显示。 -->
+          <webview id="bpw-webview" src="about:blank" partition="persist:webview-browser" style="width:100%;height:100%;border:0"></webview>
         </div>
         <div class="bpw-status"><span id="bpw-title" class="bpw-pagetitle">未打开页面</span><span id="bpw-vp"></span></div>
       </div>

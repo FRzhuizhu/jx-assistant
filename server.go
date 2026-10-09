@@ -281,6 +281,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/browser/state", a.handleBrowserState)
 	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
 	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)
+	// Electron 壳面板桥的导航回报（panel-bridge.js 在 did-navigate 推送）：
+	// 更新内嵌目标状态并广播 browser_nav（旧壳由 onNavCompleted 触发同一事件）
+	mux.HandleFunc("POST /api/browser/electron-report", a.handleBrowserElectronReport)
 	// 文件查看页（fileview.go）：代码/文本类交付与文件链接的右栏「文件」视图，
 	// 自包含 HTML，桌面/网页/远程三端一致；fileraw 供图片/PDF 内嵌
 	mux.HandleFunc("GET /api/fileview", a.handleFileView)
