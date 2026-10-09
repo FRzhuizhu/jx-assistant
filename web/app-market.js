@@ -2,7 +2,7 @@
    技能 / 组件 / 插件 三个 tab + 搜索 + 一键安装/更新/卸载：
      · 全部操作走 /api/market（挂在 /api/ 下，远程手机端经中继隧道天然可用）；
      · 组件装/卸后调 CX.refresh() 热加载/热卸载，不刷新页面；
-     · 插件 tab 底部保留「管理外部 Claude 市场」入口（复用设置页 ccplugins 分区）；
+     · 插件 tab 底部保留「管理外部 Claude 市场」入口（跳设置页统一「插件」页）；
      · 未配置市场服务器时给出建议地址一键填入（与中继网关同 host 的 jxai-server）。
    样式在 style.css 尾部 mk-* 前缀；复用 app-core.js 的 $ / api / esc / confirmCenter。 */
 
@@ -229,7 +229,7 @@ function bindMarket() {
     };
   });
   const ext = $('mk-ext-market');
-  if (ext) ext.onclick = () => { if (typeof openSettings === 'function') openSettings('ccplugins'); };
+  if (ext) ext.onclick = () => { if (typeof openSettings === 'function') openSettings('plugins'); };
   // Esc 关闭市场视图（有任何弹窗开着时不抢键：确认框/设置自己处理 Esc）
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape' || !marketOpen()) return;

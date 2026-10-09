@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -33,9 +34,10 @@ type App struct {
 	CfgPath    string
 	Store      *Store
 	Ctx        *ContextEngine // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
-	Plugins    *PluginRegistry
+	Plugins    *PluginRegistry      // DSH 插件兼容层实现（adapters.go：插件兼容层/ + adapter_*.go）
+	Layers     *PluginLayerRegistry // 插件兼容层注册表：主体发现的全部插件体系（pluginlayers.go）
 	Components *ComponentRegistry
-	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层（ccplugin*.go）
+	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层实现（ccplugin*.go）
 	Todos      *todoScheduler    // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
 	asr        *asrManager       // 本地语音识别测试通道（voiceasr.go，语音组件设置页用）
 	static     fs.FS             // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
@@ -134,6 +136,15 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.CCPlugins = InitCCPlugins(a, cfg.DataDir)
 	a.CCPlugins.MCPStartAll()
 	a.CCPlugins.ModsStartAll()
+	// 主体发现插件兼容层：各层（DSH、Claude Code…）经 registerPluginLayer
+	// 自注册，主体只按 PluginLayer 契约调用——统一清单与总开关走 /api/plugins，
+	// 主体不认识任何具体插件格式
+	a.Layers = discoverPluginLayers(a)
+	layerNames := []string{}
+	for _, l := range a.Layers.Layers() {
+		layerNames = append(layerNames, l.Info().Name)
+	}
+	log.Printf("[插件] 主体发现 %d 个插件兼容层：%s", len(layerNames), strings.Join(layerNames, "、"))
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
 	// 技能可见性全模式契约自检：任何模式丢了技能清单注入或 read_skill，
@@ -390,14 +401,19 @@ func (a *App) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.FileServer(http.FS(a.static)).ServeHTTP(w, r)
 }
 
-// ---------- 插件兼容层：清单、开关与资产 ----------
+// ---------- 插件兼容层：统一清单与总开关（各层的注册表见 pluginlayers.go） ----------
 
 func (a *App) handleListPlugins(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"plugins": a.Plugins.List()})
+	if a.Layers == nil {
+		writeJSON(w, 200, map[string]any{"layers": []LayerInfo{}, "plugins": []LayerPlugin{}})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"layers": a.Layers.Infos(), "plugins": a.Layers.AllPlugins()})
 }
 
 func (a *App) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Layer   string `json:"layer"` // 来源体系（层 id；缺省=全部层里按 id 唯一匹配）
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
 	}
@@ -405,15 +421,19 @@ func (a *App) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 id 与 enabled")
 		return
 	}
-	if _, ok := a.Plugins.Manifest(body.ID); !ok {
-		writeErr(w, 404, "插件不存在或未适配")
+	if a.Layers == nil {
+		writeErr(w, 500, "插件兼容层未初始化")
 		return
 	}
-	if err := a.Plugins.SetEnabled(body.ID, body.Enabled); err != nil {
+	if err := a.Layers.SetEnabled(body.Layer, body.ID, body.Enabled); err != nil {
+		if errors.Is(err, errLayerNotFound) || errors.Is(err, errPluginNotFound) {
+			writeErr(w, 404, err.Error())
+			return
+		}
 		writeErr(w, 500, "保存开关失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": 1, "refreshNeeded": true, "plugins": a.Plugins.List()})
+	writeJSON(w, 200, map[string]any{"ok": 1, "refreshNeeded": true, "plugins": a.Layers.AllPlugins()})
 }
 
 // handlePluginAsset 提供适配器浏览器半边资产（仅平级文件，防目录穿越）。
