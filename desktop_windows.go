@@ -333,9 +333,7 @@ func runDesktop(app *App, url string) error {
 			break // 正常关窗：走进程退出
 		}
 		atomic.StoreInt32(&frontendRestartReq, 0)
-		if p := restartWndRect.Load(); p != nil {
-			prevRect = *p
-		}
+		prevRect = restartWndRect.Load()
 		log.Printf("前端热重启：切换兼容显示模式重建界面（后端与任务不受影响）")
 	}
 	// 消息循环退出 = 主窗口关闭（正常点 ✕，或 WebView2/窗口异常）。落一行日志：
@@ -383,7 +381,7 @@ func newDesktopFrontend(prev *panelRect) webview2.WebView {
 		}
 	}
 	dataDir := filepath.Join("data", "webview")
-	if webviewSoftwareRender {
+	if webviewSoftwareRender.Load() {
 		// 兼容显示模式（软件合成）：黑屏自检升级或标记文件触发，把 GPU 整个
 		// 让给与我们抢资源的其他应用（聊天界面很轻，软件合成无压力）。删掉
 		// data/webview-compat.flag 即恢复默认硬件加速（热重启本会话内也会切回）。
@@ -574,8 +572,8 @@ var (
 	mainWndDispatch       func(f func())
 	selfCheckBusy         int32
 	selfCheckLastMs       int64
-	selfCheckAlerted      int32                // 弹窗只一次（防打扰/防循环）
-	frontendRestartReq    int32                // 黑屏升级：置位后前端窗口循环热重启
+	selfCheckAlerted      int32                     // 弹窗只一次（防打扰/防循环）
+	frontendRestartReq    int32                     // 黑屏升级：置位后前端窗口循环热重启
 	restartWndRect        atomic.Pointer[panelRect] // 热重启时沿用旧窗口位置尺寸
 	procPostMessageW      = desktopUser32.NewProc("PostMessageW")
 )
@@ -629,7 +627,7 @@ func scheduleSelfCheck(hwnd uintptr) {
 			log.Printf("黑屏自检：升级后已恢复")
 			return
 		}
-		selfCheckEscalate(hwnd)
+		selfCheckEscalate()
 	}()
 }
 
@@ -639,12 +637,12 @@ func scheduleSelfCheck(hwnd uintptr) {
 // 热重启**——当场关掉当前界面窗口，窗口循环按软件合成重建，后端（服务/
 // 会话/任务）原样继续，用户视角是「黑窗口自己关了、一两秒后界面回来了」。
 // 已在兼容模式下仍黑：不再折腾，提示取证反馈。弹窗每进程至多一次。
-func selfCheckEscalate(hwnd uintptr) {
+func selfCheckEscalate() {
 	if !atomic.CompareAndSwapInt32(&selfCheckAlerted, 0, 1) {
 		log.Printf("黑屏自检：兼容处置本进程已执行过，跳过")
 		return
 	}
-	if webviewSoftwareRender {
+	if webviewSoftwareRender.Load() {
 		log.Printf("黑屏自检：兼容模式下仍黑屏（疑似更深层驱动问题），请用户取证反馈")
 		go desktopMessageBox(
 			"检测到界面在兼容显示模式下仍然黑屏。\n\n"+
@@ -660,7 +658,7 @@ func selfCheckEscalate(hwnd uintptr) {
 		log.Printf("黑屏自检：兼容标记写入失败: %v", err)
 		return
 	}
-	webviewSoftwareRender = true
+	webviewSoftwareRender.Store(true)
 	log.Printf("黑屏自检：启用兼容显示模式（%s），前端热重启中（后端不动）", softwareCompatPath)
 	go desktopMessageBox(
 		"检测到显卡驱动与界面渲染冲突（界面持续黑屏）。\n\n"+
@@ -668,19 +666,32 @@ func selfCheckEscalate(hwnd uintptr) {
 			"并改用软件渲染，不再与其他应用争抢 GPU。\n\n"+
 			"下次启动也将直接使用兼容模式；如需恢复默认渲染，"+
 			"删除 data\\webview-compat.flag 后重启软件即可。", desktopAppTitle)
-	restartFrontendNow(hwnd)
+	restartFrontendNow()
 }
 
-// restartFrontendNow 请求前端热重启：记下旧窗口位置（重开原位）→ 关窗，
-// 窗口循环按当前 webviewSoftwareRender 重建前端（黑屏自检升级与设置页
-// 「界面渲染」切换共用）。PostMessage 跨线程安全。
-func restartFrontendNow(hwnd uintptr) {
-	r := &panelRect{}
-	if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(r))); ok != 0 && r.Left > -30000 {
-		restartWndRect = r
+// restartFrontendNow 请求前端热重启（黑屏自检升级与设置页「界面渲染」切换
+// 共用）：记下旧窗口位置（重开原位）→ 向「当前活着的主窗口」投递 WM_CLOSE，
+// 窗口循环见 frontendRestartReq 即按当前 webviewSoftwareRender 重建前端。
+// 关键护栏：热重启存在 ~几百毫秒的重建间隙，此刻拿旧句柄 PostMessage 会
+// 静默失败、切换请求丢失（标记已写而前端没换 → 状态不一致）。这里改为
+// 反复读 mainWndHwnd 重试投递，直到新窗口登记后送达为止（上限 3 秒兜底）。
+func restartFrontendNow() {
+	if hwnd := mainWndHwnd.Load(); hwnd != 0 {
+		r := &panelRect{}
+		if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(r))); ok != 0 && r.Left > -30000 {
+			restartWndRect.Store(r)
+		}
 	}
 	atomic.StoreInt32(&frontendRestartReq, 1)
-	procPostMessageW.Call(hwnd, 0x0010, 0, 0) // WM_CLOSE
+	for i := 0; i < 16; i++ {
+		if h := mainWndHwnd.Load(); h != 0 {
+			if r1, _, _ := procPostMessageW.Call(h, 0x0010, 0, 0); r1 != 0 { // WM_CLOSE
+				return // 已送达（不保证窗口还活着，但请求已入队）
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	log.Printf("前端热重启请求未能投递（3 秒内无有效主窗口）")
 }
 
 // ---------- 渲染模式查询与切换（设置页「界面渲染」） ----------
@@ -690,7 +701,7 @@ func restartFrontendNow(hwnd uintptr) {
 // 切换 / user=设置页手动开启），非兼容模式下为空串。
 func (a *App) displayMode() map[string]any {
 	reason := ""
-	if webviewSoftwareRender {
+	if webviewSoftwareRender.Load() {
 		reason = "auto"
 		if b, err := os.ReadFile(softwareCompatPath); err == nil && strings.Contains(string(b), "user") {
 			reason = "user"
@@ -698,7 +709,7 @@ func (a *App) displayMode() map[string]any {
 	}
 	return map[string]any{
 		"desktop":  a.shellWnd != 0,
-		"software": webviewSoftwareRender,
+		"software": webviewSoftwareRender.Load(),
 		"reason":   reason,
 	}
 }
@@ -710,7 +721,7 @@ func (a *App) setDisplayMode(software bool) error {
 	if a.shellWnd == 0 {
 		return fmt.Errorf("仅桌面版支持渲染模式切换")
 	}
-	if software == webviewSoftwareRender {
+	if software == webviewSoftwareRender.Load() {
 		return nil // 已在目标模式：不动窗口
 	}
 	if software {
@@ -721,10 +732,10 @@ func (a *App) setDisplayMode(software bool) error {
 	} else if err := os.Remove(softwareCompatPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("兼容标记删除失败: %w", err)
 	}
-	webviewSoftwareRender = software
+	webviewSoftwareRender.Store(software)
 	log.Printf("渲染模式切换（设置页）：%s，前端热重启", map[bool]string{true: "兼容模式（软件合成）", false: "GPU 渲染"}[software])
 	// 响应先送达前端再关窗（400ms 缓冲），用户看到界面自动重开即生效
-	time.AfterFunc(400*time.Millisecond, func() { restartFrontendNow(a.shellWnd) })
+	time.AfterFunc(400*time.Millisecond, restartFrontendNow)
 	return nil
 }
 
