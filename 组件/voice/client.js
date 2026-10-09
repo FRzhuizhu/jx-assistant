@@ -10,15 +10,16 @@
  *    浏览器的 speechSynthesis——那在远程手机端上部分浏览器没有，旧版连朗读
  *    设置区都不渲染。
  *
- * 2) 听写（STT）：**浏览器自带的 SpeechRecognition**（WebView2/Edge 内置的微软
- *    识别接口，音频由浏览器直接发给它的识别服务）——即本组件一直以来的实现，
- *    逻辑与样式原样保留：连接中/录音中三态、灰色暂定层（未定稿转写叠在输入框
- *    上显示为灰字、静置 2.5 秒落成正文）、断线退避重连、时长上限倒计时徽标、
- *    一次性轻提示。桌面 WebView2 可用（注意：该能力随运行时版本波动，153 系
- *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）。远程手机端（安卓 Chrome 的识别服务国内不可达）与 Electron 壳（Chromium
- *    无免费识别通道）自动落到本地离线模型（/api/voice/asr/transcribe，voiceasr.go）：
- *    本机/桌面走 WebSocket 流式（说话出灰字、停顿即离线精修落黑字，复用浏览器引擎同款两段式体验）；远程 https 页面自动回退整段识别。音频不出本机/服务器。引擎与
- *    引擎在设置页可选（默认自动）；按句即时出字（能量 VAD 切句）。
+ * 2) 听写（STT）两档（设置页对用户只分「本地/云端」，不点名模型与厂商）：
+ *    a. 本地语音识别模型（默认，voiceasr.go 通道）：本机/桌面走 WebSocket
+ *       流式——说话实时出灰字、停顿约 1 秒由离线模型精修落成黑字（复用浏览器
+ *       引擎同款两段式体验）；远程 https 页面开不了 ws，自动回退整段识别。
+ *       音频不出本机/服务器。
+ *    b. 云端语音识别模型（手动选择）：浏览器自带的 SpeechRecognition——本组件
+ *       一直以来的实现原样保留（连接三态、灰色暂定层、断线退避重连、时长上限
+ *       倒计时）；各浏览器接入的服务商不同（Edge/WebView2、Chrome、国产浏览
+ *       器各异）且依赖其在线服务可达，能力随浏览器版本波动（失败处置指引见
+ *       dictationFailMsg）。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
  *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
@@ -163,24 +164,14 @@
   const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
   let onResize = null;         // 设置页尺寸联动（旧版曾用于远程窄屏隐藏按钮，已撤）
 
-  /* ---------- 听写引擎选择：浏览器识别（微软）｜本地离线模型 ----------
-   * pref.engine：auto（默认）| browser | xasr。
-   * auto = 环境里有 SpeechRecognition 用浏览器识别（微软服务），否则本地 Paraformer
-   * 兜底——远程手机端（Android Chrome 无国内可达的识别服务）与 Electron 壳
-   * （无免费识别通道）从此都有可用的听写，不再隐藏按钮。 */
+  /* ---------- 听写引擎选择：本地（默认）｜云端（浏览器内置识别） ----------
+   * pref.engine：xasr（默认·本地）| browser（云端，需手动选）。
+   * 对用户只分本地/云端两档：云端由浏览器内置识别能力提供，不同浏览器接入的
+   * 服务商不同且依赖其在线服务；选了云端但环境没有 SpeechRecognition 时回退本地。
+   * 历史值 'auto'（按环境自动挑浏览器/本地）随本次改版一并归一到本地默认。 */
   function dictationEngine() {
-    const p = String(pref.get('engine', 'auto'));
-    const valid = p === 'browser' || p === 'xasr';
-    const fallback = 'xasr'; // 双语+原生标点+CPU 最快，综合默认
-    if (!valid) {
-      // auto：Electron 壳与远程端直接走本地——两处 SpeechRecognition 对象虽存在，
-      // 但识别服务必然不可达（Electron 无厂商标识、安卓 Chrome 走谷歌服务国内不通）；
-      // 桌面/本机浏览器有 SR 才用微软服务
-      if (window.JX_ELECTRON || window.JX_REMOTE) return fallback;
-      return SR ? 'browser' : fallback;
-    }
-    if (p === 'browser' && !SR) return fallback; // 选了浏览器但环境没有 → 本地兜底
-    return p;
+    const p = String(pref.get('engine', 'xasr'));
+    return (p === 'browser' && SR) ? 'browser' : 'xasr';
   }
   function dictationIsLocal() { return dictationEngine() !== 'browser'; }
 
@@ -1281,29 +1272,28 @@
     unit.textContent = '秒（30–600，默认 240）';
     row('单次听写时长上限', sec).appendChild(unit);
 
-    // 听写引擎：浏览器识别（微软服务）或本地离线模型（voiceasr.go 通道）
+    // 听写引擎：本地（默认）/ 云端（浏览器内置识别），不点名厂商
     const engSel = document.createElement('select');
     engSel.className = 'sp-select';
+    // 对用户只分「本地/云端」两档，不点名模型与厂商：云端走浏览器内置识别，
+    // 不同浏览器接入的服务商本来就不同（Edge/WebView2、Chrome、国产浏览器各异）
     const engOpts = [
-      ['auto', '自动（有浏览器识别用微软，否则本地 X-ASR）'],
-      ['browser', '浏览器识别（微软服务，需 Edge/WebView2/Chrome）'],
-      ['xasr', '本地·X-ASR（小米·中英双语·带标点·最快）'],
-          ];
+      ['xasr', '本地语音识别模型（离线·默认）'],
+      ['browser', '云端语音识别模型（当前浏览器内置识别）'],
+    ];
     for (const [v, t] of engOpts) {
       const o = document.createElement('option');
       o.value = v; o.textContent = t;
       engSel.appendChild(o);
     }
-    engSel.value = String(pref.get('engine', 'auto'));
+    engSel.value = String(pref.get('engine', 'xasr')) === 'browser' ? 'browser' : 'xasr';
     engSel.onchange = () => { pref.set('engine', engSel.value); };
     row('听写引擎', engSel);
 
-
-    note('两种听写引擎：「浏览器识别」走 WebView2/Edge 内置的微软服务（音频直发'
-      + '它的识别服务，边说边出灰字）；「本地模型」离线转写（音频不出本机/服务器，'
-      + '按句出全文——说完一句点停，稍候文字落进输入框），手机远程端与 Electron 壳'
-      + '会自动落到本地引擎。首次用本地引擎需加载模型（几秒到十几秒），按句识别：说完一句'
-      + '停顿即出字。');
+    note('「本地识别」全程离线（音频不出本机/服务器）：说话实时出灰字，停顿约'
+      + ' 1 秒精修落成正文。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
+      + '接入的服务商不同，且依赖其在线服务可达）。默认本地，需要时手动切换；'
+      + '首次使用本地识别需加载模型（几秒）。');
 
     /* ----- 快捷键 ----- */
     group('语音快捷键');
