@@ -2374,6 +2374,39 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
      （桌面侧 .foot-grid 的 display:contents 在这里被覆盖成网格） */
   .foot-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
 
+  /* 输入工具栏恒一行：任务执行中多出停止键后总宽超限，原来靠换行兜底——
+     中缝还剩着三四十像素的空隙、发送键却掉到第二行，观感割裂。窄屏整栏
+     与左组都改成不换行：塞不下时权限/模型芯片的文字省略号收缩，加号/语音/
+     圆环/停止/发送固定尺寸不缩。两个关键细节：
+     ① 芯片标签 span 要 min-width:0——「deepseek-flash」是一整个不可断词，
+        不给的话模型芯片收不动，超限压力全砸到左组头上（左组会溢出叠到
+        语音键上）；芯片自身保持默认内容下限，图标+箭头不会被挤没。
+     ② 左组恢复 min-width:auto（桌面规则的 min-width:0 在窄屏撤回）——
+        有了内容下限，极端塞不下时整行向左溢出进卡片留白，而不是左组
+        内容叠到右侧按钮上。
+     左组靠左、按钮贴右的结构不变：富余时中缝自然变宽，紧张时收紧到接近
+     按钮间距，发送键永远钉在最右 */
+  .composer-bar, .composer-left { flex-wrap: nowrap; }
+  .composer-left { min-width: auto; }
+  .composer-bar .cbtn, .composer-bar .send-btn, .composer-bar .ctx-ring,
+  .composer-bar .mode-flags { flex: none; }
+  .composer-bar .chip-btn { min-width: 46px; }
+  .composer-bar .chip-btn span { min-width: 0; }
+  /* 带短名的芯片（权限：JS 在 syncComposer 里同步 data-short，同左侧栏机制）：
+     长标签藏起、短字经 ::after 顶上——「工作区内读写」六七个字在一行排版里
+     会把模型标签挤没 */
+  .composer-bar .chip-btn[data-short] span { display: none; }
+  .composer-bar .chip-btn[data-short]::after {
+    content: attr(data-short);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 芯片下拉小箭头窄屏隐掉：触屏上整颗胶囊就是点按目标，箭头纯装饰；
+     隐掉省出的 2×18px 让权限/模型标签在执行态（多出停止键）还能留两三个字 */
+  .composer-bar .chip-btn .caret { display: none; }
+  /* 执行态（停止键在场）隐掉上下文圆环：圆环的价值在发送前，执行中让位——
+     省出的 38px 让两颗芯片的标签不至于全被挤光 */
+  .composer-bar:has(.stop:not(.hidden)) .ctx-ring { display: none; }
+
   /* 右栏：整屏浮层，从右侧滑入；宽度推导冻结（rpApply 窄屏直接返回），拖拽条退场 */
   #rpanel {
     position: fixed; top: var(--tb-h); bottom: 0; right: 0;

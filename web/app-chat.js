@@ -4615,6 +4615,9 @@ function syncModelSubPop(view) {
 /* ---------- 弹出面板系统：加号菜单 / 权限面板 / 模型面板 / 目录面板 ---------- */
 
 const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读写', 'full': '完全访问' };
+/* 窄屏（手机）输入工具栏一行排时权限芯片的短名（chip 的 data-short，CSS 换显，
+   机制同左侧栏入口按钮）：全名六七个字会把模型标签挤没，短名保住可读性 */
+const PERM_SHORTS = { 'read-only': '只读', 'workspace-write': '读写', 'full': '完全' };
 // 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
 // 扩展模式（设计人员等）＝在这里加一项 + 后端加对应提示词分支，
 // 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
@@ -4705,6 +4708,7 @@ function syncComposer(view) {
   const s = sessionOrDraftFor(view);
   const remote = vcur ? !!vcur.remote : (view === mainView && !!homeDraft.remote);
   viewEl(view, 'perm-chip-label').textContent = (PERM_LABELS[s.permission] || s.permission) + (remote ? ' ·远程' : '');
+  viewEl(view, 'perm-chip').dataset.short = (PERM_SHORTS[s.permission] || s.permission) + (remote ? ' ·远' : '');
   const tk = curThinking(view);
   viewEl(view, 'model-chip-label').textContent = modelNameOf(currentModelKey(view)) + (tk ? ' · ' + (THINK_LABELS[tk] || tk) : '');
   viewEl(view, 'flag-plan').classList.toggle('on', s.planMode);
