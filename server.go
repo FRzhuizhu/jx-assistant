@@ -37,6 +37,7 @@ type App struct {
 	Components *ComponentRegistry
 	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层（ccplugin*.go）
 	Todos      *todoScheduler    // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
+	asr        *asrManager       // 本地语音识别测试通道（voiceasr.go，语音组件设置页用）
 	static     fs.FS             // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
 	mu              sync.Mutex
@@ -147,6 +148,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	go a.flushDeliveries("")
 	// 待办与定时任务：载入清单并起调度循环（组件关掉时整拍跳过，见 todo.go）
 	a.Todos = newTodoScheduler(a)
+	// 本地语音识别测试通道（voiceasr.go）：worker 惰性拉起，无模型时端点仍可列清单
+	a.asr = &asrManager{app: a}
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
 	// 远程外壳版本代数恢复（一键清缓存的计数，remoteaccess.go）
@@ -286,6 +289,10 @@ func (a *App) Routes() http.Handler {
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
+	// 本地语音识别测试通道（voiceasr.go）：模型清单/就绪态 + 转录（16k mono WAV
+	// 的 base64，前端语音设置页「本地识别测试」面板用）
+	mux.HandleFunc("GET /api/voice/asr/models", a.handleASRModels)
+	mux.HandleFunc("POST /api/voice/asr/transcribe", a.handleASRTranscribe)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
 	mux.HandleFunc("GET /api/device/poll", a.handleDevicePoll)

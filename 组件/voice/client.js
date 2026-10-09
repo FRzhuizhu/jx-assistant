@@ -1035,6 +1035,143 @@
       + '（https://go.microsoft.com/fwlink/p/?LinkId=2124703）或以 -browser 参数'
       + '启动、改用 Edge 打开可解。');
 
+    /* ----- 本地识别测试（模型评估面板，后端 voiceasr.go） ----- */
+    group('本地识别测试（离线模型评估）');
+    note('对麦克风说几秒话，用所选本地模型离线转写（音频不出本机）。'
+      + '首次切换模型需加载几十秒；Qwen 系列自带标点，另两个模型无标点输出。');
+
+    const asrModelSel = document.createElement('select');
+    asrModelSel.className = 'sp-select';
+    const asrDevSel = document.createElement('select');
+    asrDevSel.className = 'sp-select';
+    const dCpu = document.createElement('option');
+    dCpu.value = 'cpu'; dCpu.textContent = 'CPU（任何机器）';
+    const dAuto = document.createElement('option');
+    dAuto.value = 'auto'; dAuto.textContent = '自动加速（核显 Vulkan/DML，回退 CPU）';
+    asrDevSel.append(dCpu, dAuto);
+    asrDevSel.value = 'auto';
+    row('识别模型', asrModelSel);
+    row('算力', asrDevSel);
+
+    const asrRec = btn('● 录音', '点我开始录音，再点结束并发给所选模型');
+    const asrStatus = document.createElement('span');
+    asrStatus.className = 'sp-value';
+    const asrOut = document.createElement('div');
+    asrOut.className = 'asr-result';
+    row('测试', asrRec).appendChild(asrStatus);
+    el.appendChild(asrOut);
+
+    const fillModels = (models) => {
+      asrModelSel.innerHTML = '';
+      if (!models || !models.length) {
+        const o = document.createElement('option');
+        o.value = ''; o.textContent = '（不可用：未找到 asr/asr_worker.py）';
+        asrModelSel.appendChild(o);
+        return;
+      }
+      for (const m of models) {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = m.name + (m.ready ? '' : '（未就绪：模型文件缺失）');
+        if (!m.ready) o.disabled = true;
+        asrModelSel.appendChild(o);
+      }
+      const first = models.find((m) => m.ready);
+      if (first) asrModelSel.value = first.id;
+    };
+    fillModels([]);
+    fetch('/api/voice/asr/models').then(async (res) => {
+      if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+      const d = await res.json();
+      if (!el.isConnected) return;
+      fillModels(d.models || []);
+    }).catch(() => {});
+
+    // 录音：16k 单声道 PCM 采集（AudioContext 直接重采样），停录后封 WAV 走后端
+    let recStream = null, recCtx = null, recNode = null, recChunks = [], recT0 = 0;
+    const pcmToWavB64 = (floats, sr) => {
+      const len = floats.length;
+      const buf = new ArrayBuffer(44 + len * 2);
+      const v = new DataView(buf);
+      const wstr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      wstr(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); wstr(8, 'WAVE');
+      wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+      wstr(36, 'data'); v.setUint32(40, len * 2, true);
+      for (let i = 0; i < len; i++) {
+        const s = Math.max(-1, Math.min(1, floats[i]));
+        v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      let bin = '';
+      const u8 = new Uint8Array(buf);
+      for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+      return btoa(bin);
+    };
+    asrRec.onclick = async () => {
+      if (recStream) { // 停录 → 转录
+        try { recNode && recNode.disconnect(); } catch (e) {}
+        try { recStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+        const sr = recCtx ? recCtx.sampleRate : 16000;
+        try { recCtx && await recCtx.close(); } catch (e) {}
+        recStream = null; recCtx = null; recNode = null;
+        const secs = ((Date.now() - recT0) / 1000).toFixed(1);
+        const total = recChunks.reduce((n, c) => n + c.length, 0);
+        const floats = new Float32Array(total);
+        let off = 0;
+        for (const c of recChunks) { floats.set(c, off); off += c.length; }
+        recChunks = [];
+        if (total < 1600) { asrOut.textContent = '录音太短（' + secs + 's），请说长一点再停'; return; }
+        const model = asrModelSel.value;
+        if (!model) { asrOut.textContent = '没有可用模型（见下拉框提示）'; return; }
+        asrRec.textContent = '● 录音';
+        asrStatus.textContent = '识别中…（首次加载模型可能要等）';
+        asrOut.textContent = '';
+        const t0 = Date.now();
+        try {
+          const res = await fetch('/api/voice/asr/transcribe', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, device: asrDevSel.value, wavB64: pcmToWavB64(floats, sr) }),
+          });
+          if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+          const d = await res.json();
+          asrStatus.textContent = '';
+          asrOut.innerHTML = '';
+          const txt = document.createElement('div');
+          txt.className = 'asr-text';
+          txt.textContent = d.text || '（未识别到内容）';
+          const stat = document.createElement('div');
+          stat.className = 'asr-stat';
+          stat.textContent = `音频 ${d.audio_ms}ms ｜ 推理 ${d.infer_ms}ms ｜ 端到端 ${d.total_ms}ms`
+            + ` ｜ RTF ${d.rtf}（<1 即快于实时） ｜ ${model} @ ${asrDevSel.value === 'cpu' ? 'CPU' : '自动'}`;
+          asrOut.append(txt, stat);
+        } catch (e) {
+          asrStatus.textContent = '';
+          asrOut.textContent = '识别失败：' + (e && e.message ? e.message : e) + '（耗时 ' + (Date.now() - t0) + 'ms）';
+        }
+        return;
+      }
+      // 开始录音
+      try {
+        recStream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        });
+      } catch (e) {
+        asrOut.textContent = '麦克风不可用：' + (e && e.message ? e.message : e);
+        return;
+      }
+      recCtx = new AudioContext({ sampleRate: 16000 });
+      const src = recCtx.createMediaStreamSource(recStream);
+      recNode = recCtx.createScriptProcessor(4096, 1, 1);
+      recChunks = [];
+      recNode.onaudioprocess = (ev) => { recChunks.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
+      src.connect(recNode);
+      recNode.connect(recCtx.destination);
+      recT0 = Date.now();
+      asrRec.textContent = '■ 停止并识别';
+      asrStatus.textContent = '录音中…';
+      asrOut.textContent = '';
+    };
+
     /* ----- 快捷键 ----- */
     group('语音快捷键');
 
