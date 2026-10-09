@@ -1295,6 +1295,44 @@ document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
   b.onclick = () => { lsSet('jx.theme', b.dataset.v); applyTheme(); syncThemeCards(); };
 });
 
+// 界面渲染模式（桌面版）：GPU 渲染 / 兼容模式。状态读自服务端实际运行值
+// （/api/display-mode），网页/手机端 desktop=false 时整个区块隐藏。
+// 点选切换 → POST 后端写/删兼容标记并前端热重启（窗口约 1 秒后原位重开，
+// 本页随之前端一起重建，回来即是新模式）。
+(async function initRenderMode() {
+  const sec = document.getElementById('render-mode-section');
+  if (!sec) return;
+  let st = null;
+  try { st = await api('/api/display-mode'); } catch (e) { return; }
+  if (!st || !st.desktop) return;
+  sec.style.display = '';
+  const cards = document.querySelectorAll('#render-cards .theme-card');
+  const stateLine = document.getElementById('render-mode-state');
+  const sync = () => {
+    const cur = st.software ? 'compat' : 'gpu';
+    cards.forEach((b) => b.classList.toggle('cur', b.dataset.v === cur));
+    stateLine.textContent = st.software
+      ? '当前运行：兼容模式（软件渲染，' + (st.reason === 'auto' ? '黑屏时自动切换）' : '手动开启）')
+      : '当前运行：GPU 渲染（默认）';
+  };
+  sync();
+  cards.forEach((b) => {
+    b.onclick = async () => {
+      const want = b.dataset.v === 'compat';
+      if (want === !!st.software) return;
+      stateLine.textContent = '正在切换渲染模式，界面即将自动重开…';
+      try {
+        await api('/api/display-mode', { method: 'POST', body: JSON.stringify({ software: want }) });
+        st.software = want;
+        st.reason = 'user';
+        sync();
+      } catch (e) {
+        sync(); // 切换失败（非桌面版等）：恢复显示当前实际状态
+      }
+    };
+  });
+})();
+
 // 点缀色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
 const ACCENTS = [
   ['默认蓝', '#4d6bfe', '#3d5bef'],

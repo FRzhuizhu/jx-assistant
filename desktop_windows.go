@@ -278,7 +278,7 @@ func runDesktop(app *App, url string) error {
 	// 权限说明见 newDesktopFrontend（每轮前端创建时都会做）。
 	softwareCompatPath = filepath.Join("data", "webview-compat.flag")
 	if _, err := os.Stat(softwareCompatPath); err == nil {
-		webviewSoftwareRender = true
+		webviewSoftwareRender.Store(true)
 		log.Printf("兼容显示模式已启用（软件合成，标记文件 %s 存在）", softwareCompatPath)
 	}
 	// 前端窗口循环：正常一轮（用户关窗 → 退出循环、进程收尾）；黑屏自检
@@ -294,6 +294,9 @@ func runDesktop(app *App, url string) error {
 			return fmt.Errorf("创建桌面窗口失败")
 		}
 		subclassMainWindow(uintptr(w.Window()))
+		// 当前主窗口登记（原子）：restartFrontendNow 从任意 goroutine 取
+		// 「此刻活着的那扇窗」投递关窗，热重启的重建间隙里重试等待新句柄。
+		mainWndHwnd.Store(uintptr(w.Window()))
 		// 黑屏自检的 UI 线程通道：检测 goroutine 里要动窗口（1px resize）时经
 		// Dispatch 投递（COM/窗口操作必须在 UI 线程，与浏览器面板同一纪律）。
 		mainWndDispatch = w.Dispatch
@@ -330,7 +333,9 @@ func runDesktop(app *App, url string) error {
 			break // 正常关窗：走进程退出
 		}
 		atomic.StoreInt32(&frontendRestartReq, 0)
-		prevRect = restartWndRect
+		if p := restartWndRect.Load(); p != nil {
+			prevRect = *p
+		}
 		log.Printf("前端热重启：切换兼容显示模式重建界面（后端与任务不受影响）")
 	}
 	// 消息循环退出 = 主窗口关闭（正常点 ✕，或 WebView2/窗口异常）。落一行日志：
@@ -560,14 +565,18 @@ func nudgeMainWindow(hwnd uintptr) {
 // ---------- 黑屏自检与自动降级 ----------
 
 var (
-	softwareCompatPath    string
-	webviewSoftwareRender bool // 本次启动是否已带软件合成
+	softwareCompatPath string
+	// webviewSoftwareRender 本次启动（或上次热重启后）前端是否软件合成。
+	// HTTP goroutine（设置页切换）与自检 goroutine 写、UI 线程窗口循环读，
+	// 一律走原子访问。
+	webviewSoftwareRender atomic.Bool
+	mainWndHwnd           atomic.Uintptr // 当前主窗口句柄（窗口循环每轮登记）
 	mainWndDispatch       func(f func())
 	selfCheckBusy         int32
 	selfCheckLastMs       int64
-	selfCheckAlerted      int32      // 弹窗只一次（防打扰/防循环）
-	frontendRestartReq    int32      // 黑屏升级：置位后前端窗口循环热重启
-	restartWndRect        *panelRect // 热重启时沿用旧窗口位置尺寸
+	selfCheckAlerted      int32                // 弹窗只一次（防打扰/防循环）
+	frontendRestartReq    int32                // 黑屏升级：置位后前端窗口循环热重启
+	restartWndRect        atomic.Pointer[panelRect] // 热重启时沿用旧窗口位置尺寸
 	procPostMessageW      = desktopUser32.NewProc("PostMessageW")
 )
 

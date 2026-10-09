@@ -185,6 +185,8 @@ func (a *App) sessLock(id string) *sync.Mutex {
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux.HandleFunc("GET /api/display-mode", a.handleGetDisplayMode)
+	mux.HandleFunc("POST /api/display-mode", a.handleSetDisplayMode)
 	mux.HandleFunc("GET /api/search/title", a.handleSearchTitle)
 	mux.HandleFunc("GET /api/search/content", a.handleSearchContent)
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
@@ -682,6 +684,29 @@ func searchSnippet(content, q string) string {
 		suf = "…"
 	}
 	return pre + string(runes[lo:hi]) + suf
+}
+
+// handleGetDisplayMode 设置页「界面渲染」区块的数据源：当前渲染模式与来由
+// （desktop_windows.go 实现；网页/手机模式 desktop=false，前端隐藏区块）。
+func (a *App) handleGetDisplayMode(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.displayMode())
+}
+
+// handleSetDisplayMode 切换 GPU 渲染 / 兼容模式：写删兼容标记 + 前端热重启
+// （后端不动，窗口约 1 秒后原位重开）。
+func (a *App) handleSetDisplayMode(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Software bool `json:"software"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
+		return
+	}
+	if err := a.setDisplayMode(p.Software); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {

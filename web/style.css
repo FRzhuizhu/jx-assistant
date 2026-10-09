@@ -1808,6 +1808,10 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .tc-main b { width: 44%; height: 6px; border-radius: 3px; background: var(--accent); display: block; }
 .tc-name { font-size: 12px; color: var(--text-2); text-align: center; }
 .theme-card.cur .tc-name { color: var(--accent); font-weight: 600; }
+/* 渲染模式卡片（设置 · 界面渲染）：借主题卡片的边框/选中环，文字更紧凑 */
+.render-cards { max-width: 420px; }
+.render-cards .theme-card { gap: 2px; padding: 10px 6px; }
+.render-cards .rc-sub { font-size: 11px; color: var(--text-3); text-align: center; }
 
 /* ---------- 设置：模型页（提供方卡片） ---------- */
 .pf-add {
