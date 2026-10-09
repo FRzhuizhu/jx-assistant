@@ -430,6 +430,8 @@
 
   let playURL = null;    // blob URL（播完/停止即 revoke）
   let playEl = null;     // <audio> 元素
+  let ttsAbort = null;   // 分段朗读在途请求的中止器（停止时连同预取一起砍）
+  let ttsStopChain = null; // 分段播放链的停摆钩子（ttsPlay 内部赋值）
 
   function restBtn(btn) {
     btn.classList.remove('playing');
@@ -438,6 +440,8 @@
   }
 
   function stopAudio() {
+    if (ttsAbort) { try { ttsAbort.abort(); } catch (e) { /* 已中止 */ } ttsAbort = null; }
+    if (ttsStopChain) { try { ttsStopChain(); } catch (e) { /* 已停 */ } ttsStopChain = null; }
     if (playEl) {
       playEl.onended = playEl.onerror = null;
       playEl.pause();
@@ -451,23 +455,84 @@
     if (playingBtn) { restBtn(playingBtn); playingBtn = null; }
   }
 
-  /** 后端合成并播放一段文本：返回 Promise，播放结束/出错时落定（单飞：先停上一条）。 */
-  function ttsPlay(text) {
-    stopAudio();
+  /** 朗读文本切块：句末标点切大块、软标点收尾小块；首块刻意更短（尽快出声）。
+   * 后端 /api/voice/tts 虽是流式响应，但浏览器没有对 POST 渐进播放的通用手段
+   * （旧实现 res.blob() 攒齐全文才开播——长消息要等微软合成完整篇才出声），
+   * 故改为按句分段合成 + 顺序播放 + 预取：首块约 0.5–1.5s 出声，后续块在
+   * 上一块播放期间已在下载。 */
+  function splitSpeechChunks(text) {
+    const parts = [];
+    let buf = '';
+    for (const ch of text) {
+      buf += ch;
+      const hard = '。！？!?；;\n'.indexOf(ch) >= 0;
+      const soft = '，,、：:）)'.indexOf(ch) >= 0;
+      const first = parts.length === 0;
+      const max = first ? 80 : 180;
+      const min = first ? 18 : 60;
+      if ((hard && buf.length >= min) || (soft && buf.length >= max) || buf.length >= 240) {
+        const t = buf.trim();
+        if (t) parts.push(t);
+        buf = '';
+      }
+    }
+    const tail = buf.trim();
+    if (tail) parts.push(tail);
+    return parts.length ? parts : [text.trim()];
+  }
+
+  function ttsFetchBlob(text, signal) {
     return fetch('/api/voice/tts', {
-      method: 'POST',
+      method: 'POST', signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, rate: spokenRate(), voice: pref.get('edgeVoice', '') }),
     }).then(async (res) => {
       if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
       return res.blob();
-    }).then((blob) => new Promise((resolve, reject) => {
-      playURL = URL.createObjectURL(blob);
-      playEl = new Audio(playURL);
-      playEl.onended = () => { stopAudio(); resolve(); };
-      playEl.onerror = () => { stopAudio(); reject(new Error('播放失败')); };
-      playEl.play().catch(reject);
-    }));
+    });
+  }
+
+  /** 后端合成并播放一段文本（分段流式）：返回 Promise，全部播完/出错/被停时落定
+   * （单飞：先停上一条）。播放队列预取窗口 3 块：块 i 在播时，i+1/i+2 已在合成。 */
+  function ttsPlay(text) {
+    stopAudio();
+    ttsAbort = new AbortController();
+    const signal = ttsAbort.signal;
+    const chunks = splitSpeechChunks(text);
+    const blobs = chunks.map(() => null);
+    let idx = 0, stopped = false;
+    const prefetch = () => {
+      for (let i = idx; i < Math.min(idx + 3, chunks.length); i++) {
+        if (!blobs[i]) blobs[i] = ttsFetchBlob(chunks[i], signal);
+      }
+    };
+    prefetch();
+    return new Promise((resolve, reject) => {
+      const playChunk = () => {
+        if (stopped) return;
+        if (idx >= chunks.length) { stopAudio(); resolve(); return; }
+        const i = idx;
+        blobs[i].then((blob) => {
+          if (stopped || signal.aborted) return;
+          playURL = URL.createObjectURL(blob);
+          playEl = new Audio(playURL);
+          playEl.onended = () => {
+            URL.revokeObjectURL(playURL); playURL = null; playEl = null;
+            idx += 1;
+            prefetch();
+            playChunk();
+          };
+          playEl.onerror = () => { stopAudio(); reject(new Error('播放失败')); };
+          playEl.play().catch((e) => { stopAudio(); reject(e); });
+        }).catch((e) => {
+          if (signal.aborted || stopped) return;
+          stopAudio();
+          reject(i === 0 ? e : new Error('朗读中断：' + (e && e.message ? e.message : e)));
+        });
+      };
+      ttsStopChain = () => { stopped = true; resolve(); }; // 被停/被顶替：安静落定（按钮由 stopSpeak 复位）
+      playChunk();
+    });
   }
 
   /** 朗读一条消息：按钮态驱动 + 后端合成播放。 */
