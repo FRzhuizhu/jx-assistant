@@ -15,12 +15,15 @@
       <b>坚祥数字助理</b>
     </div>
 
+    <!-- 入口按钮的文字放在 .sb-label 里、按钮带 data-short 短名：桌面两者无差别，
+         手机端（窄屏媒体查询）藏全名、亮短名，更窄连短字也隐掉只剩图标。
+         以后往这组里加新入口，照这个结构写（span + data-short），否则手机端只能显示图标 -->
     <div class="actions">
-      <button id="btn-new-task" class="side-btn">
+      <button id="btn-new-task" class="side-btn" data-short="新任务">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        新工作任务
+        <span class="sb-label">新工作任务</span>
       </button>
-      <button id="btn-new-assistant" class="side-btn">
+      <button id="btn-new-assistant" class="side-btn" data-short="数据助理">
         <svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g><style>
 [data-state] .da-eye,[data-state] .da-eyes{transform-box:fill-box;transform-origin:center}
 .da-smile{opacity:0}
@@ -49,7 +52,7 @@
 @keyframes da-hover{0%,100%{transform:translateX(0)}22%{transform:translateX(3.2px)}45%{transform:translateX(-.6px)}70%{transform:translateX(-3.2px)}90%{transform:translateX(.6px)}}
 @media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face],[data-da-face]:hover,button:hover [data-da-face]{transform:none;transition:none}[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:none!important}}
 </style></svg>
-        数字助理主对话
+        <span class="sb-label">数字助理主对话</span>
       </button>
     </div>
 
@@ -83,15 +86,22 @@
     </div>
     <div id="session-list"></div>
 
+    <!-- 底部框架：设置行独占最后一行；其上是按钮格 .foot-grid——桌面
+         display:contents 完全透明（按钮就是 sidebar-foot 的普通行，观感与
+         从前一致），手机端切成两栏网格。以后组件要往侧栏底部加入口，一律
+         append 进 .foot-grid：手机端自动落进两栏格子往上叠行，设置行恒在
+         最底独占整行，桌面端照常多出一行。 -->
     <div class="sidebar-foot">
+      <div class="foot-grid">
       <button id="btn-market" class="foot-btn" title="市场：安装/更新 技能、组件与插件">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
         市场
       </button>
       <button id="btn-recycle" class="foot-btn" title="回收站">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         回收站
       </button>
+      </div>
       <!-- 连接状态胶囊/反馈胶囊/手机图标都嵌在设置行右侧（同一行的中间对齐，
            行内右对齐的锚点是 .foot-feedback 的 margin-left:auto） -->
       <button id="btn-settings" class="foot-btn">

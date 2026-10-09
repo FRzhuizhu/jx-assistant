@@ -159,6 +159,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   display: flex; flex-direction: column; gap: 3px;
   padding: 4px 10px 12px;
 }
+/* 底部按钮格（市场/回收站/以后的组件入口）：桌面 display:contents 完全透明，
+   按钮仍是 .sidebar-foot 的直接行、观感与从前一致；手机端窄屏媒体查询里切两栏
+   网格（设置行不在格内，永远独占最后一行）。组件往底部加按钮 append 进
+   .foot-grid 即可，两端自动各就各位（契约见 index.html 同名注释） */
+.foot-grid { display: contents; }
 /* 连接状态胶囊：嵌在设置行右侧、紧跟反馈胶囊（行内居中由 flex 的 align-items:center
    保证；右对齐交给 .foot-feedback 的 margin-left:auto 这一个锚点） */
 .foot-btn .pill { margin-left: 0; flex: none; }
@@ -2350,6 +2355,25 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   body.sb-collapsed #sidebar { width: 100%; min-width: 100%; }
   .sb-inner { width: 100%; }
 
+  /* 顶部入口按钮并成一栏（图标 + data-short 短字）：原来竖排三行近 130px，
+     现在一行 ~40px，整段高度让给中间的会话列表。全名 .sb-label 藏掉、短字经
+     ::after 从 data-short 取（塞不下省略号截断）；更窄的 359.98 断点连短字也
+     隐掉只剩图标，title 悬停/无障碍名仍是全名。图标本身一个没动 */
+  #sidebar .actions { flex-direction: row; gap: 6px; padding: 6px 10px 8px; }
+  #sidebar .actions .side-btn {
+    flex: 1 1 0; min-width: 0;
+    padding: 9px 4px; font-size: 12.5px; gap: 5px;
+  }
+  #sidebar .actions .side-btn .sb-label { display: none; }
+  #sidebar .actions .side-btn::after {
+    content: attr(data-short);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* 底部框架：设置行不变；其上市场/回收站（及以后组件按钮）两栏网格往上叠行
+     （桌面侧 .foot-grid 的 display:contents 在这里被覆盖成网格） */
+  .foot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+
   /* 右栏：整屏浮层，从右侧滑入；宽度推导冻结（rpApply 窄屏直接返回），拖拽条退场 */
   #rpanel {
     position: fixed; top: var(--tb-h); bottom: 0; right: 0;
@@ -2406,6 +2430,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 @media (max-width: 499.98px) and (prefers-reduced-motion: reduce) {
   #sidebar, #rpanel { transition: none; }
+}
+
+/* 更窄一档（<360px：分屏半屏、折叠屏外屏等）：顶部入口连短字都排不开了，
+   收成纯图标（::after 不生成盒子，图标随 justify-content 居中），全名仍在
+   title 悬停里。断点取 359.98：常见手机最窄 320px 也能排下三个图标 */
+@media (max-width: 359.98px) {
+  #sidebar .actions .side-btn::after { content: none; }
+  #sidebar .actions .side-btn { padding: 9px 2px; }
 }
 
 /* ---------- 右栏多视图切换与 iframe 面板 ---------- */
