@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -108,6 +110,15 @@ func pickDialogNative(startDir, title string, pickFolder, allFilter, multi bool)
 	}
 	ch := make(chan pickResult, 1)
 	go func() {
+		// COM/vtable 手工调用没有编译期保证，任何一处崩（空指针、坏 hr 分支）
+		// 都会 panic；这颗协程没有 net/http 的兜底 recover，裸 panic 直接杀掉
+		// 整个进程（桌面壳窗口瞬关）。在这里拦下、落日志、按失败返回。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[pick-dialog] 对话框协程 panic（已拦截）: %v\n%s", r, debug.Stack())
+				ch <- pickResult{err: fmt.Errorf("文件选择框内部错误: %v", r)}
+			}
+		}()
 		runtime.LockOSThread()
 		paths, err := pickDialogSTA(startDir, title, pickFolder, allFilter, multi)
 		runtime.UnlockOSThread()

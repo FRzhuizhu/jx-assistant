@@ -220,6 +220,8 @@ func (a *App) Routes() http.Handler {
 	// 读系统剪贴板（右键「粘贴」在桌面壳里的兜底路径：WebView2 里
 	// readText 会永久挂起）。剪贴板是敏感数据：仅回环可达
 	mux.HandleFunc("GET /api/clipboard", a.handleClipboardRead)
+	// 前端诊断打点（见 handleDiag）：只写日志不回数据
+	mux.HandleFunc("GET /api/diag", a.handleDiag)
 	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
 	mux.HandleFunc("GET /api/questions", a.handleListQuestions)
@@ -1699,7 +1701,9 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		a.handleUploadByPath(w, r, m)
 		return
 	}
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// 256MB：办公 PPT 常带大媒体轻松超 32MB，旧上限会把大文件静默截断成坏文件
+	// （LimitReader 截到 32MB 照写不报错）。回环/局域网传 256MB 是用户自己的选择。
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		writeErr(w, 400, "上传解析失败: "+err.Error())
 		return
 	}
@@ -1726,7 +1730,7 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	} else {
 		dst = filepath.Join(ws, name)
 	}
-	data, err := io.ReadAll(io.LimitReader(file, 32<<20))
+	data, err := io.ReadAll(io.LimitReader(file, 256<<20))
 	if err != nil {
 		writeErr(w, 500, "读取上传内容失败: "+err.Error())
 		return
@@ -1881,11 +1885,14 @@ func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
 	}
 	allFilter := r.URL.Query().Get("filter") == "all"
 	multi := r.URL.Query().Get("multi") == "1" || r.URL.Query().Get("multi") == "true"
+	log.Printf("[pick-file] 打开原生文件选择框（filter=all:%v multi:%v，阻塞至用户关闭）", allFilter, multi)
 	paths, err := pickFileSerialized(start, title, allFilter, multi)
 	if err != nil {
+		log.Printf("[pick-file] 失败: %v", err)
 		writeErr(w, 500, "无法打开文件选择框: "+err.Error())
 		return
 	}
+	log.Printf("[pick-file] 返回 %d 个路径", len(paths))
 	first := ""
 	if len(paths) > 0 {
 		first = paths[0]
@@ -2578,6 +2585,23 @@ func (a *App) handleClipboardRead(w http.ResponseWriter, r *http.Request) {
 		resp["png"] = base64.StdEncoding.EncodeToString(png)
 	}
 	writeJSON(w, 200, resp)
+}
+
+// handleDiag 前端诊断打点：页面探针（web/app-chat.js 的 jxDiag）把关键分支的
+// 执行结果经 1px GIF beacon 送到这里落一行日志。桌面壳 WebView2 封了远程调试
+// 端口、也没有 console 可看，「点了没反应 / 请求没发出去」这类前端问题只能靠
+// 它取证。只写日志不回数据（GIF 空体即可），消息截断防刷屏；走 withCORS 的
+// 同源校验与访问日志，不留额外攻击面。
+func (a *App) handleDiag(w http.ResponseWriter, r *http.Request) {
+	m := r.URL.Query().Get("m")
+	if len(m) > 500 {
+		m = m[:500] + "…"
+	}
+	log.Printf("[diag] %s", m)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "image/gif")
+	// 1x1 透明 GIF：Image beacon 只需要一个能解码的图
+	_, _ = w.Write([]byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"))
 }
 
 // handleDeliveryDownload 提供交付文件的下载。只放行已登记进 deliveries 的

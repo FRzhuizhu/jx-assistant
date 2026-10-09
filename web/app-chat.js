@@ -2,6 +2,25 @@
    ROW_ITEM_BUILDERS，契约见《消息类型规范.md》）、发送与流式、SSE 事件流、
    审批/提问/待办卡片、SSH 远程、输入区与弹出面板、宽度拖把手。第四个加载。 */
 
+/* 全局错误打点（桌面壳排障）：WebView2 封了远程调试端口也没有 console，
+   未捕获异常在这里回传后端日志（/api/diag），否则在桌面壳里无声无息——
+   顶层脚本一旦中断，后面所有 UI 绑定（菜单项/按钮）全体失效。 */
+window.addEventListener('error', (ev) => {
+  try {
+    const where = (ev.filename || '').split('/').pop();
+    const line = ev.lineno ? (':' + ev.lineno + ':' + ev.colno) : '';
+    const img = new Image();
+    img.src = '/api/diag?m=' + encodeURIComponent('JS错误: ' + ev.message + ' @' + where + line) + '&t=' + Date.now();
+  } catch (e) { /* 最后的兜底也别再抛 */ }
+});
+window.addEventListener('unhandledrejection', (ev) => {
+  try {
+    const r = ev.reason;
+    const img = new Image();
+    img.src = '/api/diag?m=' + encodeURIComponent('未处理Promise拒绝: ' + (r && r.message ? r.message : String(r))) + '&t=' + Date.now();
+  } catch (e) { /* 忽略 */ }
+});
+
 /* ---------- 首页（新建对话）---------- */
 
 // 输入卡片的位置：首页时挂在页面中央的问候区里，进对话后回到底部
@@ -2339,7 +2358,7 @@ function buildApprovalCard(e, own) {
   acts.className = 'ap-actions';
   acts.innerHTML =
     '<button class="ok" data-act="ok">允许</button>' +
-    '<button class="ok always" data-act="always" title="常设授权：命令升级点亮对应能力开关；工作区外写入会把会话切到「完全访问」（三项能力捆绑点亮），此后不再逐次审批">始终允许</button>' +
+    '<button class="ok always" data-act="always" title="常设授权：命令升级/能力申请点亮对应能力开关；工作区外写入会把会话切到「完全访问」（三项能力捆绑点亮），此后不再逐次审批">始终允许</button>' +
     '<button class="deny" data-act="deny">拒绝</button>';
   acts.querySelectorAll('button').forEach((b) => {
     b.onclick = () => decideApproval(ap.id, b.dataset.act !== 'deny', b.dataset.act === 'always');
@@ -4798,8 +4817,17 @@ let uploadTarget = mainView; // 文件选择框是单例：记住这次选择属
    JSON {path}（登记 uploads 表，该路径可作 deliver_file 交付目标）；其余（浏览器 /
    手机 / 远程 / 粘贴 / 拖拽）暂存 File 对象，发送时走 multipart。 */
 
-const ATTACH_MAX_BYTES = 32 * 1024 * 1024; // 与后端 multipart 上限一致：超了入列时就提示
+// 与后端 multipart 上限一致（server.go handleUpload 的 LimitReader）：超了入列时就提示。
+// 256MB：办公 PPT 常带大媒体，32MB 旧上限会把多数 pptx 挡在门外（用户以为「粘贴不了」）。
+const ATTACH_MAX_BYTES = 256 * 1024 * 1024;
 const ATTACH_MAX_COUNT = 20;               // 一条消息最多带 20 个附件
+
+// 前端诊断打点：桌面壳 WebView2 封了远程调试端口、也没有 console 可看，
+// 关键分支的执行结果经 1px GIF beacon 回传后端日志（GET /api/diag 落一行）。
+// 排障「点了没反应 / 请求没发出」类问题用，别当普通日志刷。
+function jxDiag(msg) {
+  try { new Image().src = '/api/diag?m=' + encodeURIComponent(msg) + '&t=' + Date.now(); } catch (e) { /* 静默 */ }
+}
 
 let attachSeq = 0; // 附件 id 序号（本次页面生命周期内递增，DOM 定位与移除用）
 
@@ -4860,7 +4888,7 @@ function stageFiles(files, view) {
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
-  if (tooBig) attachHint(view, tooBig + ' 个文件超过 ' + fmtBytes(ATTACH_MAX_BYTES) + '，没有加入');
+  if (tooBig) attachHint(view, tooBig + ' 个文件超过 ' + fmtBytes(ATTACH_MAX_BYTES) + '，没有加入；大文件请点 ＋ 用「文件上传」选（走本机路径，不受此限）', 8000);
   else if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
 }
 
@@ -4993,12 +5021,20 @@ function setupAttachDrop(view) {
       const cd = e.clipboardData;
       if (!cd) return;
       const files = [];
+      const itemKinds = [];
       for (const it of (cd.items || [])) {
+        itemKinds.push(it.kind + ':' + it.type);
         if (it.kind !== 'file') continue;
         const f = it.getAsFile();
         if (f) files.push(f);
       }
       if (!files.length && cd.files) files.push(...cd.files);
+      // 剪贴板带文件（或声明了 Files 类型）时打点：文件名/大小/类型全记，
+      // 「ppt 粘贴不了、word 能粘」这类差异一查便知（超限被拒/类型为空/根本没送到）
+      if (files.length || (cd.types || []).includes('Files')) {
+        jxDiag('paste:files=[' + files.map((f) => f.name + ':' + f.size + ':' + (f.type || '?')).join(', ') +
+          '] items=[' + itemKinds.slice(0, 8).join(' | ') + '] types=[' + (cd.types || []).join(',') + ']');
+      }
       if (!files.length) return; // 纯文本：交给默认粘贴
       e.preventDefault();
       stageFiles(files, view);
@@ -5075,26 +5111,35 @@ async function flushAttachments(view) {
 async function doUpload(view) {
   view = view || popView || mainView;
   closePopovers();
-  if (view.state.streaming) {
-    attachHint(view, '本轮执行中：加进来的文件会随下一条消息一起上传');
-    return;
-  }
+  // 本轮执行中照样让选文件（选进来的随下一条消息一起上传）；旧版直接 return，
+  // 用户看来就是「点了文件上传没任何反应」
+  jxDiag('upload:click streaming=' + !!view.state.streaming +
+    ' shell=' + document.documentElement.classList.contains('desktop-shell') +
+    ' remote=' + !!(view.state.cur && view.state.cur.remote));
+  if (view.state.streaming) attachHint(view, '本轮执行中：加进来的文件会随下一条消息一起上传');
   // 桌面壳（shell=desktop）的本地会话：走系统原生文件选择框采集本机真实路径
-  // （它同时是 deliver_file 的交付目标来源）；用户取消则静默结束，接口不可用
-  // 回退浏览器文件选择。手机/远程（JX_REMOTE）与局域网浏览器（非桌面壳，
-  // 弹了也是弹在宿主机上、路径对用户那台机器无意义）走 multipart 原路径。
+  // （它同时是 deliver_file 的交付目标来源）；用户取消则静默结束。fetch 带超时：
+  // 渲染进程异常/连接问题时请求可能永远悬着，到点回退浏览器文件选择框，不再干等。
+  // 手机/远程（JX_REMOTE）与局域网浏览器（非桌面壳）走 multipart 原路径。
   if (document.documentElement.classList.contains('desktop-shell') &&
       !(view.state.cur && view.state.cur.remote)) {
     try {
-      const r = await fetch('/api/pick-file?filter=all&multi=1&title=' + encodeURIComponent('选择要加入的文件'));
+      jxDiag('upload:fetch pick-file');
+      const opt = (window.AbortSignal && AbortSignal.timeout) ? { signal: AbortSignal.timeout(15000) } : {};
+      const r = await fetch('/api/pick-file?filter=all&multi=1&title=' + encodeURIComponent('选择要加入的文件'), opt);
+      jxDiag('upload:pick-file http=' + r.status);
       if (r.ok) {
         const d = await r.json();
         const paths = d.paths || (d.path ? [d.path] : []);
+        jxDiag('upload:pick-file paths=' + paths.length);
         if (paths.length) stagePaths(paths, view);
         return; // 选到了就入列收工，取消就什么都不做
       }
-    } catch (e) { /* 原生选择框不可用：走下面的浏览器回退 */ }
+    } catch (e) {
+      jxDiag('upload:pick-file err=' + ((e && (e.name + ':' + e.message)) || e) + '，回退浏览器文件框');
+    }
   }
+  jxDiag('upload:回退 file-input');
   uploadTarget = view;
   $('file-input').value = '';
   $('file-input').click();
@@ -5315,11 +5360,13 @@ function setupScrollTuck() {
 $('btn-send').onclick = send;
 $('btn-stop').onclick = () => stopRun(mainView);
 $('btn-plus').onclick = () => openPlusMenu(mainView);
+jxDiag('init:绑定A btn-send/stop/plus 完成');
 $('sub-btn-plus').onclick = () => openPlusMenu(subView);
 $('perm-chip').onclick = () => { popView = mainView; renderPermPop(popView); openPopover('perm-pop', $('perm-chip')); };
 $('sub-perm-chip').onclick = () => { popView = subView; renderPermPop(popView); openPopover('perm-pop', $('sub-perm-chip')); };
 $('model-chip').onclick = () => { popView = mainView; renderModelPop(popView); openPopover('model-pop', $('model-chip')); };
 $('sub-model-chip').onclick = () => { popView = subView; renderModelPop(popView); openPopover('model-pop', $('sub-model-chip')); };
+jxDiag('init:绑定B sub/chips 完成');
 // 工作目录面板：每次打开重置搜索；搜索实时过滤目录列表
 $('ws-row').onclick = () => {
   $('ws-search').value = '';
@@ -5346,6 +5393,7 @@ $('ws-search-clear').onclick = () => {
 };
 $('pm-upload').onclick = () => doUpload();
 $('pm-plan').onclick = () => toggleModeFlag('planMode');
+jxDiag('init:绑定C 菜单项 完成');
 // 目标模式开启时要求填写目标文本；关闭时清状态（goalText 保留备查）
 async function toggleGoalFlag() {
   const s = sessionOrDraftFor(popView);
@@ -5505,3 +5553,4 @@ $('input').addEventListener('input', () => {
   autoGrow();
   persistMainDraftLS(); // 首页/会话两份草稿按当前上下文即时落本地
 });
+jxDiag('init:app-chat.js 顶层执行完毕');
