@@ -139,24 +139,18 @@ def main():
         if not (enc and dec and joi and tok):
             raise RuntimeError(f"流式模型文件不完整：{d}")
         kwargs = {}
-        # 端点检测：说后约 1 秒静音即断句（sherpa 默认关闭检测，必须显式开启；
-        # 参数名以 from_transducer 文档为准——rule2_min_utterance_length 是不存在的）
-        for k, v in {"enable_endpoint_detection": True,
-                     "rule1_min_trailing_silence": 1.0,
-                     "rule2_min_trailing_silence": 0.6,
-                     "rule3_min_utterance_length": 15}.items():
-            kwargs[k] = v
+        # 断句时机由前端统一控制（3 秒停顿，手机/电脑同一实现）：服务端关掉
+        # 端点检测避免双重切句——worker 只负责收流、出实时 partial（灰字）、
+        # 收到 stream_flush/stream_end 时用离线模型精修该段（黑字）。
+        # （enable_endpoint_detection 默认即关，这里显式声明意图）
+        kwargs = {"enable_endpoint_detection": False}
         try:
             st["online"] = sherpa_onnx.OnlineRecognizer.from_transducer(
                 encoder=enc, decoder=dec, joiner=joi, tokens=tok, num_threads=4, **kwargs)
         except TypeError:
-            kwargs = {}
             st["online"] = sherpa_onnx.OnlineRecognizer.from_transducer(
                 encoder=enc, decoder=dec, joiner=joi, tokens=tok, num_threads=4)
-        if kwargs:
-            print("[asr-stream] 端点检测已开启（说后 1.0s/0.6s 静音断句）", file=sys.stderr)
-        else:
-            print("[asr-stream] 端点参数不被支持，检测可能不可用", file=sys.stderr)
+        print("[asr-stream] 端点检测关闭：断句由前端 3 秒停顿驱动（stream_flush）", file=sys.stderr)
 
     def refine_offline(samples_i16):
         """离线 X-ASR 精修一段（int16 样本）——精度/标点完整版。静默装载：
@@ -194,6 +188,15 @@ def main():
             return
         reply({"ok": True, "event": "partial", "text": text})
 
+    def stream_flush():
+        """前端检测到停顿（3 秒）时调用：精修当前段（黑字）并重开流，录音继续。"""
+        import numpy as np
+        seg_samples = np.concatenate(st["seg"]) if st["seg"] else np.zeros(0, dtype=np.int16)
+        text = (st["online"].get_result(st["stream"]) or "").strip()
+        refined = refine_offline(seg_samples) if len(seg_samples) >= 1600 else ""
+        stream_reset()
+        reply({"ok": True, "event": "final", "text": refined or text})
+
     def stream_finish():
         import numpy as np
         online = st["online"]
@@ -224,6 +227,8 @@ def main():
                 reply({"ok": True})
             elif req.get("cmd") == "stream_chunk":
                 feed_chunk(req.get("pcm_b64", ""))
+            elif req.get("cmd") == "stream_flush":
+                stream_flush()
             elif req.get("cmd") == "stream_end":
                 if st["started"]:
                     st["started"] = False

@@ -12,7 +12,7 @@
  *
  * 2) 听写（STT）两档（设置页对用户只分「本地/云端」，不点名模型与厂商）：
  *    a. 本地语音识别模型（默认，voiceasr.go 通道）：本机/桌面走 WebSocket
- *       流式——说话实时出灰字、停顿约 1 秒由离线模型精修落成黑字（复用浏览器
+ *       流式——说话实时出灰字、停顿约 3 秒由离线模型精修落成黑字（复用浏览器
  *       引擎同款两段式体验）；远程 https 页面开不了 ws，自动回退整段识别。
  *       音频不出本机/服务器。
  *    b. 云端语音识别模型（手动选择）：浏览器自带的 SpeechRecognition——本组件
@@ -872,22 +872,27 @@
      * 噪声底×3.5)；句间长静音不入段；单句超 18s 强切；点停时未发的尾段补发。
      * 多段在途由服务端 worker 排队串行（X-ASR 约 60 倍实时，队列秒清）。 */
     const wsHint = () => (location.protocol !== 'https:'
-      ? '录音中·实时转写：说话出灰字，停顿约 1 秒落成正文；点麦克风结束'
-      : '录音中…说完点一下麦克风（远程走整段识别）');
-    /* ---------- 本地引擎：流式听写（灰字实时 → 停顿精修黑字） ----------
-     * 本机/桌面形态（http 页面）：WebSocket 流式——说话期间实时出灰色增量字
-     * （复用浏览器引擎的 segs/灰字层机制），检测到停顿（~1s）即由服务端用
-     * 离线 X-ASR 精修该段（标点/大小写完整），回 final 事件落成黑色正文，
-     * 录音无缝继续。远程 https 页面开不了 ws（浏览器混合内容拦截，中继隧道
-     * 也未覆盖 WebSocket）：自动回退「整段录音→点停→一次性识别」。 */
+      ? '录音中·实时转写：说话出灰字，停顿约 3 秒自动落成正文；点麦克风结束'
+      : '录音中…说完一句停顿约 3 秒自动出字；点麦克风结束');
+    /* ---------- 本地引擎：前端统一停顿切句（3 秒），手机/电脑同一实现 ----------
+     * 断句时机完全在前端：说完一句停顿 3 秒 → 该句定稿。电脑（http 页面，有
+     * WebSocket）：说话期间实时灰字（stream_chunk→partial），停顿 3 秒发
+     * stream_flush 由离线模型精修落黑字，录音无缝继续；手机远程（https 开不了
+     * ws）：同样 3 秒停顿，只是该句走整段 POST 识别（经中继隧道），无灰字但
+     * 逐句出字。服务端端点检测已关闭，不会双重切句。 */
     const makeLocalRec = (stream) => {
       const ctx = new AudioContext({ sampleRate: 16000 });
       const src = ctx.createMediaStreamSource(stream);
       const node = ctx.createScriptProcessor(4096, 1, 1);
       const canStream = location.protocol !== 'https:';
+      const SPEECH_MIN_MS = 350;    // 短于此视为噪声毛刺，丢弃
+      const PAUSE_FLUSH_MS = 3000;  // 停顿 3 秒 = 一句话说完，绝对阈值
+      const SEG_MAX_MS = 18000;     // 不停顿连续说超 18 秒也强制出句
+      let seg = [];                 // 当前句的帧（Float32，从首个语音帧起收）
+      let speechMs = 0, silenceMs = 0;
+      let noiseFloor = 0.004;       // 环境噪声底（RMS，自适应）
       let ws = null, wsReady = false, wsFail = false;
-      const chunks = [];          // 回退模式：整段样本
-      let ended = false, segCount = 0, doneCb = null;
+      let ended = false, segCount = 0, failCount = 0, doneCb = null;
       const i16ToB64 = (i16) => {
         const u8 = new Uint8Array(i16.buffer);
         let bin = '';
@@ -902,9 +907,7 @@
         return false;
       };
       if (canStream) {
-        try {
-          ws = new WebSocket('ws://' + location.host + '/api/voice/asr/stream');
-        } catch (e) { ws = null; }
+        try { ws = new WebSocket('ws://' + location.host + '/api/voice/asr/stream'); } catch (e) { ws = null; }
       }
       if (ws) {
         ws.onopen = () => { wsReady = true; ws.send('{"cmd":"stream_start"}'); };
@@ -913,12 +916,12 @@
           try { d = JSON.parse(ev.data); } catch (e) { return; }
           if (!d.ok) { voiceToast('识别通道错误：' + (d.err || '')); return; }
           if (d.event === 'partial') {
-            // 实时灰字：当前句的增量（复用浏览器引擎同款灰字层）
+            // 实时灰字：当前句（可能跨多小句，flush 前的缓冲）增量
             sess.segs.set(0, { text: d.text || '', final: false, changedAt: Date.now() });
             sess.retries = 0;
             renderShadow();
           } else if (d.event === 'final') {
-            // 停顿精修：灰字撤下、黑字落定（离线模型转写，标点完整）
+            // 停顿 3 秒（或收尾）：灰字撤下、离线精修的黑字落定
             sess.segs.delete(0);
             sess.committed.delete(0);
             renderShadow();
@@ -938,19 +941,59 @@
         };
         ws.onerror = () => { };
       }
+      const flushSeg = () => {
+        const spoken = speechMs;
+        const frames = seg;
+        seg = []; speechMs = 0; silenceMs = 0;
+        if (spoken < SPEECH_MIN_MS) return; // 毛刺：丢
+        if (ws && wsReady && !wsFail) {
+          try { ws.send('{"cmd":"stream_flush"}'); } catch (e) { /* 收尾兜底 */ }
+          return;
+        }
+        // 无 WS（手机远程/通道断了）：该句整段 POST（经中继隧道可达）
+        const total = frames.reduce((n, c) => n + c.length, 0);
+        if (total < 1600) return;
+        const floats = new Float32Array(total);
+        let off = 0;
+        for (const c of frames) { floats.set(c, off); off += c.length; }
+        voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000)).then((d) => {
+          if (!active) return; // 组件已卸载：迟到的文字不再落
+          if (d.text) {
+            commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
+            segCount += 1;
+            if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
+          }
+        }).catch(() => {
+          if (!active || sess.done) return;
+          failCount += 1;
+          if (failCount === 1) voiceToast('有一句识别失败（网络/服务波动），继续说即可');
+        });
+      };
       node.onaudioprocess = (ev) => {
         if (ended) return;
         const f = ev.inputBuffer.getChannelData(0);
-        if (ws && wsReady && !wsFail) {
-          const i16 = new Int16Array(f.length);
-          for (let i = 0; i < f.length; i++) {
-            const s = Math.max(-1, Math.min(1, f[i]));
-            i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        let sum = 0;
+        for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
+        const rms = Math.sqrt(sum / f.length);
+        const frameMs = (f.length / ctx.sampleRate) * 1000;
+        const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
+        if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
+        if (isSpeech || speechMs > 0) {
+          const f32 = new Float32Array(f);
+          seg.push(f32);
+          if (ws && wsReady && !wsFail) {
+            const i16 = new Int16Array(f.length);
+            for (let i = 0; i < f.length; i++) {
+              const s = Math.max(-1, Math.min(1, f[i]));
+              i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            if (ws.bufferedAmount < 262144) ws.send(JSON.stringify({ cmd: 'stream_chunk', pcm_b64: i16ToB64(i16) }));
           }
-          if (ws.bufferedAmount < 262144) ws.send(JSON.stringify({ cmd: 'stream_chunk', pcm_b64: i16ToB64(i16) }));
-        } else {
-          chunks.push(new Float32Array(f)); // 无流式通道（或已断）：攒整段
         }
+        if (isSpeech) { speechMs += frameMs; silenceMs = 0; }
+        else if (speechMs > 0) silenceMs += frameMs;
+        if (speechMs >= SPEECH_MIN_MS && silenceMs >= PAUSE_FLUSH_MS) flushSeg();
+        else if (speechMs >= SEG_MAX_MS) flushSeg();
       };
       src.connect(node);
       node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
@@ -961,7 +1004,7 @@
       };
       return {
         isLocal: true,
-        // 正常按停：流式=通知收尾等 done；回退=整段一次性识别
+        // 正常按停：WS=stream_end 精修尾段后收尾；无 WS=尾句补发即收尾
         stop() {
           if (stopAll() === 'ended') return;
           if (ws && wsReady && !wsFail) {
@@ -971,17 +1014,8 @@
             setTimeout(() => { if (doneCb) { doneCb = null; finishUp(); } }, 3000); // done 不来的兜底
             return;
           }
-          const total = chunks.reduce((n, c) => n + c.length, 0);
-          if (total < 1600) { finish('未识别到语音内容'); return; }
-          const floats = new Float32Array(total);
-          let off = 0;
-          for (const c of chunks) { floats.set(c, off); off += c.length; }
-          voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000)).then((d) => {
-            if (d.text) commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
-            finish(d.text ? '' : '未识别到内容');
-          }).catch((e) => {
-            finish('识别失败：' + (e && e.message ? e.message : e));
-          });
+          flushSeg();
+          finish(segCount > 0 ? '' : '未识别到语音内容');
         },
         // 放弃（发送前暂停/组件卸载）：停麦即止，迟到的结果不污染下一条草稿
         abort() {
@@ -990,7 +1024,6 @@
         },
       };
     };
-
     const startLocal = () => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         finish('当前页面无法访问麦克风（需 https 或本机地址）');
@@ -1290,8 +1323,8 @@
     engSel.onchange = () => { pref.set('engine', engSel.value); };
     row('听写引擎', engSel);
 
-    note('「本地识别」全程离线（音频不出本机/服务器）：说话实时出灰字，停顿约'
-      + ' 1 秒精修落成正文。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
+    note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 3 秒自动'
+      + '落成正文（电脑端另有实时灰字预览）。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
       + '接入的服务商不同，且依赖其在线服务可达）。默认本地，需要时手动切换；'
       + '首次使用本地识别需加载模型（几秒）。');
 
