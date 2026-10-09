@@ -135,6 +135,9 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.CCPlugins.ModsStartAll()
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
+	// 技能可见性全模式契约自检：任何模式丢了技能清单注入或 read_skill，
+	// 直接拒绝启动（见 skill_manager.go 的 assertSkillVisibility）
+	a.assertSkillVisibility()
 	a.recoverInterrupted()
 	// 交付队列崩溃残留兜底：上一进程若死在执行中（running），复位回 pending
 	// 并统一重放——登记过的交付不能因为重启就丢
@@ -149,6 +152,21 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	// 远程外壳版本代数恢复（一键清缓存的计数，remoteaccess.go）
 	a.loadShellEpoch()
 	return a, nil
+}
+
+// sessionModes 是会话模式全集（单一事实源）：建会话校验（handleCreateSession）
+// 与启动自检（assertSkillVisibility）共用。新增模式必须加进本列表——自检会
+// 逐模式强制「技能清单注入 + read_skill 在场」的全模式契约，漏加即启动炸响。
+var sessionModes = []string{"assistant", "aux", "office", "coding", "task", "skill-create"}
+
+// modeKnown 判断模式是否在 sessionModes 全集里。
+func modeKnown(m string) bool {
+	for _, x := range sessionModes {
+		if x == m {
+			return true
+		}
+	}
+	return false
 }
 
 // sessLock 保证同一会话同一时刻只有一轮主循环在运行；
@@ -1196,7 +1214,7 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		InheritContext bool             `json:"inheritContext"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体
-	if body.Mode != "assistant" && body.Mode != "aux" && body.Mode != "office" && body.Mode != "coding" && body.Mode != "skill-create" {
+	if !modeKnown(body.Mode) {
 		body.Mode = "task"
 	}
 	if body.Permission == "" {

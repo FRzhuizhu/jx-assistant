@@ -4,36 +4,18 @@ package main
 // 的内嵌目标是右栏原生 WebView2 面板（真浏览器，用户可直接旁观共操），网页
 // 形态是后台无头实例，headed 弹独立窗口。点击/输入前先 BroadcastPointer 亮出
 // AI 位置（原生面板在目标页面内注入标记元素）。
-// 所有工具要求会话开启「操作浏览器」能力（perm.go 能力门控，权限芯片里的
-// browser 复选框），fail closed。browser_screenshot 的截图入库为附件：
-// 用户直接看，视觉模型可内联。
+// 所有工具要求会话开启「操作浏览器」能力（perm.go requireCapability 能力门控，
+// 权限芯片里的 browser 复选框），fail closed；未开启时模型可在被拦后同轮带
+// request_capability=true + justification 重试申请开启（弹审批卡）。每个工具的
+// 描述都带这句权限提醒、schema 都带这对升级参数（capRequestProps）——工具
+// 定义是模型的第一手说明，权限前置到那里，别只靠运行时报错指路。
+// browser_screenshot 的截图入库为附件：用户直接看，视觉模型可内联。
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
 )
-
-// requireCapability 是能力门控的统一提示；能力清单与开关在 perm.go / 权限芯片。
-// 这段文案要两头都读得懂：对模型明说「别绕路」——能力关着时命令沙箱里也做不到
-// （受限令牌），改用 run_command 只会白费一轮；以及「正确出路」——在回复里向
-// 用户申请开启该能力（用户在权限芯片里勾选）。用户在工具卡片里同样会看到这句，
-// 所以措辞要能直接照做。关着时一律 fail closed（不降级、不猜测用户意图）。
-func requireCapability(t *toolContext, capID, title string) error {
-	if !hasCapability(t.sess, capID) {
-		var road string // 该能力的"别绕路"那句：各能力能绕的路不同，分开说
-		switch capID {
-		case capBrowser:
-			road = "不要改用 run_command 启动浏览器：命令在 OS 沙箱里执行，沙箱里启动浏览器一定失败（受限令牌，access denied），只会白费一轮。"
-		case capComputer:
-			road = "不要改用 run_command 模拟键鼠或截屏：命令在 OS 沙箱里执行，做不到这些，只会白费一轮。"
-		case capDevice:
-			road = "不要改用 adb_* 或 shell 命令绕行：它们同属这条能力，关着时一律被拦。"
-		}
-		return fmt.Errorf("需要「%s」能力：本会话未开启，该工具已被能力门控拦下。%s如果确实需要，请在回复里向用户申请开启（请用户点权限芯片 → 勾选「允许%s」），用户勾选后即可正常调用。", title, road, title)
-	}
-	return nil
-}
 
 // activeHost 取工具作用目标（最近一次 browser_open 选定的实例，另一形态关闭时
 // 自动回退到仍在运行的实例）；浏览器从未打开时给出与旧版一致的提示。
@@ -45,19 +27,22 @@ func activeHost(t *toolContext) (browserTarget, error) {
 	return h, nil
 }
 
+// capNoteBrowser 是 browser_* 工具描述统一携带的权限提醒句。
+const capNoteBrowser = "需会话开启「操作浏览器」能力：未开启时本工具会被拦下，可在被拦后同轮带 request_capability=true 与一句 justification 重试向用户申请开启（弹审批卡）；不要改用命令行拉浏览器（沙箱内必败）。"
+
 func browserOpenTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_open",
 			"打开或导航到指定网页（各实例各自保留地址与登录态，重开会回到之前的页面）。mode 选打开方式："+
 				"headless（默认）在内嵌浏览器打开——桌面版显示在右栏「浏览器」面板（原生 Edge 网页，用户可旁观并随时直接操作），网页版在后台运行；"+
 				"headed 弹一个独立的浏览器窗口，用户在真实窗口里查看和操作，适合演示给用户、需要用户配合填写的场景。"+
-				"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。只接受 http/https 地址。返回页面标题与最终地址。",
-			objSchema(map[string]any{
+				"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。只接受 http/https 地址。返回页面标题与最终地址。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{
 				"url":  strProp("完整网址，http 或 https"),
 				"mode": strProp("headless（默认，内嵌形态）或 headed（独立窗口）"),
-			}, "url")),
+			}), "url")),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -80,11 +65,11 @@ func browserOpenTool() Tool {
 func browserContentTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_content",
-			"读取当前网页的地址、标题与可见正文文本（截断到 2 万字符）。读不到正文时可用 browser_evaluate 自行提取。",
-			objSchema(map[string]any{}),
+			"读取当前网页的地址、标题与可见正文文本（截断到 2 万字符）。读不到正文时可用 browser_evaluate 自行提取。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			h, err := activeHost(t)
@@ -106,11 +91,11 @@ func browserContentTool() Tool {
 func browserClickTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_click",
-			"点击当前网页里匹配 CSS 选择器的元素（第一个匹配项）。点击后稍等页面反应。",
-			objSchema(map[string]any{"selector": strProp("CSS 选择器")}, "selector"),
+			"点击当前网页里匹配 CSS 选择器的元素（第一个匹配项）。点击后稍等页面反应。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{"selector": strProp("CSS 选择器")}), "selector"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -135,15 +120,15 @@ func browserClickTool() Tool {
 func browserTypeTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_type",
-			"向当前网页里匹配 CSS 选择器的输入框输入文本（支持中文，整段注入）。clear=true 时先清空已有内容（默认清空）。",
-			objSchema(map[string]any{
+			"向当前网页里匹配 CSS 选择器的输入框输入文本（支持中文，整段注入）。clear=true 时先清空已有内容（默认清空）。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{
 				"selector": strProp("输入框的 CSS 选择器，如 input[name='q']"),
 				"text":     strProp("要输入的文本"),
 				"clear":    boolProp("是否先清空，默认 true"),
-			}, "selector", "text"),
+			}), "selector", "text"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -171,14 +156,14 @@ func browserTypeTool() Tool {
 func browserScrollTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_scroll",
-			"滚动当前网页。direction=down/up，amount 为滚动幅度（1≈100 像素，默认 5）。",
-			objSchema(map[string]any{
+			"滚动当前网页。direction=down/up，amount 为滚动幅度（1≈100 像素，默认 5）。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{
 				"direction": strProp("down 或 up，默认 down"),
 				"amount":    intProp("滚动幅度，1≈100 像素，默认 5"),
-			}),
+			})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -211,15 +196,15 @@ func browserViewportTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_viewport",
 			"设置内嵌浏览器的视口（CSS 像素，宽 320–3840、高 320–2160），用于响应式测试（如手机宽度 393×852）。reset=true 恢复默认 1280×900。"+
-				"桌面右栏面板=网页实际显示区域：宽度会请求面板调整（高度跟随右栏，无法独立设定）；网页版后台实例则完整生效。",
-			objSchema(map[string]any{
+				"桌面右栏面板=网页实际显示区域：宽度会请求面板调整（高度跟随右栏，无法独立设定）；网页版后台实例则完整生效。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{
 				"width":  intProp("视口宽（CSS px）"),
 				"height": intProp("视口高（CSS px）"),
 				"reset":  boolProp("恢复默认视口"),
-			}),
+			})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -249,11 +234,11 @@ func browserViewportTool() Tool {
 func browserEvaluateTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_evaluate",
-			"在当前网页执行 JavaScript 并返回结果（JSON 序列化）。用于提取浏览器组件覆盖不到的数据，如 document.querySelector(...).href、JSON.stringify(window.__data)。",
-			objSchema(map[string]any{"js": strProp("要执行的 JavaScript 表达式或语句")}, "js"),
+			"在当前网页执行 JavaScript 并返回结果（JSON 序列化）。用于提取浏览器组件覆盖不到的数据，如 document.querySelector(...).href、JSON.stringify(window.__data)。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{"js": strProp("要执行的 JavaScript 表达式或语句")}), "js"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -286,11 +271,11 @@ func browserEvaluateTool() Tool {
 func browserScreenshotTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_screenshot",
-			"截取当前网页可见区域，以图片信封返回：用户可在界面查看，支持视觉的模型能直接看到截图。",
-			objSchema(map[string]any{}),
+			"截取当前网页可见区域，以图片信封返回：用户可在界面查看，支持视觉的模型能直接看到截图。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			h, err := activeHost(t)
@@ -315,10 +300,10 @@ func browserScreenshotTool() Tool {
 func browserCloseTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_close",
-			"关闭当前浏览器实例（工具正在作用的那个）。若另一形态的实例仍在运行，后续工具自动作用于它；都没了，下次 browser_open 重新启动。",
-			objSchema(map[string]any{})),
+			"关闭当前浏览器实例（工具正在作用的那个）。若另一形态的实例仍在运行，后续工具自动作用于它；都没了，下次 browser_open 重新启动。"+capNoteBrowser,
+			objSchema(withCapRequest(map[string]any{}))),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capBrowser, "操作浏览器"); err != nil {
+			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			h, err := activeHost(t)

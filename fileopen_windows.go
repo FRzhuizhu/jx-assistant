@@ -47,10 +47,13 @@ func openPathWithDefaultApp(abs string) error {
 // 「在文件夹中查看」、右键菜单的「在文件夹中定位」）。explorer /select,
 // 需要把路径作为独立参数传入，含空格也不会被拆开。
 func revealInExplorer(abs string) error {
+	// 不能带 CREATE_NO_WINDOW/SW_HIDE 启动：explorer 是 GUI 子系统程序，
+	// 没有控制台黑窗可压；而新版 Win11 的 explorer 不再把 /select 请求
+	// 转交已存在的实例，而是自己建窗口——隐藏启动状态会传染给新窗口
+	// （真机复现：窗口建成但 IsWindowVisible=False，用户侧表现为「在文件
+	// 夹中查看」点击没反应，请求侧仍是 200）。
 	cmd := exec.Command("explorer", "/select,"+abs)
-	openHideWindow(cmd)
-	// explorer.exe 定位成功也常以非零码退出（它把请求转给已存在的实例后
-	// 立即返回），因此只看启动是否成功，不看退出码。CREATE_NO_WINDOW 对它
-	// 无害：窗口由已存在的交互式 explorer 实例创建，不吃启动显示状态。
+	// explorer.exe 定位成功也常以非零码退出（它把 UI 转给别的实例后立即
+	// 返回），因此只看启动是否成功，不看退出码。
 	return cmd.Start()
 }

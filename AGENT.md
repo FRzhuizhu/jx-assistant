@@ -392,6 +392,11 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   access denied），要看网页只能用 `browser_*`（前提是该会话已开启能力）。这条
   已写进环境快照的「能力」段（`agent.go` `envPrompt`：开关状态逐项列出，关着时
   说明后果与正确出路）。
+  **能力门控有自己的升级参数**（`perm.go` `requireCapability`）：能力关着被拦后，
+  模型同轮带 `request_capability=true` + `justification` 重试同一工具即弹审批卡——
+  「允许」=本次放行（不点亮开关），「始终允许」=点亮对应能力开关（常设授权）。
+  与 `sandbox_permissions` 同一套拒绝驱动语义；每个门控工具的描述都带权限提醒、
+  schema 都带这对参数（`tools.go` `capRequestProps`）。
   点亮后该类动作不再逐次审批。
 - **一次性授权凭证**：每次写文件/执行命令先签发 5 分钟时效的一次性凭证，
   执行器核销后才动手；过期/重用即拒绝（fail closed）。
@@ -709,7 +714,11 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 | `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + 历史查询 |
 | `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
-| `skill-create` | 创建技能：用户演示操作 → 沉淀成给后续 AI 照做的 SKILL.md 教程；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **demo_record_start/stop/status/transcribe（演示记录器，仅 Windows 真实现）+ register_skill（注册/覆盖技能）** + 用户技能清单注入（与 task 同） |
+| `skill-create` | 创建技能：用户演示操作 → 沉淀成给后续 AI 照做的 SKILL.md 教程；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **demo_record_start/stop/status/transcribe（演示记录器，仅 Windows 真实现）+ register_skill（注册/覆盖技能）** |
+
+（各模式共有的常驻工具不再逐行列出：`read_skill` 对**所有模式**注册，
+技能清单经环境快照对**所有模式**注入——见下文「技能」节与启动自检
+`assertSkillVisibility`。）
 
 **派发关系**：数字助理有两个派发工具——`dispatch_task` 派出**顶层工作任务**
 （进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
@@ -831,9 +840,13 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（指向
 本机含 SKILL.md 的文件夹）、开关、删除。用户技能按 **清单先行、内容按需**
 送达模型：环境快照里只列 名字（id）与一句话描述，要用哪个技能先调用
-`read_skill`（常驻工具，task / skill-create 模式）读它的完整 SKILL.md 说明——技能增减
+`read_skill`（常驻工具，**所有模式注册**）读它的完整 SKILL.md 说明——技能增减
 不改变工具定义；清单变化经环境快照补在对话**最底部**，并附一行
 「技能变更：新增 X／移除 Y」明说增删了哪个技能，上文历史快照一律不动。
+**技能清单是环境快照的固定条目，所有模式一律注入**（与操作系统/权限模式
+同级，不挂模式谓词——技能功能晚于 office/coding 落地，曾因手写门控漏掉
+这两个模式；现由启动自检 `assertSkillVisibility` 逐模式看护，任何模式丢了
+清单注入或 read_skill 都拒绝启动，模式全集以 `sessionModes` 为单一事实源）。
 
 **创建技能模式（`skill-create`）**——技能的生产端：用户演示操作（或口述），
 AI 观察学习后写成 SKILL.md 并注册进 `技能/user/`。闭环三件套：

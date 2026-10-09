@@ -17,6 +17,9 @@ package main
 //     一次，该重试弹审批卡由用户决定，批准后以更宽策略执行这一次。
 //     「始终允许」= 常设授权：命令升级点亮对应能力开关；工作区外写入
 //     把会话切到完全访问（捆绑能力一并点亮，不再审批）。
+//     能力门控（browser_* / computer_* / device_*）有同款升级参数：被拦
+//     后同轮带 request_capability=true + justification 重试即弹审批卡，
+//     「允许」放行本次、「始终允许」点亮对应能力开关。
 //     被拒绝的升级对该命令终局。
 //  3. 一次性授权凭证（Grant）：每次写文件/执行命令签发短时效凭证，
 //     执行器核销后才动手；过期或重复核销即拒绝（fail closed）。
@@ -28,6 +31,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -95,6 +99,60 @@ func (a *App) addCapability(s *SessionMeta, cap string) {
 	s.Tools = append(s.Tools, cap)
 	_ = a.Store.SaveMeta(s)
 	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
+}
+
+// requireCapability 是能力门控（browser_* / computer_* / device_* 工具族）的
+// 统一入口：会话未开启对应能力时 fail closed，不降级、不猜测用户意图。
+// 拒绝报错与工具描述都要两头读得懂：对模型明说「别绕路」——能力关着时命令
+// 沙箱里也做不到（受限令牌），改用 run_command 只会白费一轮；以及「正确出路」
+// ——同轮带 request_capability=true + justification 重试（弹审批卡向用户申请
+// 开启本能力），或在回复里请用户点权限芯片勾选。用户在工具卡片里同样会看到
+// 这句报错，措辞要能直接照做。
+func requireCapability(t *toolContext, capID, title string, args json.RawMessage) error {
+	if hasCapability(t.sess, capID) {
+		return nil
+	}
+	// 升级重试：模型被拦后带 request_capability + justification 向用户申请
+	// 开启（sandbox_permissions 的能力版，语义同款）：「允许」= 本次放行
+	// （不点亮开关，下次仍需申请）；「始终允许」= addCapability 点亮权限
+	// 芯片对应开关（常设授权），之后该能力不再逐次审批。
+	var p struct {
+		RequestCapability bool   `json:"request_capability"`
+		Justification     string `json:"justification"`
+	}
+	_ = json.Unmarshal(args, &p) // 解析失败按未携带处理（schema 校验兜底）
+	if p.RequestCapability {
+		just := strings.TrimSpace(p.Justification)
+		if just == "" {
+			return fmt.Errorf("request_capability 必须搭配一句 justification（给用户看的理由），本次缺少")
+		}
+		summary := fmt.Sprintf("开启「%s」能力以使用 %s｜理由：%s", title, t.toolName, truncateRunes(just, 120))
+		if t.emit != nil {
+			t.emit(Event{Type: "tool_wait", Name: t.toolName, Output: "等待用户审批（申请开启「" + title + "」能力）…"})
+		}
+		approved, always := t.app.requestApproval(t.ctx, t.sess, t.toolName, summary,
+			fmt.Sprintf("当前会话未开启「%s」能力，%s 已被能力门控拦下。「允许」=本次放行这一次调用；「始终允许」=在权限芯片点亮「允许%s」（常设授权，之后不再逐次审批）", title, t.toolName, title))
+		if !approved {
+			return fmt.Errorf("用户未批准开启「%s」能力，本次未执行。本轮终局：停止并如实说明，不要换法绕过；命令行替代不了这条能力", title)
+		}
+		if always {
+			wasMode, wasTools := permModeOf(t.sess), t.sess.Tools
+			t.app.addCapability(t.sess, capID)
+			// 「权限变更」即时落地：注记随新环境快照落库（env 通道）
+			t.app.landPermChange(t.sess, permSrcApproval, wasMode, wasTools, t.emit)
+		}
+		return nil
+	}
+	var road string // 该能力的"别绕路"那句：各能力能绕的路不同，分开说
+	switch capID {
+	case capBrowser:
+		road = "不要改用 run_command 启动浏览器：命令在 OS 沙箱里执行，沙箱里启动浏览器一定失败（受限令牌，access denied），只会白费一轮。"
+	case capComputer:
+		road = "不要改用 run_command 模拟键鼠或截屏：命令在 OS 沙箱里执行，做不到这些，只会白费一轮。"
+	case capDevice:
+		road = "不要改用 adb_* 或 shell 命令绕行：它们同属这条能力，关着时一律被拦。"
+	}
+	return fmt.Errorf("需要「%s」能力：本会话未开启，该工具已被能力门控拦下。%s如果确实需要，可在重试时带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡由用户决定），或请用户点权限芯片 → 勾选「允许%s」。", title, road, title)
 }
 
 // bundleFullAccessCaps 把完全访问捆绑的能力并入 tools（纯内存合并，不落库；

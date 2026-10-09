@@ -80,11 +80,11 @@ func demoRecordTools() []Tool {
 func demoRecordStartTool() Tool {
 	return Tool{
 		Spec: toolSpec("demo_record_start",
-			"开始演示记录：此后用户在电脑上的每次鼠标点击、回车/Tab 按键、窗口切换都会自动截屏，全程记录事件日志与麦克风音频（用户可以边操作边口头讲解）。用户演示完毕后调用 demo_record_stop 收录材料。请在用户明确表示要开始演示时才调用。",
-			objSchema(map[string]any{}),
+			"开始演示记录：此后用户在电脑上的每次鼠标点击、回车/Tab 按键、窗口切换都会自动截屏，全程记录事件日志与麦克风音频（用户可以边操作边口头讲解）。用户演示完毕后调用 demo_record_stop 收录材料。请在用户明确表示要开始演示时才调用。"+capNoteComputer,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑"); err != nil {
+			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
 				return "", err
 			}
 			if t.isRemote() {
@@ -109,11 +109,11 @@ func demoRecordStartTool() Tool {
 func demoRecordStopTool() Tool {
 	return Tool{
 		Spec: toolSpec("demo_record_stop",
-			"停止演示记录并收录材料：停全局钩子与录音，生成截图序列、事件日志、INDEX.md 对照表（以及语音字幕——若转写服务已配置）。返回材料概要与目录。",
-			objSchema(map[string]any{}),
+			"停止演示记录并收录材料：停全局钩子与录音，生成截图序列、事件日志、INDEX.md 对照表（以及语音字幕——若转写服务已配置）。返回材料概要与目录。"+capNoteComputer,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑"); err != nil {
+			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
 				return "", err
 			}
 			stats, err := recorderStop()
@@ -155,11 +155,11 @@ func demoRecordStopTool() Tool {
 func demoRecordStatusTool() Tool {
 	return Tool{
 		Spec: toolSpec("demo_record_status",
-			"查看演示记录器当前状态：是否在录、已产生的事件数与截图数。",
-			objSchema(map[string]any{}),
+			"查看演示记录器当前状态：是否在录、已产生的事件数与截图数。"+capNoteComputer,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑"); err != nil {
+			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
 				return "", err
 			}
 			return recorderStatusText(), nil
@@ -170,13 +170,13 @@ func demoRecordStatusTool() Tool {
 func demoRecordTranscribeTool() Tool {
 	return Tool{
 		Spec: toolSpec("demo_record_transcribe",
-			"对一次已收录的演示记录补跑语音转写（生成 讲解.srt 并刷新 INDEX.md）。用于转写服务刚配置好、要给历史录音补字幕的场景。",
-			objSchema(map[string]any{
+			"对一次已收录的演示记录补跑语音转写（生成 讲解.srt 并刷新 INDEX.md）。用于转写服务刚配置好、要给历史录音补字幕的场景。"+capNoteComputer,
+			objSchema(withCapRequest(map[string]any{
 				"dir": strProp("演示记录目录（相对或绝对路径，目录里需有 audio.wav）"),
-			}, "dir"),
+			}), "dir"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑"); err != nil {
+			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
 				return "", err
 			}
 			var p struct {

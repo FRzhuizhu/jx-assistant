@@ -105,35 +105,41 @@ func (t *toolContext) resolve(p string) (string, error) {
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
 // （见 agent.go 的 suspendedInPlan）；enter/exit_plan_mode / update_goal 因此常驻。
+// read_skill 在函数出口统一追加：技能清单经环境快照对**所有模式**注入
+// （envPrompt 固定条目），读取入口必须在每个模式在场，否则清单对
+// assistant/aux 是「看得见读不着」的空头支票。集中在一处追加（而非散进
+// 各分支），新增模式不可能漏带；启动自检 assertSkillVisibility 逐模式校验。
 func (a *App) toolsFor(mode string) []Tool {
 	history := []Tool{searchSessionsTool(), readSessionMessagesTool()}
 	// 待办与定时任务工具（组件 todo-scheduler）：除辅助对话（定位是只答疑）外
 	// 各模式都有；组件关掉时为空。
 	todos := a.todoTools()
+	var tools []Tool
 	if mode == "assistant" {
-		return append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), a.dispatchSubTool(), a.listExpertsTool(), sendToSessionTool(),
+		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), a.dispatchSubTool(), a.listExpertsTool(), sendToSessionTool(),
 			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
-	}
-	if mode == "aux" {
+	} else if mode == "aux" {
 		// enter_plan_mode 不配：aux 只读答疑，没有可暂停的执行动作，计划无意义
 		// （exit 保留，用户手动给 aux 会话开计划模式时仍可退出）。
-		return append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
+		tools = append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
 			exitPlanModeTool(), updateGoalTool()}, history...)
+	} else {
+		// 创建技能模式专属工具（demo_record_* 演示记录器 + register_skill 注册闭环）
+		// 只挂在该模式——其他模式的工具目录保持原形状（缓存与提示词都不受影响）。
+		skillCreate := []Tool{}
+		if mode == "skill-create" {
+			skillCreate = append(demoRecordTools(), registerSkillTool())
+		}
+		tools = append(append([]Tool{
+			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
+			globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
+			pdfTool(), ocrTool(), officeSkillTool(),
+			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
+			askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
+			jobOutputTool(), jobListTool(), jobKillTool(),
+		}, skillCreate...), append(append(append(append(append(todos, append(a.ccMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
 	}
-	// 创建技能模式专属工具（demo_record_* 演示记录器 + register_skill 注册闭环）
-	// 只挂在该模式——其他模式的工具目录保持原形状（缓存与提示词都不受影响）。
-	skillCreate := []Tool{}
-	if mode == "skill-create" {
-		skillCreate = append(demoRecordTools(), registerSkillTool())
-	}
-	return append(append([]Tool{
-		readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
-		globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
-		pdfTool(), ocrTool(), officeSkillTool(), readUserSkillTool(),
-		snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
-		askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
-		jobOutputTool(), jobListTool(), jobKillTool(),
-	}, skillCreate...), append(append(append(append(append(todos, append(a.ccMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
+	return append(tools, readUserSkillTool())
 }
 
 // ccMCPTools 返回已连接插件 MCP 服务器与 mods 注册的动态工具
@@ -170,6 +176,25 @@ func boolProp(desc string) map[string]any {
 
 func toolSpec(name, desc string, params map[string]any) ToolDef {
 	return ToolDef{Type: "function", Function: ToolSpec{Name: name, Description: desc, Parameters: params}}
+}
+
+// capRequestProps 能力门控工具（browser_* / computer_* / device_*）的公共升级
+// 参数：能力未开启被拦后，模型重试时携带它们向用户申请开启该能力
+// （requireCapability 弹审批卡，见 perm.go）。与 sandbox_permissions 同一套
+// 拒绝驱动语义：未经真实拒绝不要携带。
+func capRequestProps() map[string]any {
+	return map[string]any{
+		"request_capability": boolProp("仅在被能力门控拦下后的重试中使用：true=向用户申请开启本工具所需的能力（弹审批卡由用户决定）"),
+		"justification":      strProp("与 request_capability 搭配：一句话向用户说明为什么需要这个能力"),
+	}
+}
+
+// withCapRequest 把能力升级参数并入工具参数表（就地合并，返回同一 map）。
+func withCapRequest(props map[string]any) map[string]any {
+	for k, v := range capRequestProps() {
+		props[k] = v
+	}
+	return props
 }
 
 // ---------- 执行环境抽象（本地 / SSH 远程统一文件与目录操作） ----------
@@ -848,7 +873,7 @@ func runGrep(t *toolContext, args json.RawMessage) (string, error) {
 
 func runCommandTool() Tool {
 	return Tool{
-		Spec: toolSpec("run_command", "执行一条 shell 命令并返回输出。命令按会话权限模式在 OS 级沙箱内执行：workspace-write 下只能写工作区与私有临时目录（Windows 受限令牌 / Linux Landlock / 远程沙箱 helper），read-only 下不能写任何位置，联网不受限。尝试沙箱可能拒绝的命令是安全且符合预期的：直接运行并读取标记。若命令因沙箱拒绝失败且更宽档位能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档）与一句 justification 重试同一命令一次——该重试会弹审批由用户批准；未经真实拒绝不要请求升级；被拒后该命令终局，停止并说明，不要绕过。需要看网页或操作浏览器时，不要用命令行拉起浏览器（沙箱内会被拒），直接用 browser_* 工具（需本会话已开启「操作浏览器」能力）。",
+		Spec: toolSpec("run_command", "执行一条 shell 命令并返回输出。命令按会话权限模式在 OS 级沙箱内执行：workspace-write 下只能写工作区与私有临时目录（Windows 受限令牌 / Linux Landlock / 远程沙箱 helper），read-only 下不能写任何位置，联网不受限。尝试沙箱可能拒绝的命令是安全且符合预期的：直接运行并读取标记。若命令因沙箱拒绝失败且更宽档位能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档）与一句 justification 重试同一命令一次——该重试会弹审批由用户批准；未经真实拒绝不要请求升级；被拒后该命令终局，停止并说明，不要绕过。sandbox_permissions 只放宽命令沙箱，开不了 browser_*/computer_* 的能力开关。需要看网页或操作浏览器时，不要用命令行拉起浏览器（沙箱内会被拒），直接用 browser_* 工具（若「操作浏览器」能力未开启，调用会被拦，可在重试该工具时带 request_capability=true 与 justification 向用户申请开启）。",
 			objSchema(map[string]any{
 				"command":             strProp("要执行的命令"),
 				"shell":               strProp("本地执行时的 shell：Windows 默认 powershell（或 cmd），其他平台默认 sh；远程执行忽略"),

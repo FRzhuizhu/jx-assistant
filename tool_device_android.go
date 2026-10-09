@@ -39,9 +39,11 @@ func deviceBridgeHint() string {
 }
 
 // requireDevice 设备工具的统一门控：能力开关 + 桥与服务状态（打开应用除外，
-// 走引擎自身的 am 命令，不需要无障碍）。
-func requireDevice(t *toolContext, needBridge bool) error {
-	if err := requireCapability(t, capDevice, "操作手机"); err != nil {
+// 走引擎自身的 am 命令，不需要无障碍）。args 透传给 requireCapability：
+// 能力未开启时模型可在被拦后带 request_capability + justification 重试申请
+// 开启（弹审批卡）。
+func requireDevice(t *toolContext, needBridge bool, args json.RawMessage) error {
+	if err := requireCapability(t, capDevice, "操作手机", args); err != nil {
 		return err
 	}
 	if needBridge {
@@ -52,14 +54,17 @@ func requireDevice(t *toolContext, needBridge bool) error {
 	return nil
 }
 
+// capNoteDevice 是 device_* / adb_* 工具描述统一携带的权限提醒句。
+const capNoteDevice = "需「操作手机」能力：未开启时本工具会被拦下，可在被拦后同轮带 request_capability=true 与一句 justification 重试向用户申请开启（弹审批卡）。"
+
 func deviceScreenshotTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_screenshot",
-			"截取手机当前屏幕，以图片信封返回。device_tap/device_swipe 的坐标就以这张图的像素坐标为准（屏幕 1:1）。需要「操作手机」能力且无障碍服务已开启。",
-			objSchema(map[string]any{}),
+			"截取手机当前屏幕，以图片信封返回。device_tap/device_swipe 的坐标就以这张图的像素坐标为准（屏幕 1:1）。"+capNoteDevice+"无障碍服务需已开启。",
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, true); err != nil {
+			if err := requireDevice(t, true, args); err != nil {
 				return "", err
 			}
 			res, err := deviceSubmit("screenshot", nil, 25*time.Second)
@@ -86,11 +91,11 @@ func deviceScreenshotTool() Tool {
 func deviceUiTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_ui",
-			"读取手机当前界面的可交互元素树（无障碍节点：文本/描述/类名、是否可点、像素 bounds）。用于在点按前确认元素位置——先 device_screenshot 看全貌，再用本工具精确定位。",
-			objSchema(map[string]any{}),
+			"读取手机当前界面的可交互元素树（无障碍节点：文本/描述/类名、是否可点、像素 bounds）。用于在点按前确认元素位置——先 device_screenshot 看全貌，再用本工具精确定位。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, true); err != nil {
+			if err := requireDevice(t, true, args); err != nil {
 				return "", err
 			}
 			res, err := deviceSubmit("ui_dump", nil, 20*time.Second)
@@ -112,14 +117,14 @@ func deviceUiTool() Tool {
 func deviceTapTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_tap",
-			"在手机屏幕指定像素坐标点按（坐标以 device_screenshot 返回的图为准）。",
-			objSchema(map[string]any{
+			"在手机屏幕指定像素坐标点按（坐标以 device_screenshot 返回的图为准）。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"x": map[string]any{"type": "integer", "description": "横坐标（屏幕像素）"},
 				"y": map[string]any{"type": "integer", "description": "纵坐标（屏幕像素）"},
-			}, "x", "y"),
+			}), "x", "y"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, true); err != nil {
+			if err := requireDevice(t, true, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -144,17 +149,17 @@ func deviceTapTool() Tool {
 func deviceSwipeTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_swipe",
-			"在手机屏幕上从 (x1,y1) 滑动到 (x2,y2)，duration 毫秒（默认 300，滚动列表建议 200-400）。",
-			objSchema(map[string]any{
+			"在手机屏幕上从 (x1,y1) 滑动到 (x2,y2)，duration 毫秒（默认 300，滚动列表建议 200-400）。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"x1": map[string]any{"type": "integer", "description": "起点横坐标"},
 				"y1": map[string]any{"type": "integer", "description": "起点纵坐标"},
 				"x2": map[string]any{"type": "integer", "description": "终点横坐标"},
 				"y2": map[string]any{"type": "integer", "description": "终点纵坐标"},
 				"duration": map[string]any{"type": "integer", "description": "滑动时长毫秒，默认 300"},
-			}, "x1", "y1", "x2", "y2"),
+			}), "x1", "y1", "x2", "y2"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, true); err != nil {
+			if err := requireDevice(t, true, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -181,13 +186,13 @@ func deviceSwipeTool() Tool {
 func deviceTypeTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_type",
-			"向手机当前获得输入焦点的输入框输入文本（整框替换）。先点按输入框获得焦点再输入。",
-			objSchema(map[string]any{
+			"向手机当前获得输入焦点的输入框输入文本（整框替换）。先点按输入框获得焦点再输入。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"text": strProp("要输入的文本（整框替换）"),
-			}, "text"),
+			}), "text"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, true); err != nil {
+			if err := requireDevice(t, true, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -211,13 +216,13 @@ func deviceTypeTool() Tool {
 func deviceKeyTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_key",
-			"按手机系统键：back 返回 / home 主屏 / recents 最近任务 / notifications 通知栏。",
-			objSchema(map[string]any{
+			"按手机系统键：back 返回 / home 主屏 / recents 最近任务 / notifications 通知栏。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"key": map[string]any{"type": "string", "enum": []string{"back", "home", "recents", "notifications"}, "description": "系统键"},
-			}, "key"),
+			}), "key"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, true); err != nil {
+			if err := requireDevice(t, true, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -241,13 +246,13 @@ func deviceKeyTool() Tool {
 func deviceAppTool() Tool {
 	return Tool{
 		Spec: toolSpec("device_app",
-			"在手机上打开指定应用（参数为应用包名，如 com.android.settings 打开设置；不确定包名可先用 adb_shell 的 pm list packages 查）。经系统 am 启动，不需要无障碍服务。",
-			objSchema(map[string]any{
+			"在手机上打开指定应用（参数为应用包名，如 com.android.settings 打开设置；不确定包名可先用 adb_shell 的 pm list packages 查）。经系统 am 启动，不需要无障碍服务。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"package": strProp("应用包名"),
-			}, "package"),
+			}), "package"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, false); err != nil {
+			if err := requireDevice(t, false, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -279,14 +284,14 @@ func deviceAppTool() Tool {
 func adbConnectTool() Tool {
 	return Tool{
 		Spec: toolSpec("adb_connect",
-			"以 ADB 主机身份连接 adbd（本机无线调试或局域网安卓设备）。本机用法：用户在 开发者选项→无线调试 里查看端口后填 host=127.0.0.1、port=该端口；首次连接会在设备上弹「允许调试」授权框（用户点允许即永久记住）。需要「操作手机」能力。",
-			objSchema(map[string]any{
+			"以 ADB 主机身份连接 adbd（本机无线调试或局域网安卓设备）。本机用法：用户在 开发者选项→无线调试 里查看端口后填 host=127.0.0.1、port=该端口；首次连接会在设备上弹「允许调试」授权框（用户点允许即永久记住）。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"host": strProp("adbd 主机（本机无线调试填 127.0.0.1）"),
 				"port": map[string]any{"type": "integer", "description": "adbd 端口（无线调试页显示的端口）"},
-			}, "host", "port"),
+			}), "host", "port"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, false); err != nil {
+			if err := requireDevice(t, false, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -312,14 +317,14 @@ func adbConnectTool() Tool {
 func adbShellTool() Tool {
 	return Tool{
 		Spec: toolSpec("adb_shell",
-			"在已连接的 adbd 上执行 shell 命令（shell uid 权限：screencap/input/pm/dumpsys 等全可用）。先用 adb_connect 建立连接。危险命令护栏照常拦截。",
-			objSchema(map[string]any{
+			"在已连接的 adbd 上执行 shell 命令（shell uid 权限：screencap/input/pm/dumpsys 等全可用）。先用 adb_connect 建立连接。危险命令护栏照常拦截。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{
 				"command":   strProp("要执行的命令"),
 				"timeout_s": map[string]any{"type": "integer", "description": "超时秒数，默认 60，上限 600"},
-			}, "command"),
+			}), "command"),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, false); err != nil {
+			if err := requireDevice(t, false, args); err != nil {
 				return "", err
 			}
 			var p struct {
@@ -351,11 +356,11 @@ func adbShellTool() Tool {
 func adbScreencapTool() Tool {
 	return Tool{
 		Spec: toolSpec("adb_screencap",
-			"经 ADB 通道截取设备屏幕（shell uid 的 screencap，比无障碍截屏更底层，解锁界面等系统界面也能截）。以图片信封返回；坐标语义与 device_screenshot 相同。",
-			objSchema(map[string]any{}),
+			"经 ADB 通道截取设备屏幕（shell uid 的 screencap，比无障碍截屏更底层，解锁界面等系统界面也能截）。以图片信封返回；坐标语义与 device_screenshot 相同。"+capNoteDevice,
+			objSchema(withCapRequest(map[string]any{})),
 		),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireDevice(t, false); err != nil {
+			if err := requireDevice(t, false, args); err != nil {
 				return "", err
 			}
 			raw, err := adbExecRaw("screencap -p", 25*time.Second)

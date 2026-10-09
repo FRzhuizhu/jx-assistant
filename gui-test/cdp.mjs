@@ -38,6 +38,7 @@ function makeClient(ws) {
       return new Promise((ok, bad) => pending.set(id, { ok, bad }));
     },
     close() { ws.close(); },
+    ws, // 调试脚本可直接挂事件监听（Network/Page 域）
   };
 }
 

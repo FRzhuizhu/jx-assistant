@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -281,9 +282,28 @@ func runDesktop(app *App, url string) error {
 	// 的任意网站自动放行麦克风）；系统层面的麦克风开关（Windows 设置 → 隐私 →
 	// 麦克风）仍照旧生效，是唯一的最终闸门。
 	const autoGrantMic = "--use-fake-ui-for-media-stream"
+	// 黑屏修复的一半：关掉 Chromium 的原生窗口遮挡判定。电脑操作技能执行时
+	// 主窗口长时间被目标程序盖住，Chromium 判定「已遮挡」停止合成，解除后
+	// 偶发不再续帧＝整个客户区黑屏、执行不受影响（部分机型才复现，
+	// WebView2Feedback #5171 同类）。新版运行时或已忽略该开关（无害），
+	// 保底唤醒在 subclassMainWindow 的 1px 位移。已带 --disable-features 的
+	// 环境把本特性并进去，避免出现第二个同名开关把用户的值顶掉。
+	const noOcclusion = "CalculateNativeWinOcclusion"
 	prevArgs, hadArgs := os.LookupEnv(webView2ArgsEnv)
+	merged := prevArgs
 	if !strings.Contains(prevArgs, autoGrantMic) {
-		_ = os.Setenv(webView2ArgsEnv, strings.TrimSpace(prevArgs+" "+autoGrantMic))
+		merged = strings.TrimSpace(merged + " " + autoGrantMic)
+	}
+	if !strings.Contains(prevArgs, noOcclusion) {
+		const dfPrefix = "--disable-features="
+		if i := strings.Index(prevArgs, dfPrefix); i >= 0 {
+			merged = prevArgs[:i+len(dfPrefix)] + noOcclusion + "," + prevArgs[i+len(dfPrefix):]
+		} else {
+			merged = strings.TrimSpace(merged + " " + dfPrefix + noOcclusion)
+		}
+	}
+	if merged != prevArgs {
+		_ = os.Setenv(webView2ArgsEnv, merged)
 	}
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus: true,
@@ -304,6 +324,7 @@ func runDesktop(app *App, url string) error {
 	if w == nil {
 		return fmt.Errorf("创建桌面窗口失败")
 	}
+	subclassMainWindow(uintptr(w.Window()))
 	// 右栏原生浏览器面板：COM 调用一律经 Dispatch 投递到本窗口的 UI 线程
 	app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
 	// 右侧栏截图（panel_screenshot 工具）的通道：shellEval 注入主界面 JS，
@@ -329,4 +350,112 @@ func runDesktop(app *App, url string) error {
 	w.Run()
 	w.Destroy()
 	return nil
+}
+
+// ---------- 主窗口渲染唤醒（电脑操作时黑屏修复） ----------
+
+// 现象：执行电脑操作技能期间，主窗口被目标程序遮挡或整体最小化（模型常会
+// 激活别的窗口、点任务栏），WebView2 合成器停帧；恢复可见后偶发不再续帧——
+// 整个客户区黑屏、标题栏正常、执行不受影响，部分机型才复现（WebView2
+// Feedback #5171 / #2983 同类，官方未修）。右栏面板已踩过同族问题并验证了
+// 解法（browser_panel_windows.go applyRectOnUI：同矩形重发不重绘，真实位移
+// 1px 立即唤醒），这里把同款机制装到主窗口：
+//   - 吞掉最小化时的 WM_SIZE——绑定库会拿退化矩形 PutBounds，是停帧源之一；
+//   - 激活/还原/纯 Z 序变化（遮挡解除）时，1px 往返位移逼合成器出新帧，
+//     两步在同一次消息处理内完成，中间不发生绘制，肉眼不可见；
+//     （去抖 150ms，WM_ACTIVATE 与 WM_SIZE 连发时只唤醒一次）
+//   - 自己发出的位移事件带真实坐标（无 NOSIZE/NOMOVE 标志），被
+//     WM_WINDOWPOSCHANGED 分支的条件天然滤掉，不会递归。
+const (
+	wmSize             = 0x0005
+	sizeMinimized      = 1
+	wmActivate         = 0x0006
+	wmWindowPosChanged = 0x0047
+	swpNoSizeFlag      = 0x0001
+	swpNoMoveFlag      = 0x0002
+	waInactive         = 0
+	gwlpWndProc        = ^uintptr(3) // GWLP_WNDPROC(-4)：按位取反，^3 == -4
+)
+
+// windowPosMirror 镜像 Win32 WINDOWPOS（x64 布局；只读 flags 字段）。
+type windowPosMirror struct {
+	hwnd, after  uintptr
+	x, y, cx, cy int32
+	flags        uint32
+}
+
+var (
+	procSetWindowLongPtrW = desktopUser32.NewProc("SetWindowLongPtrW")
+	procCallWindowProcW   = desktopUser32.NewProc("CallWindowProcW")
+	procDefWindowProcW    = desktopUser32.NewProc("DefWindowProcW")
+	mainWndOrigProc       uintptr
+	mainWndNudgeCb        = windows.NewCallback(mainWndSubclassProc)
+	lastMainWndNudgeMs    int64
+)
+
+// subclassMainWindow 换掉主窗口原 wndproc（安装必须在 UI 线程；此后所有消息
+// 先经 mainWndSubclassProc 再转回绑定库原 proc）。失败则保持原样并落日志——
+// 用户侧若仍复现黑屏，靠 desktop.log 区分「修复未安装上」与「唤醒无效」，
+// 行为退回修复前，不影响功能。
+func subclassMainWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	orig, _, callErr := procSetWindowLongPtrW.Call(hwnd, gwlpWndProc, mainWndNudgeCb)
+	if orig != 0 {
+		mainWndOrigProc = orig
+	} else {
+		log.Printf("主窗口子类化失败：黑屏修复未生效（errno=%v）", callErr)
+	}
+}
+
+func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
+	switch msg {
+	case wmSize:
+		if wp == sizeMinimized {
+			return 0 // 别让绑定库把最小化下的退化矩形 PutBounds 给 WebView2
+		}
+		nudgeMainWindow(hwnd)
+	case wmActivate:
+		if wp&0xffff != waInactive {
+			nudgeMainWindow(hwnd)
+		}
+	case wmWindowPosChanged:
+		if p := (*windowPosMirror)(lp); p != nil &&
+			p.flags&swpNoSizeFlag != 0 && p.flags&swpNoMoveFlag != 0 {
+			nudgeMainWindow(hwnd)
+		}
+	}
+	if mainWndOrigProc == 0 {
+		r, _, _ := procDefWindowProcW.Call(hwnd, msg, wp, uintptr(lp))
+		return r
+	}
+	r, _, _ := procCallWindowProcW.Call(mainWndOrigProc, hwnd, msg, wp, uintptr(lp))
+	return r
+}
+
+// nudgeMainWindow 真实位移 1px 再移回（复用右栏面板的 procPanelSetWindowPos/
+// procPanelGetWindowRect 与 panelRect），给合成器一次必达的窗口位置事件。
+// 每次落一行日志：用户侧若仍黑屏，desktop.log 里有「唤醒已发出」的记录，
+// 即可排除本机制、指向渲染进程/GPU 死亡的另一族黑屏（那族要靠截图瘦身或
+// ProcessFailed 自动重载来修）。
+func nudgeMainWindow(hwnd uintptr) {
+	now := time.Now().UnixMilli()
+	if now-atomic.LoadInt64(&lastMainWndNudgeMs) < 150 {
+		return
+	}
+	atomic.StoreInt64(&lastMainWndNudgeMs, now)
+	var r panelRect
+	if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ok == 0 {
+		return
+	}
+	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
+	if w <= 0 || h <= 0 || r.Left <= -30000 { // 最小化（窗口挪到 -32000）不折腾
+		return
+	}
+	log.Printf("主窗口渲染唤醒：1px 位移（黑屏修复）")
+	procPanelSetWindowPos.Call(hwnd, 0, uintptr(int(r.Left)+1), uintptr(int(r.Top)), uintptr(w), uintptr(h),
+		swpNoZOrder|swpNoActivate)
+	procPanelSetWindowPos.Call(hwnd, 0, uintptr(int(r.Left)), uintptr(int(r.Top)), uintptr(w), uintptr(h),
+		swpNoZOrder|swpNoActivate)
 }

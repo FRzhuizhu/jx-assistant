@@ -2,9 +2,10 @@ package main
 
 // 用户技能管理：自带技能（pdf/ocr/office）只读展示、常开；
 // 用户技能位于 技能/user/<目录名>/（必须含 SKILL.md），可添加/开关/删除。
-// 开关状态存 data/skills.json。开启的用户技能，其 SKILL.md 正文（去
-// frontmatter）会追加在系统提示词的最末尾——基础提示词与环境块保持
-// 稳定前缀，开关技能只影响尾部，不影响缓存命中率。
+// 开关状态存 data/skills.json。用户技能按「清单先行、内容按需」送达模型：
+// 环境快照里只列 名字（id）与一句话描述（**所有模式一律注入**，见
+// envPrompt 的固定条目与 assertSkillVisibility 自检），正文由模型按需调
+// read_skill 读取；技能增减不改变工具定义与系统提示词的稳定前缀。
 
 import (
 	"encoding/json"
@@ -334,6 +335,43 @@ func (a *App) userSkillsPromptBlock() string {
 		return ""
 	}
 	return "# 用户技能清单（要用某个技能时，先调用 read_skill 读它的完整说明）\n" + b.String()
+}
+
+// assertSkillVisibility 启动自检（NewApp 调用）：技能可见性是全模式契约——
+// 用户技能清单经环境快照注入每个模式（envPrompt 的固定条目，无模式谓词），
+// read_skill 也在每个模式的工具目录里（toolsFor 出口统一追加）。历史上正是
+// 「按模式手写门控」漏掉了先于技能功能存在的 office/coding——装了技能、
+// 模型却收不到清单更新；把契约做成启动断言后，将来任何模式（含新增模式）
+// 悄悄丢掉技能可见性都会在这里炸响，而不是静默坑用户。
+// 自检用的会话 id 不落库，envPrompt 只读不写，无启动残留。
+func (a *App) assertSkillVisibility() {
+	enabledSkills := false
+	if list, err := a.listSkills(); err == nil {
+		for _, s := range list.User {
+			if s.Enabled {
+				enabledSkills = true
+				break
+			}
+		}
+	}
+	for _, mode := range sessionModes {
+		hasRead := false
+		for _, tl := range a.toolsFor(mode) {
+			if tl.Spec.Function.Name == "read_skill" {
+				hasRead = true
+				break
+			}
+		}
+		if !hasRead {
+			panic(fmt.Sprintf("技能可见性自检失败：模式 %s 的工具目录里没有 read_skill（toolsFor 出口应全模式追加）", mode))
+		}
+		if enabledSkills {
+			sess := &SessionMeta{ID: "__skill_selfcheck__", Mode: mode}
+			if !strings.Contains(a.envPrompt(sess), "用户技能清单") {
+				panic(fmt.Sprintf("技能可见性自检失败：模式 %s 的环境快照里没有用户技能清单（envPrompt 应为固定条目、无条件注入）", mode))
+			}
+		}
+	}
 }
 
 // readUserSkillTool 是用户技能的按需读取工具：清单只报名字与描述，

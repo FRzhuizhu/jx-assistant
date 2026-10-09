@@ -350,16 +350,16 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
 	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截
 	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "skill-create" {
-		b.WriteString("- 能力开关与命令沙箱是两套门：browser_* / computer_* / device_* 由助手进程直接驱动本机浏览器/桌面/手机，不经过命令沙箱；sandbox_permissions 升级只放宽命令沙箱，不会打开能力开关。别用命令行去拉浏览器（沙箱内起不来，见下方能力项）。下面逐项列出当前开关状态：\n")
+		b.WriteString("- 能力开关与命令沙箱是两套门：browser_* / computer_* / device_* 由助手进程直接驱动本机浏览器/桌面/手机，不经过命令沙箱；sandbox_permissions 升级只放宽命令沙箱，不会打开能力开关（要开能力得在被拦后于 browser_* / computer_* 调用里带 request_capability=true 申请）。别用命令行去拉浏览器（沙箱内起不来，见下方能力项）。下面逐项列出当前开关状态：\n")
 		if hasCapability(sess, capBrowser) {
 			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图（助手进程直接驱动本机 Edge/Chrome，不经命令沙箱）\n")
 		} else {
-			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拒绝。此能力是沙箱外的独立通道：关着时你在命令沙箱里启动浏览器**一定失败**（受限令牌下报 access denied / 进程直接崩），不要用 shell 去试，也不要申请 sandbox_permissions（升级只放宽命令沙箱，打不开能力开关）。需要看网页时，请让用户在权限芯片里勾选「允许操作浏览器」后再试（模型无法自行开启该能力）\n")
+			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拦下。此能力是沙箱外的独立通道：关着时你在命令沙箱里启动浏览器**一定失败**（受限令牌下报 access denied / 进程直接崩），不要用 shell 去试，也不要申请 sandbox_permissions（升级只放宽命令沙箱，打不开能力开关）。需要看网页时：重试 browser_* 调用并带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡，用户批准后即可用），或请用户在权限芯片里勾选「允许操作浏览器」\n")
 		}
 		if hasCapability(sess, capComputer) {
 			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准；同样不经命令沙箱）\n")
 		} else {
-			b.WriteString("- 能力：未开启「操作电脑」——computer_* 工具的调用会被拒绝；关着时命令沙箱里的命令也替代不了它（截不了屏、模拟不了键鼠），需要时请让用户在权限芯片中勾选\n")
+			b.WriteString("- 能力：未开启「操作电脑」——computer_* 工具的调用会被拦下；关着时命令沙箱里的命令也替代不了它（截不了屏、模拟不了键鼠）。需要时：重试 computer_* 调用并带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡），或请用户在权限芯片中勾选「允许操作电脑」\n")
 		}
 		// 手机操控（仅安卓注册）：device_* 走无障碍桥，adb_* 走引擎内置 ADB
 		// 客户端。就绪状态是易变信息（用户开关无障碍/连 ADB），归环境快照正管。
@@ -376,7 +376,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 				}
 				b.WriteString(line + "\n")
 			} else {
-				b.WriteString("- 能力：未开启「操作手机」——device_* / adb_* 工具的调用会被拒绝；需要时请让用户在权限芯片中勾选后再试（沙箱里的命令替代不了它）\n")
+				b.WriteString("- 能力：未开启「操作手机」——device_* / adb_* 工具的调用会被拦下；需要时重试调用并带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡），或请用户在权限芯片中勾选「允许操作手机」（沙箱里的命令替代不了它）\n")
 			}
 		}
 	}
@@ -417,15 +417,20 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	// 自带技能一览（静态）；用户技能段也归入快照——开关技能只影响尾部
 	// 快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
 	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南）、downloader（下载器：aria2c 下载落盘）、apkinfo（APK 包名/版本/签名查看），需要时直接调用对应工具或子命令\n")
-	if sess.Mode == "task" || sess.Mode == "skill-create" {
-		if block := a.userSkillsPromptBlock(); block != "" {
+	// 用户技能清单与插件技能清单：环境快照的固定条目，**所有模式一律注入**，
+	// 不挂任何模式谓词——与上面的操作系统/权限模式行同级。技能功能晚于
+	// office/coding 落地，曾因手写「task/skill-create 才注入」的门控把两个
+	// 老模式漏在清单外（实测装了技能、模型却收不到清单更新）；改为无条件
+	// 注入后新增模式天然覆盖，启动自检 assertSkillVisibility 再兜一道底。
+	// read_skill 工具同样全模式注册（toolsFor 出口统一追加），清单在任何
+	// 模式都可读、可行动。
+	if block := a.userSkillsPromptBlock(); block != "" {
+		b.WriteString(block + "\n")
+	}
+	// Claude Code 插件技能清单（ccplugin_skills.go）：同为清单先行、按需读取
+	if a.CCPlugins != nil {
+		if block := a.CCPlugins.ccSkillsPromptBlock(); block != "" {
 			b.WriteString(block + "\n")
-		}
-		// Claude Code 插件技能清单（ccplugin_skills.go）：同为清单先行、按需读取
-		if a.CCPlugins != nil {
-			if block := a.CCPlugins.ccSkillsPromptBlock(); block != "" {
-				b.WriteString(block + "\n")
-			}
 		}
 	}
 	return b.String()
