@@ -185,9 +185,9 @@
   }
   function dictationIsLocal() { return dictationEngine() !== 'browser'; }
 
-  /* 本地通道起不来时的可执行提示：缺 worker（安装包没带 asr/）、缺运行时依赖
-   * （sherpa-onnx 未装进便携运行时）、缺模型文件（data/asr-models 未就绪）三类
-   * 是产品侧可预期的失败，直接把「切云端」这条出路告诉用户；其他错误原样显示。 */
+  /* 本地通道起不来时的可执行提示：缺 worker（组件文件不完整）、缺运行时依赖
+   * （sherpa-onnx 未装进共享便携运行时）、缺模型文件（组件/voice/models/ 未就绪）
+   * 三类是产品侧可预期的失败，直接把「切云端」这条出路告诉用户；其他错误原样显示。 */
   function voiceLocalHint(err) {
     const s = String(err || '');
     if (/asr_worker\.py|sherpa|模型文件不完整|asr-models|便携运行时未装配/.test(s)) {
@@ -953,7 +953,16 @@
      * WebSocket）：说话期间实时灰字（stream_chunk→partial），停顿 3 秒发
      * stream_flush 由离线模型精修落黑字，录音无缝继续；手机远程（https 开不了
      * ws）：同样 3 秒停顿，只是该句走整段 POST 识别（经中继隧道），无灰字但
-     * 逐句出字。服务端端点检测已关闭，不会双重切句。 */
+     * 逐句出字。服务端端点检测已关闭，不会双重切句。
+     *
+     * ── 本地模型身份（仅注释记录，用户端文案一律只说「本地语音识别模型」）──
+     * 小米 X-ASR（Zipformer2 transducer，中英双语、原生标点与大小写，
+     * 约 100 万小时训练，评估期对比 Paraformer/SenseVoice/Qwen3-ASR 后定标）。
+     * 两个模型都随组件目录（models/）分发、跑在共享便携运行时的 sherpa-onnx 上：
+     *   models/xasr/           离线版（精修落字/整段识别，int8 约 168MB）
+     *     https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-zipformer-transducer-zh-en-punct-int8-2026-06-03.tar.bz2
+     *   models/xasr-streaming/ 流式版 480ms 档（实时灰字，int8 约 163MB）
+     *     https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2 */
     const makeLocalRec = (stream) => {
       const ctx = new AudioContext({ sampleRate: 16000 });
       const src = ctx.createMediaStreamSource(stream);
