@@ -5233,6 +5233,11 @@ async function flushAttachments(view) {
 async function doUpload(view) {
   view = view || popView || mainView;
   closePopovers();
+  // 让出本次鼠标事件链再弹选择器：原生文件选择对话框（桌面壳 /api/pick-file）与浏览器
+  // 文件框若还在 mousedown/mouseup 处理链里弹出，容易抢走随后的 mouseup —— 语音快捷键
+  // 引擎会因此留下"按键未松开"的残留（点上传却开听写的老问题，详见
+  // 语音误触发排查（点上传文件启动听写）2026-10-10.md）。
+  await new Promise((r) => setTimeout(r, 0));
   // 本轮执行中照样让选文件（选进来的随下一条消息一起上传）；旧版直接 return，
   // 用户看来就是「点了文件上传没任何反应」
   jxDiag('upload:click streaming=' + !!view.state.streaming +

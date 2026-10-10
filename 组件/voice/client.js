@@ -26,6 +26,11 @@
  *    一样带上语音快捷键提示（app-core 的 sendKeyHint 追加 window.JXVoiceHint，
  *    子输入框由本组件自己拼）。远程页面且视口宽度 <500（手机端）时隐藏听筒
  *    按钮（window.JX_REMOTE 区分远程；手机浏览器多不支持语音识别）。
+ *    触发判定＝**边沿触发**（2026-10-10 修）：组合必须由"本次按下的那个键"补齐，
+ *    另有多路兜底清理（失焦 / 页面隐藏 / 重新聚焦 / 指针取消 / 光标离开文档 /
+ *    长时间无输入的残留心跳）。防的是"mouseup 丢失后残留把普通点击误判成快捷键"
+ *    ——曾表现为点「＋→文件上传」却启动听写，见
+ *    语音误触发排查（点上传文件启动听写）2026-10-10.md。
  *
  * 全程零配置（不需要任何密钥）。按钮 DOM 在 web/index.html（位置与样式不变），
  * 默认带 .hidden——按钮属于本组件，组件关掉（设置 → 内置组件）或没加载到页面
@@ -163,6 +168,11 @@
   let captureCtl = null;       // 当前录制会话（重复点击录制按钮时作废旧会话）
   const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
   let onResize = null;         // 远程窄屏隐藏的窗口尺寸联动
+  // 残留兜底（2026-10-10）：距最近一次真实输入超过 STALE_MS 而按键状态还挂着，
+  // 视为"mouseup/keyup 丢了"的残留，清掉——别让它把后续普通点击误判成快捷键。
+  let lastInputAt = 0;         // 最近一次按键/鼠标事件时刻
+  let staleTimer = null;       // 残留清理心跳
+  const STALE_MS = 20000;
 
   function micHiddenByEnv() {
     return !!window.JX_REMOTE && window.innerWidth < 500; // 远程手机端页面
@@ -195,10 +205,11 @@
     armedSolo = null;
   }
 
-  function shortcutFire(action) { // action: 'press' | 'release'
+  function shortcutFire(action, key) { // action: 'press' | 'release'；key＝本次按下的那个键
     if (!active || captureMode || !document.hasFocus()) return;
     const ctl = activeVoiceCtl();
     if (!ctl) return;
+    lastInputAt = Date.now(); // 刷新"最近一次真实输入"时刻（残留清理定时器用）
     const alts = shortcutAlternatives();
     const mode = voiceShortcutMode();
 
@@ -209,6 +220,12 @@
       for (const alt of alts) {
         if (alt.length === 1 && isModKey(alt[0])) continue; // 独按修饰键走 2)
         if (!altHeld(alt)) continue;
+        // 边沿触发（2026-10-10 修）：本次按下的键必须**属于**该组合。
+        // 否则"按下没配到 mouseup"的残留（默认主快捷键＝鼠标侧键；弹原生文件对话框、
+        // 光标移出窗口松手、WebView2 不派发 window blur 等都会造成）会把之后任何一次
+        // 普通鼠标点击都补成"组合成立"→ 点「上传文件」却开了听写。详见
+        // 语音误触发排查（点上传文件启动听写）2026-10-10.md。
+        if (key && !alt.includes(key)) continue;
         if (mode === 'hold') {
           if (!holdSession && !ctl.active()) { holdSession = true; ctl.start(); }
         } else if (!firedLatch) {
@@ -219,7 +236,8 @@
       }
       // 2) 独按修饰键：按住先布防；点按模式在独按松开时触发（见 release）
       for (const alt of alts) {
-        if (alt.length === 1 && isModKey(alt[0]) && altHeld(alt)) {
+        // 同样要求"就是这次按下了这个修饰键"才布防（残留的修饰键不再布防）
+        if (alt.length === 1 && isModKey(alt[0]) && altHeld(alt) && alt[0] === key) {
           if (!armedSolo) {
             armedSolo = { key: alt[0], started: false };
             if (mode === 'hold' && !ctl.active()) {
@@ -260,6 +278,20 @@
   }
 
   let scKeyDown = null, scKeyUp = null, scMouseDown = null, scMouseUp = null, scContextMenu = null, scBlur = null;
+  let scVisibility = null, scFocus = null, scPointerCancel = null, scMouseLeave = null;
+
+  // 残留清理心跳：长时间没有输入却还挂着按键状态，就清（hold 说话与听写进行中豁免）
+  function startStaleTimer() {
+    if (staleTimer) return;
+    staleTimer = setInterval(() => {
+      if (!active || holdSession) return;
+      const ctl = activeVoiceCtl();
+      if (ctl && ctl.active()) return;
+      if (!heldKey.size && !heldMouse.size && !armedSolo) return;
+      if (Date.now() - lastInputAt < STALE_MS) return;
+      clearShortcutState();
+    }, 5000);
+  }
 
   function clearShortcutState() {
     heldKey.clear();
@@ -287,7 +319,7 @@
       if (e.repeat) return;
       if (armedSolo && k !== armedSolo.key) cancelSolo(); // 独按期间按了别的键：解除
       heldKey.add(k);
-      shortcutFire('press');
+      shortcutFire('press', k);
     };
     scKeyUp = (e) => {
       if (!active) return;
@@ -303,7 +335,7 @@
       if (shortcutAlternatives().some((a) => a.includes(m))) e.preventDefault();
       if (armedSolo && m !== armedSolo.key) cancelSolo();
       heldMouse.add(m);
-      shortcutFire('press');
+      shortcutFire('press', m);
     };
     scMouseUp = (e) => {
       if (!active) return;
@@ -326,6 +358,22 @@
     document.addEventListener('mouseup', scMouseUp);
     document.addEventListener('contextmenu', scContextMenu);
     window.addEventListener('blur', scBlur);
+    // —— 兜底清理（2026-10-10 修：光靠 blur 不够）——
+    // 现场是"mouseup 丢失 + 窗口没失焦/WebView2 不派发 blur"，残留会永久留下。
+    // 页面隐藏、重新聚焦、指针取消、光标离开文档，各清一次；另有残留心跳。
+    scVisibility = () => { if (document.hidden) clearShortcutState(); };
+    scFocus = () => clearShortcutState();
+    scPointerCancel = () => clearShortcutState();
+    scMouseLeave = () => { // 光标离开文档后，按着的鼠标键不可能再收到 mouseup
+      if (!heldMouse.size) return;
+      heldMouse.clear();
+      shortcutFire('release');
+    };
+    document.addEventListener('visibilitychange', scVisibility);
+    window.addEventListener('focus', scFocus);
+    document.addEventListener('pointercancel', scPointerCancel, true);
+    document.addEventListener('mouseleave', scMouseLeave);
+    startStaleTimer();
     // 远程窄屏隐藏的窗口尺寸联动（旋转/分屏跨过 500 阈值时即时显隐）
     onResize = () => {
       if (!active) return;
@@ -345,8 +393,14 @@
     if (scMouseUp) document.removeEventListener('mouseup', scMouseUp);
     if (scContextMenu) document.removeEventListener('contextmenu', scContextMenu);
     if (scBlur) window.removeEventListener('blur', scBlur);
+    if (scVisibility) document.removeEventListener('visibilitychange', scVisibility);
+    if (scFocus) window.removeEventListener('focus', scFocus);
+    if (scPointerCancel) document.removeEventListener('pointercancel', scPointerCancel, true);
+    if (scMouseLeave) document.removeEventListener('mouseleave', scMouseLeave);
+    if (staleTimer) { clearInterval(staleTimer); staleTimer = null; }
     if (onResize) window.removeEventListener('resize', onResize);
     scKeyDown = scKeyUp = scMouseDown = scMouseUp = scContextMenu = scBlur = onResize = null;
+    scVisibility = scFocus = scPointerCancel = scMouseLeave = null;
     clearShortcutState();
   }
 
