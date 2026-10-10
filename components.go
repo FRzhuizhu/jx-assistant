@@ -106,9 +106,26 @@ func (r *ComponentRegistry) rescan() {
 	if data, err := os.ReadFile(r.statePath); err == nil {
 		_ = json.Unmarshal(data, &enabled) // 损坏按空处理（全部缺省启用）
 	}
+	// 残留清理：组件目录已删除（手动删/卸载）的开关态一并剔除并回写——
+	// 否则重装同名组件时旧记录会把「缺省启用」短路成停用（实测踩过：
+	// input-counter 删目录重装后默认关）。清掉后重装即视为新组件。
+	pruned := false
+	for id := range enabled {
+		if _, ok := items[id]; !ok {
+			delete(enabled, id)
+			pruned = true
+			log.Printf("[组件] 清理残留开关态：%s（组件目录已不存在）", id)
+		}
+	}
 	r.mu.Lock()
 	r.items, r.enabled = items, enabled
 	r.mu.Unlock()
+	if pruned {
+		if data, err := json.MarshalIndent(enabled, "", "  "); err == nil {
+			_ = os.MkdirAll(filepath.Dir(r.statePath), 0755)
+			_ = os.WriteFile(r.statePath, data, 0644)
+		}
+	}
 }
 
 func (r *ComponentRegistry) IsEnabled(id string) bool {
