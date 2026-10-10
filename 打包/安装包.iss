@@ -38,6 +38,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "stage\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\技能\*"; DestDir: "{app}\技能"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 内置组件必须随包（打包清单纪律 ③）：危险命令护栏 / 待办与定时任务 / Git 面板 /
+; 语音（朗读与听写）。程序按 {app}\组件\*/manifest.json 发现组件，装不进就没有
+; 默认组件（危险命令护栏会一并失效）；打包脚本已强校验 stage\组件 存在且非空。
+Source: "stage\组件\*"; DestDir: "{app}\组件"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 本地语音识别 worker（asr/asr_worker.py，跑在 技能\_runtime 的便携运行时上）：语音组件
+; 「本地语音识别模型」档经 /api/voice/asr/* 调它，缺文件时该档报「未找到 asr/asr_worker.py」
+Source: "stage\asr\*"; DestDir: "{app}\asr"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "stage\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

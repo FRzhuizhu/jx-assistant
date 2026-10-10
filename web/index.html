@@ -155,10 +155,58 @@
         <button data-mk-tab="plugin" class="mk-tab">插件</button>
         <span class="mk-tabs-rest">
           <span id="mk-count"></span>
+          <button id="mk-upload-btn" class="mk-act hidden" title="把技能包（zip 或含 SKILL.md 的文件夹）发布到市场服务器，本机不安装">＋ 上传技能</button>
           <button id="mk-ext-market" class="mk-link hidden">管理外部 Claude 市场</button>
         </span>
       </div>
       <div id="mk-list" class="mk-list"></div>
+    </div>
+
+    <!-- 上传技能到市场（app-market.js）：市场 · 技能 tab 的「＋ 上传技能」按钮打开的弹层。
+         三种投喂方式——拖拽（文件/整个文件夹）、点击选取（文件 / 文件夹）、Ctrl+V 粘贴；
+         前端做技能包校验（必须含 SKILL.md）与元信息预填，提交时组装 FormData 打
+         POST /api/market/publish（后端接口尚未实现，契约见 app-market.js 的注释）。 -->
+    <div id="mk-upload-modal" class="modal hidden">
+      <div class="modal-card mku-card">
+        <h3>上传技能到市场</h3>
+        <p class="mku-sub">把技能包拖进来，或点下面的按钮选择文件 / 文件夹，也可以直接按 <kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴。上传的是技能包本身（发布到市场服务器），本机已装的技能不受影响。</p>
+        <div id="mku-drop" class="mku-drop">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <div class="mku-drop-t">拖拽技能包到这里</div>
+          <div class="mku-drop-s">.zip 压缩包 · 技能文件夹 · 单个 SKILL.md 都行</div>
+          <div class="mku-drop-btns">
+            <button id="mku-pick-file" class="mk-act">选择文件</button>
+            <button id="mku-pick-dir" class="mk-act ghost">选择文件夹</button>
+          </div>
+        </div>
+        <input id="mku-file-input" type="file" multiple class="hidden">
+        <input id="mku-dir-input" type="file" webkitdirectory class="hidden">
+        <div id="mku-files" class="mku-files hidden"></div>
+        <div class="mku-meta">
+          <label>技能 ID <span class="mku-req">必填</span>
+            <input id="mku-id" placeholder="英文短名，如 wechat-chat-ops" autocomplete="off" spellcheck="false">
+          </label>
+          <label>名称
+            <input id="mku-name" placeholder="市场上显示的名字" autocomplete="off">
+          </label>
+          <label>版本
+            <input id="mku-version" placeholder="如 1.0.0" autocomplete="off" spellcheck="false">
+          </label>
+          <label>标签 <span class="mku-opt">逗号分隔</span>
+            <input id="mku-tags" placeholder="如 办公, 自动化" autocomplete="off">
+          </label>
+          <label class="mku-wide">描述
+            <input id="mku-desc" placeholder="一句话说明这个技能做什么（显示在市场的卡片上）" autocomplete="off">
+          </label>
+        </div>
+        <div id="mku-status" class="mku-status"></div>
+        <div class="modal-actions">
+          <button id="mku-clear">清空</button>
+          <span class="spacer"></span>
+          <button id="mku-cancel">取消</button>
+          <button id="mku-submit" class="accent" disabled>发布到市场</button>
+        </div>
+      </div>
     </div>
 
     <div id="progress-panel" class="hidden"></div>
@@ -598,6 +646,11 @@
               <div class="sf-label">市场服务器</div>
               <input id="set-market-url" class="pf-input" placeholder="http://网关地址:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
               <p class="sf-desc">jxai-server 市场的清单地址（同一台服务器上与中继网关共用端口）；填好即用，改动即时生效。留空则市场页显示未配置。</p>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">发布者姓名</div>
+              <input id="set-publisher-name" class="pf-input" placeholder="如 张三" autocomplete="off" spellcheck="false">
+              <p class="sf-desc">发布技能时随包上报的市场条目归属名：市场卡片上只有「发布者 = 这个姓名」的条目才显示「更新发布 / 删除」（即只能管自己发的）。首次接入向导里填的姓名会自动写入这里；留空则不带归属，发布后自己也删不了。</p>
             </div>
           </div>
           <div class="gen-section">
