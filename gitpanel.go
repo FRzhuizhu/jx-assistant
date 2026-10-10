@@ -9,8 +9,9 @@ package main
 //   paths（safePathspecs 逐项校验后放在 -- 之后）、hash（4..40 位十六进制）。
 // 写边界：只动 index 与本地历史的操作——add（暂存）/ restore --staged（取消暂存，
 // 空仓库回退 rm --cached）/ rm --cached（移出跟踪变未跟踪）/ commit（提交）/
-// checkout（切换本地分支）/ sync（fetch + 快进或无冲突自动合并 + push 当前分支，
-// 任何需要决策或无法自动完成的情形一律原样退回并提示交给对话）。不做
+// checkout（切换本地分支）/ sync（与远程同步，细分为 pull=fetch+快进/自动合并、
+// push=仅本地领先且远程无新提交、空=整套先拉后推；无法自动完成的情形一律
+// 原样退回并提示交给对话）。不做
 // reset/revert/discard/stash/rebase 等会改写工作区或历史的操作。
 // 组件未启用时全部接口一律 404（与 todo-scheduler 同一语义）。
 
@@ -56,6 +57,8 @@ const (
 	gitLogMax         = 300
 	// AI 摘要喂给模型的 diff 文本上限。
 	gitSummaryMaxChars = 24000
+	// 仅探远程状态（面板刷新时后台 fetch，op=fetch）：短超时，失败静默。
+	gitFetchTimeout = 20 * time.Second
 )
 
 // 候选仓库扫描：预算与跳过目录对齐数字助理2 的 dsh-git-panel 插件。
@@ -1044,12 +1047,14 @@ func (a *App) gitAheadBehind(ctx context.Context, root, upstream string) (ahead,
 	return ahead, behind
 }
 
-// gitSync 与远程同步：fetch → 落后则合并（先快进；分叉时自动合并，一旦冲突
-// 立即 --abort 恢复现场）→ 领先则推送当前分支。面板只做"机器能自动完成"的
+// gitSync 与远程同步。op：""=整套（拉取能合并的、再推送，「⟲ 同步」按钮）、
+// "pull"=只拉取（提交栏「↓ 拉取」按钮）、"push"=只推送（「↑ 推送」按钮）。
+// 流程：fetch → 落后则合并（先快进；分叉时自动合并，一旦冲突立即 --abort 恢复
+// 现场）→ 本地领先且远程没有新提交时推送当前分支。面板只做"机器能自动完成"的
 // 部分；凡是需要人（或数字助理）决策/外部条件的情形——无上游、历史分叉有
 // 冲突、未提交改动挡住合并、推送被拒、凭据缺失——一律不动手，返回
 // needHelp=true，由前端引导用户去对话里派工作任务处理。
-func (a *App) gitSync(ctx context.Context, session, repo string) (summary string, needHelp bool, err error) {
+func (a *App) gitSync(ctx context.Context, session, repo, op string) (summary string, needHelp bool, err error) {
 	root, _, reason := a.gitResolve(ctx, session, repo)
 	if root == "" {
 		return "", false, errors.New(reason)
@@ -1061,28 +1066,55 @@ func (a *App) gitSync(ctx context.Context, session, repo string) (summary string
 	}
 	remote := strings.SplitN(upstream, "/", 2)[0]
 
-	// 1) fetch：网络/凭据问题交给对话（AI 可以先诊断 remote 配置与凭据）
-	if _, _, err := a.gitRun(ctx, root, gitSyncTimeout, "fetch", "--no-tags", remote); err != nil {
+	// 1) fetch：拉取/推送都先取一次远程（推送据此判断远程是否又有新提交）；
+	//    网络/凭据问题交给对话（AI 可以先诊断 remote 配置与凭据）
+	//    网络/凭据问题交给对话（AI 可以先诊断 remote 配置与凭据）。
+	//    仅探状态（op=fetch，前端后台调）用短超时，失败也不弹建议卡
+	fetchTimeout := gitSyncTimeout
+	if op == "fetch" {
+		fetchTimeout = gitFetchTimeout
+	}
+	if _, _, err := a.gitRun(ctx, root, fetchTimeout, "fetch", "--no-tags", remote); err != nil {
+		if op == "fetch" {
+			return "获取远程状态失败：" + gitTail(err.Error(), 200), false, nil
+		}
 		return "拉取远程更新失败：" + gitTail(err.Error(), 200), true, nil
 	}
+	if op == "fetch" {
+		return "已更新远程状态", false, nil
+	}
+	ahead, behind := a.gitAheadBehind(ctx, root, upstream)
 
 	// 2) 落后则合并：快进优先（不产生提交）；分叉再试自动合并（普通 merge
 	//    提交）；有任何冲突立即中止恢复，工作区保持原样
 	pulled := ""
-	if _, behind := a.gitAheadBehind(ctx, root, upstream); behind > 0 {
+	if (op == "" || op == "pull") && behind > 0 {
 		if _, _, err := a.gitRun(ctx, root, gitSyncTimeout, "merge", "--ff-only", upstream); err != nil {
 			if _, _, err2 := a.gitRun(ctx, root, gitSyncTimeout, "merge", "--no-edit", upstream); err2 != nil {
 				// 冲突时恢复现场；若 merge 因未提交改动被 git 直接拒绝，现场本就未动
 				_, _, _ = a.gitRun(ctx, root, gitReadTimeout, "merge", "--abort")
-				return "本地与远程无法自动同步（历史分叉有冲突，或未提交的改动挡住了合并），已恢复原状、未做任何改动", true, nil
+				return "远程更新无法自动合并（历史分叉有冲突，或未提交的改动挡住了合并），已恢复原状、未做任何改动", true, nil
 			}
 			pulled = "已自动合并远程分支"
 		} else {
 			pulled = fmt.Sprintf("已快进拉取 %d 个提交", behind)
 		}
 	}
+	if op == "pull" {
+		if pulled == "" {
+			if ahead == 0 {
+				return "已是最新：与远程一致", false, nil
+			}
+			return "远程没有比本地新的提交，无需拉取", false, nil
+		}
+		return pulled, false, nil
+	}
 
-	// 3) 领先则推送当前分支（显式 refspec，不受 push.default 影响）
+	// 3) 领先则推送当前分支（显式 refspec，不受 push.default 影响）。
+	//    只推送时远程又有新提交则不动手，引导先走「拉取」
+	if op == "push" && behind > 0 {
+		return fmt.Sprintf("远程领先 %d 个提交：请先「拉取」合并，再推送", behind), false, nil
+	}
 	pushed := ""
 	if ahead, _ := a.gitAheadBehind(ctx, root, upstream); ahead > 0 {
 		if _, _, err := a.gitRun(ctx, root, gitSyncTimeout, "push", remote, "HEAD"); err != nil {
@@ -1092,6 +1124,13 @@ func (a *App) gitSync(ctx context.Context, session, repo string) (summary string
 			return "推送失败：" + gitTail(err.Error(), 200), true, nil
 		}
 		pushed = fmt.Sprintf("已推送 %d 个提交", ahead)
+	}
+	if op == "push" && pushed == "" {
+		return "没有领先远程的提交可推送", false, nil
+	}
+
+	if op == "push" && pushed != "" {
+		return pushed, false, nil
 	}
 
 	if pulled == "" && pushed == "" {
@@ -1182,6 +1221,7 @@ type gitRequest struct {
 	Paths   []string `json:"paths"`
 	Message string   `json:"message"`
 	Branch  string   `json:"branch"`
+	Op      string   `json:"op"` // sync 的细分操作：""=整套 / "pull"=只拉取 / "push"=只推送
 }
 
 // decodeGitRequest 解析 POST 请求体；查询参数兜底（GET/POST 统一取 session/repo）。
@@ -1334,7 +1374,11 @@ func (a *App) handleGitSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := decodeGitRequest(r)
-	summary, needHelp, err := a.gitSync(r.Context(), body.Session, body.Repo)
+	if op := body.Op; op != "" && op != "pull" && op != "push" && op != "fetch" {
+		writeErr(w, 400, "未知的同步操作："+op)
+		return
+	}
+	summary, needHelp, err := a.gitSync(r.Context(), body.Session, body.Repo, body.Op)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

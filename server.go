@@ -359,7 +359,8 @@ func (a *App) Routes() http.Handler {
 	// Git 面板（组件 git-panel 的宿主半边）：组件未启用时这些接口一律 404。
 	// 读 status/diff/graph/commit/branches，写有 stage/unstage/untrack（移出
 	// 跟踪变未跟踪）/commit/summarize（只生成提交信息不提交）/checkout（切
-	// 本地分支）/sync（fetch + 快进或无冲突自动合并 + push 当前分支；任何
+	// 本地分支）/sync（op=pull 拉取：fetch+快进或自动合并；op=push 推送：仅本地
+	// 领先且远程无新提交；空=整套先拉后推；任何
 	// 需要决策的情形原样退回）。不做 reset/revert/discard/stash/rebase。
 	mux.HandleFunc("GET /api/git/status", a.handleGitStatus)
 	mux.HandleFunc("GET /api/git/diff", a.handleGitDiff)

@@ -140,6 +140,8 @@
 .gitp-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .gitp-btn.primary:hover { background: var(--accent-hover); }
 .gitp-btn:disabled { opacity: .55; cursor: default; }
+/* 提交栏的拉取/推送按钮靠左（AI 摘要、提交靠右） */
+.gitp-commit-btns .gitp-remote { margin-right: auto; }
 
 /* ---------- 更改区：文件分组 ---------- */
 .gitp-groups { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }

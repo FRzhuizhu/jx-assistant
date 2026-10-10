@@ -15,7 +15,9 @@
  *
  * 安全与边界（与宿主半边 gitpanel.go 对应）：仓库只能选宿主扫描出的候选；
  * 写操作：暂存 / 取消暂存 / 提交 / 切换本地分支（分支名限宿主列出的清单，
- * 有覆盖风险的切换被 git 拒绝）；AI 摘要只生成不提交；不做 push/pull/reset/discard。
+ * 有覆盖风险的切换被 git 拒绝）；AI 摘要只生成不提交；远程同步拆成「拉取 / 推送
+ * 」两个按钮：拉取只要远程有新提交就可按（fetch + 快进，分叉时自动合并，冲突则
+ * 原样退回交对话处理）；推送只在本地领先且远程无新提交时可按。不做 reset/discard。
  * 渲染全部走文本节点与 createTextNode，不用 innerHTML 拼仓库内容。
  * dispose 撤掉视图、定时器与事件监听。
  */
@@ -93,6 +95,9 @@
     aiBusy: false,        // AI 摘要生成中（跨刷新保留：按钮文案/禁用不被轮询复位）
     commitBusy: false,    // 提交进行中（同上：防刷新后按钮回活、重复提交）
     syncBusy: false,      // 远程同步进行中（⟲ 按钮）
+    pullBusy: false,      // 拉取进行中（提交栏「↓ 拉取」按钮）
+    fetchBusy: false,     // 后台探远程状态进行中（refreshAll 触发，静默）
+    pushBusy: false,      // 推送进行中（提交栏「↑ 推送」按钮）
     opError: '',          // 操作类错误（用户点出来的）：轮询不抹，下一次成功操作才清
     timer: null,
   };
@@ -211,8 +216,8 @@
     const drop = el('div', 'gitp-helpdrop hidden');
     drop.appendChild(el('div', 'gitp-helpdrop-title', '面板只做安全的本地操作；这些 Git 事情请在对话里说'));
     const feats = [
-      ['拉取远程并合并 / 变基', 'pull / merge / rebase'],
-      ['推送到远程、管理远程地址', 'push / remote'],
+      ['配置远程地址、设置上游分支', 'remote add / push -u'],
+      ['变基、强推（改写历史）', 'rebase / push --force'],
       ['检出、新建、重命名、删除分支', 'checkout / branch'],
       ['贮藏与恢复手头改动', 'stash'],
       ['放弃更改、回退到某次提交', 'restore / reset / revert'],
@@ -459,6 +464,51 @@
     if (handOff) await suggestTask(handOff);
   }
 
+  /* 单独拉取 / 推送（提交栏按钮）：op='pull'|'push'，后端同样走 sync 接口。
+   * 可用性由 syncCommitBar 按 ahead/behind 控制；这里只处理执行与结果反馈，
+   * 需要决策（冲突、凭据等）时与 ⟲ 同步一样交回对话。 */
+  async function doRemote(op) {
+    if (S.pullBusy || S.pushBusy) return;
+    const isPull = op === 'pull';
+    if (isPull) S.pullBusy = true; else S.pushBusy = true;
+    S.opError = '';
+    syncCommitBar();
+    renderStrip();
+    let handOff = null;
+    try {
+      const d = await gitPost('sync', { op });
+      if (d.needHelp) {
+        handOff = d.summary || '这一步没法自动完成';
+      } else {
+        S.error = '';
+        S.opError = '';
+        S.note = d.summary || (isPull ? '已拉取' : '已推送');
+        renderStrip();
+        await refreshAll();
+      }
+    } catch (e) {
+      S.opError = e.message;
+      handOff = e.message; // 网络/凭据等技术问题同样引导去对话
+      renderStrip();
+    }
+    if (isPull) S.pullBusy = false; else S.pushBusy = false;
+    syncCommitBar();
+    if (handOff) await suggestTask(handOff);
+  }
+
+  /* 面板刷新时后台探一次远程状态（sync op=fetch）：让「拉取/推送」按钮的
+   * ahead/behind 跟上远程实际情况（status 本身只读本地跟踪分支，不碰网络）。
+   * 静默失败——无网/凭据问题不打扰，用户点按钮时后端还会再 fetch 兜底。 */
+  async function pokeRemote() {
+    if (S.fetchBusy) return;
+    S.fetchBusy = true;
+    try {
+      await gitPost('sync', { op: 'fetch' });
+      await loadStatus(); // 拿新的 ahead/behind 刷按钮（仅探，不动工作区）
+    } catch (e) { /* 静默 */ }
+    S.fetchBusy = false;
+  }
+
   /* 需要决策的 Git 操作：统一弹卡建议回对话新建工作任务，面板不代做 */
   async function suggestTask(reason) {
     const tip = reason +
@@ -494,6 +544,13 @@
     ta.value = S.commitMsg;
     ta.oninput = () => { S.commitMsg = ta.value; };
     const btns = el('div', 'gitp-commit-btns');
+    // 拉取 / 推送（靠左）：可用性跟 ahead/behind 走，见 syncCommitBar
+    const pull = el('button', 'gitp-btn gitp-remote', '↓ 拉取');
+    pull.id = 'gitp-pull-btn';
+    pull.onclick = () => doRemote('pull');
+    const push = el('button', 'gitp-btn gitp-remote', '↑ 推送');
+    push.id = 'gitp-push-btn';
+    push.onclick = () => doRemote('push');
     const ai = el('button', 'gitp-btn', 'AI 摘要');
     ai.title = '用当前会话配置的模型为已暂存改动生成提交信息（只生成，不提交）';
     ai.onclick = async () => {
@@ -541,21 +598,39 @@
       syncCommitBar();
       renderStrip();
     };
+    btns.appendChild(pull);
+    btns.appendChild(push);
     btns.appendChild(ai);
     btns.appendChild(ok);
     cm.appendChild(ta);
     cm.appendChild(btns);
-    return { cm, ta, ai, ok };
+    return { cm, ta, ai, ok, pull, push };
   }
 
   // 把状态刷到提交框（节点可能此刻不在文档里，比如正在看文件 diff——值照样留住）
   function syncCommitBar() {
     if (!commitBar) return;
-    const { ta, ai, ok } = commitBar;
+    const { ta, ai, ok, pull, push } = commitBar;
     if (ta.value !== S.commitMsg) ta.value = S.commitMsg;
     ai.disabled = S.aiBusy;
     ai.textContent = S.aiBusy ? '生成中…' : 'AI 摘要';
     ok.disabled = S.commitBusy || !S.groups.staged.length;
+    // 拉取 / 推送：跟 upstream 的 ahead/behind 走（数据来自最近一次 status，
+    // 点击后后端会再 fetch 兜底）。拉取：远程有新提交即可（含分叉自动合并）；
+    // 推送：本地领先且远程没有新提交（分叉/落后都灰，先拉取再推）
+    const rBusy = S.pullBusy || S.pushBusy;
+    const noUp = !S.upstream;
+    pull.disabled = rBusy || noUp || S.behind <= 0;
+    push.disabled = rBusy || noUp || S.ahead <= 0 || S.behind > 0;
+    pull.textContent = S.pullBusy ? '拉取中…' : '↓ 拉取';
+    push.textContent = S.pushBusy ? '推送中…' : '↑ 推送';
+    pull.title = noUp ? '当前分支没有上游（远程跟踪分支），无法拉取'
+      : S.behind > 0 ? '拉取远程更新：远程领先 ' + S.behind + ' 个提交（能快进/自动合并的自动完成，冲突则交回对话处理）'
+      : '远程没有比本地新的提交';
+    push.title = noUp ? '当前分支没有上游（远程跟踪分支），无法推送'
+      : S.behind > 0 ? '远程有 ' + S.behind + ' 个新提交：请先拉取合并，再推送'
+      : S.ahead > 0 ? '推送 ' + S.ahead + ' 个提交到 ' + S.upstream
+      : '没有领先远程的提交可推送';
   }
 
   function ensureCommitBar() {
@@ -1061,6 +1136,7 @@
     loadStatus();
     loadGraph(true);
     loadBranches();
+    pokeRemote(); // 后台探远程状态，刷新拉取/推送按钮的可用性（不阻塞面板）
   }
 
   /* ---------- 生命周期 ---------- */
