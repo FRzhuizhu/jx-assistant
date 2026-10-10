@@ -47,8 +47,11 @@ type provisionPayload struct {
 		BaseURL string `json:"baseURL"`
 		Key     string `json:"key"`
 		Models  []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			ContextWindow  int    `json:"contextWindow,omitempty"`
+			MaxOutput      int    `json:"maxOutput,omitempty"`
+			SupportsImages bool   `json:"supportsImages,omitempty"`
 		} `json:"models"`
 		DefaultModel string `json:"defaultModel"`
 		// 每月额度（积分，1 积分 = 0.001 元；仅展示用，扣减在 new-api 侧）
@@ -284,9 +287,17 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 	if payload.API != nil && len(payload.API.Models) > 0 {
 		models := make([]ModelCfg, 0, len(payload.API.Models))
 		for _, m := range payload.API.Models {
-			if m.ID != "" {
-				models = append(models, ModelCfg{ID: m.ID, Name: m.Name}) // ContextWindow 0=未知，走默认兜底
+			if m.ID == "" {
+				continue
 			}
+			// 能力元数据（上下文长度/最大输出/图片输入）：服务端下发的权威值优先；
+			// 没带就按模型名兜底猜测（new-api 体系不存这些数据，服务端也可能没配）。
+			cw, mo, imgs := m.ContextWindow, m.MaxOutput, m.SupportsImages
+			if cw == 0 {
+				cw, imgs = guessModelMeta(m.ID)
+			}
+			models = append(models, ModelCfg{ID: m.ID, Name: m.Name,
+				ContextWindow: cw, MaxOutput: mo, SupportsImages: imgs})
 		}
 		if dm := payload.API.DefaultModel; dm != "" { // 默认模型置顶（models[0] 即默认）
 			for i := range models {

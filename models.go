@@ -167,7 +167,10 @@ func guessModelMeta(id string) (ctx int, images bool) {
 		return false
 	}
 	images = has("4o", "gpt-4-turbo", "gpt-4.1", "gpt-5", "o3", "o4-mini", "claude",
-		"gemini", "glm-4v", "glm-5.3-flash", "qwen-vl", "-vl-", "vision", "llava", "pixtral", "grok-4", "vlmodel")
+		"gemini", "glm-4v", "glm-5.3-flash", "qwen-vl", "-vl-", "vision", "llava", "pixtral", "grok-4", "vlmodel",
+		// DeepSeek V4 系输入支持图片（官方 /v1/models 的 input_modalities: text+image）；
+		// 老 deepseek-chat/reasoner/coder 纯文本，不列。
+		"deepseek-flash", "deepseek-v4")
 	switch {
 	case has("moonshot-v1-128k"):
 		return 131072, images
