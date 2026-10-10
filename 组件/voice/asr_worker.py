@@ -19,9 +19,11 @@ stdout 纪律：协议应答走原 fd1 的独立句柄；启动时把 sys.stdout
 引擎日志全部落在 stderr，不污染 JSON 流。Go 侧（voiceasr.go）把 stderr
 当日志收。
 
-模型与依赖落位（开发目录即仓库根）：
-  data/asr-models/xasr/          sherpa-onnx-x-asr-…-int8 解包（评估定标：小米 X-ASR）
-依赖装在便携运行时（技能/_runtime/python）：sherpa-onnx。
+落位（组件自包含）：本脚本与模型都在 组件/voice/ 里——
+  组件/voice/asr_worker.py        本文件
+  组件/voice/models/xasr/         离线模型（精修/整段识别）
+  组件/voice/models/xasr-streaming/ 流式模型（实时灰字）
+运行时用共享便携 Python（技能/_runtime/python，装 sherpa-onnx）。
 （评估期的 paraformer/sensevoice/qwen 分支已删——结论见 git 历史 054c19e881。）
 """
 import base64
@@ -36,8 +38,8 @@ from pathlib import Path
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent  # 仓库根（asr/ 的上级）
-    models_root = root / "data" / "asr-models"
+    root = Path(__file__).resolve().parent  # 组件/voice：worker 与 models/ 同级（自包含）
+    models_root = root / "models"
 
     # ---- stdout 纪律：fd1 留给协议，其余全部转 stderr ----
     proto = os.fdopen(os.dup(1), "w", encoding="utf-8")

@@ -88,22 +88,23 @@ type asrWorker struct {
 	device string
 }
 
-// workerRoot asr_worker.py 与模型目录的仓库根：桌面/安装版锚在 exe 旁，
-// 与技能目录同源（开发目录即仓库根）。
-func (m *asrManager) workerRoot() (string, error) {
+// voiceDir 语音组件目录（组件自包含：worker 脚本与 models/ 都归组件本体）。
+// 相对路径 "组件/voice" 与技能目录同规约：开发＝仓库根，桌面/安装版 cwd 已锚 exe 旁。
+func (m *asrManager) voiceDir() (string, error) {
+	dir := filepath.Join("组件", "voice")
+	if _, err := os.Stat(filepath.Join(dir, "asr_worker.py")); err != nil {
+		return "", fmt.Errorf("未找到语音组件 worker（%s）：组件文件不完整", filepath.Join(dir, "asr_worker.py"))
+	}
+	return dir, nil
+}
+
+// pythonExe 共享便携运行时（技能/_runtime——运行时共享原则，语音不自带）。
+func (m *asrManager) pythonExe() (string, error) {
 	dir, err := m.app.SkillsDir()
 	if err != nil {
 		return "", err
 	}
-	root := filepath.Dir(dir) // 技能目录的上级 = 仓库/安装根
-	if _, err := os.Stat(filepath.Join(root, "asr", "asr_worker.py")); err != nil {
-		return "", fmt.Errorf("未找到 asr/asr_worker.py（应在 %s）", root)
-	}
-	return root, nil
-}
-
-func (m *asrManager) pythonExe(root string) (string, error) {
-	py := filepath.Join(root, "技能", "_runtime", "python", "python.exe")
+	py := filepath.Join(dir, "_runtime", "python", "python.exe")
 	if _, err := os.Stat(py); err != nil {
 		return "", fmt.Errorf("便携运行时未装配（%s）：先在设置里启用任一技能触发装配，或手动放置", py)
 	}
@@ -116,16 +117,16 @@ func (m *asrManager) get() (*asrWorker, error) {
 	if m.w != nil && m.w.cmd.ProcessState == nil {
 		return m.w, nil
 	}
-	root, err := m.workerRoot()
+	dir, err := m.voiceDir()
 	if err != nil {
 		return nil, err
 	}
-	py, err := m.pythonExe(root)
+	py, err := m.pythonExe()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(py, filepath.Join("asr", "asr_worker.py"))
-	cmd.Dir = root
+	cmd := exec.Command(py, filepath.Join(dir, "asr_worker.py"))
+	cmd.Dir = dir
 	cmd.Stderr = pipeLineLogger{prefix: "[asr-worker] "}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -194,16 +195,16 @@ func (m *asrManager) getStream() (*asrWorker, error) {
 	if m.sw != nil && m.sw.cmd.ProcessState == nil {
 		return m.sw, nil
 	}
-	root, err := m.workerRoot()
+	dir, err := m.voiceDir()
 	if err != nil {
 		return nil, err
 	}
-	py, err := m.pythonExe(root)
+	py, err := m.pythonExe()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(py, filepath.Join("asr", "asr_worker.py"))
-	cmd.Dir = root
+	cmd := exec.Command(py, filepath.Join(dir, "asr_worker.py"))
+	cmd.Dir = dir
 	cmd.Stderr = pipeLineLogger{prefix: "[asr-stream-worker] "}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
