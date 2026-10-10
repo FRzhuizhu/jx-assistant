@@ -11,15 +11,15 @@
  *    设置区都不渲染。
  *
  * 2) 听写（STT）两档（设置页对用户只分「本地/云端」，不点名模型与厂商）：
- *    a. 本地语音识别模型（默认，voiceasr.go 通道）：本机/桌面走 WebSocket
+ *    a. 云端语音识别模型（默认）：浏览器自带的 SpeechRecognition——各浏览器接入
+ *       的服务商不同（Edge/WebView2、Chrome、国产浏览器各异）且依赖其在线服务
+ *       可达，能力随浏览器版本波动（失败处置指引见 dictationFailMsg）；环境没有
+ *       该能力时（部分远程手机端浏览器、Electron 壳）自动落到本地模型。
+ *    b. 本地语音识别模型（需手动选择，voiceasr.go 通道）：本机/桌面走 WebSocket
  *       流式——说话实时出灰字、停顿约 3 秒由离线模型精修落成黑字（复用浏览器
  *       引擎同款两段式体验）；远程 https 页面开不了 ws，自动回退整段识别。
- *       音频不出本机/服务器。
- *    b. 云端语音识别模型（手动选择）：浏览器自带的 SpeechRecognition——本组件
- *       一直以来的实现原样保留（连接三态、灰色暂定层、断线退避重连、时长上限
- *       倒计时）；各浏览器接入的服务商不同（Edge/WebView2、Chrome、国产浏览
- *       器各异）且依赖其在线服务可达，能力随浏览器版本波动（失败处置指引见
- *       dictationFailMsg）。
+ *       音频不出本机/服务器；要求 技能\_runtime 带 sherpa-onnx 且 data\asr-models
+ *       模型文件齐备，未就绪时设置页切回云端。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
  *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
@@ -164,16 +164,31 @@
   const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
   let onResize = null;         // 设置页尺寸联动（旧版曾用于远程窄屏隐藏按钮，已撤）
 
-  /* ---------- 听写引擎选择：本地（默认）｜云端（浏览器内置识别） ----------
-   * pref.engine：xasr（默认·本地）| browser（云端，需手动选）。
+  /* ---------- 听写引擎选择：云端（默认，浏览器内置识别）｜本地（离线模型） ----------
+   * pref.engine：browser（默认·云端）| xasr（本地，需离线运行时与模型就绪）。
    * 对用户只分本地/云端两档：云端由浏览器内置识别能力提供，不同浏览器接入的
-   * 服务商不同且依赖其在线服务；选了云端但环境没有 SpeechRecognition 时回退本地。
-   * 历史值 'auto'（按环境自动挑浏览器/本地）随本次改版一并归一到本地默认。 */
+   * 服务商不同且依赖其在线服务；环境没有 SpeechRecognition（部分远程手机端浏览器、
+   * Electron 壳）时云端不可用，自动落到本地模型。
+   * 历史值 'auto'（按环境自动挑浏览器/本地）与早期默认 'xasr' 都归一到云端默认——
+   * 本地档要 技能\_runtime 带 sherpa-onnx + data\asr-models 模型文件齐备才能用，
+   * 装完即用的发行版不能把它当默认；用户显式选过本地则尊重其选择。 */
   function dictationEngine() {
-    const p = String(pref.get('engine', 'xasr'));
-    return (p === 'browser' && SR) ? 'browser' : 'xasr';
+    const p = String(pref.get('engine', 'browser'));
+    if (!SR) return 'xasr'; // 环境没有浏览器识别能力：只能走本地
+    return p === 'xasr' ? 'xasr' : 'browser';
   }
   function dictationIsLocal() { return dictationEngine() !== 'browser'; }
+
+  /* 本地通道起不来时的可执行提示：缺 worker（安装包没带 asr/）、缺运行时依赖
+   * （sherpa-onnx 未装进便携运行时）、缺模型文件（data/asr-models 未就绪）三类
+   * 是产品侧可预期的失败，直接把「切云端」这条出路告诉用户；其他错误原样显示。 */
+  function voiceLocalHint(err) {
+    const s = String(err || '');
+    if (/asr_worker\.py|sherpa|模型文件不完整|asr-models|便携运行时未装配/.test(s)) {
+      return '本地语音识别未就绪（缺运行时或模型文件），请在 设置 · 语音 把「听写引擎」切到云端语音识别模型';
+    }
+    return '';
+  }
 
   /* ---------- 本地引擎的采集与上传（16k 单声道 PCM → WAV base64） ---------- */
   function voicePcmToWavB64(floats, sr) {
@@ -914,7 +929,7 @@
         ws.onmessage = (ev) => {
           let d = null;
           try { d = JSON.parse(ev.data); } catch (e) { return; }
-          if (!d.ok) { voiceToast('识别通道错误：' + (d.err || '')); return; }
+          if (!d.ok) { voiceToast(voiceLocalHint(d.err) || ('识别通道错误：' + (d.err || ''))); return; }
           if (d.event === 'partial') {
             // 实时灰字：当前句（可能跨多小句，flush 前的缓冲）增量
             sess.segs.set(0, { text: d.text || '', final: false, changedAt: Date.now() });
@@ -963,10 +978,10 @@
             segCount += 1;
             if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
           }
-        }).catch(() => {
+        }).catch((e) => {
           if (!active || sess.done) return;
           failCount += 1;
-          if (failCount === 1) voiceToast('有一句识别失败（网络/服务波动），继续说即可');
+          if (failCount === 1) voiceToast(voiceLocalHint(e && e.message) || '有一句识别失败（网络/服务波动），继续说即可');
         });
       };
       node.onaudioprocess = (ev) => {
@@ -1305,28 +1320,28 @@
     unit.textContent = '秒（30–600，默认 240）';
     row('单次听写时长上限', sec).appendChild(unit);
 
-    // 听写引擎：本地（默认）/ 云端（浏览器内置识别），不点名厂商
+    // 听写引擎：云端（默认）/ 本地（离线模型），不点名厂商
     const engSel = document.createElement('select');
     engSel.className = 'sp-select';
     // 对用户只分「本地/云端」两档，不点名模型与厂商：云端走浏览器内置识别，
     // 不同浏览器接入的服务商本来就不同（Edge/WebView2、Chrome、国产浏览器各异）
     const engOpts = [
-      ['xasr', '本地语音识别模型（离线·默认）'],
-      ['browser', '云端语音识别模型（当前浏览器内置识别）'],
+      ['browser', '云端语音识别模型（当前浏览器内置识别·默认）'],
+      ['xasr', '本地语音识别模型（离线·需模型就绪）'],
     ];
     for (const [v, t] of engOpts) {
       const o = document.createElement('option');
       o.value = v; o.textContent = t;
       engSel.appendChild(o);
     }
-    engSel.value = String(pref.get('engine', 'xasr')) === 'browser' ? 'browser' : 'xasr';
+    engSel.value = String(pref.get('engine', 'browser')) === 'xasr' ? 'xasr' : 'browser';
     engSel.onchange = () => { pref.set('engine', engSel.value); };
     row('听写引擎', engSel);
 
-    note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 3 秒自动'
-      + '落成正文（电脑端另有实时灰字预览）。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
-      + '接入的服务商不同，且依赖其在线服务可达）。默认本地，需要时手动切换；'
-      + '首次使用本地识别需加载模型（几秒）。');
+    note('默认「云端识别」：由当前浏览器内置的识别能力提供（各浏览器接入的服务商不同，且依赖其在线服务可达）；'
+      + '环境没有该能力时（部分远程手机端浏览器、Electron 壳）自动落到本地。「本地识别」全程离线'
+      + '（音频不出本机/服务器），需运行时与模型文件齐备（未就绪时会提示切换），说完一句停顿约 3 秒'
+      + '自动落成正文（电脑端另有实时灰字预览）；首次使用本地识别需加载模型（几秒）。');
 
     /* ----- 快捷键 ----- */
     group('语音快捷键');
