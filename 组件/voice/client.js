@@ -195,7 +195,7 @@
   function voiceLocalHint(err) {
     const s = String(err || '');
     if (/asr_worker\.py|sherpa|模型文件不完整|asr-models|便携运行时未装配/.test(s)) {
-      return '本地语音识别未就绪（缺运行时或模型文件），请在 设置 · 语音 把「听写引擎」切到云端语音识别模型';
+      return '本地语音识别未就绪（缺运行时或模型文件）：请在 设置 · 语音 把「听写引擎」切到云端语音识别模型；若刚升级过本程序，先重开程序再试';
     }
     return '';
   }
@@ -680,6 +680,7 @@
   const VOICE_SETTLE_MS = 2500;       // 灰字静置多久落成正文
   const VOICE_SWEEP_MS = 400;         // 定稿巡检间隔
   const VOICE_STOP_GRACE = 1200;      // 用户按停后等引擎吐完最后一句的兜底时长（毫秒）
+  const VOICE_TAIL_WAIT_MS = 8000;    // 按停后等在途整段识别的上限（毫秒），超了才收尾
 
   /**
    * 把「上一段已有文字」与「新到文字」拼起来：中文之间不加空格（语音转写的中文
@@ -970,6 +971,7 @@
       let noiseFloor = 0.004;       // 环境噪声底（RMS，自适应）
       let ws = null, wsReady = false, wsFail = false;
       let ended = false, segCount = 0, failCount = 0, doneCb = null;
+      let pendingPost = 0;   // 在途的整段识别（无 WS / 通道挂了时的兜底路径）：收尾要等它
       const i16ToB64 = (i16) => {
         const u8 = new Uint8Array(i16.buffer);
         let bin = '';
@@ -1032,13 +1034,16 @@
         const floats = new Float32Array(total);
         let off = 0;
         for (const c of frames) { floats.set(c, off); off += c.length; }
+        pendingPost += 1;
         voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000)).then((d) => {
+          pendingPost -= 1;
           if (!active) return; // 组件已卸载：迟到的文字不再落
           if (d.text) {
             commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
             segCount += 1;
           }
         }).catch((e) => {
+          pendingPost -= 1;
           if (!active || sess.done) return;
           failCount += 1;
           if (failCount === 1) voiceToast(voiceLocalHint(e && e.message) || '有一句识别失败（网络/服务波动），继续说即可');
@@ -1077,9 +1082,20 @@
         try { ctx.close(); } catch (e) { /* 已关 */ }
         return 'ok';
       };
-      return {
+      // 收尾等待：尾句若还在整段识别中（无 WS / 通道挂了），等它回来再下结论。
+      // 原先直接 finish，于是出现「刚按停就报未识别到语音内容、一秒后文字才落进
+      // 输入框」的误报（用户报过）。等到在途请求清零，或超过上限为止。
+      const settleThen = (cb, capMs) => {
+        const t0 = Date.now();
+        const tick = () => {
+          if (pendingPost === 0 || Date.now() - t0 >= capMs) { cb(); return; }
+          setTimeout(tick, 120);
+        };
+        tick();
+      };
+      const api = {
         isLocal: true,
-        // 正常按停：WS=stream_end 精修尾段后收尾；无 WS=尾句补发即收尾
+        // 正常按停：WS=stream_end 精修尾段后收尾；无 WS=尾句补发，等在途识别回来再收尾
         stop() {
           if (stopAll() === 'ended') return;
           if (ws && wsReady && !wsFail) {
@@ -1090,7 +1106,10 @@
             return;
           }
           flushSeg();
-          finish(segCount > 0 ? '' : '未识别到语音内容');
+          settleThen(() => {
+            if (sess.done || sess.rec !== api) return; // 已收尾或已开始新一轮：这次结论作废
+            finish(segCount > 0 ? '' : '未识别到语音内容');
+          }, VOICE_TAIL_WAIT_MS);
         },
         // 放弃（发送前暂停/组件卸载）：停麦即止，迟到的结果不污染下一条草稿
         abort() {
@@ -1098,6 +1117,7 @@
           if (ws) { doneCb = null; try { ws.close(); } catch (e) { /* */ } }
         },
       };
+      return api;
     };
     const startLocal = () => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
