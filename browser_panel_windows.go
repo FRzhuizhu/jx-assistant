@@ -148,6 +148,13 @@ type evtHandlerVtbl struct{ queryInterface, addRef, release, invoke uintptr }
 var evtHandlerVtblInst = evtHandlerVtbl{
 	comQIProc, comRefProc, comRefProc,
 	windows.NewCallback(func(this *evtHandler, sender, args unsafe.Pointer) uintptr {
+		// 回调发生在 WebView2 的原生栈上：这里的 panic 冒不出去也接不住，
+		// 直接就是整进程无声死亡——必须就地吞掉落日志。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[browser-panel] 事件回调 recover: %v", r)
+			}
+		}()
 		if this != nil && this.fn != nil {
 			this.fn(sender, args)
 		}
@@ -260,6 +267,10 @@ type browserPanel struct {
 	url, title                 string
 	navCh                      chan struct{} // 最近一次导航的完成信号（NavigationCompleted 关闭）
 
+	// 事件 token：Close 时反注册（remove_XXX）要用；注册时由 WebView2 写入。
+	newWinToken   int64
+	titleToken    int64
+	closing       bool        // Close 已进入：跳过迟到事件里对将亡控件的调用
 	newWinHandler *evtHandler // 引用保活：COM 侧只存裸指针，Go 侧必须持有
 	titleHandler  *evtHandler
 }
@@ -345,16 +356,18 @@ func (p *browserPanel) createOnUI() error {
 	if wv == nil {
 		return fmt.Errorf("CoreWebView2 不可用")
 	}
-	var token int64
+	var nwt, tt int64
 	nwh := newEvtHandler(func(sender, args unsafe.Pointer) { p.onNewWindow(args) })
 	_, _, _ = wvVtblOf(wv).addNewWindowRequested.Call(
-		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(nwh)), uintptr(unsafe.Pointer(&token)))
+		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(nwh)), uintptr(unsafe.Pointer(&nwt)))
 	th := newEvtHandler(func(sender, args unsafe.Pointer) { p.onTitleChanged() })
 	_, _, _ = wvVtblOf(wv).addDocumentTitleChanged.Call(
-		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&token)))
+		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&tt)))
 	p.stateMu.Lock()
 	p.chrome, p.ctl, p.wv, p.hwnd = ch, ctl, wv, hwnd
+	p.closing = false
 	p.newWinHandler, p.titleHandler = nwh, th
+	p.newWinToken, p.titleToken = nwt, tt
 	p.stateMu.Unlock()
 	p.applyRectOnUI()
 	return nil
@@ -537,7 +550,16 @@ func (p *browserPanel) NavAction(action string) error {
 
 // onNavCompleted NavigationCompleted（UI 线程）：读回地址标题、广播、放行等待者。
 func (p *browserPanel) onNavCompleted() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[browser-panel] onNavCompleted recover: %v", r)
+		}
+	}()
 	p.stateMu.Lock()
+	if p.closing {
+		p.stateMu.Unlock()
+		return // Close 进行中：不再碰将亡控件
+	}
 	wv, ch := p.wv, p.navCh
 	p.navCh = nil
 	p.stateMu.Unlock()
@@ -562,7 +584,16 @@ func (p *browserPanel) onNavCompleted() {
 }
 
 func (p *browserPanel) onTitleChanged() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[browser-panel] onTitleChanged recover: %v", r)
+		}
+	}()
 	p.stateMu.Lock()
+	if p.closing {
+		p.stateMu.Unlock()
+		return
+	}
 	wv, old := p.wv, p.title
 	p.stateMu.Unlock()
 	if wv == nil {
@@ -581,19 +612,26 @@ func (p *browserPanel) onTitleChanged() {
 
 // onNewWindow 弹窗请求（target=_blank / window.open）：原地导航，不弹新窗。
 func (p *browserPanel) onNewWindow(args unsafe.Pointer) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[browser-panel] onNewWindow recover: %v", r)
+		}
+	}()
+	p.stateMu.Lock()
+	closing := p.closing
+	wv := p.wv
+	p.stateMu.Unlock()
+	if closing || wv == nil {
+		return
+	}
 	v := *(**nwrArgsVtbl)(args)
 	h := uintptr(args)
 	var uri *uint16
 	_, _, _ = v.getUri.Call(h, uintptr(unsafe.Pointer(&uri)))
 	u := readWVString(uri)
 	if u != "" && u != "about:blank" {
-		p.stateMu.Lock()
-		wv := p.wv
-		p.stateMu.Unlock()
-		if wv != nil {
-			u16, _ := windows.UTF16PtrFromString(u)
-			_, _, _ = wvVtblOf(wv).navigate.Call(uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(u16)))
-		}
+		u16, _ := windows.UTF16PtrFromString(u)
+		_, _, _ = wvVtblOf(wv).navigate.Call(uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(u16)))
 	}
 	_, _, _ = v.putHandled.Call(h, 1)
 }
@@ -873,26 +911,65 @@ func (p *browserPanel) Where() string {
 
 // Close 关闭面板实例（browser_close）：拆控件与子窗口，下次打开重建。
 // 进程退出路径不调它——WebView2 子进程由顶层 kill-on-close Job Object 清场。
+//
+// 两阶段收尾（修复 browser_close 后整个进程无声退出的缺陷）：
+// 阶段一（UI 线程）：先反注册自有事件（remove_XXX，拿注册时的 token），
+//   再 Controller.Close——让 WebView2 异步清理时不会再回调我们的 Go handler；
+// 阶段二（延迟 400ms 再投递）：DestroyWindow 拆宿主子窗口。Controller.Close
+//   本身是异步的，立刻销毁宿主窗口会在清理途中抽走地面，历史上两度让进程
+//   直接消失（无 panic 日志、无 Windows 崩溃事件——windowsgui 子系统下
+//   回调栈上的 panic/崩溃均无现场可查）。每阶段都 recover 兜底：回调/闭包
+//   里的 panic 出现在 windows.NewCallback 的原生栈上，冒出去就是整进程死，
+//   必须就地吞掉并落日志。
 func (p *browserPanel) Close() {
 	p.createMu.Lock()
-	defer p.createMu.Unlock()
 	p.stateMu.Lock()
-	hwnd, ctl := p.hwnd, p.ctl
+	p.closing = true
+	hwnd, ctl, wv := p.hwnd, p.ctl, p.wv
+	nwh, th := p.newWinHandler, p.titleHandler
+	nwt, tt := p.newWinToken, p.titleToken
 	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
 	p.started, p.visible = false, false
-	p.url, p.title, p.cssW, p.cssH = "", "", 0, 0
+	p.url, p.title = "", ""
+	p.cssW, p.cssH = 0, 0
 	if p.navCh != nil {
 		close(p.navCh)
 		p.navCh = nil
 	}
 	p.stateMu.Unlock()
+	p.createMu.Unlock()
 	p.createErr = nil // 允许下次重建
 	if ctl != nil {
 		p.dispatch(func() {
-			_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
-			if hwnd != 0 {
-				_, _, _ = procPanelDestroyWindow.Call(hwnd)
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[browser-panel] Close 阶段一 recover: %v", r)
+				}
+			}()
+			if wv != nil {
+				if nwh != nil {
+					_, _, _ = wvVtblOf(wv).removeNewWindowRequested.Call(
+						uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(nwh)), uintptr(unsafe.Pointer(&nwt)))
+				}
+				if th != nil {
+					_, _, _ = wvVtblOf(wv).removeDocumentTitleChanged.Call(
+						uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&tt)))
+				}
 			}
+			_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
+		})
+		// 阶段二：给 WebView2 一拍异步清理的时间再拆窗口
+		time.AfterFunc(400*time.Millisecond, func() {
+			p.dispatch(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[browser-panel] Close 阶段二 recover: %v", r)
+					}
+				}()
+				if hwnd != 0 {
+					_, _, _ = procPanelDestroyWindow.Call(hwnd)
+				}
+			})
 		})
 	}
 	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: ""})
@@ -906,6 +983,7 @@ func (p *browserPanel) releaseAfterMainLoopGone() {
 	p.createMu.Lock()
 	defer p.createMu.Unlock()
 	p.stateMu.Lock()
+	p.closing = true // 与 Close() 同语义：之后到期的迟到事件一律跳过
 	hwnd, ctl := p.hwnd, p.ctl
 	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
 	p.started, p.visible = false, false
