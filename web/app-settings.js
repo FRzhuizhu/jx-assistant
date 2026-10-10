@@ -388,7 +388,7 @@ window.addEventListener('cx:change', () => {
 /* ---------- 插件清单与分区（统一插件页：/api/plugins 带 layers + JX 注册的分区） ---------- */
 
 // 各体系行的富渲染器（按层 id 注册，app-ccplugins.js 等提供）；缺省通用行
-const pluginRowRenderers = { claude: ccpPluginRow };
+const pluginRowRenderers = { claude: ccpPluginRow, mcp: mcpServerRow };
 
 function pluginRowFor(p) {
   return (pluginRowRenderers[p.layer] || simplePluginRow)(p);
@@ -439,6 +439,8 @@ async function renderPluginList() {
   box.innerHTML = '加载中…';
   let data;
   try { data = await api('/api/plugins'); } catch (e) { box.textContent = '插件清单读取失败：' + e.message; return; }
+  // MCP 分组行需要连通状态、目录区需要安装状态：并行拉取（失败不阻断本页）
+  mcpLoadSideData();
   let markets = [];
   for (const L of (data.layers || [])) {
     if (L.extra && Array.isArray(L.extra.marketplaces)) { markets = L.extra.marketplaces; break; }

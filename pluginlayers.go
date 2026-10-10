@@ -243,4 +243,10 @@ func init() {
 		}
 		return claudeLayer{r: a.CCPlugins}
 	})
+	registerPluginLayer(func(a *App) PluginLayer {
+		if a == nil || a.MCPServers == nil {
+			return nil
+		}
+		return mcpLayer{r: a.MCPServers}
+	})
 }

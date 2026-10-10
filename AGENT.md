@@ -1108,6 +1108,38 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   验证）+ ccplugin_mod_test.go（goja 语法矩阵/ESM 转换/handler 链/mods
   端到端：官方 first-mod 示例原文全链路）。
 
+## 独立 MCP 服务器（mcpservers*.go / mcpcatalog.go）
+
+不装整个 CC 插件、直接添加一个 MCP 服务的注册表（stdio 命令或 http/sse
+地址）。连接复用 ccplugin_mcp.go 的 mcpClient（宿主经 mcpHost 接口注入：
+插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替换，独立侧 mcpPlainHost
+只做 ${环境变量}）；工具名 `mcp__<服务器>__<工具>`——服务器名限定字母
+数字连字符（不含下划线），与插件路径 `mcp__<插件>_<服务器>__<工具>` 命名
+空间天然隔离，同挂 tools.go 的 ccMCPTools()。
+
+- **状态**：`<dataDir>/mcp-servers.json`（增删/开关/来源 manual 或
+  catalog:<id>）；桥代码与各桥独立 venv 落 `<dataDir>/mcp-servers/<id>/`。
+- **插件层**：注册为第三个插件兼容层（层 id `mcp`，统一插件页按层分组，
+  总开关走 /api/plugins，行内测试/删除走 /api/mcp）。信任边界与 CC 插件
+  mcp 组件一致：显式添加并启用 = 放行该服务器工具，不逐工具审批。
+- **设计软件桥目录**（mcpcatalog.go，内置制造业常用软件的社区 MCP 桥，
+  设置页一键安装）：solidworks（yimu0824/solidworks-mcp，COM）、multicad
+  （AnCode666/multiCAD-mcp，中望 ZWCAD/AutoCAD/GstarCAD/BricsCAD）、blender
+  （PyPI mcp-for-blender + addon.py）、freecad（PyPI freecad-mcp，需
+  Python 3.12+，安装器检测拦截）、autocad（vigneshpbmenon，轻量 2D）。
+  安装器走 GitHub codeload tar.gz（国内网络下 github.com 主站 git 协议常
+  断，codeload/raw 一般可达）+ venv pip。上游依赖钉版与垫片：solidworks/
+  multicad/autocad 均 import mcp 1.x 低层 API，pip 装 `mcp<2`
+  （fastmcp<4）；autocad 的 requirements 写了不存在的 pyautocad>=2.0.0、
+  `FastMCP(title=)` 老 kwarg，安装器直装可用版本并做一行替换。
+- **API**：`GET /api/mcp`（清单+连通状态）、`POST /api/mcp`（增改）、
+  `/delete`、`/test`（连通并列工具）、`GET /api/mcp/catalog`（目录+已装
+  标记）、`POST /api/mcp/catalog/install`（一键装，分钟级）。
+- **测试**：mcpservers_test.go（名称域/状态回读/层注册/目录完整性/tar.gz
+  解压防穿越）；mcp_install_now_test.go 为手动实装入口
+  （`JX_MCP_INSTALL_NOW=<目录id逗号列表> go test -run TestMCPInstallNow`，
+  驱动真实下载安装+握手验证，缺省跳过）。
+
 ### 与 Claude Code 的已知差异（有意为之或暂不支持）
 
 1. mod 敏感 API 过会话权限门控与危险命令护栏（Claude 对 mods 明确无沙箱，

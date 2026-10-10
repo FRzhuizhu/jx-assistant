@@ -720,6 +720,19 @@
             </div>
             <div id="ccp-market-panel"></div>
           </div>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">MCP 服务器：直接连接任意 Model Context Protocol 服务（stdio 命令或 HTTP 地址），启用后该服务的工具进入助手工具目录（mcp__服务器__工具，新会话生效）。也可从下方目录一键安装制造业设计软件的 MCP 桥（SolidWorks / 中望·AutoCAD / Blender / FreeCAD 等）。</div>
+            <div class="ccp-install-row">
+              <input id="mcp-add-name" type="text" placeholder="名称（字母/数字/连字符）" style="max-width:150px" />
+              <select id="mcp-add-type" style="max-width:86px">
+                <option value="stdio">stdio</option>
+                <option value="http">HTTP</option>
+              </select>
+              <input id="mcp-add-cmd" type="text" placeholder="stdio：启动命令（如 python D:\path\server.py）；HTTP：服务地址" />
+              <button id="mcp-add-btn" class="pf-add">添加</button>
+            </div>
+            <div id="mcp-catalog" class="mcp-catalog"></div>
+          </div>
           <div id="plugin-list"></div>
           <div id="plugin-sections"></div>
         </div>

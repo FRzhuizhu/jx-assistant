@@ -308,9 +308,198 @@ function bindCCSlashComposer() {
   }, true); // 捕获阶段：先于 app-chat 的回车发送处理
 }
 
+/* ---------- MCP 服务器（独立注册表 mcpservers*.go 的浏览器半边） ----------
+   统一插件页的 mcp 分组行渲染（mcpServerRow：开关/测试/删除）+ 手动添加
+   表单（bindMCPPanel）+ 设计软件桥目录（renderMCPCatalog，一键安装）。
+   清单与总开关走统一 /api/plugins（layer=mcp），测试/删除/目录走 /api/mcp。
+   连通状态（工具数/最近错误）由 renderPluginList 并行拉取的 /api/mcp 填进
+   mcpStatusCache，行渲染时按名查。 */
+
+let mcpStatusCache = [];   // /api/mcp 的 servers（renderPluginList 时刷新）
+let mcpCatalogCache = [];  // /api/mcp/catalog 的 items
+
+function mcpStatusOf(name) { return mcpStatusCache.find(s => s.name === name) || null; }
+
+function mcpServerRow(p) {
+  const st = mcpStatusOf(p.id) || {};
+  const row = document.createElement('div');
+  row.className = 'plugin-row';
+  const info = document.createElement('div');
+  info.className = 'pr-info';
+  const badges = [];
+  if (!st.enabled) badges.push('已停用');
+  else if (st.connected) badges.push(`已连接 · ${st.toolCount} 个工具`);
+  else if (st.lastError) badges.push('连接失败');
+  else badges.push('未连接');
+  const fromCatalog = (st.source || '').startsWith('catalog:');
+  const cmdLine = st.type === 'http' || st.type === 'sse'
+    ? st.url : [st.command, ...(st.args || [])].filter(Boolean).join(' ');
+  info.innerHTML =
+    `<div class="pr-line"><b>${esc(p.name)}</b>` +
+    `<span class="pr-ver">${esc(st.type || 'stdio')}</span>` +
+    `<span class="pr-ver">${fromCatalog ? '设计软件桥' : '手动添加'}</span></div>` +
+    (badges.length ? `<div class="ccp-badges">${badges.map(b => `<span class="ccp-badge">${esc(b)}</span>`).join('')}</div>` : '') +
+    `<p>${esc(p.description || '')}</p>` +
+    (cmdLine ? `<div class="mcp-cmd">${esc(cmdLine)}</div>` : '') +
+    (st.lastError ? `<div class="mcp-cmd">最近错误：${esc(st.lastError)}</div>` : '');
+  // 总开关（走统一 /api/plugins，与各体系后端逻辑一致）
+  const tg = document.createElement('label');
+  tg.className = 'pr-toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!p.enabled;
+  cb.onchange = async () => {
+    cb.disabled = true;
+    try {
+      await api('/api/plugins', { method: 'POST', body: JSON.stringify({ layer: p.layer, id: p.id, enabled: cb.checked }) });
+      note.textContent = '已更新，新会话生效';
+      await renderPluginList();
+    } catch (e) { alert('切换失败：' + e.message); cb.checked = !cb.checked; cb.disabled = false; }
+  };
+  tg.appendChild(cb);
+  tg.appendChild(document.createElement('span'));
+  row.appendChild(info);
+  row.appendChild(tg);
+  const note = document.createElement('div');
+  note.className = 'pr-note';
+  row.appendChild(note);
+  // 动作行：测试连通 / 删除
+  const acts = document.createElement('div');
+  acts.className = 'mcp-actions';
+  const testBtn = document.createElement('button');
+  testBtn.className = 'mcp-act';
+  testBtn.textContent = '测试';
+  testBtn.onclick = async () => {
+    testBtn.disabled = true;
+    testBtn.textContent = '连接中…';
+    try {
+      const res = await api('/api/mcp/test', { method: 'POST', body: JSON.stringify({ name: p.id }) });
+      const names = (res.tools || []).map(t => t.name);
+      note.textContent = `已连接：${res.count} 个工具（${names.slice(0, 10).join('、')}${names.length > 10 ? ' 等' : ''}）`;
+    } catch (e) {
+      note.textContent = '连接失败：' + e.message;
+    }
+    testBtn.disabled = false;
+    testBtn.textContent = '测试';
+  };
+  acts.appendChild(testBtn);
+  const del = document.createElement('button');
+  del.className = 'mcp-act';
+  del.textContent = '删除';
+  del.onclick = async () => {
+    if (!confirm(`删除 MCP 服务器「${p.name}」？`)) return;
+    try {
+      await api('/api/mcp/delete', { method: 'POST', body: JSON.stringify({ name: p.id }) });
+      await renderPluginList();
+    } catch (e) { alert('删除失败：' + e.message); }
+  };
+  acts.appendChild(del);
+  row.appendChild(acts);
+  return row;
+}
+
+/* 目录渲染：每桥一行（名称/对接软件/说明/前置条件 + 安装或已装徽章） */
+function renderMCPCatalog(items) {
+  mcpCatalogCache = items || [];
+  const box = $('mcp-catalog');
+  if (!box) return;
+  box.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'mcp-cat-title';
+  title.textContent = '设计软件 MCP 桥目录（一键安装：下载代码 + 建独立虚拟环境 + 装依赖 + 注册，约需 1–3 分钟）';
+  box.appendChild(title);
+  for (const it of mcpCatalogCache) {
+    const d = document.createElement('div');
+    d.className = 'ccp-market-item mcp-cat-item' + (it.installed ? ' installed' : '');
+    d.innerHTML =
+      `<div class="pr-line"><b>${esc(it.name)}</b>${it.installed ? '<span class="ccp-badge">已装</span>' : ''}` +
+      `<span class="mcp-vendor">${esc(it.vendor || '')}</span></div>` +
+      `<p>${esc(it.description || '')}</p>` +
+      (it.requirement ? `<p class="mcp-req">前置：${esc(it.requirement)}</p>` : '');
+    if (!it.installed) {
+      const btn = document.createElement('button');
+      btn.className = 'ccp-install-btn';
+      btn.textContent = '安装';
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = '安装中…（下载+装依赖，请勿关闭）';
+        try {
+          const res = await api('/api/mcp/catalog/install', { method: 'POST', body: JSON.stringify({ id: it.id }) });
+          const tips = (res.notes || []).join('\n');
+          if (tips) alert(`「${it.name}」安装完成。后续步骤：\n\n${tips}`);
+          await renderPluginList();
+        } catch (e) {
+          alert('安装失败：' + e.message);
+          btn.disabled = false;
+          btn.textContent = '安装';
+        }
+      };
+      d.appendChild(btn);
+    }
+    box.appendChild(d);
+  }
+}
+
+/* 手动添加表单（绑定一次） */
+let mcpBound = false;
+function bindMCPPanel() {
+  if (mcpBound) return;
+  mcpBound = true;
+  const addBtn = $('mcp-add-btn');
+  if (addBtn) addBtn.onclick = async () => {
+    const name = ($('mcp-add-name').value || '').trim();
+    const type = $('mcp-add-type').value;
+    const cmd = ($('mcp-add-cmd').value || '').trim();
+    if (!name) { alert('请填写服务器名称'); return; }
+    if (!cmd) { alert(type === 'http' ? '请填写服务地址' : '请填写启动命令'); return; }
+    let body = { name, type };
+    if (type === 'http') {
+      body.url = cmd;
+    } else {
+      const parts = splitCommandLine(cmd);
+      if (!parts.length) { alert('启动命令不能为空'); return; }
+      body.command = parts[0];
+      body.args = parts.slice(1);
+    }
+    addBtn.disabled = true;
+    addBtn.textContent = '添加中…';
+    try {
+      await api('/api/mcp', { method: 'POST', body: JSON.stringify(body) });
+      $('mcp-add-name').value = '';
+      $('mcp-add-cmd').value = '';
+      await renderPluginList();
+    } catch (e) { alert('添加失败：' + e.message); }
+    addBtn.disabled = false;
+    addBtn.textContent = '添加';
+  };
+}
+
+/* splitCommandLine 按空白拆启动命令，双/单引号内的空白保留。 */
+function splitCommandLine(s) {
+  const out = [];
+  let cur = '', q = null;
+  for (const ch of s) {
+    if (q) { if (ch === q) q = null; else cur += ch; }
+    else if (ch === '"' || ch === "'") q = ch;
+    else if (/\s/.test(ch)) { if (cur) { out.push(cur); cur = ''; } }
+    else cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/* mcpLoadSideData 连通状态 + 目录（renderPluginList 并行调用，失败静默）。 */
+async function mcpLoadSideData() {
+  try { const d = await api('/api/mcp'); mcpStatusCache = d.servers || []; }
+  catch (e) { mcpStatusCache = []; }
+  try { const c = await api('/api/mcp/catalog'); renderMCPCatalog(c.items || []); }
+  catch (e) { /* 目录暂不可用不阻断插件页 */ }
+}
+
 /* 启动：绑定安装区按钮与斜杠命令（清单渲染由 app-settings.js 的
    renderPluginList 统一负责，打开设置时触发） */
 document.addEventListener('DOMContentLoaded', () => {
   bindCCPluginPanel();
   bindCCSlashComposer();
+  bindMCPPanel();
 });
