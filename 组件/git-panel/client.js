@@ -544,13 +544,17 @@
     ta.value = S.commitMsg;
     ta.oninput = () => { S.commitMsg = ta.value; };
     const btns = el('div', 'gitp-commit-btns');
-    // 拉取 / 推送（靠左）：可用性跟 ahead/behind 走，见 syncCommitBar
-    const pull = el('button', 'gitp-btn gitp-remote', '↓ 拉取');
-    pull.id = 'gitp-pull-btn';
-    pull.onclick = () => doRemote('pull');
-    const push = el('button', 'gitp-btn gitp-remote', '↑ 推送');
-    push.id = 'gitp-push-btn';
-    push.onclick = () => doRemote('push');
+    // 远程同步（靠左，单按钮两用）：远程有新提交=「拉取」，本地领先且远程
+    // 没有新提交=「推送」；其余（与远程一致 / 无上游）置灰。可用性与样式在
+    // syncCommitBar 里随 ahead/behind 切换：可按=与「✓ 提交」一致的强调样式，
+    // 不可按=AI 摘要那种普通描边（灰字）
+    const rmt = el('button', 'gitp-btn gitp-remote', '同步');
+    rmt.id = 'gitp-remote-btn';
+    rmt.onclick = () => {
+      if (S.behind > 0) return doRemote('pull');
+      if (S.ahead > 0) return doRemote('push');
+    };
+
     const ai = el('button', 'gitp-btn', 'AI 摘要');
     ai.title = '用当前会话配置的模型为已暂存改动生成提交信息（只生成，不提交）';
     ai.onclick = async () => {
@@ -598,39 +602,41 @@
       syncCommitBar();
       renderStrip();
     };
-    btns.appendChild(pull);
-    btns.appendChild(push);
+    btns.appendChild(rmt);
     btns.appendChild(ai);
     btns.appendChild(ok);
     cm.appendChild(ta);
     cm.appendChild(btns);
-    return { cm, ta, ai, ok, pull, push };
+    return { cm, ta, ai, ok, rmt };
   }
 
   // 把状态刷到提交框（节点可能此刻不在文档里，比如正在看文件 diff——值照样留住）
   function syncCommitBar() {
     if (!commitBar) return;
-    const { ta, ai, ok, pull, push } = commitBar;
+    const { ta, ai, ok, rmt } = commitBar;
     if (ta.value !== S.commitMsg) ta.value = S.commitMsg;
     ai.disabled = S.aiBusy;
     ai.textContent = S.aiBusy ? '生成中…' : 'AI 摘要';
     ok.disabled = S.commitBusy || !S.groups.staged.length;
-    // 拉取 / 推送：跟 upstream 的 ahead/behind 走（数据来自最近一次 status，
-    // 点击后后端会再 fetch 兜底）。拉取：远程有新提交即可（含分叉自动合并）；
-    // 推送：本地领先且远程没有新提交（分叉/落后都灰，先拉取再推）
+    // 远程同步按钮（单按钮两用）：远程领先=拉取、本地领先=推送；与远程一致或
+    // 没有上游时置灰。数据来自最近一次 status（面板刷新时 pokeRemote 会后台
+    // fetch 兜底）。样式随可用性切换：可按=primary（同「✓ 提交」），灰=普通描边
     const rBusy = S.pullBusy || S.pushBusy;
     const noUp = !S.upstream;
-    pull.disabled = rBusy || noUp || S.behind <= 0;
-    push.disabled = rBusy || noUp || S.ahead <= 0 || S.behind > 0;
-    pull.textContent = S.pullBusy ? '拉取中…' : '↓ 拉取';
-    push.textContent = S.pushBusy ? '推送中…' : '↑ 推送';
-    pull.title = noUp ? '当前分支没有上游（远程跟踪分支），无法拉取'
-      : S.behind > 0 ? '拉取远程更新：远程领先 ' + S.behind + ' 个提交（能快进/自动合并的自动完成，冲突则交回对话处理）'
-      : '远程没有比本地新的提交';
-    push.title = noUp ? '当前分支没有上游（远程跟踪分支），无法推送'
-      : S.behind > 0 ? '远程有 ' + S.behind + ' 个新提交：请先拉取合并，再推送'
-      : S.ahead > 0 ? '推送 ' + S.ahead + ' 个提交到 ' + S.upstream
-      : '没有领先远程的提交可推送';
+    const canPull = !noUp && S.behind > 0;
+    const canPush = !noUp && !canPull && S.ahead > 0;
+    rmt.disabled = rBusy || (!canPull && !canPush);
+    rmt.className = 'gitp-btn gitp-remote' + ((canPull || canPush) ? ' primary' : '');
+    rmt.textContent = S.pullBusy ? '拉取中…'
+      : S.pushBusy ? '推送中…'
+      : canPull ? '↓ 拉取'
+      : canPush ? '↑ 推送'
+      : noUp ? '同步' : '已同步';
+    rmt.title = noUp ? '当前分支没有上游（远程跟踪分支），无法与远程同步'
+      : canPull ? '拉取远程更新：远程领先 ' + S.behind + ' 个提交（能快进/自动合并的自动完成，冲突则交回对话处理）'
+      : canPush ? '推送 ' + S.ahead + ' 个提交到 ' + S.upstream
+      : '与远程一致：没有要拉取或推送的更新';
+
   }
 
   function ensureCommitBar() {
