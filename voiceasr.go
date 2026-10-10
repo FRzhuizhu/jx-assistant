@@ -92,10 +92,15 @@ type asrWorker struct {
 // 相对路径 "组件/voice" 与技能目录同规约：开发＝仓库根，桌面/安装版 cwd 已锚 exe 旁。
 func (m *asrManager) voiceDir() (string, error) {
 	dir := filepath.Join("组件", "voice")
-	if _, err := os.Stat(filepath.Join(dir, "asr_worker.py")); err != nil {
-		return "", fmt.Errorf("未找到语音组件 worker（%s）：组件文件不完整", filepath.Join(dir, "asr_worker.py"))
+	worker := filepath.Join(dir, "asr_worker.py")
+	if _, err := os.Stat(worker); err != nil {
+		return "", fmt.Errorf("未找到语音组件 worker（%s）：组件文件不完整", worker)
 	}
-	return dir, nil
+	// 必须回绝对路径：调用处拿它当子进程的工作目录（cmd.Dir），若仍是相对
+	// 路径，Python 会把「组件/voice/asr_worker.py」按这个新工作目录再解析一遍，
+	// 拼成 组件/voice/组件/voice/asr_worker.py 而报 No such file（worker 秒退，
+	// 引擎只看到「worker 无应答（已退出）」，本地听写整条不可用）。
+	return filepath.Abs(dir)
 }
 
 // pythonExe 共享便携运行时（技能/_runtime——运行时共享原则，语音不自带）。
