@@ -1,0 +1,16 @@
+{
+  "id": "input-counter",
+  "name": "输入字数统计",
+  "version": "1.0.0",
+  "description": "在输入框右上角浮一枚小角标显示当前字数（字·词），不与任何按钮抢位；输入文字提前约两格换行，永远不会被角标挡住。统计经组件桥的 worker（counter_worker.py）计算，验证自包含后端免编译安装链路。",
+  "client": { "js": "client.js", "css": "client.css" },
+  "workers": [
+    {
+      "name": "stats",
+      "command": ["{python}", "counter_worker.py"],
+      "endpoints": [
+        { "method": "POST", "path": "stats", "type": "call" }
+      ]
+    }
+  ]
+}
