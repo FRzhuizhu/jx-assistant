@@ -15,12 +15,15 @@
       <b>坚祥数字助理</b>
     </div>
 
+    <!-- 入口按钮的文字放在 .sb-label 里、按钮带 data-short 短名：桌面两者无差别，
+         手机端（窄屏媒体查询）藏全名、亮短名，更窄连短字也隐掉只剩图标。
+         以后往这组里加新入口，照这个结构写（span + data-short），否则手机端只能显示图标 -->
     <div class="actions">
-      <button id="btn-new-task" class="side-btn">
+      <button id="btn-new-task" class="side-btn" data-short="新任务">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        新工作任务
+        <span class="sb-label">新工作任务</span>
       </button>
-      <button id="btn-new-assistant" class="side-btn">
+      <button id="btn-new-assistant" class="side-btn" data-short="数据助理">
         <svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g><style>
 [data-state] .da-eye,[data-state] .da-eyes{transform-box:fill-box;transform-origin:center}
 .da-smile{opacity:0}
@@ -49,7 +52,7 @@
 @keyframes da-hover{0%,100%{transform:translateX(0)}22%{transform:translateX(3.2px)}45%{transform:translateX(-.6px)}70%{transform:translateX(-3.2px)}90%{transform:translateX(.6px)}}
 @media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face],[data-da-face]:hover,button:hover [data-da-face]{transform:none;transition:none}[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:none!important}}
 </style></svg>
-        数字助理主对话
+        <span class="sb-label">数字助理主对话</span>
       </button>
     </div>
 
@@ -83,15 +86,22 @@
     </div>
     <div id="session-list"></div>
 
+    <!-- 底部框架：设置行独占最后一行；其上是按钮格 .foot-grid——桌面
+         display:contents 完全透明（按钮就是 sidebar-foot 的普通行，观感与
+         从前一致），手机端切成三栏网格。以后组件要往侧栏底部加入口，一律
+         append 进 .foot-grid：手机端自动落进三栏格子往上叠行，设置行恒在
+         最底独占整行，桌面端照常多出一行。 -->
     <div class="sidebar-foot">
+      <div class="foot-grid">
       <button id="btn-market" class="foot-btn" title="市场：安装/更新 技能、组件与插件">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
         市场
       </button>
       <button id="btn-recycle" class="foot-btn" title="回收站">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         回收站
       </button>
+      </div>
       <!-- 连接状态胶囊/反馈胶囊/手机图标都嵌在设置行右侧（同一行的中间对齐，
            行内右对齐的锚点是 .foot-feedback 的 margin-left:auto） -->
       <button id="btn-settings" class="foot-btn">
@@ -495,10 +505,6 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
           插件
         </button>
-        <button class="set-nav-item" data-pane="ccplugins">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
-          Claude 插件
-        </button>
         <button class="set-nav-item" data-pane="about">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg>
           关于
@@ -567,6 +573,24 @@
                 <input id="set-maxsteps" type="number" min="1" max="1000">
                 <span class="sf-desc">单条消息触发的任务里，模型可连续执行的步数（模型调用＋工具执行）上限；连续跑满这个数仍未完成会自动停止</span>
               </div>
+            </div>
+          </div>
+          <div class="gen-section" id="render-mode-section" style="display:none">
+            <h4>界面渲染（桌面版）</h4>
+            <div class="set-field">
+              <div class="sf-label">渲染模式</div>
+              <div class="theme-cards render-cards" id="render-cards">
+                <button type="button" class="theme-card" data-v="gpu">
+                  <span class="tc-name">GPU 渲染</span>
+                  <span class="rc-sub">默认 · 高效</span>
+                </button>
+                <button type="button" class="theme-card" data-v="compat">
+                  <span class="tc-name">兼容模式</span>
+                  <span class="rc-sub">软件渲染 · 不占用 GPU</span>
+                </button>
+              </div>
+              <p class="sf-desc" id="render-mode-state"></p>
+              <p class="sf-desc">个别电脑的显卡驱动与其他应用争抢 GPU 时界面可能黑屏，软件会自动临时切换到兼容模式；在此可查看当前实际运行的模式并随时改回。切换后界面窗口自动重开（约 1 秒），后台任务与会话不受影响。</p>
             </div>
           </div>
           <p class="tip">本页偏好保存在本机浏览器；最大步数保存在服务端（即时生效）。</p>
@@ -739,17 +763,9 @@
         <div class="set-pane" id="set-pane-plugins">
           <h3>插件</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">来自 插件兼容层/；开关即时保存，界面部分刷新页面后生效</div>
-            <div id="plugin-list"></div>
-          </div>
-          <div id="plugin-sections"></div>
-        </div>
-        <div class="set-pane" id="set-pane-ccplugins">
-          <h3>Claude 插件</h3>
-          <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">兼容 Anthropic Claude Code 插件格式（plugin.json + skills/commands/agents/hooks/MCP）。技能、命令、专家装好后即可用；hooks / mods / MCP 属执行型组件，默认关闭、需在此显式开启。输入框里输入 / 可触发插件命令。</div>
+            <div class="tip-inline" style="margin:0 0 10px">统一插件页：主体发现各「插件兼容层」，各层发现自己生态的插件，下方按来源体系分组。支持安装的体系在此提供安装入口（当前：Claude Code 格式）；hooks / mods / MCP 属执行型组件，默认关闭、需逐个显式开启。输入框输入 / 可触发插件命令。</div>
             <div class="ccp-install-row">
-              <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL" />
+              <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL（Claude Code 格式）" />
               <button id="ccp-install-btn" class="pf-add">安装</button>
             </div>
             <div class="ccp-install-row">
@@ -758,10 +774,8 @@
             </div>
             <div id="ccp-market-panel"></div>
           </div>
-          <div class="gen-section">
-            <h4>已安装 <span class="sec-sub">开关即时保存；卸载会删除本地缓存</span></h4>
-            <div id="ccp-list"></div>
-          </div>
+          <div id="plugin-list"></div>
+          <div id="plugin-sections"></div>
         </div>
         <div class="set-pane" id="set-pane-about">
           <h3>关于</h3>
@@ -893,6 +907,9 @@
 
 <!-- 模型选择面板 -->
 <div id="model-pop" class="popover model-pop hidden"></div>
+
+<!-- 模型菜单的思考档位二级浮窗：向右弹出的子菜单（挂在 model-pop 之后，同层级靠 DOM 顺序盖住它） -->
+<div id="model-sub-pop" class="popover model-sub-pop hidden"></div>
 
 <!-- 子对话专家表单的默认模型选择面板（数据同 /api/models，选中写入专家预设） -->
 <div id="expert-model-pop" class="popover model-pop hidden"></div>

@@ -182,7 +182,6 @@ async function openSettings(pane) {
   mountComponentPanes(); // 声明了 pane 的组件（如语音）的独立设置页
   renderSkillsPanel();
   renderExpertsPanel();
-  renderCCPluginPanel();
   const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : null;
   // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并压一层「设置一级」
   // 底座历史——直达分区时 navGoto 在其上补第二层，返回手势得以逐级退
@@ -386,51 +385,94 @@ window.addEventListener('cx:change', () => {
   }
 });
 
-/* ---------- 插件清单与分区（/api/plugins + JX 注册的分区） ---------- */
+/* ---------- 插件清单与分区（统一插件页：/api/plugins 带 layers + JX 注册的分区） ---------- */
 
+// 各体系行的富渲染器（按层 id 注册，app-ccplugins.js 等提供）；缺省通用行
+const pluginRowRenderers = { claude: ccpPluginRow };
+
+function pluginRowFor(p) {
+  return (pluginRowRenderers[p.layer] || simplePluginRow)(p);
+}
+
+// 通用行（DSH 等纯扫描体系）：未适配原件灰显、开关禁用
+function simplePluginRow(p) {
+  const row = document.createElement('div');
+  row.className = 'plugin-row' + (p.adapted === false ? ' unadapted' : '');
+  const info = document.createElement('div');
+  info.className = 'pr-info';
+  info.innerHTML =
+    `<div class="pr-line"><b>${esc(p.name)}</b><span class="pr-ver">${esc(p.version || '')}</span>` +
+    (p.adapted === false ? '<span class="pr-badge">未适配</span>' : '') + '</div>' +
+    `<p>${esc(p.description || '')}</p>`;
+  const tg = document.createElement('label');
+  tg.className = 'pr-toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!p.enabled;
+  cb.disabled = p.adapted === false;
+  cb.onchange = async () => {
+    cb.disabled = true;
+    try {
+      await api('/api/plugins', { method: 'POST', body: JSON.stringify({ layer: p.layer, id: p.id, enabled: cb.checked }) });
+      row.querySelector('.pr-note').textContent = '已更新；界面部分刷新页面后生效';
+    } catch (e) {
+      alert('切换失败：' + e.message);
+      cb.checked = !cb.checked;
+    }
+    cb.disabled = p.adapted === false;
+  };
+  tg.appendChild(cb);
+  tg.appendChild(document.createElement('span'));
+  row.appendChild(info);
+  row.appendChild(tg);
+  const note = document.createElement('div');
+  note.className = 'pr-note';
+  row.appendChild(note);
+  return row;
+}
+
+// 统一插件页主体：拉 layers + plugins，按来源体系分组渲染；
+// 暴露了市场清单的层（当前 Claude 层）顺带挂市场浏览面板
 async function renderPluginList() {
   const box = $('plugin-list');
   if (!box) return;
   box.innerHTML = '加载中…';
-  let list = [];
-  try { list = (await api('/api/plugins')).plugins || []; } catch (e) { box.textContent = '插件清单读取失败：' + e.message; return; }
-  box.innerHTML = '';
-  for (const p of list) {
-    const row = document.createElement('div');
-    row.className = 'plugin-row' + (p.adapted ? '' : ' unadapted');
-    const info = document.createElement('div');
-    info.className = 'pr-info';
-    info.innerHTML =
-      `<div class="pr-line"><b>${esc(p.name)}</b><span class="pr-ver">${esc(p.version || '')}</span>` +
-      (p.adapted ? '' : '<span class="pr-badge">未适配</span>') + '</div>' +
-      `<p>${esc(p.description || '')}</p>`;
-    const tg = document.createElement('label');
-    tg.className = 'pr-toggle';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = !!p.enabled;
-    cb.disabled = !p.adapted;
-    cb.onchange = async () => {
-      cb.disabled = true;
-      try {
-        await api('/api/plugins', { method: 'POST', body: JSON.stringify({ id: p.id, enabled: cb.checked }) });
-        row.querySelector('.pr-note').textContent = '已更新；界面部分刷新页面后生效';
-      } catch (e) {
-        alert('切换失败：' + e.message);
-        cb.checked = !cb.checked;
-      }
-      cb.disabled = !p.adapted;
-    };
-    tg.appendChild(cb);
-    tg.appendChild(document.createElement('span'));
-    row.appendChild(info);
-    row.appendChild(tg);
-    const note = document.createElement('div');
-    note.className = 'pr-note';
-    row.appendChild(note);
-    box.appendChild(row);
+  let data;
+  try { data = await api('/api/plugins'); } catch (e) { box.textContent = '插件清单读取失败：' + e.message; return; }
+  let markets = [];
+  for (const L of (data.layers || [])) {
+    if (L.extra && Array.isArray(L.extra.marketplaces)) { markets = L.extra.marketplaces; break; }
   }
-  if (!list.length) box.innerHTML = '<div class="pr-note">插件兼容层/ 下没有发现插件</div>';
+  renderCCMarketPanel(markets);
+  const byLayer = {};
+  for (const p of (data.plugins || [])) (byLayer[p.layer] = byLayer[p.layer] || []).push(p);
+  box.innerHTML = '';
+  for (const L of (data.layers || [])) {
+    const group = byLayer[L.id] || [];
+    delete byLayer[L.id];
+    box.appendChild(pluginLayerSection(L, group));
+  }
+  // 兜底：清单里出现未注册层（不应发生）——按层名原样追加一组
+  for (const [lid, group] of Object.entries(byLayer)) {
+    box.appendChild(pluginLayerSection({ id: lid, name: group[0].layerName || lid }, group));
+  }
+}
+
+function pluginLayerSection(L, group) {
+  const sec = document.createElement('div');
+  sec.className = 'gen-section';
+  const h = document.createElement('h4');
+  h.innerHTML = `${esc(L.name)} <span class="sec-sub">${group.length ? group.length + ' 个' : '暂无'}</span>`;
+  sec.appendChild(h);
+  if (group.length) {
+    for (const p of group) sec.appendChild(pluginRowFor(p));
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'pr-note';
+    empty.textContent = '该体系下还没有插件';
+    sec.appendChild(empty);
+  }
+  return sec;
 }
 
 function mountPluginSections() {
@@ -1296,6 +1338,44 @@ function syncThemeCards() {
 document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
   b.onclick = () => { lsSet('jx.theme', b.dataset.v); applyTheme(); syncThemeCards(); };
 });
+
+// 界面渲染模式（桌面版）：GPU 渲染 / 兼容模式。状态读自服务端实际运行值
+// （/api/display-mode），网页/手机端 desktop=false 时整个区块隐藏。
+// 点选切换 → POST 后端写/删兼容标记并前端热重启（窗口约 1 秒后原位重开，
+// 本页随之前端一起重建，回来即是新模式）。
+(async function initRenderMode() {
+  const sec = document.getElementById('render-mode-section');
+  if (!sec) return;
+  let st = null;
+  try { st = await api('/api/display-mode'); } catch (e) { return; }
+  if (!st || !st.desktop) return;
+  sec.style.display = '';
+  const cards = document.querySelectorAll('#render-cards .theme-card');
+  const stateLine = document.getElementById('render-mode-state');
+  const sync = () => {
+    const cur = st.software ? 'compat' : 'gpu';
+    cards.forEach((b) => b.classList.toggle('cur', b.dataset.v === cur));
+    stateLine.textContent = st.software
+      ? '当前运行：兼容模式（软件渲染，' + (st.reason === 'auto' ? '黑屏时自动切换）' : '手动开启）')
+      : '当前运行：GPU 渲染（默认）';
+  };
+  sync();
+  cards.forEach((b) => {
+    b.onclick = async () => {
+      const want = b.dataset.v === 'compat';
+      if (want === !!st.software) return;
+      stateLine.textContent = '正在切换渲染模式，界面即将自动重开…';
+      try {
+        await api('/api/display-mode', { method: 'POST', body: JSON.stringify({ software: want }) });
+        st.software = want;
+        st.reason = 'user';
+        sync();
+      } catch (e) {
+        sync(); // 切换失败（非桌面版等）：恢复显示当前实际状态
+      }
+    };
+  });
+})();
 
 // 点缀色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
 const ACCENTS = [

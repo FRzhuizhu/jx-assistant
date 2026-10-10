@@ -10,22 +10,22 @@
  *    浏览器的 speechSynthesis——那在远程手机端上部分浏览器没有，旧版连朗读
  *    设置区都不渲染。
  *
- * 2) 听写（STT）：**浏览器自带的 SpeechRecognition**（WebView2/Edge 内置的微软
- *    识别接口，音频由浏览器直接发给它的识别服务）——即本组件一直以来的实现，
- *    逻辑与样式原样保留：连接中/录音中三态、灰色暂定层（未定稿转写叠在输入框
- *    上显示为灰字、静置 2.5 秒落成正文）、断线退避重连、时长上限倒计时徽标、
- *    一次性轻提示。桌面 WebView2 可用（注意：该能力随运行时版本波动，153 系
- *    运行时有微软官方回归，失败提示的处置指引见 dictationFailMsg）；远程手机端
- *    受手机浏览器识别服务可达性限制（安卓 Chrome 走谷歌服务，国内不通）——后端
- *    化听写的可行性结论见 语音后端化-研究与改动说明.md（无头 Edge 假麦克风试验：
- *    音频能进 getUserMedia，但 SR 不消费假设备，路不通）。
+ * 2) 听写（STT）两档（设置页对用户只分「本地/云端」，不点名模型与厂商）：
+ *    a. 本地语音识别模型（默认，voiceasr.go 通道）：本机/桌面走 WebSocket
+ *       流式——说话实时出灰字、停顿约 3 秒由离线模型精修落成黑字（复用浏览器
+ *       引擎同款两段式体验）；远程 https 页面开不了 ws，自动回退整段识别。
+ *       音频不出本机/服务器。
+ *    b. 云端语音识别模型（手动选择）：浏览器自带的 SpeechRecognition——本组件
+ *       一直以来的实现原样保留（连接三态、灰色暂定层、断线退避重连、时长上限
+ *       倒计时）；各浏览器接入的服务商不同（Edge/WebView2、Chrome、国产浏览
+ *       器各异）且依赖其在线服务可达，能力随浏览器版本波动（失败处置指引见
+ *       dictationFailMsg）。
  *
  * 3) 快捷键：默认鼠标侧键，可自定义键盘单键/组合键、甚至鼠标左右键同按
  *    （不允许单独的左键或右键）；点按切换与长按输入两种模式（设置页可切）。
  *    仅在窗口聚焦时激活（失焦自动松手）。主输入框的占位灰字会像发送快捷键
  *    一样带上语音快捷键提示（app-core 的 sendKeyHint 追加 window.JXVoiceHint，
- *    子输入框由本组件自己拼）。远程页面且视口宽度 <500（手机端）时隐藏听筒
- *    按钮（window.JX_REMOTE 区分远程；手机浏览器多不支持语音识别）。
+ *    子输入框由本组件自己拼）。远程端没有桌面级全局快捷键，占位提示自动省略。
  *
  * 全程零配置（不需要任何密钥）。按钮 DOM 在 web/index.html（位置与样式不变），
  * 默认带 .hidden——按钮属于本组件，组件关掉（设置 → 内置组件）或没加载到页面
@@ -162,10 +162,46 @@
   let captureMode = false;     // 设置页录制快捷键时暂停引擎
   let captureCtl = null;       // 当前录制会话（重复点击录制按钮时作废旧会话）
   const voiceCtl = { main: null, sub: null }; // 各视图的听写控制器（快捷键驱动它们）
-  let onResize = null;         // 远程窄屏隐藏的窗口尺寸联动
+  let onResize = null;         // 设置页尺寸联动（旧版曾用于远程窄屏隐藏按钮，已撤）
 
-  function micHiddenByEnv() {
-    return !!window.JX_REMOTE && window.innerWidth < 500; // 远程手机端页面
+  /* ---------- 听写引擎选择：本地（默认）｜云端（浏览器内置识别） ----------
+   * pref.engine：xasr（默认·本地）| browser（云端，需手动选）。
+   * 对用户只分本地/云端两档：云端由浏览器内置识别能力提供，不同浏览器接入的
+   * 服务商不同且依赖其在线服务；选了云端但环境没有 SpeechRecognition 时回退本地。
+   * 历史值 'auto'（按环境自动挑浏览器/本地）随本次改版一并归一到本地默认。 */
+  function dictationEngine() {
+    const p = String(pref.get('engine', 'xasr'));
+    return (p === 'browser' && SR) ? 'browser' : 'xasr';
+  }
+  function dictationIsLocal() { return dictationEngine() !== 'browser'; }
+
+  /* ---------- 本地引擎的采集与上传（16k 单声道 PCM → WAV base64） ---------- */
+  function voicePcmToWavB64(floats, sr) {
+    const len = floats.length;
+    const buf = new ArrayBuffer(44 + len * 2);
+    const v = new DataView(buf);
+    const wstr = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    wstr(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); wstr(8, 'WAVE');
+    wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    wstr(36, 'data'); v.setUint32(40, len * 2, true);
+    for (let i = 0; i < len; i++) {
+      const s = Math.max(-1, Math.min(1, floats[i]));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    let bin = '';
+    const u8 = new Uint8Array(buf);
+    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  async function voiceASRTranscribe(model, device, wavB64) {
+    const res = await fetch('/api/voice/asr/transcribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, device, wavB64 }),
+    });
+    if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+    return res.json();
   }
 
   function activeVoiceCtl() {
@@ -203,8 +239,6 @@
     const mode = voiceShortcutMode();
 
     if (action === 'press') {
-      if (micHiddenByEnv()) return; // 远程手机端：静默——按钮已隐藏，不弹任何提示
-                                     //（提示曾放在快捷键匹配之前，手机上每次点按都弹，扰人）
       // 1) 非独按修饰键的备选：完整按住即触发
       for (const alt of alts) {
         if (alt.length === 1 && isModKey(alt[0])) continue; // 独按修饰键走 2)
@@ -242,7 +276,7 @@
           holdSession = false;
           if (ctl.active()) ctl.stop();
         } else if (mode === 'tap') {
-          if (!micHiddenByEnv()) ctl.toggle();
+          ctl.toggle();
         }
         armedSolo = null;
         firedLatch = false;
@@ -326,16 +360,6 @@
     document.addEventListener('mouseup', scMouseUp);
     document.addEventListener('contextmenu', scContextMenu);
     window.addEventListener('blur', scBlur);
-    // 远程窄屏隐藏的窗口尺寸联动（旋转/分屏跨过 500 阈值时即时显隐）
-    onResize = () => {
-      if (!active) return;
-      for (const view of [mainView, subView]) {
-        const b = viewEl(view, 'btn-voice');
-        if (!b) continue;
-        b.classList.toggle('hidden', micHiddenByEnv());
-      }
-    };
-    window.addEventListener('resize', onResize);
   }
 
   function removeShortcutEngine() {
@@ -355,7 +379,7 @@
   let subBasePH = null; // 子输入框原始占位文案
 
   function voiceHintText() {
-    if (window.JX_ELECTRON) return ''; // Electron 壳无听写（见按钮解禁处注释），不占位提示
+    if (window.JX_REMOTE) return ''; // 远程端无全局快捷键（那是桌面端的钩子），不占位提示
     if (!shortcutAlternatives().length) return ''; // 已清空：占位提示不带语音段
     const mode = voiceShortcutMode();
     return '；语音输入：' + shortcutLabel() + (mode === 'hold' ? '（按住说话）' : '（点按）');
@@ -398,6 +422,8 @@
 
   let playURL = null;    // blob URL（播完/停止即 revoke）
   let playEl = null;     // <audio> 元素
+  let ttsAbort = null;   // 分段朗读在途请求的中止器（停止时连同预取一起砍）
+  let ttsStopChain = null; // 分段播放链的停摆钩子（ttsPlay 内部赋值）
 
   function restBtn(btn) {
     btn.classList.remove('playing');
@@ -406,6 +432,8 @@
   }
 
   function stopAudio() {
+    if (ttsAbort) { try { ttsAbort.abort(); } catch (e) { /* 已中止 */ } ttsAbort = null; }
+    if (ttsStopChain) { try { ttsStopChain(); } catch (e) { /* 已停 */ } ttsStopChain = null; }
     if (playEl) {
       playEl.onended = playEl.onerror = null;
       playEl.pause();
@@ -419,23 +447,84 @@
     if (playingBtn) { restBtn(playingBtn); playingBtn = null; }
   }
 
-  /** 后端合成并播放一段文本：返回 Promise，播放结束/出错时落定（单飞：先停上一条）。 */
-  function ttsPlay(text) {
-    stopAudio();
+  /** 朗读文本切块：句末标点切大块、软标点收尾小块；首块刻意更短（尽快出声）。
+   * 后端 /api/voice/tts 虽是流式响应，但浏览器没有对 POST 渐进播放的通用手段
+   * （旧实现 res.blob() 攒齐全文才开播——长消息要等微软合成完整篇才出声），
+   * 故改为按句分段合成 + 顺序播放 + 预取：首块约 0.5–1.5s 出声，后续块在
+   * 上一块播放期间已在下载。 */
+  function splitSpeechChunks(text) {
+    const parts = [];
+    let buf = '';
+    for (const ch of text) {
+      buf += ch;
+      const hard = '。！？!?；;\n'.indexOf(ch) >= 0;
+      const soft = '，,、：:）)'.indexOf(ch) >= 0;
+      const first = parts.length === 0;
+      const max = first ? 80 : 180;
+      const min = first ? 18 : 60;
+      if ((hard && buf.length >= min) || (soft && buf.length >= max) || buf.length >= 240) {
+        const t = buf.trim();
+        if (t) parts.push(t);
+        buf = '';
+      }
+    }
+    const tail = buf.trim();
+    if (tail) parts.push(tail);
+    return parts.length ? parts : [text.trim()];
+  }
+
+  function ttsFetchBlob(text, signal) {
     return fetch('/api/voice/tts', {
-      method: 'POST',
+      method: 'POST', signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, rate: spokenRate(), voice: pref.get('edgeVoice', '') }),
     }).then(async (res) => {
       if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
       return res.blob();
-    }).then((blob) => new Promise((resolve, reject) => {
-      playURL = URL.createObjectURL(blob);
-      playEl = new Audio(playURL);
-      playEl.onended = () => { stopAudio(); resolve(); };
-      playEl.onerror = () => { stopAudio(); reject(new Error('播放失败')); };
-      playEl.play().catch(reject);
-    }));
+    });
+  }
+
+  /** 后端合成并播放一段文本（分段流式）：返回 Promise，全部播完/出错/被停时落定
+   * （单飞：先停上一条）。播放队列预取窗口 3 块：块 i 在播时，i+1/i+2 已在合成。 */
+  function ttsPlay(text) {
+    stopAudio();
+    ttsAbort = new AbortController();
+    const signal = ttsAbort.signal;
+    const chunks = splitSpeechChunks(text);
+    const blobs = chunks.map(() => null);
+    let idx = 0, stopped = false;
+    const prefetch = () => {
+      for (let i = idx; i < Math.min(idx + 3, chunks.length); i++) {
+        if (!blobs[i]) blobs[i] = ttsFetchBlob(chunks[i], signal);
+      }
+    };
+    prefetch();
+    return new Promise((resolve, reject) => {
+      const playChunk = () => {
+        if (stopped) return;
+        if (idx >= chunks.length) { stopAudio(); resolve(); return; }
+        const i = idx;
+        blobs[i].then((blob) => {
+          if (stopped || signal.aborted) return;
+          playURL = URL.createObjectURL(blob);
+          playEl = new Audio(playURL);
+          playEl.onended = () => {
+            URL.revokeObjectURL(playURL); playURL = null; playEl = null;
+            idx += 1;
+            prefetch();
+            playChunk();
+          };
+          playEl.onerror = () => { stopAudio(); reject(new Error('播放失败')); };
+          playEl.play().catch((e) => { stopAudio(); reject(e); });
+        }).catch((e) => {
+          if (signal.aborted || stopped) return;
+          stopAudio();
+          reject(i === 0 ? e : new Error('朗读中断：' + (e && e.message ? e.message : e)));
+        });
+      };
+      ttsStopChain = () => { stopped = true; resolve(); }; // 被停/被顶替：安静落定（按钮由 stopSpeak 复位）
+      playChunk();
+    });
   }
 
   /** 朗读一条消息：按钮态驱动 + 后端合成播放。 */
@@ -726,18 +815,21 @@
       btn.classList.remove('on');
       setSpin(false);
       setCount(null);
-      try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+      try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
       if (msg) setHint(msg, 4000); else clearT('hintTimer');
       if (toast) voiceToast(toast);
     };
-    // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾
+    // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾。
+    // 本地引擎例外：按句即时出字，stop() 直接收尾（未发尾段异步补落）。
     const stopByUser = () => {
       if (sess.stopping || sess.done) return;
       sess.stopping = true;
       clearT('restartTimer');
       clearT('connectTimer');
       const rec = sess.rec;
+      const local = !!(rec && rec.isLocal);
       try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+      if (local) return; // 本地引擎按句即时出字：stop() 里直接收尾，尾段稍后落
       clearT('stopTimer');
       sess.stopTimer = setTimeout(() => { finish(''); }, VOICE_STOP_GRACE);
     };
@@ -773,8 +865,194 @@
       if (remain <= 0) { stopByUser(); return; }
       setCount(remain <= 9000 ? Math.ceil(remain / 1000) : null);
     };
+    /* ---------- 本地引擎：按停顿逐句识别（客户端能量 VAD 切句） ----------
+     * 录音期间做音量活动检测：说完一句停顿约 0.7 秒即切出该段、异步上传
+     * X-ASR 转写、文字落进输入框，录音继续——「一小段一小段地出」，不必
+     * 整段说完才识别。噪声底自适应跟踪（长时最低能量），阈值 = max(固定下限,
+     * 噪声底×3.5)；句间长静音不入段；单句超 18s 强切；点停时未发的尾段补发。
+     * 多段在途由服务端 worker 排队串行（X-ASR 约 60 倍实时，队列秒清）。 */
+    const wsHint = () => (location.protocol !== 'https:'
+      ? '录音中·实时转写：说话出灰字，停顿约 3 秒自动落成正文；点麦克风结束'
+      : '录音中…说完一句停顿约 3 秒自动出字；点麦克风结束');
+    /* ---------- 本地引擎：前端统一停顿切句（3 秒），手机/电脑同一实现 ----------
+     * 断句时机完全在前端：说完一句停顿 3 秒 → 该句定稿。电脑（http 页面，有
+     * WebSocket）：说话期间实时灰字（stream_chunk→partial），停顿 3 秒发
+     * stream_flush 由离线模型精修落黑字，录音无缝继续；手机远程（https 开不了
+     * ws）：同样 3 秒停顿，只是该句走整段 POST 识别（经中继隧道），无灰字但
+     * 逐句出字。服务端端点检测已关闭，不会双重切句。 */
+    const makeLocalRec = (stream) => {
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      const src = ctx.createMediaStreamSource(stream);
+      const node = ctx.createScriptProcessor(4096, 1, 1);
+      const canStream = location.protocol !== 'https:';
+      const SPEECH_MIN_MS = 350;    // 短于此视为噪声毛刺，丢弃
+      const PAUSE_FLUSH_MS = 3000;  // 停顿 3 秒 = 一句话说完，绝对阈值
+      const SEG_MAX_MS = 18000;     // 不停顿连续说超 18 秒也强制出句
+      let seg = [];                 // 当前句的帧（Float32，从首个语音帧起收）
+      let speechMs = 0, silenceMs = 0;
+      let noiseFloor = 0.004;       // 环境噪声底（RMS，自适应）
+      let ws = null, wsReady = false, wsFail = false;
+      let ended = false, segCount = 0, failCount = 0, doneCb = null;
+      const i16ToB64 = (i16) => {
+        const u8 = new Uint8Array(i16.buffer);
+        let bin = '';
+        for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+        return btoa(bin);
+      };
+      const teardownMic = () => {
+        if (ended) return true;
+        ended = true;
+        try { node.disconnect(); } catch (e) { /* 已断 */ }
+        try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
+        return false;
+      };
+      if (canStream) {
+        try { ws = new WebSocket('ws://' + location.host + '/api/voice/asr/stream'); } catch (e) { ws = null; }
+      }
+      if (ws) {
+        ws.onopen = () => { wsReady = true; ws.send('{"cmd":"stream_start"}'); };
+        ws.onmessage = (ev) => {
+          let d = null;
+          try { d = JSON.parse(ev.data); } catch (e) { return; }
+          if (!d.ok) { voiceToast('识别通道错误：' + (d.err || '')); return; }
+          if (d.event === 'partial') {
+            // 实时灰字：当前句（可能跨多小句，flush 前的缓冲）增量
+            sess.segs.set(0, { text: d.text || '', final: false, changedAt: Date.now() });
+            sess.retries = 0;
+            renderShadow();
+          } else if (d.event === 'final') {
+            // 停顿 3 秒（或收尾）：灰字撤下、离线精修的黑字落定
+            sess.segs.delete(0);
+            sess.committed.delete(0);
+            renderShadow();
+            if (d.text) {
+              commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
+              segCount += 1;
+              if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
+            }
+          } else if (d.event === 'done') {
+            if (doneCb) doneCb();
+          }
+        };
+        ws.onclose = () => {
+          wsReady = false;
+          if (!ended) wsFail = true; // 意外断开：后续帧转投整段缓冲
+          if (doneCb) doneCb();
+        };
+        ws.onerror = () => { };
+      }
+      const flushSeg = () => {
+        const spoken = speechMs;
+        const frames = seg;
+        seg = []; speechMs = 0; silenceMs = 0;
+        if (spoken < SPEECH_MIN_MS) return; // 毛刺：丢
+        if (ws && wsReady && !wsFail) {
+          try { ws.send('{"cmd":"stream_flush"}'); } catch (e) { /* 收尾兜底 */ }
+          return;
+        }
+        // 无 WS（手机远程/通道断了）：该句整段 POST（经中继隧道可达）
+        const total = frames.reduce((n, c) => n + c.length, 0);
+        if (total < 1600) return;
+        const floats = new Float32Array(total);
+        let off = 0;
+        for (const c of frames) { floats.set(c, off); off += c.length; }
+        voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000)).then((d) => {
+          if (!active) return; // 组件已卸载：迟到的文字不再落
+          if (d.text) {
+            commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
+            segCount += 1;
+            if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
+          }
+        }).catch(() => {
+          if (!active || sess.done) return;
+          failCount += 1;
+          if (failCount === 1) voiceToast('有一句识别失败（网络/服务波动），继续说即可');
+        });
+      };
+      node.onaudioprocess = (ev) => {
+        if (ended) return;
+        const f = ev.inputBuffer.getChannelData(0);
+        let sum = 0;
+        for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
+        const rms = Math.sqrt(sum / f.length);
+        const frameMs = (f.length / ctx.sampleRate) * 1000;
+        const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
+        if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
+        if (isSpeech || speechMs > 0) {
+          const f32 = new Float32Array(f);
+          seg.push(f32);
+          if (ws && wsReady && !wsFail) {
+            const i16 = new Int16Array(f.length);
+            for (let i = 0; i < f.length; i++) {
+              const s = Math.max(-1, Math.min(1, f[i]));
+              i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            if (ws.bufferedAmount < 262144) ws.send(JSON.stringify({ cmd: 'stream_chunk', pcm_b64: i16ToB64(i16) }));
+          }
+        }
+        if (isSpeech) { speechMs += frameMs; silenceMs = 0; }
+        else if (speechMs > 0) silenceMs += frameMs;
+        if (speechMs >= SPEECH_MIN_MS && silenceMs >= PAUSE_FLUSH_MS) flushSeg();
+        else if (speechMs >= SEG_MAX_MS) flushSeg();
+      };
+      src.connect(node);
+      node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
+      const stopAll = () => {
+        if (teardownMic()) return 'ended';
+        try { ctx.close(); } catch (e) { /* 已关 */ }
+        return 'ok';
+      };
+      return {
+        isLocal: true,
+        // 正常按停：WS=stream_end 精修尾段后收尾；无 WS=尾句补发即收尾
+        stop() {
+          if (stopAll() === 'ended') return;
+          if (ws && wsReady && !wsFail) {
+            const finishUp = () => { try { ws.close(); } catch (e) { /* */ } finish(segCount > 0 ? '' : '未识别到语音内容'); };
+            doneCb = () => { doneCb = null; setTimeout(finishUp, 0); };
+            try { ws.send('{"cmd":"stream_end"}'); } catch (e) { finishUp(); }
+            setTimeout(() => { if (doneCb) { doneCb = null; finishUp(); } }, 3000); // done 不来的兜底
+            return;
+          }
+          flushSeg();
+          finish(segCount > 0 ? '' : '未识别到语音内容');
+        },
+        // 放弃（发送前暂停/组件卸载）：停麦即止，迟到的结果不污染下一条草稿
+        abort() {
+          teardownMic();
+          if (ws) { doneCb = null; try { ws.close(); } catch (e) { /* */ } }
+        },
+      };
+    };
+    const startLocal = () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        finish('当前页面无法访问麦克风（需 https 或本机地址）');
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      }).then((stream) => {
+        if (!sess.active || sess.done) { // 会话已被收掉（快速点按）：直接放掉麦克风
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        sess.rec = makeLocalRec(stream);
+        sess.live = true;
+        clearT('connectTimer');
+        setSpin(false);
+        btn.classList.add('on');
+        setHint(wsHint(), 0);
+      }).catch((e) => {
+        const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
+        finish(desktopShell() && !denied
+          ? '麦克风不可用：请检查 Windows 设置 → 隐私 → 麦克风'
+          : (denied ? '麦克风未授权：请在浏览器里允许麦克风权限' : '麦克风不可用：' + (e && e.message ? e.message : e)));
+      });
+    };
+
     const startOnce = () => {
       if (!sess.active || sess.done) return;
+      if (dictationIsLocal()) { startLocal(); return; }
       let rec;
       try { rec = new SR(); } catch (e) { scheduleRetry(); return; }
       sess.rec = rec;
@@ -860,8 +1138,6 @@
     };
 
     btn.onclick = () => {
-      if (!SR) { setHint('当前浏览器不支持语音识别（建议 Edge / Chrome）', 4000); return; }
-      if (micHiddenByEnv()) return; // 远程手机端：按钮已隐藏，静默
       if (sess.active) { stopByUser(); return; } // 再点一次 = 结束听写（连接中/录音中都一样）
       sess.active = true;
       sess.done = false;
@@ -875,7 +1151,7 @@
       voiceOn[key] = true;
       btn.classList.remove('on');
       setSpin(true); // 先转圈：连上了再变蓝
-      setProgressHint('正在连接语音服务…');
+      setProgressHint(dictationIsLocal() ? '正在打开麦克风…' : '正在连接语音服务…');
       if (sess.sweepTimer) clearInterval(sess.sweepTimer);
       sess.sweepTimer = setInterval(sweep, VOICE_SWEEP_MS);
       startOnce();
@@ -904,7 +1180,8 @@
         commitAll(); // 未定稿转写同步落进输入框（随本条消息一起发出）
         const rec = sess.rec;
         sess.stopping = true;
-        try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
+        // 本地引擎：放弃这次录音（迟到的识别结果不该污染下一条草稿）
+        try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
         finish(''); // 硬收尾：不等引擎尾包（迟到的定稿会在发送后污染下一条草稿）
       },
     };
@@ -1027,13 +1304,29 @@
     unit.className = 'sp-value';
     unit.textContent = '秒（30–600，默认 240）';
     row('单次听写时长上限', sec).appendChild(unit);
-    note('听写用浏览器自带的语音识别（WebView2 / Edge / Chrome——微软的识别服务，'
-      + '音频由浏览器直接发给它的识别服务）：链路抖动会自动退避重连；输入框上方浮出'
-      + '的灰字是未定稿的转写，停下约 2.5 秒才落成正文。连接失败时多半是浏览器不支持'
-      + '或识别服务不可达，换用 Microsoft Edge 通常可解；桌面壳同理——识别通道随'
-      + ' WebView2 运行时版本波动（部分版本有故障），更新 WebView2 运行时'
-      + '（https://go.microsoft.com/fwlink/p/?LinkId=2124703）或以 -browser 参数'
-      + '启动、改用 Edge 打开可解。');
+
+    // 听写引擎：本地（默认）/ 云端（浏览器内置识别），不点名厂商
+    const engSel = document.createElement('select');
+    engSel.className = 'sp-select';
+    // 对用户只分「本地/云端」两档，不点名模型与厂商：云端走浏览器内置识别，
+    // 不同浏览器接入的服务商本来就不同（Edge/WebView2、Chrome、国产浏览器各异）
+    const engOpts = [
+      ['xasr', '本地语音识别模型（离线·默认）'],
+      ['browser', '云端语音识别模型（当前浏览器内置识别）'],
+    ];
+    for (const [v, t] of engOpts) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = t;
+      engSel.appendChild(o);
+    }
+    engSel.value = String(pref.get('engine', 'xasr')) === 'browser' ? 'browser' : 'xasr';
+    engSel.onchange = () => { pref.set('engine', engSel.value); };
+    row('听写引擎', engSel);
+
+    note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 3 秒自动'
+      + '落成正文（电脑端另有实时灰字预览）。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
+      + '接入的服务商不同，且依赖其在线服务可达）。默认本地，需要时手动切换；'
+      + '首次使用本地识别需加载模型（几秒）。');
 
     /* ----- 快捷键 ----- */
     group('语音快捷键');
@@ -1220,16 +1513,13 @@
 
       // 语音输入按钮（主对话与右栏子对话各一套）：按钮 DOM 在主程序 index.html 里
       //（位置与样式不变），默认带 .hidden——按钮属于本组件，由组件揭开并接管行为；
-      // 组件关掉/没加载 = 按钮整组不出现。远程手机端（JX_REMOTE 且视口 <500）
-      // 不揭开听筒按钮（手机浏览器多不支持语音识别；resize 跨过阈值时即时显隐）。
-      // Electron 壳（JX_ELECTRON，app-core.js 按 URL 参数置位）同样不揭开：
-      // Web Speech API 在 Electron 没有免费识别通道（缺浏览器厂商标识），
-      // 听写会直接 network 失败——等本地 ASR（SenseVoice 路线）落地再放开。
+      // 组件关掉/没加载 = 按钮整组不出现。本地 ASR 落地后所有形态都揭开：浏览器
+      // 识别可用的走微软服务，不可用的（远程手机端、Electron 壳）自动落到本地模型。
       for (const view of [mainView, subView]) {
         const b = viewEl(view, 'btn-voice');
         if (!b) continue;
         voiceCtl[view.key] = bindVoiceButton(view);
-        if (!micHiddenByEnv() && !window.JX_ELECTRON) b.classList.remove('hidden');
+        b.classList.remove('hidden');
       }
 
       // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）

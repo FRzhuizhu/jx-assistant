@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const appVersion = "20261009V2" // 版本号体系：日期+V序号（同日发多版用 V2 V3），恒新于旧点分号（见 update.go 的 versionCompare）
+const appVersion = "20261010V1" // 版本号体系：日期+V序号（同日发多版用 V2 V3），恒新于旧点分号（见 update.go 的 versionCompare）
 
 // App 持有配置与会话存储，是所有 HTTP 处理器的宿主。
 type App struct {
@@ -33,10 +34,12 @@ type App struct {
 	CfgPath    string
 	Store      *Store
 	Ctx        *ContextEngine // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
-	Plugins    *PluginRegistry
+	Plugins    *PluginRegistry      // DSH 插件兼容层实现（adapters.go：插件兼容层/ + adapter_*.go）
+	Layers     *PluginLayerRegistry // 插件兼容层注册表：主体发现的全部插件体系（pluginlayers.go）
 	Components *ComponentRegistry
-	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层（ccplugin*.go）
+	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层实现（ccplugin*.go）
 	Todos      *todoScheduler    // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
+	asr        *asrManager       // 本地语音识别测试通道（voiceasr.go，语音组件设置页用）
 	static     fs.FS             // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
 	mu              sync.Mutex
@@ -133,6 +136,15 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.CCPlugins = InitCCPlugins(a, cfg.DataDir)
 	a.CCPlugins.MCPStartAll()
 	a.CCPlugins.ModsStartAll()
+	// 主体发现插件兼容层：各层（DSH、Claude Code…）经 registerPluginLayer
+	// 自注册，主体只按 PluginLayer 契约调用——统一清单与总开关走 /api/plugins，
+	// 主体不认识任何具体插件格式
+	a.Layers = discoverPluginLayers(a)
+	layerNames := []string{}
+	for _, l := range a.Layers.Layers() {
+		layerNames = append(layerNames, l.Info().Name)
+	}
+	log.Printf("[插件] 主体发现 %d 个插件兼容层：%s", len(layerNames), strings.Join(layerNames, "、"))
 	// 受保护路径与各运行时注册表的初始化统一在 initRuntime（见 runtime.go）
 	a.initRuntime()
 	// 技能可见性全模式契约自检：任何模式丢了技能清单注入或 read_skill，
@@ -147,6 +159,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	go a.flushDeliveries("")
 	// 待办与定时任务：载入清单并起调度循环（组件关掉时整拍跳过，见 todo.go）
 	a.Todos = newTodoScheduler(a)
+	// 本地语音识别测试通道（voiceasr.go）：worker 惰性拉起，无模型时端点仍可列清单
+	a.asr = &asrManager{app: a}
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
 	// 远程外壳版本代数恢复（一键清缓存的计数，remoteaccess.go）
@@ -185,6 +199,8 @@ func (a *App) sessLock(id string) *sync.Mutex {
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux.HandleFunc("GET /api/display-mode", a.handleGetDisplayMode)
+	mux.HandleFunc("POST /api/display-mode", a.handleSetDisplayMode)
 	mux.HandleFunc("GET /api/search/title", a.handleSearchTitle)
 	mux.HandleFunc("GET /api/search/content", a.handleSearchContent)
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
@@ -286,6 +302,12 @@ func (a *App) Routes() http.Handler {
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
+	// 本地语音识别通道（voiceasr.go）：听写组件的本地引擎用（16k mono WAV base64）
+	mux.HandleFunc("POST /api/voice/asr/transcribe", a.handleASRTranscribe)
+	// 流式听写通道（voiceasr.go）：WebSocket 一行一答哑桥——partial=实时灰字、
+	// final=端点（停顿）后离线精修的黑字。本机/桌面形态直连；远程 https 页面
+	// 开不了 ws，前端自动回退整段模式
+	mux.HandleFunc("GET /api/voice/asr/stream", a.handleASRStream)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
 	mux.HandleFunc("GET /api/device/poll", a.handleDevicePoll)
@@ -381,14 +403,19 @@ func (a *App) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.FileServer(http.FS(a.static)).ServeHTTP(w, r)
 }
 
-// ---------- 插件兼容层：清单、开关与资产 ----------
+// ---------- 插件兼容层：统一清单与总开关（各层的注册表见 pluginlayers.go） ----------
 
 func (a *App) handleListPlugins(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"plugins": a.Plugins.List()})
+	if a.Layers == nil {
+		writeJSON(w, 200, map[string]any{"layers": []LayerInfo{}, "plugins": []LayerPlugin{}})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"layers": a.Layers.Infos(), "plugins": a.Layers.AllPlugins()})
 }
 
 func (a *App) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Layer   string `json:"layer"` // 来源体系（层 id；缺省=全部层里按 id 唯一匹配）
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
 	}
@@ -396,15 +423,19 @@ func (a *App) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 id 与 enabled")
 		return
 	}
-	if _, ok := a.Plugins.Manifest(body.ID); !ok {
-		writeErr(w, 404, "插件不存在或未适配")
+	if a.Layers == nil {
+		writeErr(w, 500, "插件兼容层未初始化")
 		return
 	}
-	if err := a.Plugins.SetEnabled(body.ID, body.Enabled); err != nil {
+	if err := a.Layers.SetEnabled(body.Layer, body.ID, body.Enabled); err != nil {
+		if errors.Is(err, errLayerNotFound) || errors.Is(err, errPluginNotFound) {
+			writeErr(w, 404, err.Error())
+			return
+		}
 		writeErr(w, 500, "保存开关失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": 1, "refreshNeeded": true, "plugins": a.Plugins.List()})
+	writeJSON(w, 200, map[string]any{"ok": 1, "refreshNeeded": true, "plugins": a.Layers.AllPlugins()})
 }
 
 // handlePluginAsset 提供适配器浏览器半边资产（仅平级文件，防目录穿越）。
@@ -684,6 +715,29 @@ func searchSnippet(content, q string) string {
 		suf = "…"
 	}
 	return pre + string(runes[lo:hi]) + suf
+}
+
+// handleGetDisplayMode 设置页「界面渲染」区块的数据源：当前渲染模式与来由
+// （desktop_windows.go 实现；网页/手机模式 desktop=false，前端隐藏区块）。
+func (a *App) handleGetDisplayMode(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.displayMode())
+}
+
+// handleSetDisplayMode 切换 GPU 渲染 / 兼容模式：写删兼容标记 + 前端热重启
+// （后端不动，窗口约 1 秒后原位重开）。
+func (a *App) handleSetDisplayMode(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Software bool `json:"software"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
+		return
+	}
+	if err := a.setDisplayMode(p.Software); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {

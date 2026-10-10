@@ -255,6 +255,13 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   里构建，再以 `-ExeSource <exe路径>` 传入。打包产物（stage/、输出/）
   已 gitignore，`config.json` 与 `data/` 永不进包。
 
+  **打包清单纪律**（`打包安装包.ps1` 强制校验，缺一拒绝出包）：
+  ① 主程序 exe（注入桌面默认形态）；② `技能/`（含 `_runtime` 便携运行时，
+  依赖逐 manifest 校验可导入）；③ **`组件/` 内置组件**——git 里跟踪的
+  全部默认组件必须随包分发（危险命令护栏、待办定时、Git 面板、语音），
+  脚本会校验组件目录存在且至少含一个带 `manifest.json` 的组件；④
+  `使用说明.md`。给打包脚本加新的暂存项时，同步更新本清单。
+
 ## Electron 壳（jx-desktop，迁移期新形态）
 
 仓库 `electron-migration` 分支上的第三种桌面形态：壳是独立目录
@@ -969,9 +976,11 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 - **宿主半边可以落在主程序里**：组件本身是纯浏览器半边，但它掌管的功能若需要
   后端（持久化、定时、接口、模型工具），就写在主程序对应文件里、按
   `Components.IsEnabled(<id>)` 自查开关——组件关掉时那部分功能一并停。
-- 示例组件：`input-counter`（输入字数实时统计，最小组件模板——新建组件
-  直接复制该目录改 manifest 与 client.js 即可）。界面强调色（点缀色）原为
-  示例组件，现已并入主程序 `web/app-settings.js`（常规 → 外观 → 点缀色）。
+- 组件随源码入库（`组件/` 目录全部跟踪），**打包时必须随安装包分发**（见
+  「桌面版与安装包」一节的打包清单）。曾作为最小组件模板的 `input-counter`
+  （字数统计）已删除，新建组件照「manifest.json + client.js（client.css 可选）」
+  的最小结构手写即可。界面强调色（点缀色）原为示例组件，现已并入主程序
+  `web/app-settings.js`（常规 → 外观 → 点缀色）。
 - 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
   宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
   `git-panel`（Git 面板——右栏「Git」页签：同屏双区（默认上下堆叠、可切左右分栏、
@@ -1012,6 +1021,17 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 
 ## 插件与插件兼容层
 
+**统一架构（pluginlayers.go）**：目标是兼容各种插件体系（DSH、Claude
+Code、…），各家后端逻辑一致。主体只认「插件兼容层」这一层抽象——启动时
+`discoverPluginLayers` 发现全部兼容层（层在 init() 里 `registerPluginLayer`
+自注册），此后只按 `PluginLayer` 契约调用（列清单 / 总开关），不认识任何
+具体插件格式；兼容层自己去发现自己生态的插件。统一入口
+`GET/POST /api/plugins`：GET 返回 `{layers, plugins}`（每条插件带 `layer`
+来源标记），POST 总开关带 `{layer, id, enabled}`（layer 缺省=按 id 全层
+唯一匹配）。设置页只有**一个「插件」页**：按体系分组展示，安装区在页内
+（当前仅 Claude 层支持安装）。新增一个体系 = 写一个层实现并注册，主体与
+设置页零改动（前端可按层 id 注册富行渲染器，缺省通用行）。
+
 对 DSH 插件体系的手写兼容层（组件/开关机制从简：一体编译 + 扫描 + 开关）：
 
 - **`插件/`**：DSH 插件原件，原样存放、不改一字、不参与编译——功能来源与对照标准。
@@ -1020,8 +1040,9 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   （能力映射表：转译了什么、有意不做什么）。Go 半边在根目录 `adapter_<名>.go`
   （一体编译，按名与目录配对：可挂自己的 HTTP 端点、给系统提示词追加段）。
 - **扫描与开关**：启动扫描 `插件兼容层/*/manifest.json`（损坏即跳过告警，不阻断）；
-  `插件/` 里有原件但无适配器的在设置页灰显为「未适配」。开关状态存
-  `data/plugins.json`（扁平映射，缺省启用），**即时生效**：浏览器半边资产注入
+  `插件/` 里有原件但无适配器的在统一「插件」页灰显为「未适配」。开关状态存
+  `data/plugins.json`（扁平映射，缺省启用），经统一 `/api/plugins` 落盘，
+  **即时生效**：浏览器半边资产注入
   与 Go 半边端点每请求检查，界面部分刷新页面后生效，无需重启。
 - **前端接入**：页面注入的插件脚本经 `JX` 接口接入原生界面——
   `JX.registerMessageAction`（消息操作行按钮）、`JX.registerSettingsSection`
@@ -1036,8 +1057,10 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 
 对 Anthropic Claude Code 插件格式（`.claude-plugin/plugin.json` + skills /
 commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全部该格式
-插件，不是逐个手写适配（与上一节的 DSH 手写适配层是两套并存的机制）。
-设置页「Claude 插件」分区管理；输入框 `/` 触发插件命令弹层。
+插件，不是逐个手写适配。它是 pluginlayers.go 统一注册表里的一个层实现
+（与 DSH 手写适配层平级：清单与总开关走统一 `/api/plugins`，组件级开关/
+配置/装卸走本层自有 `/api/cc-plugins/*`）。设置页统一「插件」页的
+Claude 分区管理；输入框 `/` 触发插件命令弹层。
 
 - **目录布局**（全在受保护的数据区内）：`data/claude-plugins/cache/<市场>/<插件>/<版本>/`
   插件本体（`${CLAUDE_PLUGIN_ROOT}`）、`data/claude-plugins/data/<插件>@<市场>/`
@@ -1136,7 +1159,8 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `runtime.go` | 后台运行时：执行注册表、全局事件总线、派发执行体、中断恢复 |
 | `session.go` | 会话元信息与工具函数 |
 | `store.go` | SQLite 存储层与旧数据迁移（`LastUserMessageAt` 供环境快照取「用户最近发消息时间」） |
-| `adapters.go` | 插件兼容层：扫描、开关联查、资产清单、Go 半边注册点 |
+| `adapters.go` | DSH 插件兼容层实现：扫描、开关联查、资产清单、Go 半边注册点 |
+| `pluginlayers.go` | 插件兼容层注册表（主体第一层）：`PluginLayer` 契约 + 编译期自注册 + 统一清单/总开关（`/api/plugins` 的 layers+plugins） |
 | `adapter_dsh_speech.go` | dsh-speech 的 Go 半边：润色端点（复用已配置模型）+ 听写提示词段 |
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务、`Rescan`（市场装卸后重扫） |
 | `update.go` | 更新检查：定期拉发布源（updateURL，Gitea releases/latest 或 jxai-server 的 /updates/latest，两者同格式），tag_name 比当前新就经事件流推横幅；versionCompare 双体系（日期+V序号 恒新于 旧点分号） |
@@ -1174,7 +1198,7 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `POST /api/approvals/{id}` | 审批决定：`{approved, always}`（always=本会话总是允许） |
 | `POST /api/workspace/test` | 测试 SSH 远程工作区配置（拨号/SFTP/目录，回显主机指纹） |
 | `GET /api/events` | 全局事件流（后台派发进度、回报就绪、会话更新、审批请求） |
-| `GET/POST /api/plugins` | 插件清单 / 切换开关（即时生效，界面部分刷新后生效） |
+| `GET/POST /api/plugins` | 统一插件清单（`{layers, plugins}`，带来源体系）/ 切换开关（`{layer,id,enabled}`，即时生效，界面部分刷新后生效） |
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
 | `GET /api/components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供；挂 `/api/` 下让中继隧道覆盖，cx.js fetch 文本注入） |

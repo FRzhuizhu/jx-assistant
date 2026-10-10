@@ -1,31 +1,17 @@
 /* Claude Code 插件兼容层前端（ccplugin*.go 的浏览器半边）：
-   设置页「Claude 插件」分区（安装/市场/开关/组件开关/配置/卸载）+
-   输入框斜杠命令弹层（/ 触发，列出插件命令，回车/点击补全）。
-   复用 app-core.js 的 $ / api / esc；样式复用 plugin-row 体系 + style.css 尾部
-   的 ccp-* 前缀类。 */
+   统一「插件」设置页的 Claude 分组行渲染（ccpPluginRow：开关/组件开关/
+   配置/卸载）+ 市场浏览面板（renderCCMarketPanel）+ 安装与市场添加按钮
+   （bindCCPluginPanel）+ 输入框斜杠命令弹层（/ 触发，列出插件命令，
+   回车/点击补全）。清单与总开关走统一 /api/plugins（带 layer 来源），
+   组件开关/配置/装卸仍走 /api/cc-plugins。复用 app-core.js 的 $ / api /
+   esc；样式复用 plugin-row 体系 + style.css 尾部的 ccp-* 前缀类。 */
 
-/* ---------- 设置页面板 ---------- */
+/* ---------- 统一插件页：Claude 行 + 市场面板 ---------- */
 
 const CCP_COMPONENT_LABELS = {
   skills: '技能', commands: '命令', agents: '专家',
   hooks: 'Hooks', mods: 'Mods', mcp: 'MCP',
 };
-
-async function renderCCPluginPanel() {
-  const box = $('ccp-list');
-  if (!box) return;
-  box.innerHTML = '加载中…';
-  let data;
-  try { data = await api('/api/cc-plugins'); } catch (e) { box.textContent = '插件清单读取失败：' + e.message; return; }
-  renderCCMarketPanel(data.marketplaces || []);
-  box.innerHTML = '';
-  const list = data.plugins || [];
-  if (!list.length) {
-    box.innerHTML = '<div class="pr-note">还没有安装 Claude Code 插件。在上方输入插件目录 / zip 路径 / git URL 安装，或先添加市场再浏览安装。</div>';
-    return;
-  }
-  for (const p of list) box.appendChild(ccpPluginRow(p));
-}
 
 function ccpPluginRow(p) {
   const row = document.createElement('div');
@@ -45,7 +31,7 @@ function ccpPluginRow(p) {
     `<span class="pr-ver">@${esc(p.marketplace)}</span></div>` +
     (badges.length ? `<div class="ccp-badges">${badges.map(b => `<span class="ccp-badge">${esc(b)}</span>`).join('')}</div>` : '') +
     `<p>${esc(p.description || '')}</p>`;
-  // 总开关
+  // 总开关（走统一 /api/plugins：与各体系后端逻辑一致）
   const tg = document.createElement('label');
   tg.className = 'pr-toggle';
   const cb = document.createElement('input');
@@ -54,9 +40,9 @@ function ccpPluginRow(p) {
   cb.onchange = async () => {
     cb.disabled = true;
     try {
-      await api('/api/cc-plugins/toggle', { method: 'POST', body: JSON.stringify({ key: p.key, enabled: cb.checked }) });
+      await api('/api/plugins', { method: 'POST', body: JSON.stringify({ layer: p.layer, id: p.id, enabled: cb.checked }) });
       note.textContent = '已更新，新会话生效';
-      await renderCCPluginPanel();
+      await renderPluginList();
     } catch (e) { alert('切换失败：' + e.message); cb.checked = !cb.checked; cb.disabled = false; }
   };
   tg.appendChild(cb);
@@ -70,7 +56,7 @@ function ccpPluginRow(p) {
   const execRow = document.createElement('div');
   execRow.className = 'ccp-comps';
   for (const comp of ['hooks', 'mods', 'mcp']) {
-    const has = p[comp === 'hooks' ? 'hooks' : comp === 'mods' ? 'mods' : 'mcp'];
+    const has = p[comp];
     if (!has) continue;
     const cLabel = document.createElement('label');
     cLabel.className = 'ccp-comp-toggle';
@@ -80,9 +66,9 @@ function ccpPluginRow(p) {
     ccb.onchange = async () => {
       ccb.disabled = true;
       try {
-        await api('/api/cc-plugins/toggle', { method: 'POST', body: JSON.stringify({ key: p.key, component: comp, enabled: ccb.checked }) });
+        await api('/api/cc-plugins/toggle', { method: 'POST', body: JSON.stringify({ key: p.id, component: comp, enabled: ccb.checked }) });
         note.textContent = `${CCP_COMPONENT_LABELS[comp]} 组件已${ccb.checked ? '开启' : '关闭'}，新会话生效`;
-        await renderCCPluginPanel();
+        await renderPluginList();
       } catch (e) { alert('切换失败：' + e.message); ccb.checked = !ccb.checked; ccb.disabled = false; }
     };
     cLabel.appendChild(ccb);
@@ -111,7 +97,7 @@ function ccpPluginRow(p) {
       input.placeholder = opt.description || '';
       const save = async () => {
         try {
-          await api('/api/cc-plugins/toggle', { method: 'POST', body: JSON.stringify({ key: p.key, values: { [key]: input.value } }) });
+          await api('/api/cc-plugins/toggle', { method: 'POST', body: JSON.stringify({ key: p.id, values: { [key]: input.value } }) });
           note.textContent = `已保存 ${lab.textContent}`;
         } catch (e) { alert('保存失败：' + e.message); }
       };
@@ -130,8 +116,8 @@ function ccpPluginRow(p) {
   del.onclick = async () => {
     if (!confirm(`卸载插件「${p.displayName || p.name}」？本地缓存与运行数据将删除。`)) return;
     try {
-      await api('/api/cc-plugins/uninstall', { method: 'POST', body: JSON.stringify({ key: p.key }) });
-      await renderCCPluginPanel();
+      await api('/api/cc-plugins/uninstall', { method: 'POST', body: JSON.stringify({ key: p.id }) });
+      await renderPluginList();
     } catch (e) { alert('卸载失败：' + e.message); }
   };
   row.appendChild(del);
@@ -182,9 +168,7 @@ function renderCCMarketPanel(markets) {
             btn.textContent = '安装中…';
             try {
               await api('/api/cc-plugins/install', { method: 'POST', body: JSON.stringify({ marketplace: sel.value, plugin: item.name }) });
-              await renderCCPluginPanel();
-              const fresh = await api('/api/cc-plugins/marketplace/' + encodeURIComponent(sel.value));
-              renderCCMarketPanel(markets);
+              await renderPluginList(); // 统一插件页整页刷新（分组清单 + 市场面板）
               const keep = $('ccp-market-select');
               if (keep) { keep.value = sel.value; keep.onchange(); }
             } catch (e) { alert('安装失败：' + e.message); btn.disabled = false; btn.textContent = '安装'; }
@@ -200,7 +184,7 @@ function renderCCMarketPanel(markets) {
   panel.appendChild(sel);
 }
 
-/* 安装与市场添加按钮（绑定一次） */
+/* 安装与市场添加按钮（绑定一次；成功后刷新统一插件页） */
 let ccpBound = false;
 function bindCCPluginPanel() {
   if (ccpBound) return;
@@ -214,7 +198,7 @@ function bindCCPluginPanel() {
     try {
       await api('/api/cc-plugins/install', { method: 'POST', body: JSON.stringify(src.startsWith('http') || src.endsWith('.git') ? { url: src } : { path: src }) });
       $('ccp-install-src').value = '';
-      await renderCCPluginPanel();
+      await renderPluginList();
     } catch (e) { alert('安装失败：' + e.message); }
     installBtn.disabled = false;
     installBtn.textContent = '安装';
@@ -228,7 +212,7 @@ function bindCCPluginPanel() {
     try {
       await api('/api/cc-plugins/marketplace/add', { method: 'POST', body: JSON.stringify({ url: src }) });
       $('ccp-market-src').value = '';
-      await renderCCPluginPanel();
+      await renderPluginList();
     } catch (e) { alert('添加失败：' + e.message); }
     marketBtn.disabled = false;
     marketBtn.textContent = '添加市场';
@@ -324,7 +308,8 @@ function bindCCSlashComposer() {
   }, true); // 捕获阶段：先于 app-chat 的回车发送处理
 }
 
-/* 启动：绑定安装区按钮与斜杠命令（面板渲染由 app-settings.js 打开设置时触发） */
+/* 启动：绑定安装区按钮与斜杠命令（清单渲染由 app-settings.js 的
+   renderPluginList 统一负责，打开设置时触发） */
 document.addEventListener('DOMContentLoaded', () => {
   bindCCPluginPanel();
   bindCCSlashComposer();
