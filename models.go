@@ -86,10 +86,10 @@ func DefaultProviders() []ProviderCfg {
 
 // LLMTarget 是一次模型调用解析后的全部目的地信息。
 type LLMTarget struct {
-	BaseURL       string
-	APIKey        string
-	Model         string
-	ContextWindow int
+	BaseURL        string
+	APIKey         string
+	Model          string
+	ContextWindow  int
 	SupportsImages bool // 该模型是否声明支持图片输入（决定 read_image 是否内联视觉内容）
 }
 
@@ -167,7 +167,10 @@ func guessModelMeta(id string) (ctx int, images bool) {
 		return false
 	}
 	images = has("4o", "gpt-4-turbo", "gpt-4.1", "gpt-5", "o3", "o4-mini", "claude",
-		"gemini", "glm-4v", "glm-5.3-flash", "qwen-vl", "-vl-", "vision", "llava", "pixtral", "grok-4", "vlmodel")
+		"gemini", "glm-4v", "glm-5.3-flash", "qwen-vl", "-vl-", "vision", "llava", "pixtral", "grok-4", "vlmodel",
+		// DeepSeek 仅 flash 支持图片输入（官方 /v1/models 的 input_modalities: text+image）；
+		// v4-pro 与老 deepseek-chat/reasoner/coder 均为纯文本，不列。
+		"deepseek-flash")
 	switch {
 	case has("moonshot-v1-128k"):
 		return 131072, images

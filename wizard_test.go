@@ -160,3 +160,46 @@ func TestBroadcastTargets(t *testing.T) {
 		t.Fatal("应包含全网广播 255.255.255.255")
 	}
 }
+
+// 模型能力元数据两级来源：服务端载荷带的权威值优先（m-x）；
+// 没带的按模型名兜底猜测（deepseek-flash → 1M 上下文 + 图片输入；
+// deepseek-v4-pro 同为 1M 但纯文本——官方 input_modalities 仅 flash 含 image）。
+func TestWizardModelMetaFallback(t *testing.T) {
+	fake := fakeCompanyServer(t, `{
+		"company": "测试公司", "user": "__USER__", "server": "http://x",
+		"api": { "baseURL": "http://127.0.0.1:3000/v1", "key": "sk-abc",
+			"models": [{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"},
+			           {"id":"m-x","contextWindow":200000,"maxOutput":8192,"supportsImages":true}],
+			"defaultModel": "deepseek-flash" },
+		"marketURL": "http://x/m.json", "updateURL": "http://x/u" }`)
+	a := newWizardTestApp(t)
+
+	code, resp := wizardCall(t, a.handleWizardConnect, `{"server":"`+fake.URL+`","user":"张三"}`)
+	if code != 200 {
+		t.Fatalf("connect 应 200: %d %v", code, resp)
+	}
+	p := a.Cfg.Providers[0]
+	if len(p.Models) != 3 {
+		t.Fatalf("模型数不对: %#v", p.Models)
+	}
+	var flash, v4pro, mx ModelCfg
+	for _, m := range p.Models {
+		switch m.ID {
+		case "deepseek-flash":
+			flash = m
+		case "deepseek-v4-pro":
+			v4pro = m
+		case "m-x":
+			mx = m
+		}
+	}
+	if flash.ContextWindow != 1048576 || !flash.SupportsImages {
+		t.Fatalf("deepseek-flash 应兜底 1M 上下文+图片: %#v", flash)
+	}
+	if v4pro.ContextWindow != 1048576 || v4pro.SupportsImages {
+		t.Fatalf("deepseek-v4-pro 应 1M 上下文但纯文本: %#v", v4pro)
+	}
+	if mx.ContextWindow != 200000 || mx.MaxOutput != 8192 || !mx.SupportsImages {
+		t.Fatalf("m-x 应采用服务端下发的元数据: %#v", mx)
+	}
+}

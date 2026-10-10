@@ -28,6 +28,9 @@
   const DIFF_FIRST_LINES = 400;
   // 泳道配色（与对话区亮色主题协调；下标 = 泳道色序号轮转）
   const PAL = ['#4d6bfe', '#e08a1e', '#1f9d55', '#b05bd6', '#0ea5b7', '#d6455d', '#8a7a2a', '#6b7684'];
+  // 作者配色池：同一作者固定同色，按提交列表里首次出现的顺序分配（见 authorPalette）。
+  // 颜色略深一档，名字（11px 加粗）与节点、线段都用它，浅色主题下也读得清。
+  const AUTHOR_PAL = ['#4d6bfe', '#d6455d', '#1f9d55', '#b05bd6', '#c2410c', '#0e7490', '#8a7a2a', '#be185d', '#2f7ed8', '#0f766e', '#7c3aed', '#6b7684'];
   const LANE_W = 12, ROW_H = 26, DOT_R = 3.5;
   const LETTER_CLS = { M: 'm', A: 'a', D: 'd', U: 'd', R: 'r', C: 'c', T: 'm', '?': 'a' };
 
@@ -93,6 +96,18 @@
     opError: '',          // 操作类错误（用户点出来的）：轮询不抹，下一次成功操作才清
     timer: null,
   };
+
+  /* 作者配色：按作者在本次提交列表里首次出现的顺序分配固定颜色——
+   * 同一作者始终同色（翻页加载更早的提交也不会让已出现的作者换色），
+   * 人多了才轮转调色板。返回 (author) => 颜色。 */
+  function authorPalette(commits) {
+    const map = new Map();
+    for (const c of commits) {
+      const name = c.author || '(未知)';
+      if (!map.has(name)) map.set(name, AUTHOR_PAL[map.size % AUTHOR_PAL.length]);
+    }
+    return (name) => map.get(name || '(未知)') || 'var(--text-3)';
+  }
 
   /* ---------- 泳道计算：单遍状态机（思路对齐 VSCode 内置源代码管理图谱） ----------
    * commits 须是 --topo-order（父在子后）。lanes[i] = 第 i 条泳道当前等待的 hash；
@@ -788,6 +803,7 @@
       return;
     }
     const lanes = computeLanes(S.commits);
+    const aColor = authorPalette(S.commits); // 作者 → 颜色（同一作者固定同色）
     let maxW = 1;
     for (const r of lanes) maxW = Math.max(maxW, r.width);
     const svgW = maxW * LANE_W + 8;
@@ -812,7 +828,8 @@
         p.setAttribute('d', xf === xt
           ? 'M ' + xf + ' 0 L ' + xt + ' ' + ROW_H
           : 'M ' + xf + ' 0 C ' + xf + ' ' + (ROW_H * 0.45) + ', ' + xt + ' ' + (ROW_H * 0.55) + ', ' + xt + ' ' + ROW_H);
-        p.setAttribute('stroke', PAL[e.color % PAL.length]);
+        // 从本行节点出发的那条线用作者色（其余穿行泳道保持泳道配色）
+        p.setAttribute('stroke', e.from === lr.node.col ? aColor(c.author) : PAL[e.color % PAL.length]);
         p.setAttribute('stroke-width', '2');
         p.setAttribute('fill', 'none');
         svg.appendChild(p);
@@ -821,7 +838,7 @@
       dot.setAttribute('cx', x(lr.node.col));
       dot.setAttribute('cy', ROW_H / 2);
       dot.setAttribute('r', DOT_R);
-      dot.setAttribute('fill', PAL[lr.node.color % PAL.length]);
+      dot.setAttribute('fill', aColor(c.author));
       svg.appendChild(dot);
       if (c.hash === S.oid) { // HEAD 所在提交：外圈高亮
         const ring = document.createElementNS(SVGNS, 'circle');
@@ -829,7 +846,7 @@
         ring.setAttribute('cy', ROW_H / 2);
         ring.setAttribute('r', DOT_R + 2.5);
         ring.setAttribute('fill', 'none');
-        ring.setAttribute('stroke', PAL[lr.node.color % PAL.length]);
+        ring.setAttribute('stroke', aColor(c.author));
         ring.setAttribute('stroke-width', '1.5');
         svg.appendChild(ring);
       }
@@ -840,7 +857,12 @@
         info.appendChild(el('span', 'gitp-chip ' + ref.kind + (ref.current ? ' cur' : ''), ref.name));
       }
       info.appendChild(el('span', 'gitp-csubject', c.subject));
-      info.appendChild(el('span', 'gitp-cmeta', c.author + ' · ' + relTime(c.date)));
+      const meta = el('span', 'gitp-cmeta');
+      const nameEl = el('span', 'gitp-cauthor', c.author);
+      nameEl.style.color = aColor(c.author);
+      meta.appendChild(nameEl);
+      meta.appendChild(document.createTextNode(' · ' + relTime(c.date)));
+      info.appendChild(meta);
       row.appendChild(info);
       row.onclick = () => openCommit(c);
       scroll.appendChild(row);

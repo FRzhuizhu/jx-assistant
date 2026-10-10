@@ -39,18 +39,42 @@ type wizardServer struct {
 }
 
 // provisionPayload /provision 的响应结构（服务端 jxai-server 的 /provision 下发，独立仓库）。
+// wizardModelInfo 服务端下发的模型条目（provision 与 announce 公告共用）。
+type wizardModelInfo struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ContextWindow  int    `json:"contextWindow,omitempty"`
+	MaxOutput      int    `json:"maxOutput,omitempty"`
+	SupportsImages bool   `json:"supportsImages,omitempty"`
+}
+
+// buildWizardModels 由服务端模型清单构造 ModelCfg：服务端权威元数据优先，
+// 缺省按模型名兜底猜测（guessModelMeta）。向导接入与公告同步（sync.go）共用。
+func buildWizardModels(list []wizardModelInfo) []ModelCfg {
+	models := make([]ModelCfg, 0, len(list))
+	for _, m := range list {
+		if m.ID == "" {
+			continue
+		}
+		cw, mo, imgs := m.ContextWindow, m.MaxOutput, m.SupportsImages
+		if cw == 0 {
+			cw, imgs = guessModelMeta(m.ID)
+		}
+		models = append(models, ModelCfg{ID: m.ID, Name: m.Name,
+			ContextWindow: cw, MaxOutput: mo, SupportsImages: imgs})
+	}
+	return models
+}
+
 type provisionPayload struct {
 	Company string `json:"company"`
 	User    string `json:"user"`
 	Server  string `json:"server"`
 	API     *struct {
-		BaseURL string `json:"baseURL"`
-		Key     string `json:"key"`
-		Models  []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"models"`
-		DefaultModel string `json:"defaultModel"`
+		BaseURL      string            `json:"baseURL"`
+		Key          string            `json:"key"`
+		Models       []wizardModelInfo `json:"models"`
+		DefaultModel string            `json:"defaultModel"`
 		// 每月额度（积分，1 积分 = 0.001 元；仅展示用，扣减在 new-api 侧）
 		MonthlyQuotaPoints int64 `json:"monthlyQuotaPoints,omitempty"`
 	} `json:"api"`
@@ -282,12 +306,7 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 		"marketURL": payload.MarketURL, "updateURL": payload.UpdateURL,
 	}
 	if payload.API != nil && len(payload.API.Models) > 0 {
-		models := make([]ModelCfg, 0, len(payload.API.Models))
-		for _, m := range payload.API.Models {
-			if m.ID != "" {
-				models = append(models, ModelCfg{ID: m.ID, Name: m.Name}) // ContextWindow 0=未知，走默认兜底
-			}
-		}
+		models := buildWizardModels(payload.API.Models)
 		if dm := payload.API.DefaultModel; dm != "" { // 默认模型置顶（models[0] 即默认）
 			for i := range models {
 				if models[i].ID == dm {
@@ -324,6 +343,13 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 		a.Cfg.UpdateURL = payload.UpdateURL
 	}
 	a.Cfg.WizardDone = true
+	// 公司名/服务端地址留给自动同步器（sync.go）：跟随服务端变化、失联时按公司名重新发现
+	a.Cfg.WizardCompany = payload.Company
+	a.Cfg.WizardServer = server
+	// 向导里填的姓名即默认「发布者姓名」（市场条目的归属名 owner）：发布技能时
+	// 随包上报，市场卡片据此判断哪些条目能「更新发布 / 删除」。重跑向导按新填的
+	// 姓名覆盖（向导填的就是"我是谁"）；只想改名去 设置 · 网络访问。
+	a.Cfg.PublisherName = user
 	a.Cfg.syncLegacyFields()
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
 		writeErr(w, 500, "配置保存失败："+err.Error())

@@ -40,6 +40,10 @@ type marketEntryIn struct { // 服务器清单条目
 	Zip         string   `json:"zip"`
 	SHA256      string   `json:"sha256"`
 	Size        int64    `json:"size"`
+	// Owner 发布者姓名（jxai-server 记录并回传）：市场卡片拿它与本机「发布者
+	// 姓名」比对，一致才显示「更新发布 / 删除」（即"只能改自己发的"）。
+	// 老条目 / 市场服务器还没升级时为空 → 谁都改不了（管理员机制后置）。
+	Owner string `json:"owner,omitempty"`
 }
 
 type marketManifestIn struct {
@@ -58,11 +62,18 @@ type marketEntryOut struct {
 	Update           bool   `json:"update"`
 }
 
+// marketMe 本机发布者身份：前端拿它跟条目的 owner 比对，决定是否显示
+// 「更新发布 / 删除」（2026-10-10 口径：只认姓名一个字段；重名视同同一人）。
+type marketMe struct {
+	Name string `json:"name"`
+}
+
 type marketView struct {
 	Configured bool             `json:"configured"`
 	URL        string           `json:"url,omitempty"`
 	Name       string           `json:"name,omitempty"`
 	Suggested  string           `json:"suggested,omitempty"` // 未配置时的建议值（中继网关同 host）
+	Me         *marketMe        `json:"me,omitempty"`        // 本机发布者身份（空=还没设置姓名，前端不显示发布者管理按钮）
 	Error      string           `json:"error,omitempty"`
 	UpdatedAt  string           `json:"updatedAt,omitempty"`
 	Skills     []marketEntryOut `json:"skills"`
@@ -197,8 +208,18 @@ func marketTypeOK(t string) bool { return t == "skill" || t == "component" || t 
 
 /* ---------- 视图：清单 + 本机安装态 ---------- */
 
+// marketMe 本机发布者身份（姓名为空 = 还没设置：前端不显示发布者管理按钮，
+// 发布时也就不带 owner，发布后没人能删——所以上传弹层里会提示去补上）。
+func (a *App) marketMe() *marketMe {
+	name := strings.TrimSpace(a.Cfg.PublisherName)
+	if name == "" {
+		return nil
+	}
+	return &marketMe{Name: name}
+}
+
 func (a *App) buildMarketView() marketView {
-	v := marketView{Skills: []marketEntryOut{}, Components: []marketEntryOut{}, Plugins: []marketEntryOut{}}
+	v := marketView{Skills: []marketEntryOut{}, Components: []marketEntryOut{}, Plugins: []marketEntryOut{}, Me: a.marketMe()}
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
 	if raw == "" {
 		if a.Cfg.RemoteAccess.Host != "" && a.Cfg.RemoteAccess.Port > 0 {

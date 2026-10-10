@@ -67,48 +67,48 @@ var (
 
 // wvRawVtbl 镜像 edge.iCoreWebView2Vtbl（ICoreWebView2）。
 type wvRawVtbl struct {
-	queryInterface, addRef, release                                                        edge.ComProc
-	getSettings, getSource, navigate, navigateToString                                     edge.ComProc
-	addNavigationStarting, removeNavigationStarting                                        edge.ComProc
-	addContentLoading, removeContentLoading                                                edge.ComProc
-	addSourceChanged, removeSourceChanged                                                  edge.ComProc
-	addHistoryChanged, removeHistoryChanged                                                edge.ComProc
-	addNavigationCompleted, removeNavigationCompleted                                      edge.ComProc
-	addFrameNavigationStarting, removeFrameNavigationStarting                              edge.ComProc
-	addFrameNavigationCompleted, removeFrameNavigationCompleted                            edge.ComProc
-	addScriptDialogOpening, removeScriptDialogOpening                                      edge.ComProc
-	addPermissionRequested, removePermissionRequested                                      edge.ComProc
-	addProcessFailed, removeProcessFailed                                                  edge.ComProc
-	addScriptToExecuteOnDocumentCreated, removeScriptToExecuteOnDocumentCreated            edge.ComProc
-	executeScript, capturePreview, reload                                                  edge.ComProc
-	postWebMessageAsJSON, postWebMessageAsString                                           edge.ComProc
-	addWebMessageReceived, removeWebMessageReceived                                        edge.ComProc
-	callDevToolsProtocolMethod, getBrowserProcessID, getCanGoBack, getCanGoForward         edge.ComProc
-	goBack, goForward, getDevToolsProtocolEventReceiver, stop                              edge.ComProc
-	addNewWindowRequested, removeNewWindowRequested                                        edge.ComProc
-	addDocumentTitleChanged, removeDocumentTitleChanged, getDocumentTitle                   edge.ComProc
-	addHostObjectToScript, removeHostObjectFromScript, openDevToolsWindow                  edge.ComProc
-	addContainsFullScreenElementChanged, removeContainsFullScreenElementChanged             edge.ComProc
-	getContainsFullScreenElement                                                           edge.ComProc
-	addWebResourceRequested, removeWebResourceRequested                                    edge.ComProc
-	addWebResourceRequestedFilter, removeWebResourceRequestedFilter                        edge.ComProc
-	addWindowCloseRequested, removeWindowCloseRequested                                    edge.ComProc
+	queryInterface, addRef, release                                                edge.ComProc
+	getSettings, getSource, navigate, navigateToString                             edge.ComProc
+	addNavigationStarting, removeNavigationStarting                                edge.ComProc
+	addContentLoading, removeContentLoading                                        edge.ComProc
+	addSourceChanged, removeSourceChanged                                          edge.ComProc
+	addHistoryChanged, removeHistoryChanged                                        edge.ComProc
+	addNavigationCompleted, removeNavigationCompleted                              edge.ComProc
+	addFrameNavigationStarting, removeFrameNavigationStarting                      edge.ComProc
+	addFrameNavigationCompleted, removeFrameNavigationCompleted                    edge.ComProc
+	addScriptDialogOpening, removeScriptDialogOpening                              edge.ComProc
+	addPermissionRequested, removePermissionRequested                              edge.ComProc
+	addProcessFailed, removeProcessFailed                                          edge.ComProc
+	addScriptToExecuteOnDocumentCreated, removeScriptToExecuteOnDocumentCreated    edge.ComProc
+	executeScript, capturePreview, reload                                          edge.ComProc
+	postWebMessageAsJSON, postWebMessageAsString                                   edge.ComProc
+	addWebMessageReceived, removeWebMessageReceived                                edge.ComProc
+	callDevToolsProtocolMethod, getBrowserProcessID, getCanGoBack, getCanGoForward edge.ComProc
+	goBack, goForward, getDevToolsProtocolEventReceiver, stop                      edge.ComProc
+	addNewWindowRequested, removeNewWindowRequested                                edge.ComProc
+	addDocumentTitleChanged, removeDocumentTitleChanged, getDocumentTitle          edge.ComProc
+	addHostObjectToScript, removeHostObjectFromScript, openDevToolsWindow          edge.ComProc
+	addContainsFullScreenElementChanged, removeContainsFullScreenElementChanged    edge.ComProc
+	getContainsFullScreenElement                                                   edge.ComProc
+	addWebResourceRequested, removeWebResourceRequested                            edge.ComProc
+	addWebResourceRequestedFilter, removeWebResourceRequestedFilter                edge.ComProc
+	addWindowCloseRequested, removeWindowCloseRequested                            edge.ComProc
 }
 
 // ctlRawVtbl 镜像 edge._ICoreWebView2ControllerVtbl。
 type ctlRawVtbl struct {
-	queryInterface, addRef, release                     edge.ComProc
-	getIsVisible, putIsVisible, getBounds, putBounds    edge.ComProc
-	getZoomFactor, putZoomFactor                        edge.ComProc
-	addZoomFactorChanged, removeZoomFactorChanged       edge.ComProc
-	setBoundsAndZoomFactor, moveFocus                   edge.ComProc
-	addMoveFocusRequested, removeMoveFocusRequested     edge.ComProc
-	addGotFocus, removeGotFocus                         edge.ComProc
-	addLostFocus, removeLostFocus                       edge.ComProc
+	queryInterface, addRef, release                       edge.ComProc
+	getIsVisible, putIsVisible, getBounds, putBounds      edge.ComProc
+	getZoomFactor, putZoomFactor                          edge.ComProc
+	addZoomFactorChanged, removeZoomFactorChanged         edge.ComProc
+	setBoundsAndZoomFactor, moveFocus                     edge.ComProc
+	addMoveFocusRequested, removeMoveFocusRequested       edge.ComProc
+	addGotFocus, removeGotFocus                           edge.ComProc
+	addLostFocus, removeLostFocus                         edge.ComProc
 	addAcceleratorKeyPressed, removeAcceleratorKeyPressed edge.ComProc
-	getParentWindow, putParentWindow                    edge.ComProc
-	notifyParentWindowPositionChanged, close            edge.ComProc
-	getCoreWebView2                                     edge.ComProc
+	getParentWindow, putParentWindow                      edge.ComProc
+	notifyParentWindowPositionChanged, close              edge.ComProc
+	getCoreWebView2                                       edge.ComProc
 }
 
 // nwrArgsVtbl 镜像 ICoreWebView2NewWindowRequestedEventArgs（未随绑定库导出）。
@@ -247,18 +247,18 @@ type browserPanel struct {
 	createMu  sync.Mutex // 生命周期串行化（创建/关闭），不跨 UI 等待持锁于 UI 线程
 	createErr error
 
-	stateMu sync.Mutex // 数据锁：短临界区，UI 回调也仅持此锁
-	started bool
-	chrome  *edge.Chromium
-	ctl     *edge.ICoreWebView2Controller
-	wv      *edge.ICoreWebView2
-	hwnd    uintptr
-	visible bool
+	stateMu                    sync.Mutex // 数据锁：短临界区，UI 回调也仅持此锁
+	started                    bool
+	chrome                     *edge.Chromium
+	ctl                        *edge.ICoreWebView2Controller
+	wv                         *edge.ICoreWebView2
+	hwnd                       uintptr
+	visible                    bool
 	rectX, rectY, rectW, rectH int // 舞台矩形（与 CSS px 同尺度的窗口单位）
-	dpr     float64
-	cssW, cssH int                 // 面板视口的 CSS px（= 舞台矩形宽高）
-	url, title string
-	navCh   chan struct{} // 最近一次导航的完成信号（NavigationCompleted 关闭）
+	dpr                        float64
+	cssW, cssH                 int // 面板视口的 CSS px（= 舞台矩形宽高）
+	url, title                 string
+	navCh                      chan struct{} // 最近一次导航的完成信号（NavigationCompleted 关闭）
 
 	newWinHandler *evtHandler // 引用保活：COM 侧只存裸指针，Go 侧必须持有
 	titleHandler  *evtHandler
@@ -896,6 +896,31 @@ func (p *browserPanel) Close() {
 		})
 	}
 	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: ""})
+}
+
+// releaseAfterMainLoopGone 主窗口消息循环已退出后的兜底释放（前端热重启用，
+// 仅 UI 线程调用）：不走 Dispatch（旧泵已停），直接 Close 控制器、拆子窗口，
+// 让面板这棵浏览器进程树随旧前端一起退场。面板状态清空，下次 SetRect/
+// Navigate 会经新窗口的 Dispatch 重建。
+func (p *browserPanel) releaseAfterMainLoopGone() {
+	p.createMu.Lock()
+	defer p.createMu.Unlock()
+	p.stateMu.Lock()
+	hwnd, ctl := p.hwnd, p.ctl
+	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
+	p.started, p.visible = false, false
+	if p.navCh != nil {
+		close(p.navCh)
+		p.navCh = nil
+	}
+	p.stateMu.Unlock()
+	p.createErr = nil // 允许在新前端上重建
+	if ctl != nil {
+		_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
+	}
+	if hwnd != 0 {
+		_, _, _ = procPanelDestroyWindow.Call(hwnd) // 已随父窗口销毁时是无害重复
+	}
 }
 
 // BroadcastPointer 点击/输入前亮出 AI 位置：在目标页面内注入临时标记元素

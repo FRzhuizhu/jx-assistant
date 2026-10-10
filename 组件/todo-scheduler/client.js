@@ -84,10 +84,13 @@
     btn.id = 'btn-todo-scheduler';
     btn.className = 'side-btn';
     btn.title = '待办清单与定时任务';
+    // 文字结构与另两个入口一致（span.sb-label 全名 + data-short 短名）：
+    // 手机端窄屏一行三枚按钮时全名藏掉、亮短名，更窄只剩图标
+    btn.dataset.short = '待办';
     btn.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
       '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M5 3L2 6M19 3l3 3"/></svg>' +
-      '待办与定时任务';
+      '<span class="sb-label">待办与定时任务</span>';
     btn.onclick = () => { if (st.page) closePage(); else openPage(); };
     // 位置：紧跟「数字助理主对话」，在工作区段头之上
     const anchor = document.getElementById('btn-new-assistant');

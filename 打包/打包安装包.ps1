@@ -75,6 +75,30 @@ if ($ExeSource -ne "") {
 
 Write-Host "== 暂存技能目录（含便携 Python 运行时，体积较大）"
 Copy-Item $SkillsSource (Join-Path $stage "技能") -Recurse -Force
+
+# 内置组件（默认组件必须随包）：组件/ 目录整体暂存，缺失或没有任何
+# 带 manifest.json 的组件都拒绝出包——安装包交付离线全功能，默认组件
+# （危险命令护栏/待办定时/Git 面板/语音）是其中一部分，不能少。
+Write-Host "== 暂存内置组件（默认组件必须随包）"
+$compDir = Join-Path $root "组件"
+if (-not (Test-Path $compDir)) { throw "内置组件目录缺失：$compDir（默认组件必须随包分发）" }
+$compCount = (Get-ChildItem $compDir -Directory | Where-Object {
+  Test-Path (Join-Path $_.FullName "manifest.json")
+}).Count
+if ($compCount -eq 0) { throw "组件目录里没有任何带 manifest.json 的组件，拒绝出包" }
+Copy-Item $compDir (Join-Path $stage "组件") -Recurse -Force
+Write-Host "== 内置组件 $compCount 个已暂存"
+
+# 本地语音识别的 Python worker（asr/asr_worker.py，跑在 技能\_runtime 的便携运行时上）：
+# 与 技能/、组件/ 同口径随包——缺它时语音组件的「本地语音识别模型」档一按听写就报
+# 「未找到 asr/asr_worker.py」（听写默认走云端，本地档可选，但缺文件仍要出包前拦住）。
+Write-Host "== 暂存本地语音识别 worker（asr/）"
+$asrDir = Join-Path $root "asr"
+if (-not (Test-Path (Join-Path $asrDir "asr_worker.py"))) {
+  throw "asr\asr_worker.py 缺失：$asrDir（本地语音识别通道的 worker，必须随包）"
+}
+Copy-Item $asrDir (Join-Path $stage "asr") -Recurse -Force
+
 Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
 
 Write-Host "== Inno Setup 编译安装包（LZMA2 压缩，耐心等待）"

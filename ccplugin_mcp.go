@@ -86,12 +86,44 @@ type mcpToolDef struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
+// mcpHost 是 mcpClient 的宿主：变量替换与子进程工作目录的来源。
+// CC 插件路径用 ccPluginHost（${CLAUDE_PLUGIN_ROOT} 等替换 + 插件根做工作
+// 目录）；独立 MCP 服务器（mcpservers.go）用 mcpPlainHost（仅 ${环境变量}）。
+type mcpHost interface {
+	ExpandVars(s string) string
+	WorkDir() string
+}
+
+// ccPluginHost 是 CC 插件侧宿主。
+type ccPluginHost struct {
+	p   *CCPlugin
+	reg *CCPluginRegistry
+}
+
+func (h ccPluginHost) ExpandVars(s string) string {
+	return h.p.expandVars(s, h.reg.UserConfigOf(h.p))
+}
+
+func (h ccPluginHost) WorkDir() string { return h.p.Root }
+
+// mcpPlainHost 是独立服务器宿主：${VAR} 展开为环境变量，工作目录是
+// mcp-servers 数据根（相对路径命令按此解析）。
+type mcpPlainHost struct{ dir string }
+
+func (h mcpPlainHost) ExpandVars(s string) string {
+	if !strings.Contains(s, "${") {
+		return s
+	}
+	return os.Expand(s, os.Getenv)
+}
+
+func (h mcpPlainHost) WorkDir() string { return h.dir }
+
 // mcpClient 是一个已连接的 MCP 服务器（stdio 或 http）。
 type mcpClient struct {
-	fullName string // <插件名>_<服务器>（工具名中间段）
+	fullName string // 插件路径 <插件名>_<服务器>；独立路径就是服务器名
 	def      ccMCPServerDef
-	plugin   *CCPlugin
-	reg      *CCPluginRegistry
+	host     mcpHost
 
 	mu       sync.Mutex
 	started  bool
@@ -146,19 +178,18 @@ func (c *mcpClient) connect(ctx context.Context) error {
 	if c.def.Type == "http" || c.def.Type == "sse" {
 		return nil // http 无预连接，逐请求进行
 	}
-	userCfg := c.reg.UserConfigOf(c.plugin)
-	cmdName := c.plugin.expandVars(c.def.Command, userCfg)
+	cmdName := c.host.ExpandVars(c.def.Command)
 	args := make([]string, len(c.def.Args))
 	for i, a := range c.def.Args {
-		args[i] = c.plugin.expandVars(a, userCfg)
+		args[i] = c.host.ExpandVars(a)
 	}
 	cmd := exec.Command(cmdName, args...)
 	env := os.Environ()
 	for k, v := range c.def.Env {
-		env = append(env, c.plugin.expandVars(k, userCfg)+"="+c.plugin.expandVars(v, userCfg))
+		env = append(env, c.host.ExpandVars(k)+"="+c.host.ExpandVars(v))
 	}
 	cmd.Env = env
-	cmd.Dir = c.plugin.Root
+	cmd.Dir = c.host.WorkDir()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -345,8 +376,7 @@ func (c *mcpClient) httpRPC(ctx context.Context, req jsonrpcRequest) (any, error
 
 // httpPost 发一个 JSON-RPC 帧，期待响应时返回响应体（处理 SSE 包装）。
 func (c *mcpClient) httpPost(ctx context.Context, req jsonrpcRequest, wantResponse bool) ([]byte, error) {
-	userCfg := c.reg.UserConfigOf(c.plugin)
-	url := c.plugin.expandVars(c.def.URL, userCfg)
+	url := c.host.ExpandVars(c.def.URL)
 	body, _ := json.Marshal(req)
 	hctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -357,7 +387,7 @@ func (c *mcpClient) httpPost(ctx context.Context, req jsonrpcRequest, wantRespon
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/json, text/event-stream")
 	for k, v := range c.def.Headers {
-		hreq.Header.Set(k, c.plugin.expandVars(v, userCfg))
+		hreq.Header.Set(k, c.host.ExpandVars(v))
 	}
 	if c.httpSID != "" {
 		hreq.Header.Set("Mcp-Session-Id", c.httpSID)
@@ -461,7 +491,7 @@ func (r *CCPluginRegistry) mcpClients() []*mcpClient {
 		sort.Strings(names)
 		for _, n := range names {
 			out = append(out, &mcpClient{
-				fullName: p.Name + "_" + n, def: p.MCPDefs[n], plugin: p, reg: r,
+				fullName: p.Name + "_" + n, def: p.MCPDefs[n], host: ccPluginHost{p: p, reg: r},
 			})
 		}
 	}

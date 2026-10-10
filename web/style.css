@@ -159,6 +159,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   display: flex; flex-direction: column; gap: 3px;
   padding: 4px 10px 12px;
 }
+/* 底部按钮格（市场/回收站/以后的组件入口）：桌面 display:contents 完全透明，
+   按钮仍是 .sidebar-foot 的直接行、观感与从前一致；手机端窄屏媒体查询里切三栏
+   网格（设置行不在格内，永远独占最后一行）。组件往底部加按钮 append 进
+   .foot-grid 即可，两端自动各就各位（契约见 index.html 同名注释） */
+.foot-grid { display: contents; }
 /* 连接状态胶囊：嵌在设置行右侧、紧跟反馈胶囊（行内居中由 flex 的 align-items:center
    保证；右对齐交给 .foot-feedback 的 margin-left:auto 这一个锚点） */
 .foot-btn .pill { margin-left: 0; flex: none; }
@@ -1479,11 +1484,13 @@ mark {
 
 /* 思考过程：统一走 .proc-row 过程行（见"回合折叠条与过程行"节），此处仅留旧类名兼容清理 */
 
-/* 模型菜单：模型行 + 思考档位二级 */
+/* 模型菜单：模型行；思考档位 = 向右弹出的二级浮窗 #model-sub-pop（定位见 app-chat.js syncModelSubPop） */
 .model-item span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-item .caret { width: 12px; height: 12px; color: var(--text-3); flex-shrink: 0; }
-.mp-levels { margin: 0 4px 4px 30px; border-left: 2px solid var(--border-2); }
-.mp-lv { padding: 5px 10px; font-size: 12px; color: var(--text-2); border-radius: 7px; }
+.model-item.exp { background: rgba(77, 107, 254, .08); } /* 展开着二级浮窗的行 */
+.model-item.exp .caret { color: var(--accent); }
+.model-sub-pop { min-width: 150px; max-width: 240px; }
+.mp-lv { padding: 7px 11px; font-size: 12.5px; color: var(--text-2); border-radius: 7px; }
 .mp-lv.on { color: var(--accent); font-weight: 600; background: rgba(77, 107, 254, .08); }
 
 /* 搜索定位：命中的消息/过程行滚动到视野中心并闪烁 */
@@ -1808,6 +1815,10 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .tc-main b { width: 44%; height: 6px; border-radius: 3px; background: var(--accent); display: block; }
 .tc-name { font-size: 12px; color: var(--text-2); text-align: center; }
 .theme-card.cur .tc-name { color: var(--accent); font-weight: 600; }
+/* 渲染模式卡片（设置 · 界面渲染）：借主题卡片的边框/选中环，文字更紧凑 */
+.render-cards { max-width: 420px; }
+.render-cards .theme-card { gap: 2px; padding: 10px 6px; }
+.render-cards .rc-sub { font-size: 11px; color: var(--text-3); text-align: center; }
 
 /* ---------- 设置：模型页（提供方卡片） ---------- */
 .pf-add {
@@ -2344,6 +2355,59 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   body.sb-collapsed #sidebar { width: 100%; min-width: 100%; }
   .sb-inner { width: 100%; }
 
+  /* 顶部入口按钮并成一栏（图标 + data-short 短字）：原来竖排三行近 130px，
+     现在一行 ~40px，整段高度让给中间的会话列表。全名 .sb-label 藏掉、短字经
+     ::after 从 data-short 取（塞不下省略号截断）；更窄的 359.98 断点连短字也
+     隐掉只剩图标，title 悬停/无障碍名仍是全名。图标本身一个没动 */
+  #sidebar .actions { flex-direction: row; gap: 6px; padding: 6px 10px 8px; }
+  #sidebar .actions .side-btn {
+    flex: 1 1 0; min-width: 0;
+    padding: 9px 4px; font-size: 12.5px; gap: 5px;
+  }
+  #sidebar .actions .side-btn .sb-label { display: none; }
+  #sidebar .actions .side-btn::after {
+    content: attr(data-short);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* 底部框架：设置行不变；其上市场/回收站（及以后组件按钮）三栏网格往上叠行
+     （桌面侧 .foot-grid 的 display:contents 在这里被覆盖成网格） */
+  .foot-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+
+  /* 输入工具栏（用户敲定的排布）：左组（加号+权限）恒为标准形状不参与收缩，
+     权限右侧留 8px 固定间距（与其他按钮间距一致）后紧跟右组；右组是整体
+     （麦克风/圆环/模型/停止/发送），空间不够先缩模型芯片（省略号，下限 46px
+     保住胶囊壳），实在不够整组换行到第二行（换行阈值＝右组的 min-width，
+     即各按钮下限之和）。右组 grow 吸收富余空间、模型芯片顶到最右，发送键
+     贴右缘。权限芯片窄屏换短名（只读/读写/完全，JS 在 syncComposer 同步
+     data-short，同左侧栏机制），箭头纯装饰隐掉；执行态（停止键在场）圆环
+     让位——它的价值主要在发送前 */
+  .composer-bar { flex-wrap: wrap; justify-content: flex-start; }
+  .composer-left { margin-right: 0; flex: none; flex-wrap: nowrap; }
+  .composer-left > * { flex: none; }
+  .composer-right {
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
+    flex: 1 1 0; min-width: 164px;
+  }
+  .composer-right > .cbtn, .composer-right > .send-btn, .composer-right > .ctx-ring,
+  .composer-right > .mode-flags { flex: none; }
+  .composer-right > .chip-btn { flex: 1 1 auto; min-width: 46px; }
+  .composer-right .chip-btn span { min-width: 0; }
+  .composer-bar .chip-btn[data-short] span { display: none; }
+  .composer-bar .chip-btn[data-short]::after {
+    content: attr(data-short);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .composer-bar .chip-btn .caret { display: none; }
+  .composer-bar:has(.stop:not(.hidden)) .ctx-ring { display: none; }
+
+  /* 首页输入卡与对话页同宽：对话页输入卡在 #composer-wrap（#main 直下，左右
+     各留 10px，卡片宽 = 视口 - 20）；首页槽位在 .home 里，外面隔着 .msg-col
+     的左右 24px 内边距、自身又只有 96% 宽——比对话页窄一截。负外边距各抵
+     14px、宽度加回 28px、对齐改回起点（.home 的 align-items:center 会把
+     超宽子项往两边挤偏），卡片边缘与对话页完全一致（桌面 96% 布局不动） */
+  #home-composer { width: calc(100% + 28px); margin-left: -14px; align-self: flex-start; }
+
   /* 右栏：整屏浮层，从右侧滑入；宽度推导冻结（rpApply 窄屏直接返回），拖拽条退场 */
   #rpanel {
     position: fixed; top: var(--tb-h); bottom: 0; right: 0;
@@ -2402,6 +2466,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   #sidebar, #rpanel { transition: none; }
 }
 
+/* 更窄一档（<360px：分屏半屏、折叠屏外屏等）：顶部入口连短字都排不开了，
+   收成纯图标（::after 不生成盒子，图标随 justify-content 居中），全名仍在
+   title 悬停里。断点取 359.98：常见手机最窄 320px 也能排下三个图标 */
+@media (max-width: 359.98px) {
+  #sidebar .actions .side-btn::after { content: none; }
+  #sidebar .actions .side-btn { padding: 9px 2px; }
+}
+
 /* ---------- 右栏多视图切换与 iframe 面板 ---------- */
 /* .rp-view 默认隐藏、.active 显示：rpOpen 按 id 切换（native 视图与 iframe 视图
    同一机制）。基础 .rp-view 规则在上方（display:flex），此处靠后覆盖。 */
@@ -2447,7 +2519,7 @@ html.desktop-shell .bpw-hint { display: none; }
 html.electron-shell #bpw-webview { display: block; }
 html.electron-shell .bpw-hint { display: none; }
 
-/* ---------- Claude 插件兼容层（app-ccplugins.js） ---------- */
+/* ---------- Claude 插件兼容层（app-ccplugins.js：统一「插件」页的 Claude 行/安装区/市场面板/命令弹层） ---------- */
 .ccp-install-row { display: flex; gap: 8px; margin: 0 0 8px; }
 .ccp-install-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg); color: var(--text); }
 .ccp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
@@ -2481,7 +2553,12 @@ html.electron-shell .bpw-hint { display: none; }
    + 搜索 + 卡片网格（安装/更新/卸载）。
    ============================================================ */
 
+/* 对话区整块让位：#msg-zone 是 app-chat.js（setupWidthHandles）在运行时把
+   #messages 包进去的定位层，它是 #main 的直接 flex 子项——只隐藏 #messages 的话，
+   这层会继续 flex:1 与 #market-view 平分主区高度，市场页被压成半屏（下方留一大片
+   空白，列表滚动条也落到页面中部），故连它一起隐藏。 */
 body.market-mode #progress-panel,
+body.market-mode #msg-zone,
 body.market-mode #messages,
 body.market-mode #composer-wrap { display: none; }
 
@@ -2506,7 +2583,19 @@ body.market-mode #composer-wrap { display: none; }
 .mk-link { border: none; background: none; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0; }
 .mk-link:hover { text-decoration: underline; }
 
-.mk-list { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; align-content: start; padding-top: 12px; }
+/* 卡片网格：默认一屏 3 列——窗口无论缩到多小都保持 3 列（不再随宽度递减成 2 列/1 列）；
+   窗口最大化（由 app-market.js 给 body 加 .mk-4col）升为 4 列；手机窄屏（<500px）由
+   文件尾部的窄屏媒体查询接管为单列。 */
+/* 卡片区撑满主区剩余高度（不再限高——限高会在内容少时于底部留一大片空白，看着像被一块东西挡住）；
+   overflow-y: scroll + scrollbar-gutter: stable —— 滚动条常驻显示（本机 Edge 默认 overlay 滚动条
+   不占位、只在滚动瞬间浮一下，看着像「没有滑动条」；实测 scrollbar-width:thin 在本机无效，gutter 才有效）。*/
+.mk-list { flex: 1; min-height: 0; overflow-y: scroll; overflow-x: hidden; scrollbar-gutter: stable; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-content: start; padding-top: 12px; }
+
+/* 最大化 → 4 列：不写死像素阈值（1536×864@125% 这类屏幕最大化也只有 ≈1229px 视口），
+   由 app-market.js 的 updateMarketCols() 判定「innerWidth ≈ screen.availWidth」（即已最大化）
+   后给 body 加 .mk-4col 来切换，任何分辨率/缩放下都成立；窗口态保持上面的 3 列。 */
+body.mk-4col .mk-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
 .mk-hint { grid-column: 1 / -1; color: var(--text-3); font-size: 13px; line-height: 1.9; padding: 24px 4px; white-space: normal; }
 .mk-hint .mk-link { font-size: 13px; }
 .mk-suggest { margin-top: 10px; }
@@ -2528,6 +2617,42 @@ body.market-mode #composer-wrap { display: none; }
 .mk-act:disabled { opacity: .6; cursor: default; }
 .mk-act.ghost { background: transparent; border-color: var(--border); color: var(--text-2); }
 .mk-act.ghost:hover { background: #fbecec; border-color: #e2b4b4; color: var(--danger); }
+
+
+/* 上传技能到市场（市场 · 技能 tab 的「＋ 上传技能」，app-market.js）：
+   拖拽区 + 文件清单 + 元信息表单；Ctrl+V 粘贴由 app-market.js 在弹层打开时全局监听。 */
+.mku-card { width: min(560px, calc(100vw - 32px)); }
+.mku-card .spacer { flex: 1; }
+.mku-sub { font-size: 12.5px; color: var(--text-2); line-height: 1.75; margin-bottom: 12px; white-space: normal; }
+.mku-sub kbd { font-family: inherit; font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; background: var(--chip); }
+.mku-drop { border: 1.5px dashed var(--border); border-radius: 12px; padding: 18px 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; transition: border-color .15s, background .15s; }
+.mku-drop svg { width: 26px; height: 26px; color: var(--text-3); }
+.mku-drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.mku-drop.over svg { color: var(--accent); }
+.mku-drop-t { font-size: 13.5px; font-weight: 600; }
+.mku-drop-s { font-size: 12px; color: var(--text-3); }
+.mku-drop-btns { display: flex; gap: 8px; margin-top: 10px; }
+.mku-files { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 4px 10px; max-height: 190px; overflow: auto; }
+.mku-file { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; padding: 4px 0; }
+.mku-file + .mku-file { border-top: 1px solid var(--border); }
+.mku-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mku-file-name b { color: var(--accent); font-weight: 600; } /* SKILL.md 高亮 */
+.mku-file-size { margin-left: auto; flex: none; font-size: 11.5px; color: var(--text-3); }
+.mku-sum { display: flex; align-items: center; gap: 8px; padding: 6px 0 2px; font-size: 12px; color: var(--text-2); }
+.mku-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; margin-top: 14px; }
+.mku-meta label { margin-bottom: 10px; }
+.mku-meta label.mku-wide { grid-column: 1 / -1; }
+.mku-req { color: var(--danger); font-size: 11px; margin-left: 4px; }
+.mku-opt { color: var(--text-3); font-size: 11px; margin-left: 4px; }
+.mku-status { font-size: 12.5px; color: var(--text-2); line-height: 1.7; white-space: pre-line; min-height: 17px; }
+.mku-status.warn { color: var(--amber); }
+.mku-status.err { color: var(--danger); }
+.mku-status.ok { color: var(--green); }
+@media (max-width: 499.98px) {
+  .mku-meta { grid-template-columns: 1fr; }
+  .mku-card { padding: 16px; }
+  .mku-drop { padding: 14px 10px; }
+}
 
 /* 窄屏（手机远程/窄窗口）：单列卡片、搜索框全宽、页边距收紧 */
 @media (max-width: 499.98px) {
@@ -2554,3 +2679,17 @@ body.market-mode #composer-wrap { display: none; }
 .wz-either { font-size: 12.5px; color: var(--text-2); padding: 2px 0 0; }
 .wz-either b { color: var(--text); font-weight: 600; }
 .wz-form label.strong { color: var(--text); font-weight: 600; } /* 姓名标签：黑字加粗，与二选一提示行同款强调 */
+
+/* ============================================================
+   MCP 服务器（app-ccplugins.js 的 MCP 分区：手动添加行 + 设计软件
+   桥目录）。行本体复用 plugin-row / ccp-market-item 体系。
+   ============================================================ */
+#mcp-add-type { padding: 7px 6px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg); color: var(--text); }
+.mcp-catalog { display: grid; gap: 6px; margin: 4px 0 2px; }
+.mcp-cat-title { font-size: 12px; color: var(--text-2); }
+.mcp-cat-item .mcp-vendor { font-size: 11px; opacity: .7; margin-left: 8px; }
+.mcp-cat-item .mcp-req { font-size: 11px; opacity: .65; }
+.mcp-cmd { font-size: 11px; opacity: .6; word-break: break-all; margin-top: 2px; }
+.mcp-actions { display: flex; gap: 6px; margin-top: 6px; }
+.mcp-act { font-size: 11px; padding: 3px 12px; border-radius: 7px; border: 1px solid var(--bd, #d8d8de); background: transparent; cursor: pointer; color: inherit; }
+.mcp-act:hover { border-color: var(--accent); }

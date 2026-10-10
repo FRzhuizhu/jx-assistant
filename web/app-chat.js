@@ -4655,26 +4655,21 @@ function levelsOfDefault() {
   return [];
 }
 
-let modelPopExpand = ''; // 模型菜单里展开档位的模型 key
+let modelPopExpand = ''; // 模型菜单里展开思考档位浮窗的模型 key
+
+// 该模型的思考档位（「默认」条目取默认模型的档位）
+function modelLevelsOf(key) {
+  if (key === '__default__') return levelsOfDefault();
+  const [pid, mid] = key.split('|');
+  const hit = (state.models || []).find((m) => m.providerId === pid && m.modelId === mid);
+  return (hit && hit.reasoningLevels) || [];
+}
 
 function renderModelPop(view) {
   view = view || popView || mainView;
   const pop = $('model-pop');
   const cur = currentModelKey(view);
-  const thinking = curThinking(view);
-  // 档位子列表：仅当前选中的模型行内显示档位选中态
-  const lvRows = (key, levels) => {
-    if (modelPopExpand !== key || !levels || !levels.length) return '';
-    const active = key === cur;
-    let h = '<div class="mp-levels">';
-    h += `<button class="pop-item mp-lv${active && !thinking ? ' on' : ''}" data-lv="">默认（跟随服务）</button>`;
-    for (const lv of levels) {
-      h += `<button class="pop-item mp-lv${active && thinking === lv ? ' on' : ''}" data-lv="${esc(lv)}">${THINK_LABELS[lv] || esc(lv)}</button>`;
-    }
-    return h + '</div>';
-  };
-  let html = `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}" data-key="__default__">默认（${esc(state.defaultModel || '未配置')}）</button>`;
-  html += lvRows('__default__', levelsOfDefault());
+  let html = `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}${modelPopExpand === '__default__' && levelsOfDefault().length ? ' exp' : ''}" data-key="__default__">默认（${esc(state.defaultModel || '未配置')}）</button>`;
   let lastProv = '';
   for (const m of state.models || []) {
     if (m.providerId !== lastProv) {
@@ -4684,27 +4679,67 @@ function renderModelPop(view) {
     const k = m.providerId + '|' + m.modelId;
     const hasLv = m.reasoningLevels && m.reasoningLevels.length;
     const arrow = hasLv ? '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>' : '';
-    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${arrow}</button>`;
-    html += lvRows(k, m.reasoningLevels);
+    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}${modelPopExpand === k && hasLv ? ' exp' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${arrow}</button>`;
   }
   pop.innerHTML = html;
-  // 点模型 = 选中并展开/收起它的思考档位
+  // 点模型 = 选中并在该行右侧弹出/收起它的思考档位浮窗
   pop.querySelectorAll('.model-item').forEach((b) => {
     b.onclick = async () => {
       const key = b.dataset.key;
       await pickModel(key, true, popView);
       modelPopExpand = modelPopExpand === key ? '' : key;
       renderModelPop(popView);
+      syncModelSubPop(popView);
     };
   });
-  pop.querySelectorAll('.mp-lv').forEach((b) => {
+  // 打开面板的时序：onclick 里 openPopover 在本函数之后执行，rAF 等面板
+  // 可见、行有真实布局后再定位二级浮窗
+  requestAnimationFrame(() => syncModelSubPop(view));
+}
+
+// 思考档位二级浮窗：跟随 modelPopExpand 指向的模型行，向右弹出。
+// 行滚出主面板可视区（主面板会滚动）或主面板收起时一并收起。
+function syncModelSubPop(view) {
+  view = view || popView || mainView;
+  const sub = $('model-sub-pop');
+  const main = $('model-pop');
+  const key = modelPopExpand;
+  const levels = key ? modelLevelsOf(key) : [];
+  let row = null;
+  if (levels.length && !main.classList.contains('hidden')) {
+    main.querySelectorAll('.model-item').forEach((b) => { if (b.dataset.key === key) row = b; });
+  }
+  if (!row) { sub.classList.add('hidden'); return; }
+  const rr = row.getBoundingClientRect();
+  const mp = main.getBoundingClientRect();
+  if (rr.bottom < mp.top || rr.top > mp.bottom) { sub.classList.add('hidden'); return; } // 行不在可视区
+  const cur = currentModelKey(view);
+  const thinking = curThinking(view);
+  const active = key === cur; // 档位选中态只在当前选中的模型上生效
+  let h = `<button class="pop-item mp-lv${active && !thinking ? ' on' : ''}" data-lv="">默认（跟随服务）</button>`;
+  for (const lv of levels) {
+    h += `<button class="pop-item mp-lv${active && thinking === lv ? ' on' : ''}" data-lv="${esc(lv)}">${THINK_LABELS[lv] || esc(lv)}</button>`;
+  }
+  sub.innerHTML = h;
+  sub.classList.remove('hidden');
+  sub.querySelectorAll('.mp-lv').forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); pickThinking(b.dataset.lv, popView); };
   });
+  // 定位：贴该行右侧弹出；右侧放不下翻到左侧，垂直夹取在视口内
+  const sw = sub.offsetWidth, sh = sub.offsetHeight;
+  let x = rr.right + 2;
+  if (x + sw > window.innerWidth - 12) x = Math.max(12, rr.left - sw - 2);
+  let y = Math.max(12, Math.min(rr.top - 6, window.innerHeight - sh - 12));
+  sub.style.left = x + 'px';
+  sub.style.top = y + 'px';
 }
 
 /* ---------- 弹出面板系统：加号菜单 / 权限面板 / 模型面板 / 目录面板 ---------- */
 
 const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读写', 'full': '完全访问' };
+/* 窄屏（手机）输入工具栏一行排时权限芯片的短名（chip 的 data-short，CSS 换显，
+   机制同左侧栏入口按钮）：全名六七个字会把模型标签挤没，短名保住可读性 */
+const PERM_SHORTS = { 'read-only': '只读', 'workspace-write': '读写', 'full': '完全' };
 // 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
 // 扩展模式（设计人员等）＝在这里加一项 + 后端加对应提示词分支，
 // 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
@@ -4795,6 +4830,7 @@ function syncComposer(view) {
   const s = sessionOrDraftFor(view);
   const remote = vcur ? !!vcur.remote : (view === mainView && !!homeDraft.remote);
   viewEl(view, 'perm-chip-label').textContent = (PERM_LABELS[s.permission] || s.permission) + (remote ? ' ·远程' : '');
+  viewEl(view, 'perm-chip').dataset.short = (PERM_SHORTS[s.permission] || s.permission) + (remote ? ' ·远' : '');
   const tk = curThinking(view);
   viewEl(view, 'model-chip-label').textContent = modelNameOf(currentModelKey(view)) + (tk ? ' · ' + (THINK_LABELS[tk] || tk) : '');
   viewEl(view, 'flag-plan').classList.toggle('on', s.planMode);
@@ -5493,6 +5529,8 @@ $('perm-chip').onclick = () => { popView = mainView; renderPermPop(popView); ope
 $('sub-perm-chip').onclick = () => { popView = subView; renderPermPop(popView); openPopover('perm-pop', $('sub-perm-chip')); };
 $('model-chip').onclick = () => { popView = mainView; renderModelPop(popView); openPopover('model-pop', $('model-chip')); };
 $('sub-model-chip').onclick = () => { popView = subView; renderModelPop(popView); openPopover('model-pop', $('sub-model-chip')); };
+// 主面板滚动时二级浮窗跟随模型行重新定位（行滚出可视区自动收起）
+$('model-pop').addEventListener('scroll', () => syncModelSubPop());
 jxDiag('init:绑定B sub/chips 完成');
 // 工作目录面板：每次打开重置搜索；搜索实时过滤目录列表
 $('ws-row').onclick = () => {

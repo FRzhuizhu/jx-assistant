@@ -142,14 +142,20 @@ func (a *App) toolsFor(mode string) []Tool {
 	return append(tools, readUserSkillTool())
 }
 
-// ccMCPTools 返回已连接插件 MCP 服务器与 mods 注册的动态工具
-// （mcp__<插件>_<服务器>__<工具> / mcp__<插件名>__<工具>）。
-// 工具集只在插件重载边界变化，会话中保持稳定（前缀缓存契约）。
+// ccMCPTools 返回已连接插件 MCP 服务器与 mods 注册的动态工具，加上独立
+// MCP 服务器的工具（mcp__<插件>_<服务器>__<工具> / mcp__<插件名>__<工具> /
+// mcp__<独立服务器>__<工具>）。工具集只在插件重载/服务器增删边界变化，
+// 会话中保持稳定（前缀缓存契约）。
 func (a *App) ccMCPTools() []Tool {
-	if a.CCPlugins == nil {
-		return nil
+	var out []Tool
+	if a.CCPlugins != nil {
+		out = append(out, a.CCPlugins.MCPTools()...)
+		out = append(out, a.CCPlugins.ModTools()...)
 	}
-	return append(a.CCPlugins.MCPTools(), a.CCPlugins.ModTools()...)
+	if a.MCPServers != nil {
+		out = append(out, a.MCPServers.Tools()...)
+	}
+	return out
 }
 
 // ---------- Schema 辅助 ----------

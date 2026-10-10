@@ -39,7 +39,7 @@ func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.D
 	if err != nil {
 		return "", err
 	}
-	py, err := t.app.ensureSkillRuntime(t, manifest.Python.Modules, manifest.Python.Wheels)
+	py, err := t.app.ensureSkillRuntime(manifest.Python.Modules, manifest.Python.Wheels)
 	if err != nil {
 		return "", err
 	}
@@ -281,7 +281,7 @@ func runOfficeSkill(t *toolContext, args json.RawMessage) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("office 技能缺少 %s 分册配置", p.Kind)
 	}
-	py, err := t.app.ensureSkillRuntime(t, variant.Modules, variant.Wheels)
+	py, err := t.app.ensureSkillRuntime(variant.Modules, variant.Wheels)
 	if err != nil {
 		return section + "\n\n# 运行环境\n" + err.Error(), nil
 	}

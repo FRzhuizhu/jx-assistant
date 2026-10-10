@@ -255,6 +255,13 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   里构建，再以 `-ExeSource <exe路径>` 传入。打包产物（stage/、输出/）
   已 gitignore，`config.json` 与 `data/` 永不进包。
 
+  **打包清单纪律**（`打包安装包.ps1` 强制校验，缺一拒绝出包）：
+  ① 主程序 exe（注入桌面默认形态）；② `技能/`（含 `_runtime` 便携运行时，
+  依赖逐 manifest 校验可导入）；③ **`组件/` 内置组件**——git 里跟踪的
+  全部默认组件必须随包分发（危险命令护栏、待办定时、Git 面板、语音），
+  脚本会校验组件目录存在且至少含一个带 `manifest.json` 的组件；④
+  `使用说明.md`；⑤ **`asr/`**（本地语音识别的 Python worker `asr_worker.py`，跑在便携运行时上——缺它时语音组件的「本地语音识别模型」档报「未找到 asr/asr_worker.py」，听写默认走云端不受影响）。给打包脚本加新的暂存项时，同步更新本清单。
+
 ## Electron 壳（jx-desktop，迁移期新形态）
 
 仓库 `electron-migration` 分支上的第三种桌面形态：壳是独立目录
@@ -884,7 +891,10 @@ events.jsonl, audio.wav, INDEX.md}`——INDEX.md 是时间线对照表（事件
 `技能/_runtime/python`，**不探测、不依赖用户机器上的系统 Python**——
 面向非编程用户，安装包内置全部运行时与依赖，装完离线全功能。
 开发目录缺 `_runtime` 时首次使用自动装配一次（python.org
-embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包脚本
+embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配进度只写
+引擎日志（`skills.go` 的 `skillRuntimeNotice`），不进对话——曾经经 `tool_wait`
+弹「技能运行时就绪（后续离线可用）」一类提示，被用户判为噪声、已下线；
+打包脚本
 会校验运行时依赖齐全，缺一不出包。`skillsDir` 配置可指定
 技能目录位置（默认取可执行文件旁，不可写时落数据目录）。
 **安卓走内置 Linux 运行时**（`skills.go` 的 `ensureTermuxSkillRuntime`）：
@@ -977,9 +987,11 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 - **宿主半边可以落在主程序里**：组件本身是纯浏览器半边，但它掌管的功能若需要
   后端（持久化、定时、接口、模型工具），就写在主程序对应文件里、按
   `Components.IsEnabled(<id>)` 自查开关——组件关掉时那部分功能一并停。
-- 示例组件：`input-counter`（输入字数实时统计，最小组件模板——新建组件
-  直接复制该目录改 manifest 与 client.js 即可）。界面强调色（点缀色）原为
-  示例组件，现已并入主程序 `web/app-settings.js`（常规 → 外观 → 点缀色）。
+- 组件随源码入库（`组件/` 目录全部跟踪），**打包时必须随安装包分发**（见
+  「桌面版与安装包」一节的打包清单）。曾作为最小组件模板的 `input-counter`
+  （字数统计）已删除，新建组件照「manifest.json + client.js（client.css 可选）」
+  的最小结构手写即可。界面强调色（点缀色）原为示例组件，现已并入主程序
+  `web/app-settings.js`（常规 → 外观 → 点缀色）。
 - 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
   宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
   `git-panel`（Git 面板——右栏「Git」页签：同屏双区（默认上下堆叠、可切左右分栏、
@@ -996,9 +1008,13 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   → mp3 流回 blob 播放，音色清单 `/api/voice/voices` 同源 322 个神经音色、中文
   排前）。朗读不再用浏览器 speechSynthesis——部分手机浏览器没有它，旧版远程
   手机端连朗读设置区都不渲染；现在设置区恒渲染、任何浏览器行为一致。**听写
-  （STT）**：浏览器自带的 SpeechRecognition（WebView2/Edge/Chrome 内置的微软
-  识别接口），即本组件一直以来的实现（灰字暂定层/断线退避重连/倒计时徽标，
-  按钮三态），逻辑原样；连接失败提示建议换 Edge。**语音快捷键（主副双键，
+  （STT）两档，默认「云端」**：云端＝浏览器自带的 SpeechRecognition（WebView2/
+  Edge/Chrome 内置的微软识别接口，即本组件一直以来的实现：灰字暂定层/断线退避重连/
+  倒计时徽标、按钮三态，连接失败提示建议换 Edge）；本地＝`voiceasr.go` 通道的离线模型
+  （说完一句停顿约 3 秒精修落黑字，本机走 ws 流式、远程 https 回退整段 POST），**需
+  `技能/_runtime` 带 sherpa-onnx 且 `data/asr-models` 模型齐备**，缺任一即弹「识别通道
+  错误」，前端引导切回云端；环境没有浏览器识别能力时（部分远程手机端浏览器、Electron
+  壳）自动落到本地档。发行版默认「云端」——装完即用，不依赖模型文件。**语音快捷键（主副双键，
   永久并存）**：默认鼠标侧键（主，前后两枚都算）与 Alt 键（副）**同时可触发**
   ——有侧键的用侧键、没有的自然用 Alt；独按语义：按住 Alt 期间按了别的键不
   触发，点按在独按松开时触发；设置页可录制自定义键盘单键/组合键、鼠标左右
@@ -1020,6 +1036,17 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 
 ## 插件与插件兼容层
 
+**统一架构（pluginlayers.go）**：目标是兼容各种插件体系（DSH、Claude
+Code、…），各家后端逻辑一致。主体只认「插件兼容层」这一层抽象——启动时
+`discoverPluginLayers` 发现全部兼容层（层在 init() 里 `registerPluginLayer`
+自注册），此后只按 `PluginLayer` 契约调用（列清单 / 总开关），不认识任何
+具体插件格式；兼容层自己去发现自己生态的插件。统一入口
+`GET/POST /api/plugins`：GET 返回 `{layers, plugins}`（每条插件带 `layer`
+来源标记），POST 总开关带 `{layer, id, enabled}`（layer 缺省=按 id 全层
+唯一匹配）。设置页只有**一个「插件」页**：按体系分组展示，安装区在页内
+（当前仅 Claude 层支持安装）。新增一个体系 = 写一个层实现并注册，主体与
+设置页零改动（前端可按层 id 注册富行渲染器，缺省通用行）。
+
 对 DSH 插件体系的手写兼容层（组件/开关机制从简：一体编译 + 扫描 + 开关）：
 
 - **`插件/`**：DSH 插件原件，原样存放、不改一字、不参与编译——功能来源与对照标准。
@@ -1028,8 +1055,9 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
   （能力映射表：转译了什么、有意不做什么）。Go 半边在根目录 `adapter_<名>.go`
   （一体编译，按名与目录配对：可挂自己的 HTTP 端点、给系统提示词追加段）。
 - **扫描与开关**：启动扫描 `插件兼容层/*/manifest.json`（损坏即跳过告警，不阻断）；
-  `插件/` 里有原件但无适配器的在设置页灰显为「未适配」。开关状态存
-  `data/plugins.json`（扁平映射，缺省启用），**即时生效**：浏览器半边资产注入
+  `插件/` 里有原件但无适配器的在统一「插件」页灰显为「未适配」。开关状态存
+  `data/plugins.json`（扁平映射，缺省启用），经统一 `/api/plugins` 落盘，
+  **即时生效**：浏览器半边资产注入
   与 Go 半边端点每请求检查，界面部分刷新页面后生效，无需重启。
 - **前端接入**：页面注入的插件脚本经 `JX` 接口接入原生界面——
   `JX.registerMessageAction`（消息操作行按钮）、`JX.registerSettingsSection`
@@ -1044,8 +1072,10 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包�
 
 对 Anthropic Claude Code 插件格式（`.claude-plugin/plugin.json` + skills /
 commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全部该格式
-插件，不是逐个手写适配（与上一节的 DSH 手写适配层是两套并存的机制）。
-设置页「Claude 插件」分区管理；输入框 `/` 触发插件命令弹层。
+插件，不是逐个手写适配。它是 pluginlayers.go 统一注册表里的一个层实现
+（与 DSH 手写适配层平级：清单与总开关走统一 `/api/plugins`，组件级开关/
+配置/装卸走本层自有 `/api/cc-plugins/*`）。设置页统一「插件」页的
+Claude 分区管理；输入框 `/` 触发插件命令弹层。
 
 - **目录布局**（全在受保护的数据区内）：`data/claude-plugins/cache/<市场>/<插件>/<版本>/`
   插件本体（`${CLAUDE_PLUGIN_ROOT}`）、`data/claude-plugins/data/<插件>@<市场>/`
@@ -1089,6 +1119,38 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
   安装/真实插件冒烟——本机有 claude-plugins-official 克隆时装 25 个真插件
   验证）+ ccplugin_mod_test.go（goja 语法矩阵/ESM 转换/handler 链/mods
   端到端：官方 first-mod 示例原文全链路）。
+
+## 独立 MCP 服务器（mcpservers*.go / mcpcatalog.go）
+
+不装整个 CC 插件、直接添加一个 MCP 服务的注册表（stdio 命令或 http/sse
+地址）。连接复用 ccplugin_mcp.go 的 mcpClient（宿主经 mcpHost 接口注入：
+插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替换，独立侧 mcpPlainHost
+只做 ${环境变量}）；工具名 `mcp__<服务器>__<工具>`——服务器名限定字母
+数字连字符（不含下划线），与插件路径 `mcp__<插件>_<服务器>__<工具>` 命名
+空间天然隔离，同挂 tools.go 的 ccMCPTools()。
+
+- **状态**：`<dataDir>/mcp-servers.json`（增删/开关/来源 manual 或
+  catalog:<id>）；桥代码与各桥独立 venv 落 `<dataDir>/mcp-servers/<id>/`。
+- **插件层**：注册为第三个插件兼容层（层 id `mcp`，统一插件页按层分组，
+  总开关走 /api/plugins，行内测试/删除走 /api/mcp）。信任边界与 CC 插件
+  mcp 组件一致：显式添加并启用 = 放行该服务器工具，不逐工具审批。
+- **设计软件桥目录**（mcpcatalog.go，内置制造业常用软件的社区 MCP 桥，
+  设置页一键安装）：solidworks（yimu0824/solidworks-mcp，COM）、multicad
+  （AnCode666/multiCAD-mcp，中望 ZWCAD/AutoCAD/GstarCAD/BricsCAD）、blender
+  （PyPI mcp-for-blender + addon.py）、freecad（PyPI freecad-mcp，需
+  Python 3.12+，安装器检测拦截）、autocad（vigneshpbmenon，轻量 2D）。
+  安装器走 GitHub codeload tar.gz（国内网络下 github.com 主站 git 协议常
+  断，codeload/raw 一般可达）+ venv pip。上游依赖钉版与垫片：solidworks/
+  multicad/autocad 均 import mcp 1.x 低层 API，pip 装 `mcp<2`
+  （fastmcp<4）；autocad 的 requirements 写了不存在的 pyautocad>=2.0.0、
+  `FastMCP(title=)` 老 kwarg，安装器直装可用版本并做一行替换。
+- **API**：`GET /api/mcp`（清单+连通状态）、`POST /api/mcp`（增改）、
+  `/delete`、`/test`（连通并列工具）、`GET /api/mcp/catalog`（目录+已装
+  标记）、`POST /api/mcp/catalog/install`（一键装，分钟级）。
+- **测试**：mcpservers_test.go（名称域/状态回读/层注册/目录完整性/tar.gz
+  解压防穿越）；mcp_install_now_test.go 为手动实装入口
+  （`JX_MCP_INSTALL_NOW=<目录id逗号列表> go test -run TestMCPInstallNow`，
+  驱动真实下载安装+握手验证，缺省跳过）。
 
 ### 与 Claude Code 的已知差异（有意为之或暂不支持）
 
@@ -1144,7 +1206,8 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `runtime.go` | 后台运行时：执行注册表、全局事件总线、派发执行体、中断恢复 |
 | `session.go` | 会话元信息与工具函数 |
 | `store.go` | SQLite 存储层与旧数据迁移（`LastUserMessageAt` 供环境快照取「用户最近发消息时间」） |
-| `adapters.go` | 插件兼容层：扫描、开关联查、资产清单、Go 半边注册点 |
+| `adapters.go` | DSH 插件兼容层实现：扫描、开关联查、资产清单、Go 半边注册点 |
+| `pluginlayers.go` | 插件兼容层注册表（主体第一层）：`PluginLayer` 契约 + 编译期自注册 + 统一清单/总开关（`/api/plugins` 的 layers+plugins） |
 | `adapter_dsh_speech.go` | dsh-speech 的 Go 半边：润色端点（复用已配置模型）+ 听写提示词段 |
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务、`Rescan`（市场装卸后重扫） |
 | `update.go` | 更新检查：定期拉发布源（updateURL，Gitea releases/latest 或 jxai-server 的 /updates/latest，两者同格式），tag_name 比当前新就经事件流推横幅；versionCompare 双体系（日期+V序号 恒新于 旧点分号） |
@@ -1182,7 +1245,7 @@ commands / agents / hooks / MCP / mods）的通用兼容层：一次实现吃全
 | `POST /api/approvals/{id}` | 审批决定：`{approved, always}`（always=本会话总是允许） |
 | `POST /api/workspace/test` | 测试 SSH 远程工作区配置（拨号/SFTP/目录，回显主机指纹） |
 | `GET /api/events` | 全局事件流（后台派发进度、回报就绪、会话更新、审批请求） |
-| `GET/POST /api/plugins` | 插件清单 / 切换开关（即时生效，界面部分刷新后生效） |
+| `GET/POST /api/plugins` | 统一插件清单（`{layers, plugins}`，带来源体系）/ 切换开关（`{layer,id,enabled}`，即时生效，界面部分刷新后生效） |
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
 | `GET /api/components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供；挂 `/api/` 下让中继隧道覆盖，cx.js fetch 文本注入） |
