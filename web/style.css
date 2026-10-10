@@ -2553,7 +2553,12 @@ html.electron-shell .bpw-hint { display: none; }
    + 搜索 + 卡片网格（安装/更新/卸载）。
    ============================================================ */
 
+/* 对话区整块让位：#msg-zone 是 app-chat.js（setupWidthHandles）在运行时把
+   #messages 包进去的定位层，它是 #main 的直接 flex 子项——只隐藏 #messages 的话，
+   这层会继续 flex:1 与 #market-view 平分主区高度，市场页被压成半屏（下方留一大片
+   空白，列表滚动条也落到页面中部），故连它一起隐藏。 */
 body.market-mode #progress-panel,
+body.market-mode #msg-zone,
 body.market-mode #messages,
 body.market-mode #composer-wrap { display: none; }
 
@@ -2578,7 +2583,19 @@ body.market-mode #composer-wrap { display: none; }
 .mk-link { border: none; background: none; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0; }
 .mk-link:hover { text-decoration: underline; }
 
-.mk-list { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; align-content: start; padding-top: 12px; }
+/* 卡片网格：默认一屏 3 列——窗口无论缩到多小都保持 3 列（不再随宽度递减成 2 列/1 列）；
+   窗口最大化（由 app-market.js 给 body 加 .mk-4col）升为 4 列；手机窄屏（<500px）由
+   文件尾部的窄屏媒体查询接管为单列。 */
+/* 卡片区撑满主区剩余高度（不再限高——限高会在内容少时于底部留一大片空白，看着像被一块东西挡住）；
+   overflow-y: scroll + scrollbar-gutter: stable —— 滚动条常驻显示（本机 Edge 默认 overlay 滚动条
+   不占位、只在滚动瞬间浮一下，看着像「没有滑动条」；实测 scrollbar-width:thin 在本机无效，gutter 才有效）。*/
+.mk-list { flex: 1; min-height: 0; overflow-y: scroll; overflow-x: hidden; scrollbar-gutter: stable; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-content: start; padding-top: 12px; }
+
+/* 最大化 → 4 列：不写死像素阈值（1536×864@125% 这类屏幕最大化也只有 ≈1229px 视口），
+   由 app-market.js 的 updateMarketCols() 判定「innerWidth ≈ screen.availWidth」（即已最大化）
+   后给 body 加 .mk-4col 来切换，任何分辨率/缩放下都成立；窗口态保持上面的 3 列。 */
+body.mk-4col .mk-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
 .mk-hint { grid-column: 1 / -1; color: var(--text-3); font-size: 13px; line-height: 1.9; padding: 24px 4px; white-space: normal; }
 .mk-hint .mk-link { font-size: 13px; }
 .mk-suggest { margin-top: 10px; }

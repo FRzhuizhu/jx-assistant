@@ -826,3 +826,23 @@ async function mkuSubmit() {
 }
 
 document.addEventListener('DOMContentLoaded', bindMarket);
+
+/* ---------- 列数：最大化 4 列 / 窗口态 3 列（跨屏幕自适应，不依赖固定像素阈值） ---------- */
+
+// 判定「窗口是否最大化」：最大化后窗口宽度会等于本屏可用宽（screen.availWidth）。
+// 注意尺度：innerWidth/outerWidth 恒为 CSS 像素，而 screen.* 在部分宿主里报物理像素
+// （本机 1536×864@125%：availWidth=1536 物理 vs 1229 CSS）——故同时按「原值」与
+// 「除以 devicePixelRatio」两种尺度严格比对（容差 4px / 10px），任一命中即算最大化。
+// 不用固定像素阈值（如 ≥1600px）：这类屏幕最大化也只有 ≈1229px 视口，阈值必然失准。
+function updateMarketCols() {
+  const iw = window.innerWidth;
+  const ow = window.outerWidth || 0;
+  const aw = window.screen.availWidth || 0;
+  const dpr = window.devicePixelRatio || 1;
+  const near = (a, b, tol) => b > 0 && Math.abs(a - b) <= tol;
+  const maxed = near(iw, aw, 4) || near(ow, aw, 10) ||
+    (dpr > 1 && (near(iw, aw / dpr, 4) || near(ow, aw / dpr, 10)));
+  document.body.classList.toggle('mk-4col', iw >= 900 && maxed);
+}
+window.addEventListener('resize', updateMarketCols);
+document.addEventListener('DOMContentLoaded', updateMarketCols);
