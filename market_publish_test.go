@@ -239,7 +239,7 @@ func TestPublishSkillFolderPacking(t *testing.T) {
 	code, out := publishReq(t, a, map[string]any{
 		"id": "wx-ops", "version": "2.0.0", "description": "文件夹投喂", "zip": false,
 	}, []pubFile{
-		{name: "SKILL.md", data: []byte("---\nname: 微信操作\ndescription: 来自 SKILL.md\n---\n")},
+		{name: "SKILL.md", data: []byte("---\nname: 微信操作\ndescription: 来自 SKILL.md\n---\n\n把聊天记录导出成 Excel。\n")},
 		{name: "scripts/run.py", data: []byte("print(1)\n")},
 	})
 	if code != 200 {
@@ -367,7 +367,7 @@ func TestPublishSkillNestedPack(t *testing.T) {
 	outer := "微信操作_技能包_v1.3.1_20261009/"
 	pack := zipBytesForTest(t, map[string]string{
 		outer + "安装说明.md":             "# 安装说明\n",
-		outer + "微信操作/SKILL.md":       "---\nname: wechat-chat-ops\ndescription: 嵌套包\n---\n",
+		outer + "微信操作/SKILL.md":       "---\nname: wechat-chat-ops\ndescription: 嵌套包\n---\n\n正文\n",
 		outer + "微信操作/manifest.json":  `{"id":"微信操作","name":"微信操作","version":"1.3.1"}`,
 		outer + "微信操作/scripts/run.py": "print(1)\n",
 	})

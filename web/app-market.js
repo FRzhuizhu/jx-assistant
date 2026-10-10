@@ -293,6 +293,9 @@ let mkuFiles = [];        // [{file, path}]：包内相对路径（已剥掉公�
 let mkuZip = null;        // 单个 .zip 投喂时：{file, buf, entries}（entries=中央目录条目，只读不解压）
 let mkuTopDir = '';       // 包的顶层目录名（推默认技能 ID 用）
 let mkuSkillPath = '';    // 包内 SKILL.md 的相对路径（校验通过的标志）
+let mkuSkillSize = 0;     // SKILL.md 的字节数（0 = 空文件，得拦下来）
+let mkuSkillErr = '';     // SKILL.md 内容体检的结论（非空即拦截：空文件 / 只有 frontmatter / 读不出）
+let mkuIDSuggested = false; // 技能 ID 是词表建议出来的（不是包内自带或用户手填的）
 let mkuBusy = false;      // 上传在途
 let mkuErr = '';          // 提交失败的提示（优先于「就绪」，重新投喂/清空时清掉）
 let mkuEditOf = null;     // 「更新发布」时正在编辑的市场条目（{id,version}）；普通上传为 null
@@ -336,6 +339,9 @@ function mkuReset() {
   mkuZip = null;
   mkuTopDir = '';
   mkuSkillPath = '';
+  mkuSkillSize = 0;
+  mkuSkillErr = '';
+  mkuIDSuggested = false;
   mkuErr = '';
   mkuManifest = null;
   ['mku-id', 'mku-name', 'mku-version', 'mku-desc', 'mku-tags'].forEach((id) => { const el = $(id); if (el) el.value = ''; });
@@ -387,6 +393,92 @@ function mkuSlug(s) {
   const t = String(s || '').trim().replace(/\.[A-Za-z0-9]+$/, '')
     .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return /^[a-z0-9][a-z0-9-]*$/.test(t) ? t : '';
+}
+
+/* ---- 中文名 → 英文技能 ID（词表兜底） ----
+   市场只收纯小写字母/数字/中划线的 ID，中文名（微信操作、设备点检…）会被服务端
+   清洗成空串、直接拒收，只能手填。这里放一份**对照词表**，把中文名逐词换成英文词根
+   接起来（微信操作_技能包 → wechat-ops），把「必填 ID」这一步从手敲变成改一改。
+
+   规则（宁缺勿猜）：键最长 4 字、从长到短匹配（「企业微信」先于「微信」命中）；
+   值是 '' 的键是噪音词（技能/技能包/工具…），丢掉不影响语义；**只要有一个汉字
+   没被词表覆盖就整体放弃**（返回空串），继续让用户手填——猜错一半的 ID 比手敲更糟。
+
+   与后端 market_publish.go 的 skillIDWordList / skillIDFromChinese 同一份口径
+   （后端在 meta 没给 id 时也要推得出来），改动请两边同步。 */
+const MKU_ID_WORDS = {
+  // 噪音词（丢掉不影响语义）
+  '技能包': '', '技能': '', '工具包': '', '工具': '', '插件': '', '组件': '',
+  '的': '', '与': '', '和': '', '及': '', '之': '', '小': '',
+  // 常见修饰词
+  '自动': 'auto', '自动化': 'automation', '批量': 'batch', '智能': 'ai', '定时': 'schedule',
+  '快速': 'fast', '简易': 'easy', '通用': 'common', '助手': 'assistant', '工具集': 'tools',
+  // 沟通协作
+  '微信': 'wechat', '企业微信': 'wecom', '钉钉': 'dingtalk', '飞书': 'feishu', '公众号': 'mp',
+  '小程序': 'miniapp', '聊天': 'chat', '群聊': 'group', '群': 'group', '会话': 'session',
+  '联系人': 'contact', '消息': 'message', '通知': 'notify', '发送': 'send', '接收': 'recv',
+  '回复': 'reply', '记录': 'record', '转发': 'forward', '邮件': 'mail', '邮箱': 'mailbox',
+  '短信': 'sms', '电话': 'phone', '会议': 'meeting', '日程': 'calendar', '提醒': 'remind',
+  // 文件与文档
+  '文件': 'file', '文件夹': 'folder', '目录': 'dir', '文档': 'docs', '表格': 'sheet',
+  '幻灯片': 'slides', '图片': 'image', '照片': 'photo', '图像': 'image', '视频': 'video',
+  '音频': 'audio', '语音': 'voice', '文字': 'text', '识别': 'ocr', '导出': 'export',
+  '导入': 'import', '备份': 'backup', '恢复': 'restore', '上传': 'upload', '下载': 'download',
+  '压缩': 'zip', '解压': 'unzip', '合并': 'merge', '拆分': 'split', '转换': 'convert',
+  '重命名': 'rename', '清理': 'clean', '打印': 'print', '扫描': 'scan', '扫码': 'scan',
+  // 数据与图表
+  '数据': 'data', '分析': 'analysis', '统计': 'stat', '报表': 'report', '报告': 'report',
+  '图表': 'charts', '看板': 'board', '大屏': 'dashboard', '查询': 'query', '汇总': 'summary',
+  '对比': 'diff', '计算': 'calc', '生成': 'gen', '采集': 'collect', '抓取': 'crawl',
+  '爬虫': 'spider', '监控': 'monitor', '日志': 'log', '审计': 'audit',
+  // 业务（本厂常见）
+  '设备': 'device', '点检': 'checkup', '巡检': 'inspection', '保养': 'maintenance',
+  '操作': 'ops', '运维': 'ops', '处理': 'process', '登记': 'register', '入库': 'import',
+  '维修': 'repair', '台账': 'ledger', '库存': 'stock', '订单': 'order', '客户': 'customer',
+  '销售': 'sales', '财务': 'finance', '发票': 'invoice', '合同': 'contract', '考勤': 'attendance',
+  '日报': 'daily', '周报': 'weekly', '月报': 'monthly', '项目': 'project', '进度': 'progress',
+  '质量': 'quality', '检验': 'inspect', '审批': 'approval', '工单': 'ticket', '流程': 'flow',
+  '任务': 'task', '签到': 'checkin', '标签': 'label', '模板': 'template', '示例': 'demo',
+  // 技术
+  '接口': 'api', '数据库': 'db', '服务器': 'server', '网络': 'network', '网页': 'web',
+  '网站': 'site', '浏览器': 'browser', '脚本': 'script', '安装': 'install', '卸载': 'uninstall',
+  '更新': 'update', '升级': 'upgrade', '版本': 'version', '配置': 'config', '设置': 'config',
+  '权限': 'perm', '账号': 'account', '登录': 'login', '加密': 'encrypt', '解密': 'decrypt',
+  '校验': 'validate', '检查': 'check', '同步': 'sync', '迁移': 'migrate', '排队': 'queue',
+  // 专有名词（本厂/产品）
+  '精制': 'jingzhi', '坚祥': 'jx', '数字助理': 'assistant', '管家': 'keeper', '大师': 'master',
+};
+
+// mkuIDFromChinese 用词表把中文名换成英文 ID（「微信操作_技能包」→ wechat-ops）。
+// 词表没覆盖全就返回空串，交给用户手填。
+function mkuIDFromChinese(name) {
+  const r = [...mkuStripVersion(name)];
+  let out = '';
+  for (let i = 0; i < r.length;) {
+    let hit = false;
+    for (let n = 4; n >= 1; n--) { // 从长到短：企业微信优先于微信
+      if (i + n > r.length) continue;
+      const w = r.slice(i, i + n).join('');
+      if (!(w in MKU_ID_WORDS)) continue;
+      out += ' ' + MKU_ID_WORDS[w] + ' '; // 词间留空，最后由 mkuSlug 统一收拾
+      i += n;
+      hit = true;
+      break;
+    }
+    if (hit) continue;
+    if (/\p{Script=Han}/u.test(r[i])) return ''; // 有汉字没被词表覆盖：不猜
+    out += r[i]; // 英文/数字/分隔符原样留着
+    i++;
+  }
+  return mkuSlug(out);
+}
+
+// mkuSkillBodyOf 取 SKILL.md 去掉 frontmatter 后的正文（与后端 stripFrontmatter
+// 同一口径：前端先拦，后端再拦一遍，两边判定要一致）。
+function mkuSkillBodyOf(text) {
+  const s = String(text || '').trim();
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(s);
+  return (m ? s.slice(m[0].length) : s).trim();
 }
 
 /* ---- 文件收集 ---- */
@@ -548,6 +640,9 @@ function mkuFrontmatter(text) {
 // 优先 SKILL.md；名称优先包内 manifest.json 的友好名；版本号优先文件名（v 后那串）。
 async function mkuAnalyze() {
   mkuSkillPath = '';
+  mkuSkillSize = 0;
+  mkuSkillErr = '';
+  mkuIDSuggested = false;
   mkuManifest = null;
   let text = '';
   let manifest = null;
@@ -560,8 +655,13 @@ async function mkuAnalyze() {
     }
     const base = mkuSkillPath.indexOf('/') > 0 ? mkuSkillPath.slice(0, mkuSkillPath.lastIndexOf('/') + 1) : '';
     const entryOf = (want) => (mkuZip.entries || []).find((x) => x.name.toLowerCase() === String(want).toLowerCase());
+    const smEntry = mkuSkillPath ? entryOf(mkuSkillPath) : null;
+    mkuSkillSize = smEntry ? (smEntry.size || 0) : 0;
     if (mkuSkillPath && mkuZip.buf) {
-      try { text = await mkuZipReadText(mkuZip.buf, entryOf(mkuSkillPath)); } catch (e) { /* 读不出就不预填，不影响校验 */ }
+      try { text = await mkuZipReadText(mkuZip.buf, smEntry); } catch (e) {
+        // 读不出就是「文件对上了、内容拿不到」：拦下来（后端也会再拦一遍）
+        mkuSkillErr = '包内 SKILL.md 读不出来（压缩数据损坏，或当前浏览器不支持该压缩方式）：' + (e.message || e);
+      }
     }
     const me = mkuZip.buf ? entryOf(base + 'manifest.json') : null;
     if (me) { try { manifest = JSON.parse(await mkuZipReadText(mkuZip.buf, me)); } catch (e) { /* manifest 坏了不影响发布 */ } }
@@ -569,21 +669,44 @@ async function mkuAnalyze() {
     const hit = mkuFiles.find((x) => /(^|\/)SKILL\.md$/i.test(x.path));
     if (hit) {
       mkuSkillPath = hit.path;
+      mkuSkillSize = hit.file.size || 0;
       const base = hit.path.indexOf('/') > 0 ? hit.path.slice(0, hit.path.lastIndexOf('/') + 1) : '';
-      try { text = await hit.file.text(); } catch (e) { /* 同上 */ }
+      try { text = await hit.file.text(); } catch (e) {
+        mkuSkillErr = 'SKILL.md 读不出来：' + (e.message || e);
+      }
       const mf = mkuFiles.find((x) => x.path.toLowerCase() === (base + 'manifest.json').toLowerCase());
       if (mf) { try { manifest = JSON.parse(await mf.file.text()); } catch (e) { /* 同上 */ } }
     }
   }
   mkuManifest = manifest;
   const fm = mkuFrontmatter(text);
+  // SKILL.md 内容体检（与后端 checkSkillMDBody 同口径）：空文件、只有 frontmatter 都拦
+  if (mkuSkillPath && !mkuSkillErr) {
+    if (!mkuSkillSize) {
+      mkuSkillErr = 'SKILL.md 是空文件（0 字节）：技能必须有说明正文，否则市场里装得上、read_skill 却读不出内容。';
+    } else if (!mkuSkillBodyOf(text)) {
+      mkuSkillErr = 'SKILL.md 只有 frontmatter 没有正文：frontmatter 只放 name/description，' +
+        '技能怎么用要写在 --- 之后（否则发布后在市场里读不出说明）。';
+    }
+  }
   const pkgName = mkuZip ? mkuZip.file.name : (mkuTopDir || '');
   const fill = (id, v) => { const el = $(id); if (el && v && !el.value) el.value = v; };
+  // 有 SKILL.md 才预填元信息：连技能包都没认出来（坏 zip / 没有 SKILL.md）时，
+  // 从文件名猜出来的 ID/版本只会误导（状态行还写着「还没有技能包」）
+  if (!mkuSkillPath) return;
   // 技能 ID：包内 manifest.json 的 id → 包内顶层目录名 → SKILL.md 的 name → 包名
   const skillDirName = mkuSkillPath.indexOf('/') > 0 ? mkuSkillPath.slice(0, mkuSkillPath.lastIndexOf('/')).split('/').pop() : '';
+  const pkgStem = mkuStripVersion(mkuTopDir || pkgName);
   // ID 候选逐个试：市场只收纯小写字母/数字/中划线（中文会被服务端清洗掉）
-  fill('mku-id', [manifest && manifest.id, skillDirName, fm.name, mkuStripVersion(mkuTopDir || pkgName)]
-    .map((x) => mkuSlug(x)).find(Boolean) || '');
+  let idSuggest = [manifest && manifest.id, skillDirName, fm.name, pkgStem]
+    .map((x) => mkuSlug(x)).find(Boolean) || '';
+  if (!idSuggest) {
+    // 全落空（多半是中文名）：用中文→英文词表给一个建议 ID（词表没覆盖全就还是留空）
+    idSuggest = [skillDirName, fm.name, manifest && manifest.name, pkgStem]
+      .map((x) => mkuIDFromChinese(x)).find(Boolean) || '';
+    mkuIDSuggested = !!idSuggest;
+  }
+  fill('mku-id', idSuggest);
   // 版本号：文件名/目录名里 v 后面那串 → manifest.json → SKILL.md
   const ver = mkuVersionFromName(pkgName) || (manifest && manifest.version) || fm.version || '';
   fill('mku-version', ver ? String(ver) : '');
@@ -637,6 +760,9 @@ function mkuRender() {
   } else if (skillHits.length > 1) {
     msg = '包里有 ' + skillHits.length + ' 处 SKILL.md（' + skillHits.slice(0, 4).join('、') + '）：一个包只能装一个技能，请分开上传。';
     kind = 'err';
+  } else if (mkuSkillErr) {
+    msg = mkuSkillErr; // 文件对上了、内容却是空的 / 读不出：拦住，别发到市场上
+    kind = 'err';
   } else if (id && !idOk) {
     msg = '技能 ID 只能用纯小写字母/数字/中划线（市场端规则）：像 wechat-chat-ops 这样，不能带中文或空格。';
     kind = 'warn';
@@ -646,6 +772,8 @@ function mkuRender() {
       mkuSize(list.reduce((a, x) => a + (x.size || 0), 0)) + '）；将发布 ' + (id || '(待填 ID)') + (verText ? ' v' + verText : '') +
       (stray.length ? '（技能目录外还有 ' + stray.length + ' 个文件：' + stray.slice(0, 3).join('、') + '，发布时会并入技能目录）' : '');
     kind = 'ok';
+    if (mkuIDSuggested) msg += '（ID 是按中文词表建议的，可改）';
+    if (!($('mku-desc').value || '').trim()) msg += '（SKILL.md 没写 description：市场卡片上会没有说明文字，建议补一行）';
     if (!meName) msg += '（未设置发布者姓名：发布后不能在这里更新/删除，去 设置 · 网络访问 填一个）';
   }
   if (mkuBusy) { msg = '正在上传…'; kind = ''; }
@@ -653,7 +781,7 @@ function mkuRender() {
   else if (mkuEditOf) { msg = '【更新发布】' + mkuEditOf.id + ' v' + (mkuEditOf.version || '?') + ' → ' + msg; }
   mkuSetStatus(msg, kind);
   const sub = $('mku-submit');
-  if (sub) sub.disabled = mkuBusy || !list.length || !mkuSkillPath || !id || !idOk || !!(mkuZip && mkuZip.err) || skillHits.length > 1;
+  if (sub) sub.disabled = mkuBusy || !list.length || !mkuSkillPath || !id || !idOk || !!(mkuZip && mkuZip.err) || skillHits.length > 1 || !!mkuSkillErr;
 }
 
 /* ---- 投喂事件的绑定（bindMarket 里调一次） ---- */
