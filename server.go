@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"errors"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -33,14 +33,15 @@ type App struct {
 	Cfg        *Config
 	CfgPath    string
 	Store      *Store
-	Ctx        *ContextEngine // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
+	Ctx        *ContextEngine       // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
 	Plugins    *PluginRegistry      // DSH 插件兼容层实现（adapters.go：插件兼容层/ + adapter_*.go）
 	Layers     *PluginLayerRegistry // 插件兼容层注册表：主体发现的全部插件体系（pluginlayers.go）
 	Components *ComponentRegistry
-	CCPlugins  *CCPluginRegistry // Claude Code 插件兼容层实现（ccplugin*.go）
-	Todos      *todoScheduler    // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
-	asr        *asrManager       // 本地语音识别测试通道（voiceasr.go，语音组件设置页用）
-	static     fs.FS             // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	CCPlugins  *CCPluginRegistry   // Claude Code 插件兼容层实现（ccplugin*.go）
+	MCPServers *MCPServersRegistry // 独立 MCP 服务器注册表（mcpservers*.go）：用户直连 MCP 服务
+	Todos      *todoScheduler      // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
+	asr        *asrManager         // 本地语音识别测试通道（voiceasr.go，语音组件设置页用）
+	static     fs.FS               // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
 	mu              sync.Mutex
 	sessLocks       map[string]*sync.Mutex
@@ -136,6 +137,9 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.CCPlugins = InitCCPlugins(a, cfg.DataDir)
 	a.CCPlugins.MCPStartAll()
 	a.CCPlugins.ModsStartAll()
+	// 独立 MCP 服务器注册表：用户直连的 MCP 服务（mcpservers*.go），后台连接
+	a.MCPServers = InitMCPServers(a, cfg.DataDir)
+	a.MCPServers.StartAll()
 	// 主体发现插件兼容层：各层（DSH、Claude Code…）经 registerPluginLayer
 	// 自注册，主体只按 PluginLayer 契约调用——统一清单与总开关走 /api/plugins，
 	// 主体不认识任何具体插件格式
@@ -163,6 +167,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.asr = &asrManager{app: a}
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
+	// 公司接入自动同步（sync.go）：跟随服务端变化（模型/公司名/地址迁移）
+	go startCompanySyncer(a)
 	// 远程外壳版本代数恢复（一键清缓存的计数，remoteaccess.go）
 	a.loadShellEpoch()
 	return a, nil
@@ -282,6 +288,13 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/cc-plugins/marketplace/add", a.handleCCMarketplaceAdd)
 	mux.HandleFunc("GET /api/cc-plugins/marketplace/{id}", a.handleCCMarketplaceBrowse)
 	mux.HandleFunc("GET /api/cc-plugins/commands", a.handleCCPluginCommands)
+	// 独立 MCP 服务器（mcpservers*.go）：注册表 + 设计软件桥目录一键安装
+	mux.HandleFunc("GET /api/mcp", a.handleListMCPServers)
+	mux.HandleFunc("POST /api/mcp", a.handleUpsertMCPServer)
+	mux.HandleFunc("POST /api/mcp/delete", a.handleDeleteMCPServer)
+	mux.HandleFunc("POST /api/mcp/test", a.handleTestMCPServer)
+	mux.HandleFunc("GET /api/mcp/catalog", a.handleMCPCatalog)
+	mux.HandleFunc("POST /api/mcp/catalog/install", a.handleMCPCatalogInstall)
 	mux.HandleFunc("GET /api/components", a.handleListComponents)
 	mux.HandleFunc("POST /api/components", a.handleSetComponent)
 	// 组件浏览器半边资产挂在 /api/ 下（而非独立 /_components/ 前缀）：前端 cx.js

@@ -88,9 +88,15 @@ type Config struct {
 	// /market/manifest.json；空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
 	MarketURL string `json:"marketURL"`
 	// 公司接入（向导，wizard.go）：wizardDone=已完成/跳过首启向导（不再自动弹）；
-	// registryURL=总服务器地址（公司名发现不到时的查询兜底，空=只走局域网广播）。
-	WizardDone  bool   `json:"wizardDone"`
-	RegistryURL string `json:"registryURL"`
+	// registryURL=总服务器地址（公司名发现不到时的查询兜底，空=只走局域网广播）；
+	// wizardCompany/wizardServer 留给自动同步器（sync.go）：定期拉服务端 /announce
+	// 跟随变化（模型清单/元数据、公司名、市场/更新/服务端地址），失联时按公司名
+	// 重新局域网发现自动迁移（服务端换端口/换机器）。
+	WizardDone    bool   `json:"wizardDone"`
+	RegistryURL   string `json:"registryURL"`
+	WizardCompany string `json:"wizardCompany,omitempty"`
+	WizardServer  string `json:"wizardServer,omitempty"`
+	WizardRev     string `json:"wizardRev,omitempty"` // 最近应用的服务端公告哈希（仅记录）
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`
