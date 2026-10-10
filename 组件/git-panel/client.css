@@ -266,6 +266,8 @@
 .gitp-csubject {
   font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
+/* 提交作者名：颜色按作者固定分配（内联样式，见 client.js 的 authorPalette），这里只管加粗 */
+.gitp-cauthor { font-weight: 700; }
 .gitp-cmeta {
   margin-left: auto; flex-shrink: 0; max-width: 42%;
   color: var(--text-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
