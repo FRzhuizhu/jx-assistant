@@ -52,6 +52,7 @@ type marketManifestIn struct {
 	Skills     []marketEntryIn `json:"skills"`
 	Components []marketEntryIn `json:"components"`
 	Plugins    []marketEntryIn `json:"plugins"`
+	Mcps       []marketEntryIn `json:"mcps"`
 }
 
 // marketEntryOut 清单条目 + 本机安装态（前端渲染用）。
@@ -79,6 +80,7 @@ type marketView struct {
 	Skills     []marketEntryOut `json:"skills"`
 	Components []marketEntryOut `json:"components"`
 	Plugins    []marketEntryOut `json:"plugins"`
+	Mcps       []marketEntryOut `json:"mcps"`
 }
 
 type marketInstallRec struct {
@@ -200,11 +202,15 @@ func marketEntriesOf(m *marketManifestIn, typ string) []marketEntryIn {
 		return m.Components
 	case "plugin":
 		return m.Plugins
+	case "mcp":
+		return m.Mcps
 	}
 	return nil
 }
 
-func marketTypeOK(t string) bool { return t == "skill" || t == "component" || t == "plugin" }
+func marketTypeOK(t string) bool {
+	return t == "skill" || t == "component" || t == "plugin" || t == "mcp"
+}
 
 /* ---------- 视图：清单 + 本机安装态 ---------- */
 
@@ -219,7 +225,7 @@ func (a *App) marketMe() *marketMe {
 }
 
 func (a *App) buildMarketView() marketView {
-	v := marketView{Skills: []marketEntryOut{}, Components: []marketEntryOut{}, Plugins: []marketEntryOut{}, Me: a.marketMe()}
+	v := marketView{Skills: []marketEntryOut{}, Components: []marketEntryOut{}, Plugins: []marketEntryOut{}, Mcps: []marketEntryOut{}, Me: a.marketMe()}
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
 	if raw == "" {
 		if a.Cfg.RemoteAccess.Host != "" && a.Cfg.RemoteAccess.Port > 0 {
@@ -240,6 +246,7 @@ func (a *App) buildMarketView() marketView {
 	v.Skills = a.decorateEntries("skill", man.Skills, recs)
 	v.Components = a.decorateEntries("component", man.Components, recs)
 	v.Plugins = a.decorateEntries("plugin", man.Plugins, recs)
+	v.Mcps = a.decorateEntries("mcp", man.Mcps, recs)
 	return v
 }
 
@@ -276,6 +283,15 @@ func (a *App) decorateEntries(typ string, in []marketEntryIn, recs map[string]ma
 				if !hasRec { // 手动装到 jx-market 名下的边角：没有记账时以实际版本兜底
 					rec.Version = st.Version
 				}
+			}
+		case "mcp":
+			// 已装标记按来源（市场条目 id → source 标记）：条目里的全部连接器
+			// 都注册自 market:<id> 即视为已装
+			if a.MCPServers != nil {
+				o.Installed = a.MCPServers.HasSource("market:" + e.ID)
+			}
+			if o.Installed {
+				o.InstalledVersion = rec.Version
 			}
 		}
 		o.Update = o.Installed && hasRec && rec.Version != "" && rec.Version != e.Version
@@ -515,6 +531,41 @@ func (a *App) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
 		}
 		rec = marketInstallRec{Version: entry.Version, Key: key, InstalledAt: time.Now().Format(time.RFC3339)}
 		resp["plugin"] = key
+	case "mcp":
+		// 解包读 mcp.json → 按行业三形态解析 → 注册为独立连接器（来源标
+		// market:<条目id>，卸载按来源整组注销）
+		tmp, err := os.MkdirTemp("", "jxmkm-")
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		defer os.RemoveAll(tmp)
+		if err := unzip(zipPath, tmp); err != nil {
+			writeErr(w, 400, "解压失败: "+err.Error())
+			return
+		}
+		root, err := findRootWith(tmp, "mcp.json")
+		if err != nil {
+			writeErr(w, 400, "包里缺少 mcp.json（不是有效的 MCP 连接器包）")
+			return
+		}
+		data, err := os.ReadFile(filepath.Join(root, "mcp.json"))
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		defs, err := parseMCPServersDoc(data, entry.ID)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		names, err := a.MCPServers.UpsertFromDefs(defs, "market:"+entry.ID, entry.Name)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		rec = marketInstallRec{Version: entry.Version, Key: strings.Join(names, ","), InstalledAt: time.Now().Format(time.RFC3339)}
+		resp["servers"] = names
 	}
 	if err := a.saveMarketRec(body.Type, entry.ID, rec); err != nil {
 		log.Printf("[市场] 安装记账落盘失败（安装本身已成功）: %v", err)
@@ -559,6 +610,10 @@ func (a *App) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
+	case "mcp":
+		// 按来源整组注销（条目装进来的全部连接器一次撤下）
+		names := a.MCPServers.RemoveBySource("market:" + body.ID)
+		resp["removed"] = names
 	}
 	a.removeMarketRec(body.Type, body.ID)
 	writeJSON(w, 200, resp)

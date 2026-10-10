@@ -599,3 +599,118 @@ func (r *MCPServersRegistry) hasEnabled() bool {
 	}
 	return false
 }
+
+// HasSource 是否存在来自指定来源（如 "market:<条目id>"）的连接器（市场
+// 页的已装标记用）。
+func (r *MCPServersRegistry) HasSource(source string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.file.Servers {
+		if s.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveBySource 按来源注销全部连接器（市场卸载用），返回删掉的名单。
+func (r *MCPServersRegistry) RemoveBySource(source string) []string {
+	r.mu.Lock()
+	names := []string{}
+	out := r.file.Servers[:0]
+	for _, s := range r.file.Servers {
+		if s.Source == source {
+			names = append(names, s.Name)
+			r.removeClientLocked(s.Name)
+			delete(r.lastErr, s.Name)
+			continue
+		}
+		out = append(out, s)
+	}
+	r.file.Servers = out
+	err := r.save()
+	r.mu.Unlock()
+	if err != nil {
+		log.Printf("[MCP] 市场卸载落盘失败（连接器已移除）: %v", err)
+	}
+	return names
+}
+
+// UpsertFromDefs 批量注册（市场安装/拖拽 json 导入用）：source 标来源，
+// desc 为缺省描述；返回注册成功的服务器名与首个错误。
+func (r *MCPServersRegistry) UpsertFromDefs(defs map[string]ccMCPServerDef, source, desc string) ([]string, error) {
+	names := make([]string, 0, len(defs))
+	for n := range defs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var firstErr error
+	for _, n := range names {
+		d := defs[n]
+		e := mcpServerEntry{
+			Name: n, Description: desc, Enabled: true, Source: source,
+			Type: d.Type, Command: d.Command, Args: d.Args, Env: d.Env,
+			URL: d.URL, Headers: d.Headers,
+		}
+		if err := r.Upsert(e); err != nil && firstErr == nil {
+			firstErr = err
+			continue
+		}
+	}
+	if firstErr != nil && len(names) == 0 {
+		return nil, firstErr
+	}
+	return names, firstErr
+}
+
+// parseMCPServersDoc 解析一份 MCP 配置 JSON，容忍三种行业常见形态：
+// {"mcpServers":{"名":{...}}} 包裹层（Claude Desktop/Cursor/Codex 配置）、
+// {"名":{...}} 扁平、单个服务器对象本体（此时用 fallbackName 当服务器名，
+// 常取导入文件名）。每个服务器须为 stdio（command）或 http/sse（url）。
+// 与服务端 readMCPPackage 同语义（两端各持一份最小实现）。
+func parseMCPServersDoc(data []byte, fallbackName string) (map[string]ccMCPServerDef, error) {
+	defs := map[string]ccMCPServerDef{}
+	var wrapped struct {
+		MCPServers map[string]ccMCPServerDef `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err == nil && len(wrapped.MCPServers) > 0 {
+		defs = wrapped.MCPServers
+	} else if flat := map[string]ccMCPServerDef{}; json.Unmarshal(data, &flat) == nil && mcpDefsValid(flat) {
+		defs = flat
+	} else {
+		var one ccMCPServerDef
+		if err := json.Unmarshal(data, &one); err != nil || (strings.TrimSpace(one.Command) == "" && one.URL == "") {
+			return nil, fmt.Errorf("不是可识别的 MCP 配置（支持 {\"mcpServers\":{...}}、{\"名\":{...}} 或单服务器对象三种形态）")
+		}
+		if !mcpServerNameRe.MatchString(fallbackName) {
+			return nil, fmt.Errorf("单服务器形态需要合法服务器名（文件名 %q 不符：字母开头、仅字母数字连字符）", fallbackName)
+		}
+		defs = map[string]ccMCPServerDef{fallbackName: one}
+	}
+	for n, d := range defs {
+		t := strings.ToLower(strings.TrimSpace(d.Type))
+		if t == "http" || t == "sse" {
+			if strings.TrimSpace(d.URL) == "" {
+				return nil, fmt.Errorf("服务器 %q 声明为 %s 但缺少 url", n, t)
+			}
+		} else if strings.TrimSpace(d.Command) == "" {
+			return nil, fmt.Errorf("服务器 %q 缺少 command（stdio 型必须给启动命令）", n)
+		}
+	}
+	if len(defs) == 0 {
+		return nil, fmt.Errorf("配置里没有服务器定义")
+	}
+	return defs, nil
+}
+
+// mcpDefsValid 报告扁平解析结果是否真像「名→定义」而不是把单服务器对象
+// 的字段名当成了键（command/url 字段非空的定义才可信）。
+func mcpDefsValid(flat map[string]ccMCPServerDef) bool {
+	ok := 0
+	for _, d := range flat {
+		if strings.TrimSpace(d.Command) != "" || strings.TrimSpace(d.URL) != "" {
+			ok++
+		}
+	}
+	return ok > 0 && ok == len(flat)
+}

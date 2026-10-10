@@ -2706,6 +2706,7 @@ body.mk-4col .mk-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 #mcp-connector-list .plugin-row { flex-direction: column; align-items: stretch; }
 #mcp-connector-list .pr-toggle { align-self: flex-end; margin-top: -28px; }
 
-/* 技能页拖拽安装：拖入悬停时整页高亮提示落点 */
+/* 技能页/MCP 页拖拽导入：拖入悬停时整页高亮提示落点 */
 .skill-drop-zone.drop-hover,
-#set-pane-skills.drop-hover { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+#set-pane-skills.drop-hover,
+#set-pane-mcp.drop-hover { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 6%, transparent); }

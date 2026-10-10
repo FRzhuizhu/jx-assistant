@@ -120,6 +120,7 @@ function entriesOfTab(tab) {
   if (!mkData) return [];
   if (tab === 'skill') return mkData.skills || [];
   if (tab === 'component') return mkData.components || [];
+  if (tab === 'mcp') return mkData.mcps || [];
   return mkData.plugins || [];
 }
 
@@ -141,6 +142,7 @@ function renderTab() {
       skill: '市场里还没有技能。让服务器管理员用 jxai-server publish 发布（或检查市场地址）。',
       component: '市场里还没有组件。',
       plugin: '市场里还没有插件。也可以添加外部 Claude Code 插件市场（右上角入口）。',
+      mcp: '市场里还没有 MCP 连接器。管理员在服务端管理页（/admin）或 CLI 发布 mcp.json 即可（也支持直接上传 .json 配置文件）。',
     })[mkTab] + '</div>';
     return;
   }
@@ -165,7 +167,7 @@ function mkCard(e) {
     `<div class="mk-card-foot"></div>`;
   const foot = card.querySelector('.mk-card-foot');
 
-  const typeLabel = { skill: '技能', component: '组件', plugin: '插件' }[mkTab];
+  const typeLabel = { skill: '技能', component: '组件', plugin: '插件', mcp: 'MCP 连接器' }[mkTab];
   if (e.installed) {
     const st = document.createElement('span');
     st.className = 'mk-installed';

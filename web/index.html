@@ -153,6 +153,7 @@
         <button data-mk-tab="skill" class="mk-tab active">技能</button>
         <button data-mk-tab="component" class="mk-tab">组件</button>
         <button data-mk-tab="plugin" class="mk-tab">插件</button>
+        <button data-mk-tab="mcp" class="mk-tab">MCP</button>
         <span class="mk-tabs-rest">
           <span id="mk-count"></span>
           <button id="mk-upload-btn" class="mk-act hidden" title="把技能包（zip 或含 SKILL.md 的文件夹）发布到市场服务器，本机不安装">＋ 上传技能</button>
@@ -766,7 +767,7 @@
         <div class="set-pane" id="set-pane-mcp">
           <h3>MCP 连接器</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">MCP 连接器 = 接入本机的一个 Model Context Protocol 服务（设计软件桥、数据服务等），一个连接器可带几十个工具。对话中模型只看到连接器清单，需要时再查工具用法并调用——不占开头的工具目录，也不打扰其他会话的缓存。添加并启用 = 信任该连接器的全部工具。</div>
+            <div class="tip-inline" style="margin:0 0 10px">MCP 连接器 = 接入本机的一个 Model Context Protocol 服务（设计软件桥、数据服务等），一个连接器可带几十个工具。对话中模型只看到连接器清单，需要时再查工具用法并调用——不占开头的工具目录，也不打扰其他会话的缓存。添加并启用 = 信任该连接器的全部工具。<b>支持把 .json 配置文件（{"mcpServers":{...}} 或 {"名":{...}} 形态，与 Claude Desktop/Cursor 通用）直接拖进本页导入</b>；公司市场的 MCP 条目在「市场 → MCP」里一键安装。</div>
             <div class="ccp-install-row">
               <input id="mcp-add-name" type="text" placeholder="名称（字母/数字/连字符）" style="max-width:150px" />
               <select id="mcp-add-type" style="max-width:86px">

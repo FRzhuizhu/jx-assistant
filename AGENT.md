@@ -1152,12 +1152,22 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   （fastmcp<4）；autocad 的 requirements 写了不存在的 pyautocad>=2.0.0、
   `FastMCP(title=)` 老 kwarg，安装器直装可用版本并做一行替换。
 - **API**：`GET /api/mcp`（清单+连通状态）、`POST /api/mcp`（增改）、
-  `/delete`、`/test`（连通并列工具）、`GET /api/mcp/catalog`（目录+已装
-  标记）、`POST /api/mcp/catalog/install`（一键装，分钟级）。
+  `/delete`、`/test`（连通并列工具）、`POST /api/mcp/upload`（拖拽导入
+  .json 配置，multipart）、`GET /api/mcp/catalog`（目录+已装标记）、
+  `POST /api/mcp/catalog/install`（一键装，分钟级）。
+- **拖拽导入**：MCP 页支持把 .json 配置直接拖入（行业三形态：
+  `{"mcpServers":{...}}` / `{"名":{...}}` / 单服务器对象用文件名当名，
+  parseMCPServersDoc；与服务端 readMCPPackage 同语义、两端各持一份最小
+  实现）。
+- **公司市场**：市场第四类型 mcp（服务端 jxaiserver 同步支持，包体为含
+  mcp.json 的 zip，也接受裸 .json 直传）。客户端安装 = 下载解析后把每个
+  服务器注册为连接器（来源标 `market:<条目id>`），卸载按来源整组注销
+  （RemoveBySource）；已装标记按 HasSource。市场页有 MCP 标签。
 - **测试**：mcpservers_test.go（名称域/状态回读/清单段与常驻工具恒定性/
-  读取守卫/目录完整性/tar.gz 解压防穿越）；mcp_install_now_test.go 为手动
-  实装入口（`JX_MCP_INSTALL_NOW=<目录id逗号列表> go test -run
-  TestMCPInstallNow`，驱动真实下载安装+握手验证，缺省跳过）。
+  读取守卫/目录完整性/tar.gz 解压防穿越/三形态解析/按来源整组增删）；
+  mcp_install_now_test.go 为手动实装入口
+  （`JX_MCP_INSTALL_NOW=<目录id逗号列表> go test -run TestMCPInstallNow`，
+  驱动真实下载安装+握手验证，缺省跳过）。
 
 ### 与 Claude Code 的已知差异（有意为之或暂不支持）
 

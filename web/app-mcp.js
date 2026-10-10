@@ -222,4 +222,56 @@ function splitCommandLine(s) {
   return out;
 }
 
-document.addEventListener('DOMContentLoaded', () => bindMCPPanel());
+/* ---------- 拖拽导入 .json 配置（POST /api/mcp/upload） ----------
+   把 MCP 配置文件直接拖进本页即注册连接器，形态与 Claude Desktop /
+   Cursor / Codex 的配置一致：{"mcpServers":{...}}、{"名":{...}} 或单个
+   服务器对象（文件名当服务器名）。多文件依次导入。 */
+function bindMCPDropZone() {
+  const pane = $('set-pane-mcp');
+  if (!pane || pane.dataset.dropBound) return;
+  pane.dataset.dropBound = '1';
+  const note = document.createElement('div');
+  note.className = 'pr-note';
+  pane.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer.types || [])].includes('Files')) return;
+    e.preventDefault();
+    pane.classList.add('drop-hover');
+  });
+  pane.addEventListener('dragleave', (e) => {
+    if (e.target === pane) pane.classList.remove('drop-hover');
+  });
+  pane.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    pane.classList.remove('drop-hover');
+    const files = [...(e.dataTransfer.files || [])];
+    const jsons = files.filter((f) => /\.json$/i.test(f.name));
+    if (!jsons.length) {
+      alert(files.length
+        ? '只支持拖入 .json 配置文件（{"mcpServers":{...}} 或 {"名":{...}} 形态；目录/zip 请走市场或手动添加）'
+        : '拖入的内容不是文件');
+      return;
+    }
+    pane.appendChild(note);
+    note.textContent = `导入中（${jsons.length} 个）…`;
+    let ok = 0, added = [];
+    for (const f of jsons) {
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      try {
+        const res = await fetch('/api/mcp/upload', { method: 'POST', body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        ok++;
+        added = added.concat(data.servers || []);
+      } catch (err) {
+        alert(`「${f.name}」导入失败：` + err.message);
+      }
+    }
+    note.textContent = ok
+      ? `已导入 ${ok} 份配置，注册连接器：${added.join('、')}`
+      : '导入失败（见提示）';
+    renderMCPPage();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => { bindMCPPanel(); bindMCPDropZone(); });

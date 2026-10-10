@@ -223,3 +223,56 @@ func TestMCPExtractTarGz(t *testing.T) {
 		t.Error("路径穿越未被拦截")
 	}
 }
+
+func TestParseMCPServersDoc(t *testing.T) {
+	// 形态一：mcpServers 包裹层
+	m, err := parseMCPServersDoc([]byte(`{"mcpServers":{"sw":{"command":"python","args":["s.py"]}}}`), "fallback")
+	if err != nil || len(m) != 1 {
+		t.Fatalf("包裹层形态解析失败: %v %v", m, err)
+	}
+	// 形态二：扁平
+	m, err = parseMCPServersDoc([]byte(`{"a":{"command":"x"},"b":{"type":"http","url":"https://x"}}`), "fallback")
+	if err != nil || len(m) != 2 {
+		t.Fatalf("扁平形态解析失败: %v %v", m, err)
+	}
+	// 形态三：单服务器对象，用文件名当名
+	m, err = parseMCPServersDoc([]byte(`{"command":"python","args":["s.py"]}`), "my-bridge")
+	if err != nil || len(m) != 1 {
+		t.Fatalf("单对象形态解析失败: %v %v", m, err)
+	}
+	if _, ok := m["my-bridge"]; !ok {
+		t.Fatalf("单对象形态应以 fallbackName 命名: %v", m)
+	}
+	// 坏输入：非 JSON / 缺 command / http 缺 url
+	for _, bad := range []string{`not-json`, `{"a":{"args":["x"]}}`, `{"a":{"type":"http"}}`} {
+		if _, err := parseMCPServersDoc([]byte(bad), "fallback"); err == nil {
+			t.Errorf("坏输入应报错: %s", bad)
+		}
+	}
+}
+
+func TestMCPUpsertFromDefsAndRemoveBySource(t *testing.T) {
+	r := newTestMCPR(t)
+	defs := map[string]ccMCPServerDef{
+		"alpha": {Command: "python"},
+		"beta":  {Type: "http", URL: "https://x/mcp"},
+	}
+	names, err := r.UpsertFromDefs(defs, "market:cad-pack", "CAD 桥合集")
+	if err != nil || len(names) != 2 {
+		t.Fatalf("批量注册失败: %v %v", names, err)
+	}
+	if !r.HasSource("market:cad-pack") {
+		t.Fatal("HasSource 应为真")
+	}
+	if r.HasSource("market:other") {
+		t.Fatal("别的来源应为假")
+	}
+	// 整组注销
+	removed := r.RemoveBySource("market:cad-pack")
+	if len(removed) != 2 || removed[0] != "alpha" || removed[1] != "beta" {
+		t.Fatalf("整组注销应删两个: %v", removed)
+	}
+	if r.HasSource("market:cad-pack") || r.Count() != 0 {
+		t.Fatal("注销后应清空")
+	}
+}

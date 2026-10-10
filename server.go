@@ -294,6 +294,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/mcp", a.handleUpsertMCPServer)
 	mux.HandleFunc("POST /api/mcp/delete", a.handleDeleteMCPServer)
 	mux.HandleFunc("POST /api/mcp/test", a.handleTestMCPServer)
+	mux.HandleFunc("POST /api/mcp/upload", a.handleUploadMCPServers)
 	mux.HandleFunc("GET /api/mcp/catalog", a.handleMCPCatalog)
 	mux.HandleFunc("POST /api/mcp/catalog/install", a.handleMCPCatalogInstall)
 	mux.HandleFunc("GET /api/components", a.handleListComponents)

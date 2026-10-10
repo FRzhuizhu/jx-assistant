@@ -5,7 +5,9 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 )
 
@@ -97,6 +99,52 @@ func (a *App) handleTestMCPServer(w http.ResponseWriter, r *http.Request) {
 		list = append(list, map[string]any{"name": t.Name, "description": t.Description})
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "count": len(tools), "tools": list})
+}
+
+// handleUploadMCPServers 拖拽导入：上传一份 MCP 配置 .json（行业三形态，
+// 见 parseMCPServersDoc），全部服务器注册为连接器（来源 manual）。浏览器
+// 拖拽拿不到本地路径，multipart 直传是唯一通道。
+func (a *App) handleUploadMCPServers(w http.ResponseWriter, r *http.Request) {
+	if a.MCPServers == nil {
+		writeErr(w, 500, "MCP 注册表未初始化")
+		return
+	}
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		writeErr(w, 400, "上传解析失败: "+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, 400, "缺少 file 字段")
+		return
+	}
+	defer file.Close()
+	if !strings.EqualFold(filepath.Ext(header.Filename), ".json") {
+		writeErr(w, 400, "只支持 .json 配置文件（{\"mcpServers\":{...}} 或 {\"名\":{...}} 形态；目录/zip 请用目录安装或市场）")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4<<20))
+	if err != nil {
+		writeErr(w, 400, "读取上传内容失败: "+err.Error())
+		return
+	}
+	// 单服务器形态用文件名（去扩展名）当服务器名
+	fallback := strings.TrimSuffix(filepath.Base(header.Filename), filepath.Ext(header.Filename))
+	defs, err := parseMCPServersDoc(data, fallback)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	names, err := a.MCPServers.UpsertFromDefs(defs, "manual", "")
+	if err != nil && len(names) == 0 {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": true, "servers": names, "partialError": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "servers": names})
 }
 
 // handleMCPCatalog 目录清单（含安装状态）。
