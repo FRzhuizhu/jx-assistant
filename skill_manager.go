@@ -11,8 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -24,12 +25,25 @@ var builtinSkillIDs = map[string]bool{"pdf": true, "ocr": true, "office": true, 
 
 const (
 	userSkillBodyMax = 6000 // read_skill 返回的单个技能说明上限（字符）
+	// userSkillDescPromptMax 环境快照里一句话描述的截断上限：快照每个会话都
+	// 注入，超长描述会污染全部对话的上下文（行业规范本身也限 description ≤1024）
+	userSkillDescPromptMax = 200
 )
+
+// truncateRunesForPrompt 按 rune 数截断并加省略号（不破坏多字节字符）。
+func truncateRunesForPrompt(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}
 
 type userSkillEntry struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"` // 显示名称（中文为主）；显示时 displayName → name → id 逐级回退
 	Description string `json:"description"`
+	Version     string `json:"version,omitempty"` // SKILL.md frontmatter / manifest.json 的版本（缺省空）
 	Enabled     bool   `json:"enabled"`
 	BuiltIn     bool   `json:"builtin"`
 }
@@ -91,41 +105,69 @@ func stripFrontmatter(body string) string {
 	return s
 }
 
-// skillMeta 从 SKILL.md 的 frontmatter 提取 name / description；
-// 没有 frontmatter 时回退为目录名与正文首行。
-func skillMeta(dir string) (name, description, body string) {
+// skillFM 是 SKILL.md 的解析结果（frontmatter 键 + 正文），清单/安装/发布共用。
+// name 保持行业规范（Agent Skills：小写字母/数字/中划线）；displayName 是展示名
+//（中文为主，没有就回退 name——VS Code 的 name/displayName 同款双名称）。
+type skillFM struct {
+	Name        string
+	DisplayName string
+	Description string
+	Version     string
+	Tags        []string
+	Body        string // 去掉 frontmatter 后的正文
+}
+
+// skillDisplayOf 显示名的逐级回退：displayName → name → id。
+func skillDisplayOf(display, name, id string) string {
+	if s := strings.TrimSpace(display); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(name); s != "" {
+		return s
+	}
+	return id
+}
+
+// skillMeta 从目录的 SKILL.md 提取元信息（frontmatter 的 name / displayName /
+// description / version / tags）；没有 frontmatter 时回退为目录名与正文首行。
+func skillMeta(dir string) skillFM {
+	var fm skillFM
 	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 	if err != nil {
-		return filepath.Base(dir), "", ""
+		fm.Name = filepath.Base(dir)
+		return fm
 	}
 	text := string(data)
 	s := strings.TrimSpace(text)
-	name = filepath.Base(dir)
-	description = ""
+	fm.Name = filepath.Base(dir)
 	if strings.HasPrefix(s, "---") {
 		if i := strings.Index(s[3:], "\n---"); i >= 0 {
-			front := s[3 : 3+i]
-			body = strings.TrimSpace(s[3+i+4:])
-			for _, line := range strings.Split(front, "\n") {
+			fm.Body = strings.TrimSpace(s[3+i+4:])
+			for _, line := range strings.Split(s[3:3+i], "\n") {
 				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "name:") {
-					name = strings.TrimSpace(strings.TrimPrefix(line, "name:"))
-				} else if strings.HasPrefix(line, "description:") {
-					description = strings.TrimSpace(strings.TrimPrefix(line, "description:"))
+				switch {
+				case strings.HasPrefix(line, "name:"):
+					fm.Name = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "name:")), `"'`)
+				case strings.HasPrefix(line, "displayName:"):
+					fm.DisplayName = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "displayName:")), `"'`)
+				case strings.HasPrefix(line, "description:"):
+					fm.Description = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "description:")), `"'`)
+				case strings.HasPrefix(line, "version:"):
+					fm.Version = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "version:")), `"'`)
 				}
 			}
-			return name, description, body
+			return fm
 		}
 	}
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
-		t := strings.TrimSpace(line)
-		if t != "" {
-			description = strings.TrimPrefix(t, "#")
+		if t := strings.TrimSpace(line); t != "" {
+			fm.Description = strings.TrimSpace(strings.TrimPrefix(t, "#"))
 			break
 		}
 	}
-	return name, strings.TrimSpace(description), text
+	fm.Body = strings.TrimSpace(text)
+	return fm
 }
 
 // SkillLists 是 GET /api/skills 的载荷：自带技能 + 用户技能。
@@ -166,9 +208,16 @@ func (a *App) listSkills() (*SkillLists, error) {
 		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
 			continue // 没有 SKILL.md 的目录不算技能
 		}
-		name, desc, _ := skillMeta(skillDir)
+		fm := skillMeta(skillDir)
+		version := fm.Version
+		if version == "" { // manifest.json（技能运行清单）里有版本时认它
+			if m, _, err := a.readSkillManifest(filepath.Join("user", e.Name())); err == nil {
+				version = m.Version
+			}
+		}
 		out.User = append(out.User, userSkillEntry{
-			ID: e.Name(), Name: name, Description: desc,
+			ID: e.Name(), Name: fm.Name, DisplayName: fm.DisplayName,
+			Description: fm.Description, Version: version,
 			Enabled: !st.Disabled[e.Name()], BuiltIn: false,
 		})
 	}
@@ -218,6 +267,13 @@ func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 	if builtinSkillIDs[id] {
 		return nil, fmt.Errorf("%s 是自带技能，不能重名", id)
 	}
+	// 内容体检（与发布侧 checkSkillMDBody 同一份判定）：空 SKILL.md / 只有
+	// frontmatter 的包装进来「列表没描述、read_skill 读不出」，在安装口拦下
+	if raw, err := os.ReadFile(filepath.Join(root, "SKILL.md")); err != nil {
+		return nil, fmt.Errorf("SKILL.md 读取失败: %w", err)
+	} else if err := checkSkillMDBody("SKILL.md", raw); err != nil {
+		return nil, err
+	}
 	userDir, err := a.userSkillsDir()
 	if err != nil {
 		return nil, err
@@ -229,8 +285,11 @@ func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 	if err := copyDir(root, dest); err != nil {
 		return nil, fmt.Errorf("安装技能失败: %w", err)
 	}
-	name, desc, _ := skillMeta(dest)
-	return &userSkillEntry{ID: id, Name: name, Description: desc, Enabled: true}, nil
+	fm := skillMeta(dest)
+	return &userSkillEntry{
+		ID: id, Name: fm.Name, DisplayName: fm.DisplayName,
+		Description: fm.Description, Enabled: true,
+	}, nil
 }
 
 // extractSkillZip 把技能 ZIP 解压到专用临时目录，返回 (技能根, 临时目录, 错误)。
@@ -312,9 +371,10 @@ func (a *App) deleteUserSkill(id string) error {
 }
 
 // userSkillsPromptBlock 生成用户技能清单段（归入环境快照，变化补在对话尾部）：
-// 只列 名字（id）与一句话描述，正文不注入——模型要用哪个技能，先调用
+// 只列 显示名（id）与一句话描述，正文不注入——模型要用哪个技能，先调用
 // read_skill(id) 按需读完整说明（对齐 ZCode 的技能模式：清单先行、内容按需，
-// 技能增减不动工具定义、不打断前缀缓存）。
+// 技能增减不动工具定义、不打断前缀缓存）。显示名中文优先（displayName →
+// name）；描述超长截断（一句话描述的本意，全文在 read_skill）。
 func (a *App) userSkillsPromptBlock() string {
 	list, err := a.listSkills()
 	if err != nil || len(list.User) == 0 {
@@ -325,10 +385,12 @@ func (a *App) userSkillsPromptBlock() string {
 		if !s.Enabled {
 			continue
 		}
-		if s.Description == "" {
-			b.WriteString("  - " + s.Name + "（id=" + s.ID + "）\n")
+		disp := skillDisplayOf(s.DisplayName, s.Name, s.ID)
+		desc := truncateRunesForPrompt(s.Description, userSkillDescPromptMax)
+		if desc == "" {
+			b.WriteString("  - " + disp + "（id=" + s.ID + "）\n")
 		} else {
-			b.WriteString("  - " + s.Name + "（id=" + s.ID + "）：" + s.Description + "\n")
+			b.WriteString("  - " + disp + "（id=" + s.ID + "）：" + desc + "\n")
 		}
 	}
 	if b.Len() == 0 {
@@ -444,8 +506,8 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, _, body := skillMeta(filepath.Join(userDir, id))
-	body = stripFrontmatter(body)
+	fm := skillMeta(filepath.Join(userDir, id))
+	body := stripFrontmatter(fm.Body)
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("技能 %s 没有可用的说明正文", id)
 	}
@@ -498,7 +560,7 @@ func registerSkillTool() Tool {
 					return "", err
 				}
 			}
-			return fmt.Sprintf("已注册技能 %s（名称：%s%s）：各任务会话的技能清单会自动更新，" +
+			return fmt.Sprintf("已注册技能 %s（名称：%s%s）：各任务会话的技能清单会自动更新，"+
 				"可用 read_skill(id=%s) 读回验证。", entry.ID, entry.Name,
 				map[bool]string{true: "，覆盖旧版", false: ""}[p.Update], entry.ID), nil
 		},
@@ -601,6 +663,118 @@ func (a *App) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	tmp.Close()
 	entry, err := a.addUserSkill(tmpPath)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, entry)
+}
+
+// handleInstallSkillFiles 技能文件夹拖拽安装（设置页拖入文件夹）：multipart 的
+// files + paths（包内相对路径，公共顶层目录=技能文件夹名）→ 组装进临时目录 →
+// 走与 /api/skills/add 同一条 addUserSkill。浏览器拖文件夹拿不到本地路径，
+// webkitGetAsEntry 遍历出的文件集是唯一通道（前端 app-settings.js）。
+func (a *App) handleInstallSkillFiles(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, marketPublishMaxZip)
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		writeErr(w, 400, "上传解析失败（或超出大小上限）: "+err.Error())
+		return
+	}
+	var uploads []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		uploads = r.MultipartForm.File["files"]
+	}
+	if len(uploads) == 0 {
+		writeErr(w, 400, "没有收到文件（files 为空）")
+		return
+	}
+	var paths []string
+	if s := strings.TrimSpace(r.FormValue("paths")); s != "" {
+		if err := json.Unmarshal([]byte(s), &paths); err != nil {
+			writeErr(w, 400, "paths 不是合法 JSON 数组: "+err.Error())
+			return
+		}
+	}
+	// 公共顶层目录（=拖进来的文件夹名，兼当技能 id 的推导来源）
+	tops := map[string]bool{}
+	for i := range uploads {
+		p := ""
+		if i < len(paths) {
+			p = cleanZipPath(paths[i])
+		}
+		if p == "" {
+			p = cleanZipPath(uploads[i].Filename)
+		}
+		if i := strings.Index(p, "/"); i > 0 {
+			tops[p[:i]] = true
+		} else {
+			tops[""] = true // 有文件不在任何顶层目录下：散文件形态
+		}
+	}
+	top := ""
+	for t := range tops {
+		if t == "" || top != "" {
+			writeErr(w, 400, "请拖入整个技能文件夹（应只有一个顶层目录，目录里含 SKILL.md），而不是散文件")
+			return
+		}
+		top = t
+	}
+	if top == "" {
+		writeErr(w, 400, "请拖入整个技能文件夹（应只有一个顶层目录，目录里含 SKILL.md），而不是散文件")
+		return
+	}
+	tmp, err := os.MkdirTemp("", "jxskf-")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer os.RemoveAll(tmp)
+	root := filepath.Join(tmp, top)
+	for i, uh := range uploads {
+		rel := ""
+		if i < len(paths) {
+			rel = cleanZipPath(paths[i])
+		}
+		if rel == "" {
+			rel = cleanZipPath(uh.Filename)
+		}
+		rel = strings.TrimPrefix(rel, top+"/") // 剥掉顶层目录，落到 root 下
+		if rel == "" {
+			continue // 顶层目录自身的条目（遍历文件夹时理论上不会出现）
+		}
+		if rel == ".." || strings.HasPrefix(rel, "../") || strings.Contains(rel, "/../") {
+			writeErr(w, 400, "文件名里有非法路径: "+rel)
+			return
+		}
+		target := filepath.Join(root, filepath.FromSlash(rel))
+		if !strings.HasPrefix(target, root+string(os.PathSeparator)) {
+			writeErr(w, 400, "文件名里有非法路径: "+rel)
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		in, err := uh.Open()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		out, err := os.Create(target)
+		if err != nil {
+			in.Close()
+			writeErr(w, 500, err.Error())
+			return
+		}
+		_, err = io.Copy(out, in)
+		in.Close()
+		out.Close()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	entry, err := a.addUserSkill(root)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

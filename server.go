@@ -272,6 +272,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/skills", a.handleListSkills)
 	mux.HandleFunc("POST /api/skills/add", a.handleAddSkill)
 	mux.HandleFunc("POST /api/skills/upload", a.handleUploadSkill)
+	mux.HandleFunc("POST /api/skills/install-files", a.handleInstallSkillFiles) // 文件夹拖拽安装（multipart files+paths）
 	mux.HandleFunc("POST /api/skills/toggle", a.handleToggleSkill)
 	mux.HandleFunc("POST /api/skills/delete", a.handleDeleteSkill)
 	mux.HandleFunc("GET /api/experts", a.handleListExperts)
@@ -308,8 +309,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/market", a.handleMarketView)
 	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
 	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
-	mux.HandleFunc("POST /api/market/publish", a.handleMarketPublish)     // 上传技能：校验打包后转投市场服务器（market_publish.go）
-	mux.HandleFunc("POST /api/market/unpublish", a.handleMarketUnpublish) // 删除自己发布的市场条目（同文件）
+	mux.HandleFunc("GET /api/market/publish-meta", a.handleMarketPublishMeta) // 已装技能的发布元信息推导（弹层预填）
+	mux.HandleFunc("POST /api/market/publish", a.handleMarketPublish)         // 发布已装技能到市场服务器：先装后传（market_publish.go）
+	mux.HandleFunc("POST /api/market/unpublish", a.handleMarketUnpublish)     // 下架自己发布的市场条目（归属校验在服务端）
 	// 公司接入向导（wizard.go）：局域网发现 + 总服务器查询 + 一键应用配置
 	mux.HandleFunc("POST /api/wizard/discover", a.handleWizardDiscover)
 	mux.HandleFunc("POST /api/wizard/connect", a.handleWizardConnect)

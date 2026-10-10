@@ -129,7 +129,7 @@ SKILL.md 写作原则（核心，逐条落实）：
 const skillFilePrompt = `
 ## 技能文件规范
 
-技能 = 一个目录，至少含 SKILL.md（YAML frontmatter 写 name: 与 description:，正文是教程）。草稿目录建在工作区里（如 技能草稿/<技能名>/），写好后调用 register_skill(path) 注册进技能库；已注册的技能要更新时，改完草稿目录再带 update=true 重新注册。技能目录里只放教程本身；演示材料（截图/事件/录音）留在 演示记录/ 下，不要塞进技能目录。
+技能 = 一个目录，至少含 SKILL.md（YAML frontmatter 写 name:、displayName: 与 description:，正文是教程）。name 用英文短名（小写字母/数字/中划线，与行业规范一致）；displayName 是给人看的显示名，用中文（技能清单、环境提示词与市场卡片都显示它，没写会回退到 name）；description 是一句话描述兼触发器。草稿目录建在工作区里（如 技能草稿/<技能名>/），写好后调用 register_skill(path) 注册进技能库；已注册的技能要更新时，改完草稿目录再带 update=true 重新注册。技能目录里只放教程本身；演示材料（截图/事件/录音）留在 演示记录/ 下，不要塞进技能目录。
 
 文件操作一律优先用文件工具：查看文本用 read（而不是 cat 等命令行）；创建文件或整体替换内容用 write（既有文件先 read 读过才能覆盖——观察策略强制，本会话刚创建/刚改过的除外）；局部修改优先用 edit，而不是重写整个文件。
 
@@ -415,9 +415,9 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString(extra + "\n")
 		}
 	}
-	// 自带技能一览（静态）；用户技能段也归入快照——开关技能只影响尾部
-	// 快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
-	b.WriteString("- 自带技能：pdf（读 PDF 文档）、ocr（图片文字识别）、office_skill（Word/Excel/PPT 操作指南）、downloader（下载器：aria2c 下载落盘）、apkinfo（APK 包名/版本/签名查看），需要时直接调用对应工具或子命令\n")
+	// 自带技能一览（静态，中文为主、括注英文 id）；用户技能段也归入快照——
+	// 开关技能只影响尾部快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
+	b.WriteString("- 自带技能：PDF 文档（pdf，读 PDF 文档）、图片文字识别（ocr）、Office 文档（office_skill，Word/Excel/PPT 操作指南）、下载器（downloader，aria2c 下载落盘）、APK 信息（apkinfo，包名/版本/签名查看），需要时直接调用对应工具或子命令\n")
 	// 用户技能清单与插件技能清单：环境快照的固定条目，**所有模式一律注入**，
 	// 不挂任何模式谓词——与上面的操作系统/权限模式行同级。技能功能晚于
 	// office/coding 落地，曾因手写「task/skill-create 才注入」的门控把两个

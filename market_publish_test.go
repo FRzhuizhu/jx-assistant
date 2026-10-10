@@ -1,7 +1,8 @@
 package main
 
-// 市场发布单测（market_publish.go）：假市场服务器的 /admin/api/publish 收端，
-// 覆盖 zip 透传、文件夹打包、版本号解析、各种拒绝路径与元信息补全。
+// 市场发布单测（market_publish.go）：假市场服务器的 /api/market/publish 收端，
+// 覆盖「先装后传」（只发已装用户技能、包由后端从安装目录现场打包）、元信息
+// 补全（displayName 优先）、长度校验、各种拒绝路径与缓存失效。
 
 import (
 	"archive/zip"
@@ -9,18 +10,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-/* ---------- 假市场（清单 + 发布端点） ---------- */
+/* ---------- 假市场（清单 + 用户发布端点） ---------- */
 
 type fakePublishMarket struct {
 	srv    *httptest.Server
 	fields map[string]string
+	user   string // 收到的 X-Jxai-User 头（身份=发布者姓名）
 	file   string
 	zip    []byte
 	code   int
@@ -36,13 +39,14 @@ func newFakePublishMarket(t *testing.T) *fakePublishMarket {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"name":"测试市场","updatedAt":"2026-10-09T00:00:00Z","skills":[]}`)
 	})
-	mux.HandleFunc("POST /admin/api/publish", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/market/publish", func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(64 << 20); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
 		fm.hits++
-		for _, k := range []string{"type", "id", "name", "version", "desc", "tags"} {
+		fm.user = r.Header.Get(marketUserHeader)
+		for _, k := range []string{"type", "id", "name", "version", "desc", "tags", "owner"} {
 			fm.fields[k] = r.FormValue(k)
 		}
 		if f, hdr, err := r.FormFile("file"); err == nil {
@@ -67,66 +71,62 @@ func newFakePublishMarket(t *testing.T) *fakePublishMarket {
 }
 
 func newPublishTestApp(t *testing.T, marketURL string) *App {
-	return newMarketTestApp(t, marketURL) // builtinSkillIDs 是包级常量表（pdf/ocr/office/…），无需另外点
+	a := newMarketTestApp(t, marketURL)
+	a.Cfg.PublisherName = "张三" // 发布者姓名：身份头的来源
+	return a
 }
 
-/* ---------- 请求/包体构造 ---------- */
+/* ---------- 安装技能（先装后传的「装」）与请求构造 ---------- */
 
-type pubFile struct {
-	name string
-	data []byte
-}
-
-func publishReq(t *testing.T, a *App, meta any, files []pubFile) (int, map[string]any) {
+// installTestSkill 往 技能/user/<dir>/ 直接放一个技能（绕过 addUserSkill 的拷贝，
+// 等价于装好的状态），返回技能 id（=目录名）。
+func installTestSkill(t *testing.T, a *App, dir string, files map[string]string) string {
 	t.Helper()
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	if meta != nil {
-		b, err := json.Marshal(meta)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := mw.WriteField("meta", string(b)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(files) > 0 {
-		// 包内相对路径单独给（multipart 的 filename 只保留 basename）
-		names := make([]string, 0, len(files))
-		for _, f := range files {
-			names = append(names, f.name)
-		}
-		b, err := json.Marshal(names)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := mw.WriteField("paths", string(b)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, f := range files {
-		base := f.name
-		if i := strings.LastIndex(base, "/"); i >= 0 {
-			base = base[i+1:]
-		}
-		w, err := mw.CreateFormFile("files", base)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write(f.data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := mw.Close(); err != nil {
+	userDir, err := a.userSkillsDir()
+	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/market/publish", &body)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	skill := filepath.Join(userDir, dir)
+	if err := os.MkdirAll(skill, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		p := filepath.Join(skill, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func publishReq(t *testing.T, a *App, body map[string]any) (int, map[string]any) {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/market/publish", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	a.handleMarketPublish(rec, req)
 	out := map[string]any{}
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	return rec.Code, out
+}
+
+func zipNamesForTest(t *testing.T, data []byte) []string {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("发布出去的包不是合法 zip: %v", err)
+	}
+	out := []string{}
+	for _, f := range zr.File {
+		out = append(out, f.Name)
+	}
+	return out
 }
 
 func zipBytesForTest(t *testing.T, files map[string]string) []byte {
@@ -146,19 +146,6 @@ func zipBytesForTest(t *testing.T, files map[string]string) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
-}
-
-func zipNamesForTest(t *testing.T, data []byte) []string {
-	t.Helper()
-	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		t.Fatalf("发布出去的包不是合法 zip: %v", err)
-	}
-	out := []string{}
-	for _, f := range zr.File {
-		out = append(out, f.Name)
-	}
-	return out
 }
 
 const okSkillMD = "---\nname: wechat-chat-ops\ndescription: 驱动真实微信 PC 端\n---\n\n正文\n"
@@ -199,85 +186,82 @@ func TestSkillIDFromName(t *testing.T) {
 	}
 }
 
-/* ---------- 正常发布 ---------- */
+/* ---------- 正常发布：从已装目录打包，displayName 优先 ---------- */
 
-func TestPublishSkillZipPassthrough(t *testing.T) {
+func TestPublishInstalledSkill(t *testing.T) {
 	fm := newFakePublishMarket(t)
 	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	pack := zipBytesForTest(t, map[string]string{
-		"微信操作/SKILL.md":       okSkillMD,
-		"微信操作/scripts/run.py": "print(1)\n",
+	skillID := installTestSkill(t, a, "wechat-chat-ops", map[string]string{
+		"SKILL.md":       "---\nname: wechat-chat-ops\ndisplayName: 微信操作\ndescription: 驱动真实微信 PC 端\n---\n\n正文\n",
+		"scripts/run.py": "print(1)\n",
 	})
-	code, out := publishReq(t, a, map[string]any{
-		"id": "wechat-chat-ops", "name": "微信操作", "version": "1.3.1",
-		"description": "描述来自前端", "tags": []string{"办公", "自动化"}, "zip": true,
-	}, []pubFile{{name: "微信操作_技能包_v1.3.1_20261009.zip", data: pack}})
+	code, out := publishReq(t, a, map[string]any{"skillId": skillID})
 	if code != 200 {
 		t.Fatalf("期待 200，收到 %d：%v", code, out)
 	}
-	if fm.fields["type"] != "skill" || fm.fields["id"] != "wechat-chat-ops" || fm.fields["version"] != "1.3.1" {
+	if fm.user != "张三" {
+		t.Fatalf("身份头应带发布者姓名，实得 %q", fm.user)
+	}
+	if fm.fields["owner"] != "" {
+		t.Fatalf("owner 不再走表单字段（身份在头里），实得 %q", fm.fields["owner"])
+	}
+	if fm.fields["type"] != "skill" || fm.fields["id"] != "wechat-chat-ops" {
 		t.Fatalf("转发字段不对: %#v", fm.fields)
 	}
-	if fm.fields["desc"] != "描述来自前端" || fm.fields["tags"] != "办公,自动化" {
-		t.Fatalf("描述/标签转发不对: %#v", fm.fields)
+	if fm.fields["name"] != "微信操作" {
+		t.Fatalf("显示名应优先 SKILL.md 的 displayName: %#v", fm.fields)
 	}
-	if !bytes.Equal(fm.zip, pack) {
-		t.Fatalf("zip 透传后字节不一致（收到 %d 字节，原 %d 字节）", len(fm.zip), len(pack))
-	}
-	if out["sha256"] == "" || out["size"].(float64) != float64(len(pack)) {
-		t.Fatalf("回执缺 sha256/size: %v", out)
-	}
-	if out["skillMd"] != "微信操作/SKILL.md" {
-		t.Fatalf("包内 SKILL.md 路径识别不对: %v", out["skillMd"])
-	}
-}
-
-func TestPublishSkillFolderPacking(t *testing.T) {
-	fm := newFakePublishMarket(t)
-	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	// 前端已剥掉顶层目录：包内相对路径从 SKILL.md 开始
-	code, out := publishReq(t, a, map[string]any{
-		"id": "wx-ops", "version": "2.0.0", "description": "文件夹投喂", "zip": false,
-	}, []pubFile{
-		{name: "SKILL.md", data: []byte("---\nname: 微信操作\ndescription: 来自 SKILL.md\n---\n\n把聊天记录导出成 Excel。\n")},
-		{name: "scripts/run.py", data: []byte("print(1)\n")},
-	})
-	if code != 200 {
-		t.Fatalf("期待 200，收到 %d：%v", code, out)
+	if fm.file != "wechat-chat-ops-1.0.0.zip" {
+		t.Fatalf("发布包名不对: %s", fm.file)
 	}
 	names := zipNamesForTest(t, fm.zip)
-	if len(names) != 2 || !hasZipEntry(names, "SKILL.md") || !hasZipEntry(names, "scripts/run.py") {
-		t.Fatalf("打包结果不对: %v", names)
+	if !hasZipEntry(names, "SKILL.md") || !hasZipEntry(names, "scripts/run.py") {
+		t.Fatalf("包内容不对（应从安装目录原样打包）: %v", names)
 	}
-	if fm.fields["name"] != "微信操作" || fm.fields["desc"] != "文件夹投喂" {
-		t.Fatalf("元信息补全不对: %#v", fm.fields)
-	}
-	if out["skillMd"] != "SKILL.md" {
-		t.Fatalf("skillMd 应为根部的 SKILL.md: %v", out["skillMd"])
+	if out["sha256"] == "" {
+		t.Fatalf("回执缺 sha256: %v", out)
 	}
 }
 
-// 版本号/名称/id 都从包本身补全：文件名给版本，包内目录给 id，SKILL.md 给名称与描述。
-func TestPublishSkillMetaFallback(t *testing.T) {
+func TestPublishMetaFallback(t *testing.T) {
 	fm := newFakePublishMarket(t)
 	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	pack := zipBytesForTest(t, map[string]string{"微信操作/SKILL.md": okSkillMD})
-	code, out := publishReq(t, a, map[string]any{"zip": true},
-		[]pubFile{{name: "微信操作_技能包_v1.3.1_20261009.zip", data: pack}})
+	// 中文目录名 + 英文 frontmatter 名 + manifest 版本：id/名称/版本全靠推导
+	installTestSkill(t, a, "微信操作", map[string]string{
+		"SKILL.md":      "---\nname: wechat-chat-ops\ndescription: 描述来自 SKILL.md\nversion: 9.9.9\ntags: 办公, 自动化\n---\n\n正文\n",
+		"manifest.json": `{"id":"wxops","name":"微信操作（manifest）","version":"1.2.3"}`,
+	})
+	code, out := publishReq(t, a, map[string]any{"skillId": "微信操作"})
 	if code != 200 {
 		t.Fatalf("期待 200，收到 %d：%v", code, out)
 	}
-	if out["id"] != "wechat-chat-ops" {
-		t.Fatalf("id 应回退到 SKILL.md 的英文名，实得 %v", out["id"])
+	if out["id"] != "wxops" {
+		t.Fatalf("id 应优先包内 manifest.json 的 id，实得 %v", out["id"])
 	}
-	if out["version"] != "1.3.1" {
-		t.Fatalf("版本号应从文件名解析，实得 %v", out["version"])
+	if fm.fields["name"] != "微信操作（manifest）" {
+		t.Fatalf("显示名回退链：displayName（无）→ manifest.name: %#v", fm.fields)
 	}
-	if fm.fields["name"] != "wechat-chat-ops" {
-		t.Fatalf("名称应从 SKILL.md frontmatter 补全: %#v", fm.fields)
+	if fm.fields["version"] != "1.2.3" {
+		t.Fatalf("版本应优先 manifest.json，实得 %q", fm.fields["version"])
 	}
-	if fm.file != "wechat-chat-ops-1.3.1.zip" {
-		t.Fatalf("发布包名不对: %s", fm.file)
+	if fm.fields["tags"] != "办公,自动化" {
+		t.Fatalf("标签应从 SKILL.md 补全，实得 %q", fm.fields["tags"])
+	}
+	// 显式字段优先
+	fm2 := newFakePublishMarket(t)
+	b := newPublishTestApp(t, fm2.srv.URL+"/market/manifest.json")
+	installTestSkill(t, b, "微信操作", map[string]string{
+		"SKILL.md": okSkillMD,
+	})
+	if code, out = publishReq(t, b, map[string]any{
+		"skillId": "微信操作", "name": "手填名", "version": "2.0.0",
+		"description": "手填描述", "tags": []string{"手工"},
+	}); code != 200 {
+		t.Fatalf("期待 200，收到 %d：%v", code, out)
+	}
+	if fm2.fields["name"] != "手填名" || fm2.fields["version"] != "2.0.0" ||
+		fm2.fields["desc"] != "手填描述" || fm2.fields["tags"] != "手工" {
+		t.Fatalf("显式字段应优先，实得 %#v", fm2.fields)
 	}
 }
 
@@ -290,9 +274,8 @@ func TestPublishSkillKeepsCacheInvalidated(t *testing.T) {
 	if a.marketCache.man == nil {
 		t.Fatal("前置：清单缓存应已填充")
 	}
-	pack := zipBytesForTest(t, map[string]string{"SKILL.md": okSkillMD})
-	if code, out := publishReq(t, a, map[string]any{"id": "x", "version": "1.0.0", "zip": true},
-		[]pubFile{{name: "x.zip", data: pack}}); code != 200 {
+	installTestSkill(t, a, "x", map[string]string{"SKILL.md": okSkillMD})
+	if code, out := publishReq(t, a, map[string]any{"skillId": "x"}); code != 200 {
 		t.Fatalf("期待 200，收到 %d：%v", code, out)
 	}
 	if a.marketCache.man != nil {
@@ -302,86 +285,112 @@ func TestPublishSkillKeepsCacheInvalidated(t *testing.T) {
 
 /* ---------- 拒绝路径 ---------- */
 
-func TestPublishSkillRejectsMissingSkillMD(t *testing.T) {
+func TestPublishRejectsNotInstalled(t *testing.T) {
 	fm := newFakePublishMarket(t)
 	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	pack := zipBytesForTest(t, map[string]string{"微信操作/readme.md": "没有 SKILL.md"})
-	code, out := publishReq(t, a, map[string]any{"id": "x", "zip": true}, []pubFile{{name: "x.zip", data: pack}})
-	if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "SKILL.md") {
-		t.Fatalf("缺 SKILL.md 应 400，实得 %d：%v", code, out)
+	code, out := publishReq(t, a, map[string]any{"skillId": "没装过的技能"})
+	if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "先在 设置 · 技能 里安装") {
+		t.Fatalf("未安装的技能应 400 且指路设置页，实得 %d：%v", code, out)
 	}
 	if fm.hits != 0 {
 		t.Fatal("校验没过就不该打扰市场服务器")
 	}
 }
 
-func TestPublishSkillRejectsTwoTopDirs(t *testing.T) {
+func TestPublishRejectsBadAndBuiltinID(t *testing.T) {
 	fm := newFakePublishMarket(t)
 	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	pack := zipBytesForTest(t, map[string]string{
-		"技能A/SKILL.md": okSkillMD,
-		"技能B/SKILL.md": okSkillMD,
-	})
-	code, out := publishReq(t, a, map[string]any{"id": "x", "zip": true}, []pubFile{{name: "x.zip", data: pack}})
-	if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "处 SKILL.md") {
-		t.Fatalf("一个包装了多个技能应 400，实得 %d：%v", code, out)
-	}
-}
-
-func TestPublishSkillRejectsBuiltinIDAndBadZip(t *testing.T) {
-	fm := newFakePublishMarket(t)
-	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	pack := zipBytesForTest(t, map[string]string{"SKILL.md": okSkillMD})
-	if code, out := publishReq(t, a, map[string]any{"id": "pdf", "zip": true},
-		[]pubFile{{name: "x.zip", data: pack}}); code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "自带技能") {
+	installTestSkill(t, a, "demo", map[string]string{"SKILL.md": okSkillMD})
+	if code, out := publishReq(t, a, map[string]any{"skillId": "demo", "id": "pdf"}); code != 400 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "自带技能") {
 		t.Fatalf("自带技能 id 应 400，实得 %d：%v", code, out)
 	}
-	if code, out := publishReq(t, a, map[string]any{"id": "x", "zip": true},
-		[]pubFile{{name: "x.zip", data: []byte("这不是 zip")}}); code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "zip") {
-		t.Fatalf("坏包应 400，实得 %d：%v", code, out)
+	if code, out := publishReq(t, a, map[string]any{"skillId": "demo", "id": "中文"}); code != 400 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "小写字母/数字/中划线") {
+		t.Fatalf("纯中文 id 应 400，实得 %d：%v", code, out)
+	}
+	if fm.hits != 0 {
+		t.Fatal("校验没过就不该打扰市场服务器")
 	}
 }
 
-func TestPublishSkillUnconfiguredAndServerReject(t *testing.T) {
+func TestPublishLengthChecks(t *testing.T) {
+	fm := newFakePublishMarket(t)
+	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
+	installTestSkill(t, a, "demo", map[string]string{"SKILL.md": okSkillMD})
+	longName := strings.Repeat("名", 65)
+	if code, out := publishReq(t, a, map[string]any{"skillId": "demo", "name": longName}); code != 400 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "64") {
+		t.Fatalf("超长名称应 400，实得 %d：%v", code, out)
+	}
+	longDesc := strings.Repeat("述", 1025)
+	if code, out := publishReq(t, a, map[string]any{"skillId": "demo", "description": longDesc}); code != 400 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "1024") {
+		t.Fatalf("超长描述应 400，实得 %d：%v", code, out)
+	}
+	// 边界值放行
+	if code, out := publishReq(t, a, map[string]any{
+		"skillId": "demo", "name": strings.Repeat("名", 64), "description": strings.Repeat("述", 1024),
+	}); code != 200 {
+		t.Fatalf("上限内的名称/描述应放行，实得 %d：%v", code, out)
+	}
+	if fm.hits != 1 {
+		t.Fatalf("只有边界值那一次应到达市场服务器，实得 hits=%d", fm.hits)
+	}
+}
+
+func TestPublishUnconfiguredAndServerReject(t *testing.T) {
 	a := newPublishTestApp(t, "")
-	pack := zipBytesForTest(t, map[string]string{"SKILL.md": okSkillMD})
-	if code, out := publishReq(t, a, map[string]any{"id": "x", "zip": true},
-		[]pubFile{{name: "x.zip", data: pack}}); code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "未配置市场服务器") {
+	installTestSkill(t, a, "x", map[string]string{"SKILL.md": okSkillMD})
+	if code, out := publishReq(t, a, map[string]any{"skillId": "x"}); code != 400 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "未配置市场服务器") {
 		t.Fatalf("未配置市场应 400，实得 %d：%v", code, out)
 	}
 
 	fm := newFakePublishMarket(t)
-	fm.code, fm.errMsg = 409, "同名版本已存在"
+	fm.code, fm.errMsg = 409, "条目是「李四」发布的，只能由本人更新"
 	b := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	code, out := publishReq(t, b, map[string]any{"id": "x", "version": "1.0.0", "zip": true},
-		[]pubFile{{name: "x.zip", data: pack}})
-	if code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "同名版本已存在") {
-		t.Fatalf("应原样转达市场服务器的拒绝，实得 %d：%v", code, out)
+	installTestSkill(t, b, "x", map[string]string{"SKILL.md": okSkillMD})
+	code, out := publishReq(t, b, map[string]any{"skillId": "x"})
+	if code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "只能由本人更新") {
+		t.Fatalf("应原样转达市场服务器的拒绝（归属校验在服务端），实得 %d：%v", code, out)
 	}
 }
 
-// 真实技能包的形状：外层包目录 + 安装说明.md + 内层技能目录 → 规整成「技能目录在包根」
-func TestPublishSkillNestedPack(t *testing.T) {
+func TestPublishRequiresPublisherName(t *testing.T) {
 	fm := newFakePublishMarket(t)
 	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	outer := "微信操作_技能包_v1.3.1_20261009/"
-	pack := zipBytesForTest(t, map[string]string{
-		outer + "安装说明.md":             "# 安装说明\n",
-		outer + "微信操作/SKILL.md":       "---\nname: wechat-chat-ops\ndescription: 嵌套包\n---\n\n正文\n",
-		outer + "微信操作/manifest.json":  `{"id":"微信操作","name":"微信操作","version":"1.3.1"}`,
-		outer + "微信操作/scripts/run.py": "print(1)\n",
-	})
-	code, out := publishReq(t, a, map[string]any{"zip": true},
-		[]pubFile{{name: "微信操作_技能包_v1.3.1_20261009.zip", data: pack}})
-	if code != 200 {
-		t.Fatalf("期待 200，收到 %d：%v", code, out)
+	a.Cfg.PublisherName = "" // 没设发布者姓名
+	installTestSkill(t, a, "x", map[string]string{"SKILL.md": okSkillMD})
+	code, out := publishReq(t, a, map[string]any{"skillId": "x"})
+	if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "发布者姓名") {
+		t.Fatalf("没设发布者姓名应 400，实得 %d：%v", code, out)
 	}
-	if out["normalized"] != true {
-		t.Fatalf("嵌套包应被规整: %v", out["normalized"])
+	if fm.hits != 0 {
+		t.Fatal("没身份就不该打扰市场服务器")
 	}
-	names := zipNamesForTest(t, fm.zip)
-	want := []string{"微信操作/SKILL.md", "微信操作/manifest.json", "微信操作/scripts/run.py", "微信操作/安装说明.md"}
-	for _, w := range want {
+}
+
+/* ---------- 包体规整（防御路径：安装目录理论上总是干净的，单测兜住逻辑） ---------- */
+
+func TestRewriteSkillZipNestedPack(t *testing.T) {
+	// 真实技能包的形状：外层包目录 + 安装说明.md + 内层技能目录 → 规整成「技能目录在包根」
+	pack, err := inspectSkillZip(zipBytesForTest(t, map[string]string{
+		"微信操作_技能包/安装说明.md":       "# 安装说明\n",
+		"微信操作_技能包/微信操作/SKILL.md": "---\nname: wechat-chat-ops\ndescription: 嵌套包\n---\n\n正文\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed, changed, err := rewriteSkillZip(zipBytesForTest(t, map[string]string{
+		"微信操作_技能包/安装说明.md":       "# 安装说明\n",
+		"微信操作_技能包/微信操作/SKILL.md": "---\nname: wechat-chat-ops\ndescription: 嵌套包\n---\n\n正文\n",
+	}), pack)
+	if err != nil || !changed {
+		t.Fatalf("嵌套包应被规整: changed=%v err=%v", changed, err)
+	}
+	names := zipNamesForTest(t, fixed)
+	for _, w := range []string{"微信操作/SKILL.md", "微信操作/安装说明.md"} {
 		if !hasZipEntry(names, w) {
 			t.Fatalf("规整后的包里缺 %s：%v", w, names)
 		}
@@ -391,32 +400,24 @@ func TestPublishSkillNestedPack(t *testing.T) {
 			t.Fatalf("外层包目录应被剥掉: %v", names)
 		}
 	}
-	if out["id"] != "wechat-chat-ops" || out["version"] != "1.3.1" {
-		t.Fatalf("元信息不对: %v", out)
-	}
-	if fm.fields["name"] != "微信操作" {
-		t.Fatalf("名称应从包内 manifest.json 补全: %#v", fm.fields)
-	}
 }
 
-func TestPublishSkillNormalizesStrayRootFiles(t *testing.T) {
-	fm := newFakePublishMarket(t)
-	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	// 「技能目录 + 根级散文件」：市场服务器会拒，后端应把散文件并进技能目录再发
-	pack := zipBytesForTest(t, map[string]string{
+func TestRewriteSkillZipStrayRootFiles(t *testing.T) {
+	// 「技能目录 + 根级散文件」：散文件并进技能目录，包根只剩技能目录
+	data := zipBytesForTest(t, map[string]string{
 		"微信操作/SKILL.md":     okSkillMD,
 		"微信操作/scripts/x.py": "print(1)\n",
 		"安装说明.md":           "# 说明\n",
 	})
-	code, out := publishReq(t, a, map[string]any{"zip": true},
-		[]pubFile{{name: "微信操作_技能包_v1.3.1_20261009.zip", data: pack}})
-	if code != 200 {
-		t.Fatalf("期待 200，收到 %d：%v", code, out)
+	pack, err := inspectSkillZip(data)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if out["normalized"] != true {
-		t.Fatalf("应标记为已规整: %v", out["normalized"])
+	fixed, changed, err := rewriteSkillZip(data, pack)
+	if err != nil || !changed {
+		t.Fatalf("应规整: changed=%v err=%v", changed, err)
 	}
-	names := zipNamesForTest(t, fm.zip)
+	names := zipNamesForTest(t, fixed)
 	if !hasZipEntry(names, "微信操作/安装说明.md") {
 		t.Fatalf("根级散文件应并入技能目录: %v", names)
 	}
@@ -430,13 +431,5 @@ func TestPublishSkillNormalizesStrayRootFiles(t *testing.T) {
 	}
 	if len(tops) != 1 || !tops["微信操作"] {
 		t.Fatalf("规整后包根应只剩技能目录: %v", names)
-	}
-}
-
-func TestPublishSkillNoFiles(t *testing.T) {
-	fm := newFakePublishMarket(t)
-	a := newPublishTestApp(t, fm.srv.URL+"/market/manifest.json")
-	if code, out := publishReq(t, a, map[string]any{"id": "x"}, nil); code != 400 {
-		t.Fatalf("没有文件应 400，实得 %d：%v", code, out)
 	}
 }

@@ -849,11 +849,21 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 的工具型技能**：`downloader`（内置 aria2c 官方二进制，Windows/安卓
 下载落盘，缺 curl/wget 环境的兜底）、`apkinfo`（引擎子命令 `apkinfo`
 读取 APK 包名/版本/签名指纹，安装前验包，纯 Go 实现）。自带技能常开、不可
-删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（指向
-本机含 SKILL.md 的文件夹）、开关、删除。用户技能按 **清单先行、内容按需**
-送达模型：环境快照里只列 名字（id）与一句话描述，要用哪个技能先调用
-`read_skill`（常驻工具，**所有模式注册**）读它的完整 SKILL.md 说明——技能增减
-不改变工具定义；清单变化经环境快照补在对话**最底部**，并附一行
+删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（按钮选本机含
+SKILL.md 的文件夹/zip；**整个文件夹或 .zip 拖进技能页即装**——文件夹经
+webkitGetAsEntry 递归遍历走 `POST /api/skills/install-files`，路径穿越拒收）、
+开关、删除。SKILL.md frontmatter 认 name/displayName/description/version/tags：
+**name 保持行业规范**（Agent Skills：小写字母/数字/中划线），**displayName 是
+给人看的显示名（中文为主）**——技能清单、环境快照、设置页与市场卡片都按
+`displayName → name → id` 逐级回退显示（对齐 VS Code 的 name/displayName 与
+本仓库组件「英文 id + 中文 name」的既有惯例）；description 超过 200 字在环境
+快照里截断（快照每会话注入，防超长描述污染上下文；全文在 read_skill），发布
+侧按行业规范硬校验 name/displayName ≤64、description ≤1024（`market_publish.go`）。
+安装口与发布口共用 `checkSkillMDBody` 内容体检：空 SKILL.md / 只有 frontmatter
+的包两边都拦（装得上用不了的东西不进市场也不进本机）。用户技能按 **清单先行、
+内容按需**送达模型：环境快照里只列 显示名（id）与一句话描述，要用哪个技能先
+调用 `read_skill`（常驻工具，**所有模式注册**）读它的完整 SKILL.md 说明——
+技能增减不改变工具定义；清单变化经环境快照补在对话**最底部**，并附一行
 「技能变更：新增 X／移除 Y」明说增删了哪个技能，上文历史快照一律不动。
 **技能清单是环境快照的固定条目，所有模式一律注入**（与操作系统/权限模式
 同级，不挂模式谓词——技能功能晚于 office/coding 落地，曾因手写门控漏掉
@@ -1244,7 +1254,8 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务、`Rescan`（市场装卸后重扫） |
 | `update.go` | 更新检查：定期拉发布源（updateURL，Gitea releases/latest 或 jxai-server 的 /updates/latest，两者同格式），tag_name 比当前新就经事件流推横幅；versionCompare 双体系（日期+V序号 恒新于 旧点分号） |
 | `wizard.go` | 公司接入向导后端：POST /api/wizard/discover（UDP 广播找同公司服务端——浏览器发不了 UDP 故在 Go 侧做，255.255.255.255+子网定向广播、公司名=口令、registryURL 查询兜底）+ POST /api/wizard/connect（验证 healthz → POST /provision → 内部提供方 company-internal 置顶即默认、marketURL/updateURL/wizardDone 一键落位；重跑替换不堆积）；config 增 wizardDone/registryURL |
-| `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问） |
+| `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问）。对服务端的请求一律带 `X-Jxai-User` 头（值=发布者姓名，没设不带）——服务端记条目归属 owner 与下载/安装明细；安装成功后上报 `POST /api/market/report-install` |
+| `market_publish.go` / `market_publish_test.go` / `market_publish_meta_test.go` | 市场·技能发布（**先装后传**）：只能发布已装到 `技能/user/` 的技能——后端从安装目录现场打 zip、走 inspectSkillZip/rewriteSkillZip 校验链（恰好一处 SKILL.md、内容体检、结构规整）、元信息按回退链补全（id 候选含中文→英文词表 `skillIDFromChinese`，词表只在 Go 一份），流式转发服务端用户端点 `/api/market/publish`；`GET /api/market/publish-meta` 给弹层预填；下架走 `/api/market/unpublish`——**归属校验与「挪进服务端回收站」都在服务端**，客户端只发消息（本地姓名比对只是按钮显隐的 UX） |
 | `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行 / 模型工具 |
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
@@ -1282,7 +1293,11 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
 | `GET/POST /api/components` | 组件清单 / 切换开关（前端热生效，无需刷新） |
 | `GET /api/components/{id}/{file}` | 组件浏览器半边资产（仅启用时提供；挂 `/api/` 下让中继隧道覆盖，cx.js fetch 文本注入） |
 | `GET /api/market` | 市场清单视图（jxai-server 清单 + 本机安装态；`?refresh=1` 绕过 60s 缓存；未配置时给建议地址） |
-| `POST /api/market/install` `/uninstall` | 一键安装/更新/卸载 `{type: skill\|component\|plugin, id}`（下载 zip+sha256 校验后路由到三套体系；组件装卸后前端 `CX.refresh()` 热生效） |
+| `POST /api/market/install` `/uninstall` | 一键安装/更新/卸载 `{type: skill\|component\|plugin, id}`（下载 zip+sha256 校验后路由到三套体系；组件装卸后前端 `CX.refresh()` 热生效；安装成功后台异步上报服务端记 install 明细） |
+| `GET /api/market/publish-meta` | 已装技能的发布元信息推导 `?skill=<id>`（弹层预填：id/显示名/版本/描述/标签 + 词表建议标注） |
+| `POST /api/market/publish` | 发布**已安装**的用户技能 `{skillId, id, name, version, description, tags}`（后端从 `技能/user/` 打包转发市场服务器，身份=X-Jxai-User 头；先装后传） |
+| `POST /api/market/unpublish` | 下架自己发布的条目 `{type, id}`（服务端判归属后挪进回收站，403 文案透传） |
+| `POST /api/skills/install-files` | 技能文件夹拖拽安装（multipart files+paths，公共顶层目录=技能文件夹名；散文件/路径穿越拒收，走同一条 addUserSkill） |
 | `GET/POST /api/todos` | 待办/定时任务清单 / 新建（组件 `todo-scheduler`；未启用时 404。**跨会话的全局清单，与会话内 `progress_write` 的进度清单是两回事**） |
 | `POST /api/todos/update` `/delete` `/run` `/missed` | 修改 / 删除 / 立即执行 / 处理错过的槽点（`{id, action:'run'\|'dismiss'}`） |
 | `GET /api/todos/workspaces` | 程序任务可选的工作目录（默认工作区 + 历史会话用过的目录） |

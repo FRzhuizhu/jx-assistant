@@ -1496,8 +1496,10 @@ async function renderSkillsPanel() {
   for (const s of (data.user || [])) {
     const row = document.createElement('div');
     row.className = 'plugin-row';
+    // 显示名中文优先（displayName → name → id），与市场卡片/环境快照同一口径
     row.innerHTML =
-      `<div class="pr-info"><div class="pr-line"><b>${esc(s.name)}</b><span class="pr-ver">${esc(s.id)}</span></div>` +
+      `<div class="pr-info"><div class="pr-line"><b>${esc(s.displayName || s.name || s.id)}</b>` +
+      `${s.version ? `<span class="pr-ver">v${esc(s.version)}</span>` : ''}<span class="pr-ver">${esc(s.id)}</span></div>` +
       `<p>${esc(s.description || '')}</p></div>`;
     const tg = document.createElement('label');
     tg.className = 'pr-toggle';
@@ -1525,7 +1527,8 @@ async function renderSkillsPanel() {
     del.title = '删除该技能';
     del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
     del.onclick = async () => {
-      if (!(await confirmCenter('删除技能「' + s.name + '」？技能目录将被一并移除。', false, true))) return;
+      const disp = s.displayName || s.name || s.id; // 与清单/市场卡片同口径：显示名中文优先
+      if (!(await confirmCenter('删除技能「' + disp + '」？技能目录将被一并移除。', false, true))) return;
       try {
         await api('/api/skills/delete', { method: 'POST', body: JSON.stringify({ id: s.id }) });
         renderSkillsPanel();
@@ -1539,7 +1542,7 @@ async function renderSkillsPanel() {
   }
 
   if (!(data.user || []).length) {
-    uBox.innerHTML = '<div class="skill-empty">还没有用户技能。点上方「添加技能」，选择包含 SKILL.md 的文件夹或 ZIP 压缩包。</div>';
+    uBox.innerHTML = '<div class="skill-empty">还没有用户技能。点上方「添加技能」选择文件夹或 ZIP 压缩包，或把 .zip / 技能文件夹直接拖进本页安装。</div>';
   }
 }
 
@@ -1573,10 +1576,10 @@ $('skill-add-btn').onclick = () => openPopover('skill-add-pop', $('skill-add-btn
 $('sa-folder').onclick = () => installSkillFromPicker('folder');
 $('sa-zip').onclick = () => installSkillFromPicker('zip');
 
-/* ---------- 技能压缩包拖拽安装（POST /api/skills/upload） ----------
-   把 .zip 直接拖进技能页即安装，替代「添加技能 → 选 ZIP」的文件选择框
-   路线（两条路最终同走 addUserSkill）。浏览器拖拽拿不到本地路径，
-   走 multipart 直传；文件夹拖拽不支持——提示用「添加技能」按钮。 */
+/* ---------- 技能拖拽安装（拖 .zip 或整个文件夹进技能页） ----------
+   .zip 走 POST /api/skills/upload（multipart 单文件）；文件夹走 webkitGetAsEntry
+   递归遍历 → POST /api/skills/install-files（multipart files+paths，后端组装成
+   技能目录再走同一条 addUserSkill）。两条路最终都落 addUserSkill。 */
 async function uploadSkillZip(file, note) {
   const fd = new FormData();
   fd.append('file', file, file.name);
@@ -1588,6 +1591,48 @@ async function uploadSkillZip(file, note) {
     return true;
   } catch (e) {
     alert(`「${file.name}」安装失败：` + e.message);
+    return false;
+  }
+}
+
+async function uploadSkillFolder(entries, note) {
+  // entries 必须在 drop 事件同步阶段取出来（await 后 DataTransfer 失效）
+  const collect = [];
+  const walk = async (entry, prefix) => {
+    if (!entry) return;
+    if (entry.isFile) {
+      await new Promise((res) => entry.file(
+        (f) => { collect.push({ file: f, path: (prefix || '') + entry.name }); res(); }, res));
+      return;
+    }
+    if (!entry.isDirectory) return;
+    const reader = entry.createReader();
+    await new Promise((res) => {
+      const step = () => reader.readEntries(async (batch) => {
+        if (!batch.length) return res();
+        for (const en of batch) await walk(en, (prefix || '') + entry.name + '/');
+        step();
+      }, res);
+      step();
+    });
+  };
+  for (const en of entries) await walk(en, '');
+  if (!collect.length) {
+    alert('文件夹读取失败（或是个空文件夹）。');
+    return false;
+  }
+  const fd = new FormData();
+  fd.append('paths', JSON.stringify(collect.map((x) => x.path)));
+  for (const x of collect) fd.append('files', x.file, x.path.split('/').pop());
+  note.textContent = `安装中（${collect.length} 个文件）…`;
+  try {
+    const res = await fetch('/api/skills/install-files', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    note.textContent = `「${collect[0].path.split('/')[0]}」安装成功`;
+    return true;
+  } catch (e) {
+    alert('文件夹安装失败：' + e.message);
     return false;
   }
 }
@@ -1609,15 +1654,36 @@ function bindSkillDropZone() {
   pane.addEventListener('drop', async (e) => {
     e.preventDefault();
     pane.classList.remove('drop-hover');
-    const files = [...(e.dataTransfer.files || [])];
+    const dt = e.dataTransfer;
+    // 文件夹：entries 里有 directory 才走文件夹通道（同步阶段取出，见上）
+    const dirEntries = [];
+    if (dt && dt.items && dt.items.length) {
+      for (const it of dt.items) {
+        if (it.kind !== 'file') continue;
+        const en = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+        if (en && en.isDirectory) dirEntries.push(en);
+      }
+    }
+    pane.appendChild(note);
+    if (dirEntries.length) {
+      note.textContent = '安装中…';
+      let ok = 0;
+      for (const en of dirEntries) { if (await uploadSkillFolder([en], note)) ok++; }
+      if (dirEntries.length > 1) {
+        note.textContent = `完成：成功 ${ok} / ${dirEntries.length} 个技能文件夹`;
+      }
+      renderSkillsPanel();
+      return;
+    }
+    // 散文件：只认 .zip（散的技能文件装不了，指路按钮）
+    const files = [...(dt.files || [])];
     const zips = files.filter((f) => /\.zip$/i.test(f.name));
     if (!zips.length) {
       alert(files.length
-        ? '只支持拖入 .zip 压缩包安装（技能文件夹请用「添加技能」按钮选择）'
+        ? '只支持拖入 .zip 压缩包或整个技能文件夹安装（散文件请先用「添加技能」按钮）'
         : '拖入的内容不是文件（技能文件夹请用「添加技能」按钮选择）');
       return;
     }
-    pane.appendChild(note);
     note.textContent = `安装中（${zips.length} 个）…`;
     let ok = 0;
     for (const f of zips) { if (await uploadSkillZip(f, note)) ok++; }

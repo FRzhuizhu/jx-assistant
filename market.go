@@ -11,8 +11,18 @@ package main
 // 安装时记账是「已装版本 / 可更新」判定的唯一事实；插件的版本以 ccplugin
 // 安装记录为准。市场地址在 config.marketURL（设置页「网络」分区填写），
 // 未配置时返回建议值（与中继网关同 host 时市场就在同一台 jxai-server 上）。
+//
+// 与服务端的协议契约（两侧文件头注释为准，改动需同步）：
+//   - 清单 GET /market/manifest.json（匿名只读，60s 缓存）；
+//   - 下载 GET /market/items/<type>/<id>/<ver>.zip；安装成功后 POST /api/market/report-install；
+//   - 全部请求带 X-Jxai-User 头（值=发布者姓名，没设就不带）——服务端用它记
+//     下载/安装明细（market_events.jsonl）与条目归属 owner；
+//   - 发布/下架见 market_publish.go（用户端点 /api/market/publish、/api/market/unpublish，
+//     归属校验在服务端；下架=进服务端回收站）。
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -40,9 +50,10 @@ type marketEntryIn struct { // 服务器清单条目
 	Zip         string   `json:"zip"`
 	SHA256      string   `json:"sha256"`
 	Size        int64    `json:"size"`
-	// Owner 发布者姓名（jxai-server 记录并回传）：市场卡片拿它与本机「发布者
-	// 姓名」比对，一致才显示「更新发布 / 删除」（即"只能改自己发的"）。
-	// 老条目 / 市场服务器还没升级时为空 → 谁都改不了（管理员机制后置）。
+	// Owner 上传者（jxai-server 从 X-Jxai-User 头记录并回传）。归属校验在
+	// 服务端（发布/下架都由它判「只能动自己发的」）；客户端拿它与本机发布者
+	// 姓名比对只是为了决定显不显示「更新发布 / 删除」按钮（纯 UX，不是安全边界）。
+	// 老条目为空 → 谁的卡片上都没有管理按钮。
 	Owner string `json:"owner,omitempty"`
 }
 
@@ -63,8 +74,8 @@ type marketEntryOut struct {
 	Update           bool   `json:"update"`
 }
 
-// marketMe 本机发布者身份：前端拿它跟条目的 owner 比对，决定是否显示
-// 「更新发布 / 删除」（2026-10-10 口径：只认姓名一个字段；重名视同同一人）。
+// marketMe 本机发布者身份（用于前端显隐「更新发布 / 删除」按钮的 UX 比对；
+// 真正的归属校验在服务端，见 X-Jxai-User 头与 market_publish.go）。
 type marketMe struct {
 	Name string `json:"name"`
 }
@@ -149,7 +160,8 @@ func (a *App) removeMarketRec(typ, id string) {
 	}
 }
 
-// fetchMarketManifest 拉市场清单（60s 缓存；force 用于安装前取最新）。
+// fetchMarketManifest 拉市场清单（60s 缓存；force 用于安装前取最新）。带上
+// 身份头（设置了发布者姓名时）——服务端把它记进下载/安装明细（events.go）。
 func (a *App) fetchMarketManifest(rawURL string, force bool) (*marketManifestIn, error) {
 	a.marketMu.Lock()
 	if !force && a.marketCache.man != nil && a.marketCache.url == rawURL &&
@@ -159,7 +171,11 @@ func (a *App) fetchMarketManifest(rawURL string, force bool) (*marketManifestIn,
 		return m, nil
 	}
 	a.marketMu.Unlock()
-	resp, err := marketHTTPClient.Get(rawURL)
+	req, err := a.marketRequest(context.Background(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := marketHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +231,7 @@ func marketTypeOK(t string) bool {
 /* ---------- 视图：清单 + 本机安装态 ---------- */
 
 // marketMe 本机发布者身份（姓名为空 = 还没设置：前端不显示发布者管理按钮，
-// 发布时也就不带 owner，发布后没人能删——所以上传弹层里会提示去补上）。
+// 发布请求也会在本地被拦下先提示补姓名；重名视同同一人——真凭证上线前过渡）。
 func (a *App) marketMe() *marketMe {
 	name := strings.TrimSpace(a.Cfg.PublisherName)
 	if name == "" {
@@ -302,9 +318,14 @@ func (a *App) decorateEntries(typ string, in []marketEntryIn, recs map[string]ma
 
 /* ---------- 安装 ---------- */
 
-// marketDownloadZip 下载包体到临时文件并校验 sha256；调用方用 cleanup 清理。
-func marketDownloadZip(zipURL string, e marketEntryIn) (zipPath string, cleanup func(), err error) {
-	resp, err := marketDownloadClient.Get(zipURL)
+// marketDownloadZip 下载包体到临时文件并校验 sha256（带身份头，服务端记下载
+// 明细）；调用方用 cleanup 清理。
+func (a *App) marketDownloadZip(zipURL string, e marketEntryIn) (zipPath string, cleanup func(), err error) {
+	req, rerr := a.marketRequest(context.Background(), http.MethodGet, zipURL, nil)
+	if rerr != nil {
+		return "", nil, rerr
+	}
+	resp, err := marketDownloadClient.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("下载失败: %w", err)
 	}
@@ -453,7 +474,7 @@ func (a *App) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	zipPath, cleanup, err := marketDownloadZip(zipURL, entry)
+	zipPath, cleanup, err := a.marketDownloadZip(zipURL, entry)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -570,7 +591,35 @@ func (a *App) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
 	if err := a.saveMarketRec(body.Type, entry.ID, rec); err != nil {
 		log.Printf("[市场] 安装记账落盘失败（安装本身已成功）: %v", err)
 	}
+	a.reportMarketInstall(raw, body.Type, entry) // 安装成功上报（失败静默，不影响安装结果）
 	writeJSON(w, 200, resp)
+}
+
+// reportMarketInstall 向市场服务器上报一次成功安装（POST /api/market/report-install，
+// 身份头带发布者姓名）——服务端记 install 明细，与管理页的下载/安装统计对上。
+// 上报失败只落日志：明细是旁路数据，不拖垮安装主链路。
+func (a *App) reportMarketInstall(marketRawURL, typ string, e marketEntryIn) {
+	if a.marketUser() == "" {
+		return // 没设发布者姓名：服务端记不到人，省一次空跑
+	}
+	origin, err := marketOrigin(marketRawURL)
+	if err != nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"type": typ, "id": e.ID, "version": e.Version})
+	req, err := a.marketRequest(context.Background(), http.MethodPost, origin+"/api/market/report-install", bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	go func() {
+		resp, err := marketHTTPClient.Do(req)
+		if err != nil {
+			log.Printf("[市场] 安装上报失败（忽略）: %v", err)
+			return
+		}
+		resp.Body.Close()
+	}()
 }
 
 func (a *App) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {

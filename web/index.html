@@ -156,7 +156,7 @@
         <button data-mk-tab="mcp" class="mk-tab">MCP</button>
         <span class="mk-tabs-rest">
           <span id="mk-count"></span>
-          <button id="mk-upload-btn" class="mk-act hidden" title="把技能包（zip 或含 SKILL.md 的文件夹）发布到市场服务器，本机不安装">＋ 上传技能</button>
+          <button id="mk-upload-btn" class="mk-act hidden" title="把一个已安装的用户技能发布到市场服务器（先装后传）">＋ 上传技能</button>
           <button id="mk-ext-market" class="mk-link hidden">管理外部 Claude 市场</button>
         </span>
       </div>
@@ -164,31 +164,20 @@
     </div>
 
     <!-- 上传技能到市场（app-market.js）：市场 · 技能 tab 的「＋ 上传技能」按钮打开的弹层。
-         三种投喂方式——拖拽（文件/整个文件夹）、点击选取（文件 / 文件夹）、Ctrl+V 粘贴；
-         前端做技能包校验（必须含 SKILL.md）与元信息预填，提交时组装 FormData 打
-         POST /api/market/publish（后端接口尚未实现，契约见 app-market.js 的注释）。 -->
+         先装后传——从已安装的用户技能里选一个发布（技能先在本机装好、能跑，再上市场）；
+         选中后按后端 /api/market/publish-meta 的推导预填元信息（ID/显示名/版本/标签/描述，
+         均可改），提交 POST /api/market/publish 由后端从安装目录打包转发市场服务器。 -->
     <div id="mk-upload-modal" class="modal hidden">
       <div class="modal-card mku-card">
         <h3>上传技能到市场</h3>
-        <p class="mku-sub">把技能包拖进来，或点下面的按钮选择文件 / 文件夹，也可以直接按 <kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴。上传的是技能包本身（发布到市场服务器），本机已装的技能不受影响。</p>
-        <div id="mku-drop" class="mku-drop">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-          <div class="mku-drop-t">拖拽技能包到这里</div>
-          <div class="mku-drop-s">.zip 压缩包 · 技能文件夹 · 单个 SKILL.md 都行</div>
-          <div class="mku-drop-btns">
-            <button id="mku-pick-file" class="mk-act">选择文件</button>
-            <button id="mku-pick-dir" class="mk-act ghost">选择文件夹</button>
-          </div>
-        </div>
-        <input id="mku-file-input" type="file" multiple class="hidden">
-        <input id="mku-dir-input" type="file" webkitdirectory class="hidden">
-        <div id="mku-files" class="mku-files hidden"></div>
+        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip 或文件夹）。</p>
+        <div id="mku-skills" class="mku-skills"></div>
         <div class="mku-meta">
           <label>技能 ID <span class="mku-req">必填</span>
             <input id="mku-id" placeholder="英文短名，如 wechat-chat-ops" autocomplete="off" spellcheck="false">
           </label>
-          <label>名称
-            <input id="mku-name" placeholder="市场上显示的名字" autocomplete="off">
+          <label>显示名称 <span class="mku-opt">中文为主</span>
+            <input id="mku-name" placeholder="市场上与技能清单里显示的名字" autocomplete="off">
           </label>
           <label>版本
             <input id="mku-version" placeholder="如 1.0.0" autocomplete="off" spellcheck="false">
@@ -197,7 +186,7 @@
             <input id="mku-tags" placeholder="如 办公, 自动化" autocomplete="off">
           </label>
           <label class="mku-wide">描述
-            <input id="mku-desc" placeholder="一句话说明这个技能做什么（显示在市场的卡片上）" autocomplete="off">
+            <input id="mku-desc" placeholder="一句话说明这个技能做什么（显示在市场的卡片上，上限 1024 字）" autocomplete="off">
           </label>
         </div>
         <div id="mku-status" class="mku-status"></div>
@@ -752,7 +741,7 @@
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
           <div class="prov-section skill-drop-zone">
-            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。<b>支持把 .zip 技能压缩包直接拖进本页安装</b>，免开文件选择框。</div>
+            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把显示名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。<b>支持把 .zip 压缩包或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
             <button id="skill-add-btn" class="pf-add">＋ 添加技能</button>
           </div>
           <div class="gen-section">

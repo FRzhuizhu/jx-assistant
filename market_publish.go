@@ -1,45 +1,45 @@
-/* 市场发布（把技能包发到市场服务器）：POST /api/market/publish
+/* 市场发布（把技能发到市场服务器）：POST /api/market/publish
 
-   市场服务器（jxai-server，另一仓库）的发布端点是 POST /admin/api/publish：
-   multipart，字段 type / file（zip）/ id / name / version / desc / tags（逗号分隔），
-   成功回 {entry:{id,version,...}}，失败非 2xx + {error}。
+   设计口径（2026-10-10 重构）：**先装后传**——只能发布已安装到本机的用户技能
+   （技能/user/<id>/），包由后端从安装目录现场打包。这保证上市场的技能至少
+   「在本机装得进来、能被 read_skill 读到」，也顺便把前端从 zip 解析/词表
+   兜底里解放出来（元信息推导全在 Go 一处）。
 
-   本端点是它的客户端半边，做三件事：
-     1. 收前端投喂的技能包——单个 .zip 原样透传；前端剥好顶层目录的一组文件在这里打 zip；
-     2. 按「市场安装」的规矩校验并补全元信息（装得上才算合格）：
-        · 包内 SKILL.md 必须在压缩包根部或其唯一子目录里（与 extractSkillZip 同规则，
-          否则装到本机会被拒）；
-        · **SKILL.md 得有正文**：空文件、只有 frontmatter、压缩数据损坏读不出的一律拒收——
-          这种包在市场上装得上却用不了（技能列表没描述、read_skill 报「没有可用的说明正文」），
-          属于「文件对上了但内容是空的」，必须在发布前拦掉；
-        · id 要能被 sanitizeSkillID 接受，且不与自带技能重名；
-        · name/description 优先取 SKILL.md 的 frontmatter（装好后技能列表显示的就是它），
-          其次 manifest.json；
-        · version 从文件名解析（v 后一定是版本号，v1.3.1_20261009 → 1.3.1），
-          其次 manifest.json / SKILL.md 里的 version；
-        · tags 只有前端给了才发（frontmatter 的 tags 也认）。
-     3. 转发给市场服务器并回执（带包体 sha256/size），成功后清本机清单缓存，
-        前端刷新即可看到新条目。
+   市场服务器（jxai-server，另一仓库）的用户发布端点是 POST /api/market/publish：
+   multipart（type / file=zip / id / name / version / desc / tags），**身份取
+   X-Jxai-User 请求头**（值=本机发布者姓名），服务端记 owner、判归属；同 id
+   重发布只允许原发布者。下架端点 POST /api/market/unpublish {type,id} 同样
+   带头，归属校验在服务端做（客户端只发消息）。
+
+   本端点（客户端本地服务）做四件事：
+     1. 定位已装技能 技能/user/<id>/，现场打 zip（包根=SKILL.md 所在目录）；
+     2. 走「市场安装」的规矩校验（inspectSkillZip：恰好一处 SKILL.md、SKILL.md
+        有正文——空文件/只有 frontmatter/读不出的一律拒收）；
+     3. 元信息按回退链补全（见下表），name/description 做长度上限校验
+       （name ≤64、description ≤1024，Agent Skills 行业规范）；
+     4. 流式转发给市场服务器（zip 落临时文件 + 管道组装 multipart，大包不占
+        双份内存），成功后清本机清单缓存。
 
    ---------- 五个字段的来源（从哪一级取的，按先后顺序） ----------
 
    | 字段 | 第一来源（显式） | 包体推导（依次回退） |
    |---|---|---|
-   | id（必填） | meta.id（前端输入框） | 包内 manifest.json 的 id → SKILL.md 所在目录名 → SKILL.md 的 name → 包名（zip 文件名/顶层目录名）→ 中文→英文词表（skillIDFromChinese，只在这一步兜底）；都不行就 400 要求手填 |
-   | name | meta.name | manifest.json 的 name → SKILL.md 的 name → id |
+   | id（必填） | meta.id（前端输入框） | 包内 manifest.json 的 id → 技能目录名 → SKILL.md 的 name → 中文→英文词表（skillIDFromChinese，只在这一步兜底）；都不行就 400 要求手填 |
+   | name（显示名） | meta.name | SKILL.md 的 displayName（中文优先）→ manifest.json 的 name → SKILL.md 的 name → id |
    | version | meta.version | 包名里 v 后那串（v1.3.1_20261009 → 1.3.1）→ manifest.json 的 version → SKILL.md 的 version → "0.0.0" |
    | tags | meta.tags | SKILL.md 的 tags（frontmatter，逗号或 [] 分隔；manifest.json 无此字段） |
    | description | meta.description | SKILL.md 的 description → manifest.json 的 description |
 
-   注：name/description 的取舍与「装好后技能列表显示什么」对齐——列表读的是 SKILL.md
-   的 frontmatter（skill_manager.go 的 skillMeta），所以描述优先 SKILL.md；manifest.json
-   的 name 多是友好名，故名称先试它。 */
+   注：name（显示名）优先 SKILL.md 的 displayName——装好后的技能列表/环境
+   快照显示的就是它（displayName → name → id 回退），市场卡片与之一致；
+   id 始终是英文短名（^[a-z0-9-]+$），与 Agent Skills 规范的 name 字段兼容。 */
 
 package main
 
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -48,7 +48,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -241,6 +243,7 @@ type skillPackInfo struct {
 	SkillMDSize int64             // SKILL.md 的字节数（0 = 空文件）
 	SkillMDBody string            // SKILL.md 去掉 frontmatter 后的正文（不能为空）
 	Name        string            // SKILL.md frontmatter 的 name
+	DisplayName string            // SKILL.md frontmatter 的 displayName（中文为主的显示名）
 	Description string            // SKILL.md frontmatter 的 description
 	Version     string            // SKILL.md frontmatter 的 version
 	Tags        []string          // SKILL.md frontmatter 的 tags
@@ -256,38 +259,41 @@ type skillPackManifest struct {
 	Description string `json:"description"`
 }
 
-// skillFrontmatter 取 SKILL.md 开头 YAML frontmatter 里的 name / description /
-// version / tags（与 skillMeta 的读法一致：只认这几个键，不引 YAML 库）。
-// tags 支持 `a, b`、`a，b`（中文逗号）与 `[a, b]` 三种写法。
-func skillFrontmatter(text string) (name, description, version string, tags []string) {
+// skillFrontmatter 取 SKILL.md 开头 YAML frontmatter 里的 name / displayName /
+// description / version / tags（与 skillMeta 的读法一致：只认这几个键，不引
+// YAML 库）。tags 支持 `a, b`、`a，b`（中文逗号）与 `[a, b]` 三种写法。
+func skillFrontmatter(text string) skillFM {
+	var fm skillFM
 	s := strings.TrimSpace(text)
 	if !strings.HasPrefix(s, "---") {
-		return "", "", "", nil
+		return fm
 	}
 	i := strings.Index(s[3:], "\n---")
 	if i < 0 {
-		return "", "", "", nil
+		return fm
 	}
 	for _, line := range strings.Split(s[3:3+i], "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "name:"):
-			name = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "name:")), `"'`)
+			fm.Name = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "name:")), `"'`)
+		case strings.HasPrefix(line, "displayName:"):
+			fm.DisplayName = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "displayName:")), `"'`)
 		case strings.HasPrefix(line, "description:"):
-			description = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "description:")), `"'`)
+			fm.Description = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "description:")), `"'`)
 		case strings.HasPrefix(line, "version:"):
-			version = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "version:")), `"'`)
+			fm.Version = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "version:")), `"'`)
 		case strings.HasPrefix(line, "tags:"):
 			v := strings.TrimSpace(strings.TrimPrefix(line, "tags:"))
 			v = strings.Trim(strings.Trim(v, "[]"), " ")
 			for _, t := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == '，' }) {
 				if t = strings.Trim(strings.TrimSpace(t), `"'`); t != "" {
-					tags = append(tags, t)
+					fm.Tags = append(fm.Tags, t)
 				}
 			}
 		}
 	}
-	return name, description, version, tags
+	return fm
 }
 
 // checkSkillMDBody SKILL.md 内容体检：空文件、只有 frontmatter 没有正文的都拦下来。
@@ -386,7 +392,8 @@ func inspectSkillZip(data []byte) (*skillPackInfo, error) {
 	if err := checkSkillMDBody(info.SkillMDPath, raw); err != nil {
 		return nil, err
 	}
-	info.Name, info.Description, info.Version, info.Tags = skillFrontmatter(string(raw))
+	fm := skillFrontmatter(string(raw))
+	info.Name, info.DisplayName, info.Description, info.Version, info.Tags = fm.Name, fm.DisplayName, fm.Description, fm.Version, fm.Tags
 	info.SkillMDBody = stripFrontmatter(string(raw))
 	// manifest.json（技能运行清单，可选）：技能目录里的那一份
 	if raw, err := readZipEntry(zr, path.Join(info.BaseDir, "manifest.json")); err == nil {
@@ -510,44 +517,88 @@ func readZipEntry(zr *zip.Reader, name string) ([]byte, error) {
 	return nil, fmt.Errorf("包里没有 %s", name)
 }
 
-/* ---------- 打包（前端投喂的是一组文件时） ---------- */
+/* ---------- 端点 ---------- */
 
-// buildSkillZip 按包内相对路径把一组文件打成 zip（UTF-8 名、deflate）。
-// paths 与 uploads 一一对应：multipart 的 FileName() 只给 basename（Go 按 RFC 7578
-// 剥掉了目录），所以包内相对路径由前端另用 paths 字段给。
-func buildSkillZip(uploads []*multipart.FileHeader, paths []string) ([]byte, error) {
+// 行业规范（Agent Skills）的元信息长度上限：发布侧硬校验，超长拒收。
+const (
+	skillNameMax = 64   // name / displayName
+	skillDescMax = 1024 // description
+)
+
+// marketUserHeader 客户端身份头：与服务端 jxai-server 的 userHeader 同名，
+// 值取本机发布者姓名（设置 · 网络访问）。发布/下架/下载都带上——服务端记
+// owner 与下载明细、判「只能动自己发的」；没设发布者姓名时不带。
+const marketUserHeader = "X-Jxai-User"
+
+func (a *App) marketUser() string { return strings.TrimSpace(a.Cfg.PublisherName) }
+
+// marketRequest 给市场请求补身份头（有发布者姓名才带）。
+func (a *App) marketRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	if u := a.marketUser(); u != "" {
+		req.Header.Set(marketUserHeader, u)
+	}
+	return req, nil
+}
+
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// publishMeta 是按回退链推导出的五个元信息（前端预填输入框，用户可改后随
+// POST 一并提交）。ID 建议不出来时为空——发布时若用户也没填就 400。
+type publishMeta struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Version     string   `json:"version"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	IDSuggested bool     `json:"idSuggested"` // id 是中文词表建议的（前端标注「可改」）
+}
+
+// zipSkillDir 把技能目录打成 zip（包根=目录本身，SKILL.md 在根部）。
+func zipSkillDir(dir string) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for i, uh := range uploads {
-		name := ""
-		if i < len(paths) {
-			name = paths[i]
-		}
-		if strings.TrimSpace(name) == "" {
-			name = uh.Filename
-		}
-		name = cleanZipPath(name)
-		if name == "" || strings.HasSuffix(name, "/") {
-			continue
-		}
-		if name == ".." || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") {
-			return nil, fmt.Errorf("文件名里有非法路径: %s", name)
-		}
-		hdr := &zip.FileHeader{Name: name, Method: zip.Deflate}
-		hdr.Modified = time.Now()
-		fw, err := zw.CreateHeader(hdr)
+	err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil, err
+			return err
 		}
-		in, err := uh.Open()
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		_, err = io.Copy(fw, io.LimitReader(in, marketPublishMaxZip))
-		in.Close()
+		hdr, err := zip.FileInfoHeader(info)
 		if err != nil {
-			return nil, err
+			return err
 		}
+		hdr.Name = filepath.ToSlash(rel)
+		hdr.Method = zip.Deflate
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			return err
+		}
+		in, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		_, err = io.Copy(w, in)
+		return err
+	})
+	if err != nil {
+		return nil, err
 	}
 	if err := zw.Close(); err != nil {
 		return nil, err
@@ -555,9 +606,92 @@ func buildSkillZip(uploads []*multipart.FileHeader, paths []string) ([]byte, err
 	return buf.Bytes(), nil
 }
 
-/* ---------- 端点 ---------- */
+// prepareSkillPublish 定位已装用户技能（技能/user/<id>/），现场打包并走发布
+// 校验链（inspectSkillZip + rewriteSkillZip），返回 zip 数据、包信息与推导出
+// 的元信息。先装后传的「装」在这里兑现：目录不存在直接报错。
+func (a *App) prepareSkillPublish(skillID string) (data []byte, pack *skillPackInfo, meta publishMeta, err error) {
+	id := sanitizeSkillID(strings.TrimSpace(skillID))
+	userDir, uerr := a.userSkillsDir()
+	if uerr != nil {
+		return nil, nil, meta, uerr
+	}
+	dir := filepath.Join(userDir, id)
+	if id == "" || !dirExists(dir) {
+		return nil, nil, meta, fmt.Errorf("本机没有安装用户技能 %s：先在 设置 · 技能 里安装并试跑，再发布到市场", skillID)
+	}
+	if data, err = zipSkillDir(dir); err != nil {
+		return nil, nil, meta, fmt.Errorf("打包技能目录失败: %w", err)
+	}
+	if pack, err = inspectSkillZip(data); err != nil {
+		return nil, nil, meta, err
+	}
+	if fixed, changed, ferr := rewriteSkillZip(data, pack); ferr != nil {
+		return nil, nil, meta, fmt.Errorf("技能包规整失败: %w", ferr)
+	} else if changed {
+		data = fixed
+		if pack, err = inspectSkillZip(data); err != nil {
+			return nil, nil, meta, err
+		}
+	}
+	// 元信息回退链：id（manifest → 目录名 → SKILL.md name → 中文词表兜底）
+	for _, cand := range []string{pack.Manifest.ID, id, pack.Name} {
+		if meta.ID = skillIDForMarket(cand); meta.ID != "" {
+			break
+		}
+	}
+	if meta.ID == "" {
+		for _, cand := range []string{id, pack.Name, pack.DisplayName, pack.Manifest.Name} {
+			if meta.ID = skillIDFromChinese(cand); meta.ID != "" {
+				meta.IDSuggested = true
+				break
+			}
+		}
+	}
+	// 显示名：displayName（中文为主）→ manifest.json 友好名 → SKILL.md name
+	meta.Name = firstNonEmptyStr(pack.DisplayName, pack.Manifest.Name, pack.Name)
+	// 版本兜底 1.0.0（与服务端 CLI publish 的缺省一致）
+	meta.Version = firstNonEmptyStr(skillVersionFromName(id), pack.Manifest.Version, pack.Version, "1.0.0")
+	meta.Description = firstNonEmptyStr(pack.Description, pack.Manifest.Description)
+	meta.Tags = pack.Tags
+	return data, pack, meta, nil
+}
 
+// handleMarketPublishMeta 选中一个已装技能后取推导元信息（前端预填表单；
+// 词表建议只在这半边发生，Go 单一来源）。
+func (a *App) handleMarketPublishMeta(w http.ResponseWriter, r *http.Request) {
+	skillID := strings.TrimSpace(r.URL.Query().Get("skill"))
+	if skillID == "" {
+		writeErr(w, 400, "需要 skill 参数（已装用户技能的 id）")
+		return
+	}
+	_, _, meta, err := a.prepareSkillPublish(skillID)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, meta)
+}
+
+// handleMarketPublish 把一个**已安装的用户技能**发布到市场服务器。
+// POST /api/market/publish {skillId, id, name, version, description, tags}。
 func (a *App) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SkillID     string   `json:"skillId"`
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Version     string   `json:"version"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	user := a.marketUser()
+	if user == "" {
+		writeErr(w, 400, "还没设置发布者姓名（设置 · 网络访问 · 发布者姓名）：市场服务器靠它记条目归属，没名字发布出去就没人能更新/下架")
+		return
+	}
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
 	if raw == "" {
 		writeErr(w, 400, "未配置市场服务器（设置 · 网络访问 · 市场服务器）")
@@ -568,212 +702,96 @@ func (a *App) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, marketPublishMaxZip+16<<20)
-	if err := r.ParseMultipartForm(16 << 20); err != nil {
-		writeErr(w, 400, "上传内容解析失败（或超出大小上限）: "+err.Error())
-		return
-	}
-	var meta struct {
-		ID          string   `json:"id"`
-		Name        string   `json:"name"`
-		Version     string   `json:"version"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
-		Zip         bool     `json:"zip"`
-	}
-	if s := strings.TrimSpace(r.FormValue("meta")); s != "" {
-		if err := json.Unmarshal([]byte(s), &meta); err != nil {
-			writeErr(w, 400, "meta 不是合法 JSON: "+err.Error())
-			return
-		}
-	}
-	var uploads []*multipart.FileHeader
-	if r.MultipartForm != nil {
-		uploads = r.MultipartForm.File["files"]
-	}
-	if len(uploads) == 0 {
-		writeErr(w, 400, "没有收到上传内容（files 为空）")
-		return
-	}
-	// 包内相对路径（与 files 同序）：multipart 的 FileName() 只剩 basename，路径得单独给
-	var paths []string
-	if s := strings.TrimSpace(r.FormValue("paths")); s != "" {
-		if err := json.Unmarshal([]byte(s), &paths); err != nil {
-			writeErr(w, 400, "paths 不是合法 JSON 数组: "+err.Error())
-			return
-		}
-	}
-
-	// 1) 得到 zip 字节：单个 .zip 原样，否则现打
-	var (
-		data    []byte
-		srcName string // 解析版本号用的原始名字（zip 文件名 / 包内目录名 / meta.id）
-	)
-	if len(uploads) == 1 && (meta.Zip || strings.EqualFold(path.Ext(uploads[0].Filename), ".zip")) {
-		f, err := uploads[0].Open()
-		if err != nil {
-			writeErr(w, 400, "读取上传文件失败: "+err.Error())
-			return
-		}
-		data, err = io.ReadAll(io.LimitReader(f, marketPublishMaxZip))
-		f.Close()
-		if err != nil {
-			writeErr(w, 400, "读取上传文件失败: "+err.Error())
-			return
-		}
-		srcName = uploads[0].Filename
-	} else {
-		data, err = buildSkillZip(uploads, paths)
-		if err != nil {
-			writeErr(w, 400, "打包失败: "+err.Error())
-			return
-		}
-		// 文件夹上传：版本/id 看顶层目录名（前端也可在 meta 里给出）
-		if len(paths) > 0 {
-			if i := strings.Index(cleanZipPath(paths[0]), "/"); i > 0 {
-				srcName = cleanZipPath(paths[0])[:i]
-			}
-		}
-	}
-
-	// 2) 校验包体 + 抽元信息；结构不合规（外层包目录 / 技能目录外的散文件）就规整后重算
-	pack, err := inspectSkillZip(data)
+	data, pack, meta, err := a.prepareSkillPublish(body.SkillID)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	normalized := false
-	if fixed, changed, nerr := rewriteSkillZip(data, pack); nerr != nil {
-		writeErr(w, 400, "技能包规整失败: "+nerr.Error())
-		return
-	} else if changed {
-		data = fixed
-		normalized = true
-		if pack, err = inspectSkillZip(data); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
-	}
-
-	// 3) 元信息：前端填的优先，缺的按 包内 manifest.json → 技能目录名 → SKILL.md 名 → 包名 推。
-	//    市场端只收纯小写字母/数字/中划线的 id（中文名会被清洗掉、直接拒收），
-	//    所以候选逐个过 skillIDForMarket，都推不出就要求手填。
-	id := ""
-	if raw := strings.TrimSpace(meta.ID); raw != "" {
-		if id = skillIDForMarket(raw); id == "" {
+	// 显式字段优先；id 强制英文短名（^[a-z0-9-]+$，Agent Skills 规范）
+	id := strings.TrimSpace(body.ID)
+	if id != "" {
+		if id = skillIDForMarket(id); id == "" {
 			writeErr(w, 400, "技能 ID 只能用纯小写字母/数字/中划线（市场端规则，如 wechat-chat-ops），不能带中文或空格")
 			return
 		}
 	} else {
-		skillDir := ""
-		if pack.BaseDir != "" {
-			skillDir = pack.BaseDir
-			if i := strings.LastIndex(skillDir, "/"); i >= 0 {
-				skillDir = skillDir[i+1:]
-			}
-		}
-		for _, cand := range []string{pack.Manifest.ID, skillDir, pack.Name, skillIDFromName(srcName)} {
-			if id = skillIDForMarket(cand); id != "" {
-				break
-			}
-		}
-		// 上面全落空（多半是中文名）：用中文→英文词表给个建议 id。词表没覆盖全
-		// 就还是给空串，落到下面「请手填」——不猜。
-		if id == "" {
-			for _, cand := range []string{skillDir, pack.Name, pack.Manifest.Name, srcName} {
-				if id = skillIDFromChinese(cand); id != "" {
-					break
-				}
-			}
-		}
+		id = meta.ID
 	}
 	if id == "" {
-		writeErr(w, 400, "技能 ID 推不出来：市场只收纯小写字母/数字/中划线的 ID（如 wechat-chat-ops），"+
-			"中文名（如「微信操作」）请在弹层里填一个英文 ID")
+		writeErr(w, 400, "技能 ID 推不出来：市场只收纯小写字母/数字/中划线的 ID（如 wechat-chat-ops），中文名（如「微信操作」）请在弹层里填一个英文 ID")
 		return
 	}
 	if builtinSkillIDs[id] {
 		writeErr(w, 400, fmt.Sprintf("%s 是自带技能的 id，会装不上，请改名", id))
 		return
 	}
-	version := strings.TrimSpace(meta.Version)
-	if version == "" {
-		version = skillVersionFromName(srcName)
+	name := firstNonEmptyStr(body.Name, meta.Name, id)
+	if n := len([]rune(name)); n > skillNameMax {
+		writeErr(w, 400, fmt.Sprintf("显示名称 %d 字符，超出了上限 %d（行业规范）：请缩短", n, skillNameMax))
+		return
 	}
-	if version == "" {
-		version = strings.TrimSpace(pack.Manifest.Version)
+	desc := firstNonEmptyStr(body.Description, meta.Description)
+	if n := len([]rune(desc)); n > skillDescMax {
+		writeErr(w, 400, fmt.Sprintf("描述 %d 字符，超出了上限 %d（行业规范）：描述会进每个会话的技能清单，请精简，详细内容写进 SKILL.md 正文", n, skillDescMax))
+		return
 	}
-	if version == "" {
-		version = strings.TrimSpace(pack.Version) // SKILL.md frontmatter 的 version
-	}
-	if version == "" {
-		version = "0.0.0"
-	}
-	name := strings.TrimSpace(meta.Name)
-	if name == "" {
-		name = strings.TrimSpace(pack.Manifest.Name) // 包内 manifest.json 的友好名优先（SKILL.md 的 name 多是 id 风格）
-	}
-	if name == "" {
-		name = strings.TrimSpace(pack.Name)
-	}
-	if name == "" {
-		name = id
-	}
-	desc := strings.TrimSpace(meta.Description)
-	if desc == "" {
-		desc = strings.TrimSpace(pack.Description)
-	}
-	if desc == "" {
-		desc = strings.TrimSpace(pack.Manifest.Description)
-	}
-	tags := make([]string, 0, len(meta.Tags))
-	for _, t := range meta.Tags {
+	version := firstNonEmptyStr(body.Version, meta.Version, "1.0.0")
+	tags := make([]string, 0, len(body.Tags))
+	for _, t := range body.Tags {
 		if t = strings.TrimSpace(t); t != "" {
 			tags = append(tags, t)
 		}
 	}
 	if len(tags) == 0 {
-		tags = append(tags, pack.Tags...) // SKILL.md frontmatter 的 tags
+		tags = meta.Tags
 	}
 
-	// 4) 转发给市场服务器（同源 /admin/api/publish）
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	_ = mw.WriteField("type", "skill")
-	_ = mw.WriteField("id", id)
-	// 发布者姓名：市场服务器记进条目的 owner；市场卡片据此判断「这条是不是我
-	// 发的」（只对自己发的显示「更新发布 / 删除」）。没设置就不带（老行为）。
-	if owner := strings.TrimSpace(a.Cfg.PublisherName); owner != "" {
-		_ = mw.WriteField("owner", owner)
-	}
-	_ = mw.WriteField("name", name)
-	_ = mw.WriteField("version", version)
-	if desc != "" {
-		_ = mw.WriteField("desc", desc)
-	}
-	if len(tags) > 0 {
-		_ = mw.WriteField("tags", strings.Join(tags, ","))
-	}
-	pkgName := id + "-" + version + ".zip"
-	fw, err := mw.CreateFormFile("file", pkgName)
+	// 转发（用户端点，身份在头里）：zip 先落临时文件，multipart 经管道流式组装
+	// ——大包不再双份内存（原始目录字节 + zip 字节 + 请求体三份同时驻留）。
+	zipTmp, err := os.CreateTemp("", "jxmkpub-*.zip")
 	if err != nil {
-		writeErr(w, 500, "组装发布请求失败: "+err.Error())
+		writeErr(w, 500, "临时文件创建失败: "+err.Error())
 		return
 	}
-	if _, err := fw.Write(data); err != nil {
-		writeErr(w, 500, "组装发布请求失败: "+err.Error())
+	zipPath := zipTmp.Name()
+	defer os.Remove(zipPath)
+	if _, err := zipTmp.Write(data); err != nil {
+		zipTmp.Close()
+		writeErr(w, 500, "临时文件写入失败: "+err.Error())
 		return
 	}
-	if err := mw.Close(); err != nil {
-		writeErr(w, 500, "组装发布请求失败: "+err.Error())
-		return
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, origin+"/admin/api/publish", &body)
+	zipTmp.Close()
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		defer pw.Close()
+		_ = mw.WriteField("type", "skill")
+		_ = mw.WriteField("id", id)
+		_ = mw.WriteField("name", name)
+		_ = mw.WriteField("version", version)
+		if desc != "" {
+			_ = mw.WriteField("desc", desc)
+		}
+		if len(tags) > 0 {
+			_ = mw.WriteField("tags", strings.Join(tags, ","))
+		}
+		if fw, err := mw.CreateFormFile("file", id+"-"+version+".zip"); err == nil {
+			if f, err := os.Open(zipPath); err == nil {
+				_, _ = io.Copy(fw, f)
+				f.Close()
+			}
+		}
+		_ = mw.Close()
+	}()
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, origin+"/api/market/publish", pr)
 	if err != nil {
+		pw.Close()
 		writeErr(w, 500, err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set(marketUserHeader, user)
 	resp, err := marketPublishClient.Do(req)
 	if err != nil {
 		writeErr(w, 502, "连接市场服务器失败: "+err.Error())
@@ -811,7 +829,6 @@ func (a *App) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"ok": 1, "type": "skill", "id": id, "name": name, "version": version,
 		"description": desc, "tags": tags, "sha256": pack.SHA256, "size": pack.Size,
-		"skillMd": pack.SkillMDPath, "package": pkgName, "normalized": normalized,
 	}
 	if srv.Entry != nil {
 		out["entry"] = srv.Entry
@@ -819,28 +836,23 @@ func (a *App) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-/* ---------- 删除（下架）自己发布的条目 ---------- */
+/* ---------- 下架（进回收站）自己发布的条目 ---------- */
 
-// handleMarketUnpublish 把一条自己发布的条目从市场上删掉（下架）。
-//
-// 权限口径（2026-10-10 定）：只管「自己发的」——条目的 owner 与本机设置里的
-// 发布者姓名一致才允许；管理员机制后置，不做例外。服务端的实现是
-// POST <市场origin>/admin/api/unpublish（jxai-server 侧新增，需先上线）；
-// 还没上线时把 404/405 转成一句明确的提示。老条目（owner 为空）谁都删不了，
-// 等市场服务器开始记录归属后重新发布一次即可。
+// handleMarketUnpublish 下架一条自己发布的条目：客户端只发消息——归属校验
+// 与「挪进服务端回收站」都在服务端做（POST <origin>/api/market/unpublish，
+// 身份走 X-Jxai-User 头），客户端不再自判归属（那只是给按钮显隐用的 UX）。
 func (a *App) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Type    string `json:"type"`
-		ID      string `json:"id"`
-		Version string `json:"version"`
+		Type string `json:"type"`
+		ID   string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !marketTypeOK(body.Type) || strings.TrimSpace(body.ID) == "" {
-		writeErr(w, 400, "需要 type（skill/component/plugin）与 id")
+		writeErr(w, 400, "需要 type（skill/component/plugin/mcp）与 id")
 		return
 	}
-	owner := strings.TrimSpace(a.Cfg.PublisherName)
-	if owner == "" {
-		writeErr(w, 400, "还没设置发布者姓名（设置 · 网络访问 · 发布者姓名），无法判断哪些条目是你发布的")
+	user := a.marketUser()
+	if user == "" {
+		writeErr(w, 400, "还没设置发布者姓名（设置 · 网络访问 · 发布者姓名），无法向市场证明这条是你发布的")
 		return
 	}
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
@@ -853,42 +865,14 @@ func (a *App) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// 先按最新清单核一遍归属：不是自己发的就地拒绝，不去打扰市场服务器
-	man, err := a.fetchMarketManifest(raw, true)
-	if err != nil {
-		writeErr(w, 502, "市场清单获取失败: "+err.Error())
-		return
-	}
-	entry, found := marketEntryIn{}, false
-	for _, e := range marketEntriesOf(man, body.Type) {
-		if e.ID == body.ID {
-			entry, found = e, true
-			break
-		}
-	}
-	if !found {
-		writeErr(w, 404, fmt.Sprintf("市场里没有 %s %s", body.Type, body.ID))
-		return
-	}
-	if strings.TrimSpace(entry.Owner) == "" {
-		writeErr(w, 403, "这条没有发布者信息（老条目，或市场服务器还没记录归属），删不了")
-		return
-	}
-	if !strings.EqualFold(strings.TrimSpace(entry.Owner), owner) {
-		writeErr(w, 403, fmt.Sprintf("只能删除自己发布的条目：这条的发布者是「%s」", entry.Owner))
-		return
-	}
-	ver := strings.TrimSpace(body.Version)
-	if ver == "" {
-		ver = entry.Version
-	}
-	payload, _ := json.Marshal(map[string]string{"type": body.Type, "id": body.ID, "version": ver, "owner": owner})
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, origin+"/admin/api/unpublish", bytes.NewReader(payload))
+	payload, _ := json.Marshal(map[string]string{"type": body.Type, "id": body.ID})
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, origin+"/api/market/unpublish", bytes.NewReader(payload))
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(marketUserHeader, user)
 	resp, err := marketPublishClient.Do(req)
 	if err != nil {
 		writeErr(w, 502, "连接市场服务器失败: "+err.Error())
@@ -896,10 +880,6 @@ func (a *App) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		writeErr(w, 501, "市场服务器还没有删除接口（/admin/api/unpublish）：等 jxai-server 升级后再试")
-		return
-	}
 	var srv struct {
 		Error string `json:"error"`
 	}
@@ -909,16 +889,12 @@ func (a *App) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
 		if msg == "" {
 			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		writeErr(w, resp.StatusCode, "市场服务器拒绝删除: "+msg)
+		writeErr(w, resp.StatusCode, "市场服务器拒绝下架: "+msg)
 		return
 	}
-	if resp.StatusCode != 200 && resp.StatusCode != 201 && resp.StatusCode != 204 {
-		writeErr(w, 502, fmt.Sprintf("市场服务器返回了意外状态 %d", resp.StatusCode))
-		return
-	}
-	// 条目没了：清本机清单缓存，前端刷新即看不到
+	// 条目进回收站了：清本机清单缓存，前端刷新即看不到
 	a.marketMu.Lock()
 	a.marketCache = marketCacheEntry{}
 	a.marketMu.Unlock()
-	writeJSON(w, 200, map[string]any{"ok": 1, "type": body.Type, "id": body.ID, "version": ver, "owner": owner})
+	writeJSON(w, 200, map[string]any{"ok": 1, "type": body.Type, "id": body.ID})
 }
