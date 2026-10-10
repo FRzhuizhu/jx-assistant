@@ -217,9 +217,9 @@
   }
 
   async function voiceASRTranscribe(model, device, wavB64) {
-    const res = await fetch('/api/voice/asr/transcribe', {
+    const res = await fetch('/api/c/voice/asr/transcribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, device, wavB64 }),
+      body: JSON.stringify({ cmd: 'transcribe', model, device, wav_b64: wavB64 }),
     });
     if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
     return res.json();
@@ -991,7 +991,7 @@
         return false;
       };
       if (canStream) {
-        try { ws = new WebSocket('ws://' + location.host + '/api/voice/asr/stream'); } catch (e) { ws = null; }
+        try { ws = new WebSocket('ws://' + location.host + '/api/c/voice/asr/stream'); } catch (e) { ws = null; }
       }
       if (ws) {
         ws.onopen = () => { wsReady = true; ws.send('{"cmd":"stream_start"}'); };

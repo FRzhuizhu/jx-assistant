@@ -17,6 +17,22 @@ import (
 	"sync"
 )
 
+// ComponentWorkerDef 是组件自包含后端的声明（manifest 顶层 "workers" 数组项）：
+// 主程序的组件桥（componentbridge.go）按声明拉起子进程并把端点桥到它的
+// stdin/stdout——后端逻辑零主程序代码，组件可免编译安装（市场 zip 直装）。
+type ComponentWorkerDef struct {
+	Name   string `json:"name"`   // worker 标识（同组件内唯一；端点按它归属进程）
+	Command []string `json:"command"` // argv 模板：{python}=共享便携运行时 {dir}=组件目录，其余原样
+	Endpoints []ComponentWorkerEndpoint `json:"endpoints"`
+}
+
+// ComponentWorkerEndpoint 声明一条对外端点（挂在 /api/c/<组件id>/<path>）。
+type ComponentWorkerEndpoint struct {
+	Method string `json:"method"` // GET|POST
+	Path   string `json:"path"`   // 组件内相对路径（不含 /api/c/<id>/ 前缀）
+	Type   string `json:"type"`   // call=HTTP 一行一答哑管；ws=WebSocket 双向哑转发
+}
+
 // ComponentManifest 是 组件/<name>/manifest.json 的结构。
 type ComponentManifest struct {
 	ID          string `json:"id"`
@@ -27,6 +43,10 @@ type ComponentManifest struct {
 		JS  string `json:"js"`
 		CSS string `json:"css"`
 	} `json:"client"`
+	// Workers 可选：自包含后端（C 形态组件）。不用 "host" 字段名——市场服务端
+	// 旧校验把 host 解析为 bool，嵌套对象会被误判非法 JSON；未知字段 workers
+	// 静默放行，新组件包无需服务端先升级即可发布。
+	Workers []ComponentWorkerDef `json:"workers,omitempty"`
 }
 
 // ComponentStatus 是设置页展示的一条组件记录。
@@ -173,6 +193,8 @@ func (a *App) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "组件不存在")
 		return
 	}
+	// 组件关闭即杀它声明的全部 worker 进程（热卸载做真；重开会懒启复活）
+	a.Bridge.KillComponent(body.ID)
 	writeJSON(w, 200, map[string]any{"ok": 1, "components": a.Components.List()})
 }
 

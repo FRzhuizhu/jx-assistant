@@ -6,5 +6,35 @@
   "client": {
     "js": "client.js",
     "css": "client.css"
-  }
+  },
+  "workers": [
+    {
+      "name": "asr",
+      "command": [
+        "{python}",
+        "asr_worker.py"
+      ],
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "asr/transcribe",
+          "type": "call"
+        }
+      ]
+    },
+    {
+      "name": "asr-stream",
+      "command": [
+        "{python}",
+        "asr_worker.py"
+      ],
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "asr/stream",
+          "type": "ws"
+        }
+      ]
+    }
+  ]
 }

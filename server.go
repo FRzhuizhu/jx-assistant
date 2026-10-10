@@ -40,7 +40,7 @@ type App struct {
 	CCPlugins  *CCPluginRegistry   // Claude Code 插件兼容层实现（ccplugin*.go）
 	MCPServers *MCPServersRegistry // 独立 MCP 服务器注册表（mcpservers*.go）：用户直连 MCP 服务
 	Todos      *todoScheduler      // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
-	asr        *asrManager         // 本地语音识别测试通道（voiceasr.go，语音组件设置页用）
+	Bridge     *bridgeManager      // 声明式组件桥（componentbridge.go）：manifest workers 的通用宿主
 	static     fs.FS               // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 
 	mu              sync.Mutex
@@ -163,8 +163,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	go a.flushDeliveries("")
 	// 待办与定时任务：载入清单并起调度循环（组件关掉时整拍跳过，见 todo.go）
 	a.Todos = newTodoScheduler(a)
-	// 本地语音识别测试通道（voiceasr.go）：worker 惰性拉起，无模型时端点仍可列清单
-	a.asr = &asrManager{app: a}
+	// 声明式组件桥（componentbridge.go）：manifest 声明 workers 的组件后端通用宿主
+	a.Bridge = newBridgeManager(a)
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
 	// 公司接入自动同步（sync.go）：跟随服务端变化（模型/公司名/地址迁移）
@@ -317,12 +317,11 @@ func (a *App) Routes() http.Handler {
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
-	// 本地语音识别通道（voiceasr.go）：听写组件的本地引擎用（16k mono WAV base64）
-	mux.HandleFunc("POST /api/voice/asr/transcribe", a.handleASRTranscribe)
-	// 流式听写通道（voiceasr.go）：WebSocket 一行一答哑桥——partial=实时灰字、
-	// final=端点（停顿）后离线精修的黑字。本机/桌面形态直连；远程 https 页面
-	// 开不了 ws，前端自动回退整段模式
-	mux.HandleFunc("GET /api/voice/asr/stream", a.handleASRStream)
+	// 声明式组件桥（componentbridge.go）：组件自包含后端的统一端点前缀——
+	// /api/c/<组件id>/<path> 按 manifest 的 workers 声明分发（call=HTTP 一行一答、
+	// ws=WebSocket 哑转发）；组件未声明/未启用 404。挂 /api/ 下远程中继天然覆盖
+	mux.HandleFunc("GET /api/c/{id}/{rest...}", a.handleComponentBridge)
+	mux.HandleFunc("POST /api/c/{id}/{rest...}", a.handleComponentBridge)
 	// 设备桥（device_bridge.go）：Kotlin 壳长轮询拿命令/回传结果；自检端点供
 	// 本机 curl 一键诊断三件套链路。三端点仅回环可达（loopbackOnly 闸）
 	mux.HandleFunc("GET /api/device/poll", a.handleDevicePoll)

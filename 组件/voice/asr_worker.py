@@ -94,9 +94,12 @@ def main():
 
     # ---------- 转录 ----------
     def transcribe(wav_b64):
-        engine = state.get("engine")
-        if engine is None:
-            raise RuntimeError("模型尚未加载")
+        # 哑管桥（componentbridge.go）只透传一行一答：引擎装载由 worker 自理，
+        # 静默装载（load() 会多发一条 loaded 应答，打乱一行一答）
+        if state.get("engine") is None:
+            state["engine"] = load_engine("xasr", "cpu")
+            state["model"] = "xasr"
+        engine = state["engine"]
         raw = base64.b64decode(wav_b64)
         with wave.open(io.BytesIO(raw), "rb") as w:
             sr = w.getframerate()
@@ -238,7 +241,7 @@ def main():
                 else:
                     reply({"ok": True, "event": "done"})
             elif req.get("cmd") == "transcribe":
-                transcribe(req.get("wav_b64", ""))
+                transcribe(req.get("wav_b64") or req.get("wavB64") or "")
             elif req.get("cmd") == "shutdown":
                 close_engine()
                 reply({"ok": True})
