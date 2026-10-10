@@ -885,11 +885,14 @@
       setSpin(false);
       setCount(null);
       try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
-      if (msg) setHint(msg, 4000); else clearT('hintTimer');
+      // 收尾必须把常驻提示收掉（录音中…/正在识别…）：否则它会挂在输入框下面
+      // 不消失（用户报过：整段说完、消息都发出去了还显示「已出 N 句」）
+      if (msg) setHint(msg, 4000); else setHint('');
       if (toast) voiceToast(toast);
     };
-    // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾。
-    // 本地引擎例外：按句即时出字，stop() 直接收尾（未发尾段异步补落）。
+    // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾；
+    // 等待期按钮转圈 +「正在识别…」，让用户知道识别还在跑（这一秒原先没有任何反馈）。
+    // 本地引擎例外：按句即时出字，stop() 等尾段精修的 done 回包后收尾。
     const stopByUser = () => {
       if (sess.stopping || sess.done) return;
       sess.stopping = true;
@@ -897,6 +900,11 @@
       clearT('connectTimer');
       const rec = sess.rec;
       const local = !!(rec && rec.isLocal);
+      // 收尾这段「等最后一句 / 等离线精修」的空白期给个转圈：一秒左右没反馈时
+      // 用户分不清是还在识别、还是根本没录到（按钮由蓝色脉冲换成转圈 + 一行字）
+      btn.classList.remove('on');
+      setSpin(true);
+      setProgressHint('正在识别…');
       try { if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
       if (local) return; // 本地引擎按句即时出字：stop() 里直接收尾，尾段稍后落
       clearT('stopTimer');
@@ -997,7 +1005,6 @@
             if (d.text) {
               commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
               segCount += 1;
-              if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
             }
           } else if (d.event === 'done') {
             if (doneCb) doneCb();
@@ -1030,7 +1037,6 @@
           if (d.text) {
             commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
             segCount += 1;
-            if (sess.active) setHint('已出 ' + segCount + ' 句（继续说，或点麦克风结束）', 0);
           }
         }).catch((e) => {
           if (!active || sess.done) return;
