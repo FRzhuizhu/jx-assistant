@@ -879,7 +879,7 @@ function renderSessionList() {
       e.stopPropagation();
       homeDraft.workspace = ws;
       persistHomeDraftLS();
-      newTaskSession(); // 在这个目录下直接出会话（旧行为只是回首页并带上该目录）
+      goHomeNewTask();
     };
     head.querySelector('.wa-more').onclick = (e) => {
       e.stopPropagation();
@@ -950,7 +950,7 @@ function toggleSidebar() {
   slidePane(sb, collapsed ? sbWidth() : 0, collapsed ? 0 : sbWidth()); // 收起 w→0，展开 0→w
 }
 
-$('btn-new-task').onclick = () => { if (binView) setBinView(false); newTaskSession(); };
+$('btn-new-task').onclick = () => { if (binView) setBinView(false); goHomeNewTask(); };
 $('btn-sidebar').onclick = toggleSidebar;
 $('wst-search').onclick = toggleSideSearch;
 $('wst-view').onclick = (e) => openViewMenu(e.currentTarget);

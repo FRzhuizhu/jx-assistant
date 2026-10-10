@@ -79,13 +79,10 @@ async function openAssistant() {
   await openSession(s.id);
 }
 
-// 回首页（新建对话页）：启动、删除会话后、待办页的兜底返回都走这里。
-// 左上角「新工作任务」按钮不再用它——那个入口改成了「点一下就出会话」，见下面
-// 的 newTaskSession。
+// 「新工作任务」不立即建会话：留在首页聚焦输入框，发出第一条消息才真正创建
 function goHomeNewTask() {
   narrowClosePanels(); // 窄屏：从左栏浮层发起，选中目标即收起浮层
   if (marketOpen()) closeMarket(); // 新工作任务也是一张「对话页」：回首页即关掉市场页
-  void dropBlankNewTask(state.cur && state.cur.id); // 离开刚建的空会话：顺手回收，不留 "(未命名)"
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   navTok.main++;          // 作废在途的会话加载（回首页是同步完成的导航）
   navBusy.main = false;
@@ -101,126 +98,9 @@ function goHomeNewTask() {
   $('input').focus();
 }
 
-/* ---------- 「新工作任务」：点一下就出会话框（不再等第一条消息） ----------
-   旧行为是「回首页聚焦输入框，发出第一条消息才真正建会话」（懒创建）。现在点
-   「新工作任务」立即建会话并上屏：先用首页草稿（工作模式/目录/远程/权限/模型/
-   计划·目标）造一个乐观壳顶住点击瞬间——本地零延迟，远程访问下也不必等接口；
-   后端返回后由 openSession 整套接管（壳/抽屉/计划/接流）。建不出来就退回首页，
-   已经写下的字与引用一个不丢。
-
-   空会话回收：newTaskBlank 只登记「本次运行里由这个按钮创建、还没发出任何消息」
-   的会话 id——再点一次「新工作任务」时复用同一条（不重复建，也不会堆出一串
-   "(未命名)"），切走/回首页即静默删除。刷新或重启后遗留的空会话一律不动，绝不
-   误删用户特意留着的空对话。 */
-const newTaskBlank = new Set();
-const NEW_TASK_SHELL_ID = '__newtask__'; // 乐观壳的临时 id（未落库时的占位）
-let newTaskBusy = false;                 // 创建在途：连点只算一次
-
-// 建会话的 payload：与「首页发出第一条消息」时的懒创建同一份口径
-function sessionPayloadFromDraft() {
-  return {
-    mode: CHAT_MODES.some((m) => m.v === homeDraft.mode) ? homeDraft.mode : 'task',
-    workspace: homeDraft.workspace || '',
-    remote: homeDraft.remote || null,
-    permission: homeDraft.permission,
-    provider: homeDraft.provider,
-    model: homeDraft.model,
-    thinking: homeDraft.thinking || '',
-    planMode: homeDraft.planMode,
-    goalMode: homeDraft.goalMode,
-    goalText: homeDraft.goalText,
-    tools: homeDraft.tools,
-  };
-}
-
-// 新会话的空态上屏：复用既有的空会话渲染（「开始新的对话」+ 输入卡落到底部）
-function showBlankSession(view) {
-  view.state._loading = false;
-  view.state._pfxSid = null;
-  view.state.msgs = [];
-  renderMessages([], view);
-}
-
-// 静默回收一条「空的新任务会话」：只收登记在册的 id，删除失败/已不存在都忽略
-async function dropBlankNewTask(id) {
-  if (!id || !newTaskBlank.has(id)) return;
-  newTaskBlank.delete(id);
-  try { await api('/api/sessions/' + id, { method: 'DELETE' }); } catch (e) { /* 已经不在了 */ }
-  loadSessions();
-}
-
-async function newTaskSession() {
-  // 已经站在一个刚建的空会话里：它就是用户要的新任务框，把焦点还给他就好
-  if (state.cur && newTaskBlank.has(state.cur.id)) { $('input').focus(); return; }
-  if (newTaskBusy) return; // 创建在途：连点只算一次
-  newTaskBusy = true;
-  try {
-    narrowClosePanels();
-    if (marketOpen()) closeMarket();
-    // 首页草稿里已经写下的字与引用：跟着进新会话（从别的会话发起时不属于它，不带走）
-    const atHome = !state.cur;
-    const carried = atHome ? $('input').value : '';
-    const carriedQuote = atHome ? (state.quote || '') : '';
-    const gone = state.cur ? state.cur.id : '';
-    detachStream(mainView); // 旧会话在跑：只放开本地这条流，后台照旧跑完
-    navTok.main++;          // 作废在途的会话加载（这次切换是本地同步完成的）
-    navBusy.main = false;
-    state._pfxSid = null;
-    state._loading = false;
-    // 之前点出来、没写东西就切走的空会话：一并回收（不留垃圾条目）
-    [...newTaskBlank].forEach((id) => { if (id !== gone) void dropBlankNewTask(id); });
-    const d = sessionPayloadFromDraft();
-    // 乐观壳：点击瞬间就是一张空白会话（空标题在顶栏显示为「新工作任务」）
-    try {
-      localStorage.removeItem(sessionDraftKey(NEW_TASK_SHELL_ID));
-      if (carriedQuote) localStorage.setItem('jx.q.' + NEW_TASK_SHELL_ID, carriedQuote);
-      else localStorage.removeItem('jx.q.' + NEW_TASK_SHELL_ID);
-    } catch (e) { /* 隐私模式下忽略 */ }
-    optimisticSwitch(mainView, {
-      id: NEW_TASK_SHELL_ID, title: '', mode: d.mode, workspace: d.workspace, remote: d.remote,
-      permission: d.permission, provider: d.provider, model: d.model, thinking: d.thinking,
-      planMode: d.planMode, goalMode: d.goalMode, goalText: d.goalText, tools: d.tools,
-    });
-    showBlankSession(mainView);
-    $('input').value = carried; // 首页的字跟着走（进真会话后落到它的草稿 key 上）
-    autoGrow(); syncComposer(mainView);
-    void dropBlankNewTask(gone);
-    let s;
-    try {
-      s = await api('/api/sessions', { method: 'POST', body: JSON.stringify(d) });
-    } catch (e) {
-      // 建不出来：退回首页（字与引用都还在原地），把原因说出来
-      state.cur = null;
-      state.msgs = [];
-      resetEmpty();
-      $('input').value = carried; autoGrow(); syncComposer(mainView);
-      alert('新建工作任务失败：' + e.message);
-      return;
-    }
-    newTaskBlank.add(s.id); // 还没有消息：登记为可回收的空会话（发送或切走时销账）
-    if (carried) { try { localStorage.setItem(sessionDraftKey(s.id), carried); } catch (e) {} }
-    if (carriedQuote) { try { localStorage.setItem('jx.q.' + s.id, carriedQuote); } catch (e) {} }
-    // 字与引用已经跟着会话走了：首页草稿不再留一份（否则下次回首页会把已发送的内容“复活”出来）
-    if (carried || carriedQuote) clearHomeDraftLS();
-    if (state.cur && state.cur.id !== NEW_TASK_SHELL_ID && state.cur.id !== s.id) {
-      // 创建期间用户已经切到别处：会话安静地留在侧栏（下次点新任务时回收）
-      loadSessions();
-      return;
-    }
-    await loadSessions();
-    await openSession(s.id); // 复用整套打开路径：空会话数据落地即空态（「开始新的对话」）
-    $('input').focus();
-  } finally {
-    newTaskBusy = false;
-    try { localStorage.removeItem(sessionDraftKey(NEW_TASK_SHELL_ID)); } catch (e) {}
-  }
-}
-
 async function openSession(id) {
   narrowClosePanels(); // 窄屏：在左栏浮层里选中会话即收起浮层
   if (marketOpen()) closeMarket(); // 市场像一张对话页：打开任何对话即关掉它（app-market.js）
-  // 离开刚建的空会话（切到别的会话）：顺手回收，不给侧栏留 "(未命名)"
-  if (!state.cur || state.cur.id !== id) void dropBlankNewTask(state.cur && state.cur.id);
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
@@ -3870,6 +3750,21 @@ async function sendMidrun(content, viaInput, view) {
   }
 }
 
+// 本轮 chat 是否已落库：从会话详情倒序找最后一条用户发言（role=user 且
+// kind=chat/空——注入回报行不算用户发言），正文与本次一致即认定服务端已收下。
+// 给 send 的断连兜底用：误判代价不对称——把已落库的消息再发一遍会重复执行一
+// 轮（执行记录+排队项两条一样的），把没落库的误判成已落库只是少发一条（界面
+// 随后接回流，用户看得见会话还在跑，重发即可）。
+function userChatLanded(msgs, content) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== 'user') continue;
+    if (m.kind && m.kind !== 'chat') continue;
+    return m.content === content;
+  }
+  return false;
+}
+
 async function send(forceContent, view) {
   view = view || mainView;
   // 发送前先停语音听写（语音组件交出的钩子：把未定稿的灰字转写同步落进输入框
@@ -3949,7 +3844,6 @@ async function send(forceContent, view) {
   }
 
   const sid = view.state.cur.id; // 这条流所属的会话：切走后它的帧与收尾都不再动界面
-  newTaskBlank.delete(sid); // 这条会话已经有消息了：不再算「空的新任务」，切走时不回收
   view.state.streaming = true;
   view._pinned = false; // 自己发的消息：恢复跟随，输出落地即到底
   setStreamUI(true, view);
@@ -3964,6 +3858,12 @@ async function send(forceContent, view) {
   if (view === mainView) JX.emit('send', { content });
 
   let aborted = false;
+  // 服务端是否已收下这条消息：handleChat 在返回响应头之前就完成了落库并启动
+  // 执行——只要拿到 2xx 响应头，之后流再断，消息也一定在跑了，绝不能重发
+  //（否则同一条消息一边执行、一边又出现在排队队列，正是远程断流时「重复排队」
+  // 的根源）。响应头都没回来的断连没法靠这个标记，只能靠内容比对兜底（见
+  // userChatLanded）。
+  let accepted = false;
   try {
     const res = await fetch(`/api/sessions/${sid}/chat`, {
       method: 'POST',
@@ -3975,6 +3875,7 @@ async function send(forceContent, view) {
       const d = await res.json().catch(() => ({}));
       throw new Error(d.error || res.statusText);
     }
+    accepted = true;
     await consumeStream(res, view, sid);
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -3983,14 +3884,31 @@ async function send(forceContent, view) {
       // 请求失败的信息晚于切走/回首页到达：界面归新导航管，本轮不作任何界面动作
       // （旧代码这里会拿空 msgs 盖掉首页问候区、对空 cur 取 id 还会抛错）
     } else {
-      // 流断了不等于执行结束：后端执行体独立于这条连接，先对一次状态再决定提示
+      // 流断了不等于执行结束：后端执行体独立于这条连接，先对一次状态再决定提示。
+      // 手机远程链路抖动时最常见的失败形态是「请求已到、消息已落库、响应流中途
+      // 断」——旧逻辑探测到会话在跑就一律降级重发，把正在跑的消息又原样塞进
+      // 排队队列（刷新后看到执行记录与排队项一模一样两条）。现在先确认服务端
+      // 收没收下这条消息，没收下且会话在跑才降级排队。
       view.state.streamText = '';
       view.state.streamThinking = '';
       view.state.pendingSend = null; // 这轮的去向马上有定论：占位气泡退场
       renderMessages(view.state.msgs, view);
-      if (await backendRunning(view.state.cur.id, view)) {
+      let running = false;
+      if (!accepted) {
+        try {
+          const d = await api('/api/sessions/' + sid);
+          if (d.pending && view.state.cur && view.state.cur.id === sid) applyPending(view, d.pending);
+          running = !!(d.running || (d.meta && d.meta.status === 'running'));
+          accepted = userChatLanded(d.messages || [], content);
+        } catch (e2) { /* 探测也失败（服务不可达）：按没收下处理，走下面的兜底 */ }
+      }
+      if (accepted) {
+        // 消息已在服务端落库执行：不重发。endTurn → refreshIfDangling 会接回
+        // 那条执行流继续看——断的只是这条连接，不是执行本身
+      } else if (running) {
         // 后端刚被别的路径拉起执行（自动汇报/排队排水/别的窗口在发），这条消息
-        // 被拒了：降级为插话/排队（在服务端排队，不丢），endTurn 会接上那轮继续看
+        // 被拒了且库里没有它：降级为插话/排队（在服务端排队，不丢），endTurn
+        // 会接上那轮继续看
         await sendMidrun(content, false, view);
       } else {
         // 整轮没发出去（请求根本没到服务端，消息没落库）：内容退回输入框不丢字，
