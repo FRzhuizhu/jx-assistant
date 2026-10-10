@@ -883,7 +883,10 @@ events.jsonl, audio.wav, INDEX.md}`——INDEX.md 是时间线对照表（事件
 `技能/_runtime/python`，**不探测、不依赖用户机器上的系统 Python**——
 面向非编程用户，安装包内置全部运行时与依赖，装完离线全功能。
 开发目录缺 `_runtime` 时首次使用自动装配一次（python.org
-embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；打包脚本
+embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配进度只写
+引擎日志（`skills.go` 的 `skillRuntimeNotice`），不进对话——曾经经 `tool_wait`
+弹「技能运行时就绪（后续离线可用）」一类提示，被用户判为噪声、已下线；
+打包脚本
 会校验运行时依赖齐全，缺一不出包。`skillsDir` 配置可指定
 技能目录位置（默认取可执行文件旁，不可写时落数据目录）。
 **安卓走内置 Linux 运行时**（`skills.go` 的 `ensureTermuxSkillRuntime`）：

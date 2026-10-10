@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -193,22 +194,26 @@ func (a *App) readSkillGuide(skillID string) (string, error) {
 	return string(data), nil
 }
 
+// skillRuntimeNotice：技能运行时的装配进度只写引擎日志，不再弹进对话。
+// 这些通知原先经 tool_wait 显示成聊天里的「技能运行时就绪（后续离线可用）」
+// 一类提示——任何一次技能调用都会看到（首次装配时还会连报多条），判定为
+// 噪声，已按用户要求下线；装配失败仍由各步的 error 返回如实报错。
+func skillRuntimeNotice(msg string) {
+	log.Printf("[技能运行时] %s", msg)
+}
+
 // ensureSkillRuntime 保证「技能的 Python 运行时 + 全部依赖模块」可用：
 // 桌面用随包分发的 技能/_runtime/python（自包含原则，不碰系统 Python），
 // 已装配直接复用；缺失时联网装配（结果进程级缓存）。
 // 安卓用内置 Linux 运行时（Termux 快照）的 python3——缺依赖经 pip 现场补装，
 // 每次调用都核对本次技能的依赖（探测结果有缓存，常态零开销）。
-func (a *App) ensureSkillRuntime(t *toolContext, modules, wheels []string) (*pythonRuntime, error) {
+func (a *App) ensureSkillRuntime(modules, wheels []string) (*pythonRuntime, error) {
 	provisionMu.Lock()
 	defer provisionMu.Unlock()
 	if provisionedPy != nil && !isAndroidRuntime {
 		return provisionedPy, nil
 	}
-	emit := func(msg string) {
-		if t != nil && t.emit != nil {
-			t.emit(Event{Type: "tool_wait", Name: "skill-runtime", Output: msg})
-		}
-	}
+	emit := skillRuntimeNotice
 	if isAndroidRuntime {
 		py, err := ensureTermuxSkillRuntime(modules, wheels, emit)
 		if err != nil {
