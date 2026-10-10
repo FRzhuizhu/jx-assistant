@@ -2693,3 +2693,19 @@ body.mk-4col .mk-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .mcp-actions { display: flex; gap: 6px; margin-top: 6px; }
 .mcp-act { font-size: 11px; padding: 3px 12px; border-radius: 7px; border: 1px solid var(--bd, #d8d8de); background: transparent; cursor: pointer; color: inherit; }
 .mcp-act:hover { border-color: var(--accent); }
+
+/* ============================================================
+   MCP 独立设置页与技能拖拽安装（app-mcp.js / app-settings.js）：
+   连接器卡片复用 plugin-row 体系，此处只补差异部分。
+   ============================================================ */
+.mcp-card.off .pr-info { opacity: .55; }
+.mcp-tools { margin-top: 8px; border-top: 1px dashed var(--bd, #d8d8de); padding-top: 6px; display: grid; gap: 4px; }
+.mcp-tool-item { display: flex; gap: 8px; font-size: 12px; align-items: baseline; }
+.mcp-tool-item b { flex: 0 0 auto; font-family: var(--mono, monospace); font-weight: 600; }
+.mcp-tool-item span { opacity: .7; }
+#mcp-connector-list .plugin-row { flex-direction: column; align-items: stretch; }
+#mcp-connector-list .pr-toggle { align-self: flex-end; margin-top: -28px; }
+
+/* 技能页拖拽安装：拖入悬停时整页高亮提示落点 */
+.skill-drop-zone.drop-hover,
+#set-pane-skills.drop-hover { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 6%, transparent); }

@@ -501,6 +501,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 5.9L20 10l-4.4 4.4L16.8 21 12 18l-4.8 3 1.2-6.6L4 10l5.6-2.1z"/></svg>
           技能
         </button>
+        <button class="set-nav-item" data-pane="mcp">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8zM12 17v5"/></svg>
+          MCP
+        </button>
         <button class="set-nav-item" data-pane="plugins">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
           插件
@@ -746,8 +750,8 @@
         </div>
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
-          <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。</div>
+          <div class="prov-section skill-drop-zone">
+            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。<b>支持把 .zip 技能压缩包直接拖进本页安装</b>，免开文件选择框。</div>
             <button id="skill-add-btn" class="pf-add">＋ 添加技能</button>
           </div>
           <div class="gen-section">
@@ -759,22 +763,10 @@
             <div id="skill-user-list"></div>
           </div>
         </div>
-        <div class="set-pane" id="set-pane-plugins">
-          <h3>插件</h3>
+        <div class="set-pane" id="set-pane-mcp">
+          <h3>MCP 连接器</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">统一插件页：主体发现各「插件兼容层」，各层发现自己生态的插件，下方按来源体系分组。支持安装的体系在此提供安装入口（当前：Claude Code 格式）；hooks / mods / MCP 属执行型组件，默认关闭、需逐个显式开启。输入框输入 / 可触发插件命令。</div>
-            <div class="ccp-install-row">
-              <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL（Claude Code 格式）" />
-              <button id="ccp-install-btn" class="pf-add">安装</button>
-            </div>
-            <div class="ccp-install-row">
-              <input id="ccp-market-src" type="text" placeholder="市场 git URL（如 https://github.com/anthropics/claude-plugins-official）" />
-              <button id="ccp-market-btn" class="pf-add">添加市场</button>
-            </div>
-            <div id="ccp-market-panel"></div>
-          </div>
-          <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">MCP 服务器：直接连接任意 Model Context Protocol 服务（stdio 命令或 HTTP 地址），启用后该服务的工具进入助手工具目录（mcp__服务器__工具，新会话生效）。也可从下方目录一键安装制造业设计软件的 MCP 桥（SolidWorks / 中望·AutoCAD / Blender / FreeCAD 等）。</div>
+            <div class="tip-inline" style="margin:0 0 10px">MCP 连接器 = 接入本机的一个 Model Context Protocol 服务（设计软件桥、数据服务等），一个连接器可带几十个工具。对话中模型只看到连接器清单，需要时再查工具用法并调用——不占开头的工具目录，也不打扰其他会话的缓存。添加并启用 = 信任该连接器的全部工具。</div>
             <div class="ccp-install-row">
               <input id="mcp-add-name" type="text" placeholder="名称（字母/数字/连字符）" style="max-width:150px" />
               <select id="mcp-add-type" style="max-width:86px">
@@ -784,7 +776,29 @@
               <input id="mcp-add-cmd" type="text" placeholder="stdio：启动命令（如 python D:\path\server.py）；HTTP：服务地址" />
               <button id="mcp-add-btn" class="pf-add">添加</button>
             </div>
+          </div>
+          <div class="gen-section">
+            <h4>已装连接器 <span class="sec-sub">可开关 / 测试 / 展开 工具清单 / 删除</span></h4>
+            <div id="mcp-connector-list"></div>
+          </div>
+          <div class="gen-section">
+            <h4>设计软件桥目录 <span class="sec-sub">一键安装：下载代码 + 建独立虚拟环境 + 装依赖 + 注册（约 1–3 分钟）</span></h4>
             <div id="mcp-catalog" class="mcp-catalog"></div>
+          </div>
+        </div>
+        <div class="set-pane" id="set-pane-plugins">
+          <h3>插件</h3>
+          <div class="prov-section">
+            <div class="tip-inline" style="margin:0 0 10px">统一插件页：主体发现各「插件兼容层」，各层发现自己生态的插件，下方按来源体系分组。支持安装的体系在此提供安装入口（当前：Claude Code 格式）；hooks / mods / MCP 属执行型组件，默认关闭、需逐个显式开启。输入框输入 / 可触发插件命令。独立 MCP 服务在「MCP」分区管理。</div>
+            <div class="ccp-install-row">
+              <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL（Claude Code 格式）" />
+              <button id="ccp-install-btn" class="pf-add">安装</button>
+            </div>
+            <div class="ccp-install-row">
+              <input id="ccp-market-src" type="text" placeholder="市场 git URL（如 https://github.com/anthropics/claude-plugins-official）" />
+              <button id="ccp-market-btn" class="pf-add">添加市场</button>
+            </div>
+            <div id="ccp-market-panel"></div>
           </div>
           <div id="plugin-list"></div>
           <div id="plugin-sections"></div>
@@ -1048,6 +1062,7 @@
 <script src="/app-chat.js"></script>
 <script src="/app-ctxmenu.js"></script>
 <script src="/app-ccplugins.js"></script>
+<script src="/app-mcp.js"></script>
 <script src="/app-market.js"></script>
 <script src="/app-settings.js"></script>
 <script src="/app-wizard.js"></script>

@@ -1,17 +1,17 @@
 package main
 
 // 独立 MCP 服务器注册表：不装整个 Claude Code 插件，直接添加一个 MCP
-// 服务（stdio 命令或 http/sse 地址），像插件一样开关管理。连接复用
-// ccplugin_mcp.go 的 mcpClient（宿主用 mcpPlainHost：仅 ${环境变量} 展开），
-// 工具以 mcp__<服务器名>__<工具> 注册进工具目录——服务器名限定字母数字
-// 连字符（不含下划线），与插件路径的 mcp__<插件>_<服务器>__<工具> 命名
-// 空间天然隔离。
+// 服务（stdio 命令或 http/sse 地址），像技能一样开关管理。连接复用
+// ccplugin_mcp.go 的 mcpClient（宿主用 mcpPlainHost：仅 ${环境变量} 展开）。
+// 加载机制对齐用户技能——清单先行、内容按需：环境快照只列连接器
+// （PromptBlock），模型按需 mcp_read_connector 看工具清单、mcp_call_tool
+// 执行；两个工具常驻目录且定义恒定，连接器增删不扰动工具目录与前缀缓存
+// （此前把每个工具以 mcp__<服务器>__<工具> 全量注册，目录随连接器膨胀、
+// 缓存命中大幅下降，且工具过多误导模型——已废弃）。
 // 信任边界与 CC 插件的 mcp 组件一致：显式添加并启用 = 放行该服务器的
 // 工具调用，不再逐工具审批。状态落 <dataDir>/mcp-servers.json；安装器
 // （mcpcatalog.go）拉取的桥代码放 <dataDir>/mcp-servers/<id>/，每桥独立
-// venv，互不污染。
-// 本注册表同时是一个插件兼容层（层 id：mcp），统一插件页按层分组展示，
-// 行内动作（删除/测试）走专用 /api/mcp（mcpservers_api.go）。
+// venv，互不污染。设置页有独立的「MCP 连接器」分区（mcpservers_api.go）。
 
 import (
 	"context"
@@ -405,103 +405,197 @@ func (r *MCPServersRegistry) List() []mcpServerStatus {
 	return out
 }
 
-// Tools 返回全部已连接服务器的工具（挂进 toolsFor 的动态目录段）。
-// 工具集只在增删/开关边界变化，会话中保持稳定（前缀缓存契约）。
-func (r *MCPServersRegistry) Tools() []Tool {
+// ---------- 技能式按需加载（对齐 skill_manager 的清单先行、内容按需） ----------
+//
+// 一个连接器可能带几十个工具，全部注册进工具目录会撑大目录、打断前缀
+// 缓存，过多的工具定义也容易误导模型。机制与用户技能一致：
+//   环境快照只列连接器（名字 + 描述 + 工具数） → 模型要用时先
+//   mcp_read_connector(name) 看工具清单与参数 schema → 再用
+//   mcp_call_tool(connector, tool, arguments) 执行。
+// 两个工具常驻目录且定义恒定——连接器增删只影响环境快照（瞬态尾部），
+// 工具目录形状不变，前缀缓存完全不受扰动（与 read_skill 同一纪律）。
+
+// mcpConnectorBodyMax read_connector 返回正文的字符上限（超长截断提示）。
+const mcpConnectorBodyMax = 8000
+
+// PromptBlock 生成环境快照的连接器清单段（无条件注入，见 agent.go envPrompt）。
+func (r *MCPServersRegistry) PromptBlock() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := []Tool{}
+	var b strings.Builder
 	for _, s := range r.file.Servers {
 		if !s.Enabled {
 			continue
 		}
-		c, ok := r.clients[s.Name]
-		if !ok {
-			continue
+		b.WriteString("  - " + s.Name)
+		if s.Description != "" {
+			b.WriteString("：" + s.Description)
 		}
-		c.mu.Lock()
-		started, tools := c.started, c.tools
-		c.mu.Unlock()
-		if !started {
-			continue
-		}
-		for _, tl := range tools {
-			tl := tl
-			full := "mcp__" + s.Name + "__" + tl.Name
-			params := tl.InputSchema
-			if params == nil {
-				params = map[string]any{"type": "object", "properties": map[string]any{}}
+		if c, ok := r.clients[s.Name]; ok {
+			c.mu.Lock()
+			if c.started {
+				b.WriteString(fmt.Sprintf("——%d 个工具", len(c.tools)))
 			}
-			out = append(out, Tool{
-				Spec: ToolDef{Type: "function", Function: ToolSpec{
-					Name: full, Description: mcpStandaloneToolDesc(tl, s.Name), Parameters: params,
-				}},
-				Run: func(t *toolContext, args json.RawMessage) (string, error) {
-					return t.app.MCPServers.Call(t.ctx, full, args)
-				},
-			})
+			c.mu.Unlock()
 		}
+		b.WriteString("\n")
 	}
-	return out
+	if b.Len() == 0 {
+		return ""
+	}
+	return "# MCP 连接器清单（要用某连接器的工具时，先调 mcp_read_connector 读它的工具清单与参数，再用 mcp_call_tool 执行；未连接的连接器调用会报错，可让用户在设置里测试）\n" + b.String()
 }
 
-// mcpStandaloneToolDesc 组装独立服务器工具描述（含来源标注）。
-func mcpStandaloneToolDesc(t mcpToolDef, server string) string {
-	desc := strings.TrimSpace(t.Description)
-	if desc == "" {
-		desc = "MCP 工具（来自服务器 " + server + "）"
-	} else {
-		desc += "（MCP 工具，来自服务器 " + server + "）"
-	}
-	return desc
-}
-
-// Call 按完整工具名 mcp__<服务器>__<工具> 路由执行。
-func (r *MCPServersRegistry) Call(ctx context.Context, full string, args json.RawMessage) (string, error) {
-	rest := strings.TrimPrefix(full, "mcp__")
-	i := strings.Index(rest, "__")
-	if i <= 0 {
-		return "", fmt.Errorf("MCP 工具名 %s 不是 mcp__<服务器>__<工具> 形态", full)
-	}
-	name, tool := rest[:i], rest[i+2:]
+// ReadConnector 返回一个连接器的完整工具文档（名称/描述/参数 schema）；
+// 未连接时顺带懒启动（等价于设置页的「测试」）。
+func (r *MCPServersRegistry) ReadConnector(ctx context.Context, name string) (string, error) {
 	r.mu.Lock()
 	e, ok := r.entryOf(name)
 	if !ok {
 		r.mu.Unlock()
-		return "", fmt.Errorf("MCP 服务器 %s 不存在", name)
+		return "", fmt.Errorf("MCP 连接器 %s 不存在（清单见环境快照）", name)
+	}
+	if !e.Enabled {
+		r.mu.Unlock()
+		return "", fmt.Errorf("MCP 连接器 %s 已停用（设置 → MCP 里可开启）", name)
+	}
+	c := r.clientOf(e)
+	c.mu.Lock()
+	started := c.started
+	c.mu.Unlock()
+	r.mu.Unlock()
+	if !started {
+		if err := c.start(ctx); err != nil {
+			r.mu.Lock()
+			r.lastErr[name] = err.Error()
+			r.mu.Unlock()
+			return "", fmt.Errorf("连接器 %s 连接失败: %w", name, err)
+		}
+		r.mu.Lock()
+		delete(r.lastErr, name)
+		r.mu.Unlock()
+	}
+	c.mu.Lock()
+	tools := append([]mcpToolDef(nil), c.tools...)
+	c.mu.Unlock()
+	var b strings.Builder
+	fmt.Fprintf(&b, "# MCP 连接器 %s（%s）——%d 个工具\n", e.Name, e.Description, len(tools))
+	b.WriteString("调用方式：mcp_call_tool(connector=\"" + e.Name + "\", tool=<工具名>, arguments=<按下方 schema 填的对象>)\n\n")
+	for _, t := range tools {
+		b.WriteString("## " + t.Name + "\n")
+		if d := strings.TrimSpace(t.Description); d != "" {
+			b.WriteString(d + "\n")
+		}
+		schema, _ := json.Marshal(t.InputSchema)
+		if len(schema) == 0 || string(schema) == "null" {
+			schema = []byte(`{"type":"object"}`)
+		}
+		b.WriteString("参数 schema：" + string(schema) + "\n\n")
+	}
+	if body := []rune(b.String()); len(body) > mcpConnectorBodyMax {
+		b.Reset()
+		b.WriteString(string(body[:mcpConnectorBodyMax]))
+		b.WriteString("\n…（工具过多已截断：优先使用未截到的部分可再问，或让用户在设置里查看完整清单）")
+	}
+	return b.String(), nil
+}
+
+// CallToolByName 按连接器名 + 工具名执行（mcp_call_tool 的落地）。
+func (r *MCPServersRegistry) CallToolByName(ctx context.Context, connector, tool string, args json.RawMessage) (string, error) {
+	r.mu.Lock()
+	e, ok := r.entryOf(connector)
+	if !ok {
+		r.mu.Unlock()
+		return "", fmt.Errorf("MCP 连接器 %s 不存在（清单见环境快照）", connector)
+	}
+	if !e.Enabled {
+		r.mu.Unlock()
+		return "", fmt.Errorf("MCP 连接器 %s 已停用", connector)
 	}
 	c := r.clientOf(e)
 	r.mu.Unlock()
+	if len(args) == 0 {
+		args = json.RawMessage("{}")
+	}
 	return c.callTool(ctx, tool, args)
 }
 
-// Count 服务器条数（层 Info 用）。
+// ConnectorTools 返回两个常驻的按需工具（定义恒定，不随连接器增删变化）。
+func (r *MCPServersRegistry) ConnectorTools() []Tool {
+	if r == nil {
+		return nil
+	}
+	return []Tool{
+		{
+			Spec: toolSpec("mcp_read_connector",
+				"读取一个 MCP 连接器（设计软件/服务整合包）的工具清单与用法：每个工具的名称、说明、参数 schema。环境快照的「MCP 连接器清单」只列连接器名字与描述；要用某连接器的工具之前，先调用本工具看清单。",
+				objSchema(map[string]any{
+					"name": strProp("连接器名，来自环境快照里的 MCP 连接器清单"),
+				}, "name")),
+			Run: func(t *toolContext, args json.RawMessage) (string, error) {
+				var p struct {
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(args, &p); err != nil {
+					return "", err
+				}
+				if t.app.MCPServers == nil {
+					return "", fmt.Errorf("MCP 注册表未初始化")
+				}
+				return t.app.MCPServers.ReadConnector(t.ctx, strings.TrimSpace(p.Name))
+			},
+		},
+		{
+			Spec: toolSpec("mcp_call_tool",
+				"执行一个 MCP 连接器里的工具。先用 mcp_read_connector 看过该连接器的工具清单与参数 schema，再按 schema 填 arguments 调用本工具。",
+				objSchema(map[string]any{
+					"connector": strProp("连接器名，来自环境快照里的 MCP 连接器清单"),
+					"tool":      strProp("工具名，来自 mcp_read_connector 的清单"),
+					"arguments": map[string]any{
+						"type":                 "object",
+						"description":          "工具参数对象，按 mcp_read_connector 给出的 schema 填写",
+						"additionalProperties": true,
+					},
+				}, "connector", "tool")),
+			Run: func(t *toolContext, args json.RawMessage) (string, error) {
+				var p struct {
+					Connector string          `json:"connector"`
+					Tool      string          `json:"tool"`
+					Arguments json.RawMessage `json:"arguments"`
+				}
+				if err := json.Unmarshal(args, &p); err != nil {
+					return "", err
+				}
+				if t.app.MCPServers == nil {
+					return "", fmt.Errorf("MCP 注册表未初始化")
+				}
+				return t.app.MCPServers.CallToolByName(t.ctx, strings.TrimSpace(p.Connector), strings.TrimSpace(p.Tool), p.Arguments)
+			},
+		},
+	}
+}
+
+// Count 服务器条数。
 func (r *MCPServersRegistry) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.file.Servers)
 }
 
-// ---------- 层实现：独立 MCP 服务器（pluginlayers.go 的契约） ----------
+// mcpToolsMode 报告某会话模式是否带 MCP 按需工具（与 toolsFor 的分支对齐：
+// 执行类模式有，总控 assistant 只编排不实操、aux 只读答疑，均不带）。
+// 连接器清单段（PromptBlock 注入）用同一判定——清单与调用入口同模式集，
+// 不给任何模式开「看得见调不着」的空头支票。
+func mcpToolsMode(mode string) bool { return mode != "assistant" && mode != "aux" }
 
-type mcpLayer struct{ r *MCPServersRegistry }
-
-func (l mcpLayer) Info() LayerInfo {
-	return LayerInfo{ID: "mcp", Name: "MCP 服务器", Count: l.r.Count()}
-}
-
-func (l mcpLayer) Plugins() []LayerPlugin {
-	out := []LayerPlugin{}
-	for _, s := range l.r.List() {
-		out = append(out, LayerPlugin{
-			Layer: "mcp", LayerName: "MCP 服务器",
-			ID: s.Name, Name: s.Name, Description: s.Description,
-			Enabled: s.Enabled, MCP: 1,
-		})
+// hasEnabled 是否存在启用的连接器（启动自检的清单段契约用）。
+func (r *MCPServersRegistry) hasEnabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.file.Servers {
+		if s.Enabled {
+			return true
+		}
 	}
-	return out
-}
-
-func (l mcpLayer) SetEnabled(id string, on bool) error {
-	return l.r.SetEnabled(id, on)
+	return false
 }

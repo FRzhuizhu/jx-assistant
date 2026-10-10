@@ -7,8 +7,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -88,32 +91,58 @@ func TestMCPServersStateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMCPLayerRegistration(t *testing.T) {
-	a := &App{MCPServers: InitMCPServers(&App{}, t.TempDir())}
-	// 同名服务器与插件路径的 mcp__<插件>_<服务器>__ 命名隔离：服务器名不含下划线
-	if err := a.MCPServers.Upsert(mcpServerEntry{Name: "zw", Command: "x", Enabled: true}); err != nil {
+func TestMCPPromptBlockAndConnectorTools(t *testing.T) {
+	r := newTestMCPR(t)
+	// 空注册表：清单段为空，两个常驻工具仍在（工具目录形状恒定）
+	if blk := r.PromptBlock(); blk != "" {
+		t.Errorf("空注册表不应有清单段: %q", blk)
+	}
+	tools := r.ConnectorTools()
+	if len(tools) != 2 || tools[0].Spec.Function.Name != "mcp_read_connector" || tools[1].Spec.Function.Name != "mcp_call_tool" {
+		t.Fatalf("应有 mcp_read_connector/mcp_call_tool 两个常驻工具: %+v", tools)
+	}
+	specEmpty, _ := json.Marshal(tools[0].Spec)
+
+	// 添加（启用/停用各一）：清单段只列启用的；工具定义不变（前缀缓存契约）
+	if err := r.Upsert(mcpServerEntry{Name: "alpha", Command: "python", Enabled: true, Description: "甲连接器"}); err != nil {
 		t.Fatal(err)
 	}
-	layers := discoverPluginLayers(a)
-	found := false
-	for _, l := range layers.Layers() {
-		if l.Info().ID == "mcp" {
-			found = true
-			ps := l.Plugins()
-			if len(ps) != 1 || ps[0].ID != "zw" || !ps[0].Enabled {
-				t.Errorf("mcp 层清单不符: %+v", ps)
-			}
-		}
+	if err := r.Upsert(mcpServerEntry{Name: "beta", Type: "http", URL: "https://x/mcp", Enabled: false}); err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatal("插件层注册表里没有 mcp 层")
+	blk := r.PromptBlock()
+	if !strings.Contains(blk, "alpha") || strings.Contains(blk, "beta") {
+		t.Errorf("清单段应只含启用的连接器: %q", blk)
 	}
-	// 统一总开关走层协议
-	if err := layers.SetEnabled("mcp", "zw", false); err != nil {
-		t.Fatalf("层开关失败: %v", err)
+	if !strings.Contains(blk, "mcp_read_connector") {
+		t.Errorf("清单段应提示按需读取的用法: %q", blk)
 	}
-	if st := a.MCPServers.List(); st[0].Enabled {
-		t.Error("层开关未生效")
+	tools2 := r.ConnectorTools()
+	specPopulated, _ := json.Marshal(tools2[0].Spec)
+	if string(specEmpty) != string(specPopulated) {
+		t.Error("连接器增删不应改变常驻工具定义（前缀缓存契约）")
+	}
+}
+
+func TestMCPReadConnectorGuards(t *testing.T) {
+	r := newTestMCPR(t)
+	ctx := context.Background()
+	// 不存在 / 已停用：报可操作的错误，不触发连接
+	if _, err := r.ReadConnector(ctx, "ghost"); err == nil {
+		t.Error("不存在的连接器应报错")
+	}
+	if err := r.Upsert(mcpServerEntry{Name: "beta", Type: "http", URL: "https://x/mcp", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ReadConnector(ctx, "beta"); err == nil {
+		t.Error("已停用的连接器应报错")
+	}
+	// CallToolByName 同一对守卫
+	if _, err := r.CallToolByName(ctx, "ghost", "t", nil); err == nil {
+		t.Error("不存在连接器的调用应报错")
+	}
+	if _, err := r.CallToolByName(ctx, "beta", "t", nil); err == nil {
+		t.Error("已停用连接器的调用应报错")
 	}
 }
 

@@ -371,6 +371,29 @@ func (a *App) assertSkillVisibility() {
 				panic(fmt.Sprintf("技能可见性自检失败：模式 %s 的环境快照里没有用户技能清单（envPrompt 应为固定条目、无条件注入）", mode))
 			}
 		}
+		// MCP 连接器可见性同款契约（mcpservers.go）：两个常驻按需工具与
+		// 连接器清单段都只在执行类模式（mcpToolsMode），且两者同进同出；
+		// 总控/答疑模式两者都不出现——不给「看得见调不着」的空头支票。
+		if mcpToolsMode(mode) {
+			hasMCPRead, hasMCPCall := false, false
+			for _, tl := range a.toolsFor(mode) {
+				switch tl.Spec.Function.Name {
+				case "mcp_read_connector":
+					hasMCPRead = true
+				case "mcp_call_tool":
+					hasMCPCall = true
+				}
+			}
+			if !hasMCPRead || !hasMCPCall || (a.MCPServers == nil) {
+				panic(fmt.Sprintf("MCP 可见性自检失败：模式 %s 的工具目录里 mcp_read_connector/mcp_call_tool 应随注册表常驻成对在场", mode))
+			}
+			if a.MCPServers.hasEnabled() {
+				sess := &SessionMeta{ID: "__skill_selfcheck__", Mode: mode}
+				if !strings.Contains(a.envPrompt(sess), "MCP 连接器清单") {
+					panic(fmt.Sprintf("MCP 可见性自检失败：模式 %s 的环境快照里没有连接器清单（PromptBlock 应与工具同模式注入）", mode))
+				}
+			}
+		}
 	}
 }
 
@@ -539,6 +562,45 @@ func (a *App) handleAddSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry, err := a.addUserSkill(body.Path)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, entry)
+}
+
+// handleUploadSkill 技能压缩包直传（设置页拖拽安装）：multipart 的 file
+// 字段落临时文件后走与 /api/skills/add 同一条 addUserSkill 路径（解压装
+// 进 技能/user/）。浏览器拖拽拿不到本地路径，上传是唯一通道。
+func (a *App) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(256 << 20); err != nil {
+		writeErr(w, 400, "上传解析失败: "+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, 400, "缺少 file 字段")
+		return
+	}
+	defer file.Close()
+	if !strings.EqualFold(filepath.Ext(header.Filename), ".zip") {
+		writeErr(w, 400, "只支持 .zip 压缩包（技能文件夹请用「添加技能」按钮选择）")
+		return
+	}
+	tmp, err := os.CreateTemp("", "jxskill-*.zip")
+	if err != nil {
+		writeErr(w, 500, "临时文件创建失败: "+err.Error())
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmp, file); err != nil {
+		tmp.Close()
+		writeErr(w, 500, "上传写入失败: "+err.Error())
+		return
+	}
+	tmp.Close()
+	entry, err := a.addUserSkill(tmpPath)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return

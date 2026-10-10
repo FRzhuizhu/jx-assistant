@@ -1123,20 +1123,24 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   验证）+ ccplugin_mod_test.go（goja 语法矩阵/ESM 转换/handler 链/mods
   端到端：官方 first-mod 示例原文全链路）。
 
-## 独立 MCP 服务器（mcpservers*.go / mcpcatalog.go）
+## 独立 MCP 连接器（mcpservers*.go / mcpcatalog.go）
 
 不装整个 CC 插件、直接添加一个 MCP 服务的注册表（stdio 命令或 http/sse
 地址）。连接复用 ccplugin_mcp.go 的 mcpClient（宿主经 mcpHost 接口注入：
 插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替换，独立侧 mcpPlainHost
-只做 ${环境变量}）；工具名 `mcp__<服务器>__<工具>`——服务器名限定字母
-数字连字符（不含下划线），与插件路径 `mcp__<插件>_<服务器>__<工具>` 命名
-空间天然隔离，同挂 tools.go 的 ccMCPTools()。
+只做 ${环境变量}）。
 
+- **按需加载（技能式）**：一个连接器可带几十个工具，全量注册会撑爆工具
+  目录、打断前缀缓存、误导模型（第一版正是这么做的，已废弃
+  `mcp__<服务器>__<工具>` 全量注册）。现与用户技能同一纪律——清单先行、
+  内容按需：环境快照只列启用的连接器（PromptBlock，名字+描述+工具数），
+  模型按需 `mcp_read_connector(name)` 读工具清单与参数 schema、
+  `mcp_call_tool(connector, tool, arguments)` 执行。两个工具常驻目录且
+  定义恒定，连接器增删只动环境快照尾部，工具目录形状与前缀缓存不受扰动。
 - **状态**：`<dataDir>/mcp-servers.json`（增删/开关/来源 manual 或
   catalog:<id>）；桥代码与各桥独立 venv 落 `<dataDir>/mcp-servers/<id>/`。
-- **插件层**：注册为第三个插件兼容层（层 id `mcp`，统一插件页按层分组，
-  总开关走 /api/plugins，行内测试/删除走 /api/mcp）。信任边界与 CC 插件
-  mcp 组件一致：显式添加并启用 = 放行该服务器工具，不逐工具审批。
+  信任边界与 CC 插件 mcp 组件一致：显式添加并启用 = 放行该连接器工具，
+  不逐工具审批。不进统一插件页（有独立的 设置→MCP 分区，app-mcp.js）。
 - **设计软件桥目录**（mcpcatalog.go，内置制造业常用软件的社区 MCP 桥，
   设置页一键安装）：solidworks（yimu0824/solidworks-mcp，COM）、multicad
   （AnCode666/multiCAD-mcp，中望 ZWCAD/AutoCAD/GstarCAD/BricsCAD）、blender
@@ -1150,10 +1154,10 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
 - **API**：`GET /api/mcp`（清单+连通状态）、`POST /api/mcp`（增改）、
   `/delete`、`/test`（连通并列工具）、`GET /api/mcp/catalog`（目录+已装
   标记）、`POST /api/mcp/catalog/install`（一键装，分钟级）。
-- **测试**：mcpservers_test.go（名称域/状态回读/层注册/目录完整性/tar.gz
-  解压防穿越）；mcp_install_now_test.go 为手动实装入口
-  （`JX_MCP_INSTALL_NOW=<目录id逗号列表> go test -run TestMCPInstallNow`，
-  驱动真实下载安装+握手验证，缺省跳过）。
+- **测试**：mcpservers_test.go（名称域/状态回读/清单段与常驻工具恒定性/
+  读取守卫/目录完整性/tar.gz 解压防穿越）；mcp_install_now_test.go 为手动
+  实装入口（`JX_MCP_INSTALL_NOW=<目录id逗号列表> go test -run
+  TestMCPInstallNow`，驱动真实下载安装+握手验证，缺省跳过）。
 
 ### 与 Claude Code 的已知差异（有意为之或暂不支持）
 

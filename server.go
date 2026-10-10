@@ -271,6 +271,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /attachments/", a.handleAttachment)
 	mux.HandleFunc("GET /api/skills", a.handleListSkills)
 	mux.HandleFunc("POST /api/skills/add", a.handleAddSkill)
+	mux.HandleFunc("POST /api/skills/upload", a.handleUploadSkill)
 	mux.HandleFunc("POST /api/skills/toggle", a.handleToggleSkill)
 	mux.HandleFunc("POST /api/skills/delete", a.handleDeleteSkill)
 	mux.HandleFunc("GET /api/experts", a.handleListExperts)

@@ -243,10 +243,6 @@ func init() {
 		}
 		return claudeLayer{r: a.CCPlugins}
 	})
-	registerPluginLayer(func(a *App) PluginLayer {
-		if a == nil || a.MCPServers == nil {
-			return nil
-		}
-		return mcpLayer{r: a.MCPServers}
-	})
+	// 独立 MCP 服务器不进统一插件页：它有自己的设置分区（设置 → MCP 连接器）
+	// 与按需加载机制（mcpservers.go），与技能同位而非与插件同位。
 }

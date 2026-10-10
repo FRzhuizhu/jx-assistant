@@ -434,6 +434,15 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString(block + "\n")
 		}
 	}
+	// 独立 MCP 连接器清单（mcpservers.go）：与技能同一纪律——清单先行、
+	// 内容按需（mcp_read_connector / mcp_call_tool），连接器增删只影响
+	// 环境快照尾部，不动工具目录与前缀缓存。只在带 MCP 工具的执行类
+	// 模式注入（mcpToolsMode）：总控/答疑模式没有调用入口，不给空头支票。
+	if a.MCPServers != nil && mcpToolsMode(sess.Mode) {
+		if block := a.MCPServers.PromptBlock(); block != "" {
+			b.WriteString(block + "\n")
+		}
+	}
 	return b.String()
 }
 

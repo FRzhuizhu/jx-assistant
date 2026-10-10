@@ -181,6 +181,8 @@ async function openSettings(pane) {
   renderComponentList();
   mountComponentPanes(); // 声明了 pane 的组件（如语音）的独立设置页
   renderSkillsPanel();
+  bindSkillDropZone();
+  renderMCPPage(); // 独立「MCP 连接器」分区（app-mcp.js）
   renderExpertsPanel();
   const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : null;
   // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并压一层「设置一级」
@@ -388,7 +390,7 @@ window.addEventListener('cx:change', () => {
 /* ---------- 插件清单与分区（统一插件页：/api/plugins 带 layers + JX 注册的分区） ---------- */
 
 // 各体系行的富渲染器（按层 id 注册，app-ccplugins.js 等提供）；缺省通用行
-const pluginRowRenderers = { claude: ccpPluginRow, mcp: mcpServerRow };
+const pluginRowRenderers = { claude: ccpPluginRow };
 
 function pluginRowFor(p) {
   return (pluginRowRenderers[p.layer] || simplePluginRow)(p);
@@ -439,8 +441,6 @@ async function renderPluginList() {
   box.innerHTML = '加载中…';
   let data;
   try { data = await api('/api/plugins'); } catch (e) { box.textContent = '插件清单读取失败：' + e.message; return; }
-  // MCP 分组行需要连通状态、目录区需要安装状态：并行拉取（失败不阻断本页）
-  mcpLoadSideData();
   let markets = [];
   for (const L of (data.layers || [])) {
     if (L.extra && Array.isArray(L.extra.marketplaces)) { markets = L.extra.marketplaces; break; }
@@ -1572,6 +1572,61 @@ async function installSkillFromPicker(kind) {
 $('skill-add-btn').onclick = () => openPopover('skill-add-pop', $('skill-add-btn'));
 $('sa-folder').onclick = () => installSkillFromPicker('folder');
 $('sa-zip').onclick = () => installSkillFromPicker('zip');
+
+/* ---------- 技能压缩包拖拽安装（POST /api/skills/upload） ----------
+   把 .zip 直接拖进技能页即安装，替代「添加技能 → 选 ZIP」的文件选择框
+   路线（两条路最终同走 addUserSkill）。浏览器拖拽拿不到本地路径，
+   走 multipart 直传；文件夹拖拽不支持——提示用「添加技能」按钮。 */
+async function uploadSkillZip(file, note) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  try {
+    const res = await fetch('/api/skills/upload', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    note.textContent = `「${file.name}」安装成功`;
+    return true;
+  } catch (e) {
+    alert(`「${file.name}」安装失败：` + e.message);
+    return false;
+  }
+}
+
+function bindSkillDropZone() {
+  const pane = $('set-pane-skills');
+  if (!pane || pane.dataset.dropBound) return;
+  pane.dataset.dropBound = '1';
+  const note = document.createElement('div');
+  note.className = 'pr-note';
+  pane.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer.types || [])].includes('Files')) return;
+    e.preventDefault(); // 允许落点
+    pane.classList.add('drop-hover');
+  });
+  pane.addEventListener('dragleave', (e) => {
+    if (e.target === pane) pane.classList.remove('drop-hover');
+  });
+  pane.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    pane.classList.remove('drop-hover');
+    const files = [...(e.dataTransfer.files || [])];
+    const zips = files.filter((f) => /\.zip$/i.test(f.name));
+    if (!zips.length) {
+      alert(files.length
+        ? '只支持拖入 .zip 压缩包安装（技能文件夹请用「添加技能」按钮选择）'
+        : '拖入的内容不是文件（技能文件夹请用「添加技能」按钮选择）');
+      return;
+    }
+    pane.appendChild(note);
+    note.textContent = `安装中（${zips.length} 个）…`;
+    let ok = 0;
+    for (const f of zips) { if (await uploadSkillZip(f, note)) ok++; }
+    note.textContent = ok === zips.length
+      ? `已安装 ${ok} 个技能${ok > 1 ? '包' : ''}，清单见下方`
+      : `完成：成功 ${ok} / ${zips.length}`;
+    renderSkillsPanel();
+  });
+}
 
 /* ---------- 子对话专家（/api/experts：内置只读展示，自定义可增删改开关） ---------- */
 
