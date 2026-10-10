@@ -277,6 +277,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/market", a.handleMarketView)
 	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
 	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
+	mux.HandleFunc("POST /api/market/publish", a.handleMarketPublish)     // 上传技能：校验打包后转投市场服务器（market_publish.go）
+	mux.HandleFunc("POST /api/market/unpublish", a.handleMarketUnpublish) // 删除自己发布的市场条目（同文件）
 	// 公司接入向导（wizard.go）：局域网发现 + 总服务器查询 + 一键应用配置
 	mux.HandleFunc("POST /api/wizard/discover", a.handleWizardDiscover)
 	mux.HandleFunc("POST /api/wizard/connect", a.handleWizardConnect)
@@ -963,6 +965,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"lanIPs":           lanIPv4s(),
 		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
 		"marketURL":        a.Cfg.MarketURL,
+		"publisherName":    a.Cfg.PublisherName,
 		"wizardDone":       a.Cfg.WizardDone,
 		"registryURL":      a.Cfg.RegistryURL,
 		"updateURL":        a.Cfg.UpdateURL,
@@ -989,6 +992,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		RemoteHost      *string `json:"remoteHost"`    // 中继网关地址（域名或 IP，不带协议与端口）
 		RemotePort      *int    `json:"remotePort"`    // 中继网关端口
 		MarketURL       *string `json:"marketURL"`     // 市场（技能/组件/插件）服务器清单地址
+		PublisherName   *string `json:"publisherName"` // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
 		WizardDone      *bool   `json:"wizardDone"`    // 首启向导：完成/跳过（不再自动弹）
 		RegistryURL     *string `json:"registryURL"`   // 总服务器地址（向导发现不到公司时的查询兜底）
 		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
@@ -1104,6 +1108,14 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.marketMu.Lock()
 		a.marketCache = marketCacheEntry{} // 换市场源：缓存作废
 		a.marketMu.Unlock()
+	}
+	if v := body.PublisherName; v != nil {
+		name := strings.TrimSpace(*v)
+		if len([]rune(name)) > 32 {
+			writeErr(w, 400, "发布者姓名最长 32 字")
+			return
+		}
+		a.Cfg.PublisherName = name
 	}
 	if v := body.WizardDone; v != nil {
 		a.Cfg.WizardDone = *v

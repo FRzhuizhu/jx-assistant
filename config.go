@@ -87,6 +87,11 @@ type Config struct {
 	// 市场（技能/组件/插件）服务器清单地址：指向 jxai-server 的
 	// /market/manifest.json；空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
 	MarketURL string `json:"marketURL"`
+	// 发布者姓名（市场条目的归属名 owner）：发布技能时随包上报，市场卡片拿它
+	// 与条目 owner 比对——只显示自己那些条目的「更新发布 / 删除」（见
+	// market_publish.go 的 unpublish）。默认由首启向导里填的姓名写入（wizard.go）；
+	// 没跑过向导的机器在 设置 · 网络访问 手动填。空 = 未设置。
+	PublisherName string `json:"publisherName"`
 	// 公司接入（向导，wizard.go）：wizardDone=已完成/跳过首启向导（不再自动弹）；
 	// registryURL=总服务器地址（公司名发现不到时的查询兜底，空=只走局域网广播）。
 	WizardDone  bool   `json:"wizardDone"`

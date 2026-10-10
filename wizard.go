@@ -324,6 +324,10 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 		a.Cfg.UpdateURL = payload.UpdateURL
 	}
 	a.Cfg.WizardDone = true
+	// 向导里填的姓名即默认「发布者姓名」（市场条目的归属名 owner）：发布技能时
+	// 随包上报，市场卡片据此判断哪些条目能「更新发布 / 删除」。重跑向导按新填的
+	// 姓名覆盖（向导填的就是"我是谁"）；只想改名去 设置 · 网络访问。
+	a.Cfg.PublisherName = user
 	a.Cfg.syncLegacyFields()
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
 		writeErr(w, 500, "配置保存失败："+err.Error())
