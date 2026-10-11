@@ -666,6 +666,19 @@
               <input id="set-update-url" class="pf-input" placeholder="http://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
               <p class="sf-desc">软件更新检查地址（jxai-server 的 /updates/latest，或 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。</p>
             </div>
+            <div class="set-field">
+              <div class="sf-label">软件更新</div>
+              <p class="sf-desc" id="update-man-state">当前版本 -</p>
+              <div class="update-man-actions">
+                <button id="btn-update-check" class="pf-add" type="button">立即检查更新</button>
+                <button id="btn-update-dl" class="pf-add" type="button">下载完整安装包</button>
+              </div>
+              <p class="sf-desc">「立即检查」当场拉一次发布源并静默应用分块更新（发布源支持时：主程序重启软件后生效，组件即刻生效）；「下载完整安装包」走完整安装，与静默更新两条路并存、互为兜底。</p>
+              <select id="set-update-mode" class="pf-input" style="width:auto" title="更新方式">
+                <option value="auto">更新方式：自动静默更新（推荐）</option>
+                <option value="manual">更新方式：仅提醒，手动完整安装</option>
+              </select>
+            </div>
           </div>
           <p class="tip">网络访问设置保存在服务端；远程接入改动即时生效，局域网绑定改动重启程序后生效。</p>
         </div>
@@ -804,7 +817,6 @@
               </div>
             </div>
             <p class="tip" id="about-status" style="margin-top:14px"></p>
-            <p class="tip">Go 后端（LLM 主循环 + 工具集 + 编排 + 上下文管理）+ 原生 JS 前端；SQLite 存储；单文件交付。</p>
           </div>
           <div class="gen-section">
             <h4>远程外壳 <span class="sec-sub">远程端（手机）经中继加载的单文件页面</span></h4>
@@ -1034,14 +1046,18 @@
 
 <input type="file" id="file-input" multiple class="hidden">
 
-<!-- 更新横幅：服务端检查到新版本时置顶展示（在线推送 + 打开页面时从 /api/status 恢复）；
-     「确认更新」直接下载发布附件里的安装包 -->
+<!-- 更新横幅：双模式（在线推送 + 打开页面时从 /api/status 恢复）——
+     ①整包路：检查到新版本提示「确认更新」直接下载安装包；
+     ②分块静默路：主程序已交换时提示「已就绪，重启生效」，可立即重启接力 -->
 <div id="update-banner" class="update-banner hidden">
   <span class="ub-icon">⬆</span>
   <span class="ub-text"></span>
-  <button class="ub-confirm" type="button">确认更新</button>
+  <span class="ub-actions"></span>
   <button class="ub-close" type="button" title="关闭">✕</button>
 </div>
+
+<!-- 轻提示（toast）：静默组件更新完成等不打扰用户的通知，自动消失 -->
+<div id="app-toast" class="app-toast hidden"></div>
 
 <!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → ctxmenu（桌面壳右键菜单）→ settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
 <script src="/qrcode.lib.js"></script>

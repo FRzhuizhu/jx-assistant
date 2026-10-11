@@ -24,6 +24,14 @@ type ComponentWorkerDef struct {
 	Name   string `json:"name"`   // worker 标识（同组件内唯一；端点按它归属进程）
 	Command []string `json:"command"` // argv 模板：{python}=共享便携运行时 {dir}=组件目录，其余原样
 	Endpoints []ComponentWorkerEndpoint `json:"endpoints"`
+	// Hooks 可选：订阅的主程序钩子事件（白名单见 componentbridge.go，如
+	// prompt.submit/run.end）。声明了钩子的 worker 启用帧协议（stdin/stdout
+	// 变成带 id 的 JSON 帧双向解复用），并因此能收到事件、回决定、反向调主程序
+	// API；未声明维持哑管（一行一答），存量组件零影响。
+	Hooks []string `json:"hooks,omitempty"`
+	// HooksTimeoutMs 可选：拦截型钩子等 worker 决定的上限（毫秒）。缺省 5000，
+	// 上限 30000——超时按放行处理（fail-open），组件卡死不拖慢发送。
+	HooksTimeoutMs int `json:"hooksTimeoutMs,omitempty"`
 }
 
 // ComponentWorkerEndpoint 声明一条对外端点（挂在 /api/c/<组件id>/<path>）。
@@ -131,11 +139,49 @@ func (r *ComponentRegistry) rescan() {
 func (r *ComponentRegistry) IsEnabled(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.isEnabledLocked(id)
+}
+
+func (r *ComponentRegistry) isEnabledLocked(id string) bool {
 	if _, ok := r.items[id]; !ok {
 		return false
 	}
 	on, rec := r.enabled[id]
 	return !rec || on // 未记录的缺省启用
+}
+
+// HookSub 是一个钩子订阅：启用中组件的某个 worker 声明了该事件。
+type HookSub struct {
+	CompID string
+	Def    ComponentWorkerDef
+}
+
+// HookSubscribers 返回订阅了某事件的全部启用组件 worker（组件 id 升序——拦截型
+// 决定的应用顺序因此稳定）。事件是否在白名单由发射方（componentbridge.go）把关，
+// 这里只做声明匹配。
+func (r *ComponentRegistry) HookSubscribers(event string) []HookSub {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]string, 0, len(r.items))
+	for id := range r.items {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := []HookSub{}
+	for _, id := range ids {
+		if !r.isEnabledLocked(id) {
+			continue
+		}
+		for _, def := range r.items[id].Workers {
+			for _, h := range def.Hooks {
+				if h == event {
+					out = append(out, HookSub{CompID: id, Def: def})
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (r *ComponentRegistry) Manifest(id string) (ComponentManifest, bool) {

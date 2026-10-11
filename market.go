@@ -396,6 +396,11 @@ func (a *App) installMarketComponent(e marketEntryIn, root string) (marketInstal
 	if strings.ContainsAny(id, `\/:*?"<>|`) || id == "." || id == ".." {
 		return marketInstallRec{}, fmt.Errorf("组件 id 不能当目录名: %s", id)
 	}
+	// 先杀该组件的 worker：exe 形态的 worker 占着目录时 RemoveAll 直接失败，
+	// py 形态会继续用旧代码服务到进程死亡——两种形态都先杀干净再换目录
+	if a.Bridge != nil {
+		a.Bridge.KillComponent(id)
+	}
 	dst := filepath.Join(a.Components.Dir(), id)
 	if err := os.RemoveAll(dst); err != nil {
 		return marketInstallRec{}, err

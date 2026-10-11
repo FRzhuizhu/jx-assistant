@@ -624,23 +624,34 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 	// 三种终态都在审计日志留痕（导出日志时间线可见，不发给模型）；
 	// 失败同时给会话打上「异常中断」标记——左侧栏把时间位换成「⚠ 已中断」，
 	// 用户没看着这个会话也能一眼发现这轮没跑完（打开会话不清，重跑一轮即清）。
+	hookStatus, hookErr := "done", ""
 	switch {
 	case err == nil:
 		_ = a.Store.SetLastStop(m.ID, "")
 		emit(Event{Type: "done"})
 	case a.isStopped(run) || run.ctx.Err() != nil:
+		hookStatus = "stopped"
 		log.Printf("[对话] 会话 %s 已被用户停止", m.ID)
 		a.clearRunError(m.ID)
 		_ = a.Store.SetLastStop(m.ID, "") // 用户主动停止不算异常，不留标记
 		a.auditWrite(m, map[string]any{"type": "stop"})
 		emit(Event{Type: "stopped"})
 	default:
+		hookStatus = "error"
+		hookErr = err.Error()
 		log.Printf("[对话] 会话 %s 本轮结束于错误: %v", m.ID, err)
 		a.setRunError(m.ID, err.Error())
 		_ = a.Store.SetLastStop(m.ID, stopKindOf(err))
 		a.auditWrite(m, map[string]any{"type": "error", "error": err.Error()})
 		emit(Event{Type: "error", Error: err.Error()})
 	}
+	// 组件钩子通知：run.end（通知型）——一轮执行结束（含排队续跑全部完成），
+	// 订阅组件的 worker 收到事件帧即止，主流程不等应答（emitComponentHooks）
+	a.emitComponentHooks("run.end", map[string]any{
+		"sessionID": m.ID,
+		"status":    hookStatus,
+		"error":     hookErr,
+	})
 	emit(Event{Type: "session_updated"})
 }
 

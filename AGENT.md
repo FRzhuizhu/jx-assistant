@@ -986,9 +986,15 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
 跑共享便携运行时，经主程序的**声明式桥**（componentbridge.go，已实现）运行：
 manifest 顶层 `workers` 数组声明命令与端点（挂 /api/c/<组件id>/…），主程序按
 声明懒拉起子进程并哑转发（json-lines 一行一答；call 与 ws 两型）——组件后端为
-脚本或预编译产物、市场直装免编译免主程序更新。目的是开源后社区开发者各归各
-开发（避免人人改主程序导致冲突与组件不通用）、终端用户免编译装上即用。声明
-规范与协议详见《组件/README.md》。
+脚本或预编译产物、市场直装免编译免主程序更新。worker 声明里还可加 `hooks`
+订阅主程序钩子事件（`prompt.submit` 拦截型／`run.end` 通知型）：声明了钩子的
+worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/hostres），
+能收主程序事件、回决定（拒绝/改写/附加上下文）并反向调用主程序 API（仅
+/api/ 前缀，权限同前端）；拦截型超时/组件故障一律按放行（fail-open）。前端
+对应物是可等待钩子 `JX.hook('send', fn)`：send 在组装正文前 await（听写组件
+靠它先落定尾段再发送），与 `JX.on` 的同步通知相区分。目的是开源后社区开发者
+各归各开发（避免人人改主程序导致冲突与组件不通用）、终端用户免编译装上即用。
+声明规范与协议详见《组件/README.md》。
 
 - **`组件/<名字>/`**：`manifest.json`（id/名称/版本/描述/资产）+ `client.js`
   （`client.css` 可选）——纯浏览器半边，没有宿主代码、没有转译。
@@ -1061,10 +1067,13 @@ manifest 顶层 `workers` 数组声明命令与端点（挂 /api/c/<组件id>/�
   ＝回到侧键+Alt；点按切换与长按输入两种模式；仅窗口聚焦时
   生效（失焦自动松手结束长按）；主输入框占位灰字由基座 `sendKeyHint` 追加
   组件交出的
-  `window.JXVoiceHint` 片段（子输入框组件自己拼）。**发送前自动停听写**：
-  `send()` 执行点（app-chat.js）先调组件交出的 `window.JXVoicePause`——未定稿
-  灰字同步落进输入框随消息发出，再硬收尾；回车/Ctrl+回车/发送按钮/子对话
-  全覆盖。**远程手机端**
+  `window.JXVoiceHint` 片段（子输入框组件自己拼）。**发送前自动停听写（可等待
+  钩子）**：组件经 `JX.hook('send', fn)` 注册发送前钩子，`send()`（app-chat.js
+  的 prepareSend）在组装消息正文前 `await JX.awaitHooks('send', …)`——听写组件
+  走与用户按停相同的收尾路径（定稿尾段 + 等在途识别清零，上限 8 秒），落定后
+  才放行发送，随说的内容随本条消息一起发出；钩子异常隔离、总超时 10 秒放行
+  （组件内部上限 8 秒小于它，不会被提前放行），组件卡死不会卡死发送；
+  回车/Ctrl+回车/发送按钮/子对话全覆盖。**远程手机端**
   （`window.JX_REMOTE` 且视口 <500）自动隐藏听写按钮（resize 跨阈值即时
   显隐），快捷键触发给提示不启动。设置＝**独立设置页「语音」**（设置 →
   语音：语速默认 1.2、Edge 音色、试听、听写时长上限、快捷键与触发方式）；
@@ -1269,6 +1278,8 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `adapter_dsh_speech.go` | dsh-speech 的 Go 半边：润色端点（复用已配置模型）+ 听写提示词段 |
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务、`Rescan`（市场装卸后重扫） |
 | `update.go` | 更新检查：定期拉发布源（updateURL，Gitea releases/latest 或 jxai-server 的 /updates/latest，两者同格式），tag_name 比当前新就经事件流推横幅；versionCompare 双体系（日期+V序号 恒新于 旧点分号） |
+| `update_blocks.go` | 分块静默更新：release 附件带 blocks.json（快照式清单=每块当前应是什么版本）就走静默路——engine 块趁旧进程活着原地换 exe（改名交换，重启生效，`POST /api/update/restart` 用 PowerShell 助手逃逸 Job 接力重启）、组件块杀 worker 后整目录替换热生效；落后多版一步对齐每块最新，没有 blocks.json 的旧源回退整包横幅；`config.updateMode`（auto/manual） |
+| `update_restart_windows.go` | 立即重启助手：生成带 UTF-8 BOM 的 restart.ps1（无 BOM 会被 PowerShell 5.1 按 GBK 读、中文路径乱码断链），CREATE_BREAKAWAY_FROM_JOB 逃出 kill-on-close Job 等旧进程退出后拉起新 exe |
 | `wizard.go` | 公司接入向导后端：POST /api/wizard/discover（UDP 广播找同公司服务端——浏览器发不了 UDP 故在 Go 侧做，255.255.255.255+子网定向广播、公司名=口令、registryURL 查询兜底）+ POST /api/wizard/connect（验证 healthz → POST /provision → 内部提供方 company-internal 置顶即默认、marketURL/updateURL/wizardDone 一键落位；重跑替换不堆积）；config 增 wizardDone/registryURL |
 | `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问）。对服务端的请求一律带 `X-Jxai-User` 头（值=发布者姓名，没设不带）——服务端记条目归属 owner 与下载/安装明细；安装成功后上报 `POST /api/market/report-install` |
 | `market_publish.go` / `market_publish_test.go` / `market_publish_meta_test.go` | 市场·技能发布（**先装后传**）：只能发布已装到 `技能/user/` 的技能——后端从安装目录现场打 zip、走 inspectSkillZip/rewriteSkillZip 校验链（恰好一处 SKILL.md、内容体检、结构规整）、元信息按回退链补全（id 候选含中文→英文词表 `skillIDFromChinese`，词表只在 Go 一份），流式转发服务端用户端点 `/api/market/publish`；`GET /api/market/publish-meta` 给弹层预填；下架走 `/api/market/unpublish`——**归属校验与「挪进服务端回收站」都在服务端**，客户端只发消息（本地姓名比对只是按钮显隐的 UX） |

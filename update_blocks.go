@@ -1,0 +1,498 @@
+// 分块静默更新：发布源 release 附件里带 blocks.json 时，不再走「下载完整
+// 安装包手动装」的整包路，而是按块（engine=主程序 exe、components/<id>=组件
+// 目录）下载校验后静默应用，用户无感知。
+//
+//	engine：Windows 允许改名正在运行的 exe（但不能删/覆盖）。趁旧进程还活着
+//	  做两次原子改名：旧 exe → xxx.exe.old、新 exe → xxx.exe。此后磁盘上的
+//	  正牌文件已是新版，内存里仍跑旧版——用户下次自然重启即生效，无需任何
+//	  常驻助手。新版启动时自清 .old（FinalizeEngineSwap）。想立即生效走
+//	  /api/update/restart：临时生成 PowerShell 助手逃出 kill-on-close Job
+//	  （processguard 加了 BREAKAWAY_OK，仅此一处用），等旧进程退出后拉起新 exe。
+//	组件：整目录替换（先杀 worker，修市场链路同款缺口），Rescan 后前端
+//	  CX.refresh() 热生效，不打扰用户。
+//
+// blocks.json 是「快照式清单」：记录截至本次发布每块应是哪个版本（不是变更
+// 单）。落后多版的客户端一步对齐到每块最新——V3 只改主程序时清单里 voice 仍
+// 写 V2 发的版本，V1 用户一次拿到 engine@V3 + voice@V2，V2 用户只下主程序。
+//
+// 兼容：发布源没有 blocks.json 附件时完全不进本文件的路，整包横幅行为不变；
+// 任何分块失败记 LastError 并回退整包横幅。完整安装包始终是并行存在的兜底路
+// （设置页「下载完整安装包」）。
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// updateBlocksFile 分块清单在 release 附件里的固定名字。
+const updateBlocksFile = "blocks.json"
+
+// updateBlocks 分块清单（快照式：每块当前应是什么版本）。
+type updateBlocks struct {
+	Engine     *updateBlock           `json:"engine,omitempty"`
+	Components map[string]updateBlock `json:"components,omitempty"`
+}
+
+// updateBlock 单个块：file 是 release 附件名（按名在 assets 里查下载直链）。
+type updateBlock struct {
+	Version string `json:"version"`
+	File    string `json:"file"`
+	SHA256  string `json:"sha256,omitempty"`
+}
+
+// updateBlockState 分块更新的落盘记账（data/updates/state.json）。
+type updateBlockState struct {
+	EnginePending string            `json:"enginePending,omitempty"` // 已交换待重启生效的 engine 版本
+	EngineArgv    []string          `json:"engineArgv,omitempty"`    // 交换时的启动参数（立即重启时沿用）
+	SwappedAt     string            `json:"swappedAt,omitempty"`
+	Applied       map[string]string `json:"applied,omitempty"` // 已应用的组件块：id → 版本
+}
+
+var (
+	updateApplyMu  sync.Mutex // 串行化分块应用（轮询与手动检查可能同拍触发）
+	updateApplying bool
+	// 大块下载（voice 模型 zip 几百兆）：30 分钟上限、1GB 封顶
+	updateBlockDownload = &http.Client{Timeout: 30 * time.Minute}
+)
+
+func (a *App) updatesStatePath() string {
+	return filepath.Join(a.Cfg.DataDir, "updates", "state.json")
+}
+
+func (a *App) loadUpdateBlockState() updateBlockState {
+	var st updateBlockState
+	if data, err := os.ReadFile(a.updatesStatePath()); err == nil {
+		_ = json.Unmarshal(data, &st)
+	}
+	return st
+}
+
+func (a *App) saveUpdateBlockState(st updateBlockState) error {
+	out, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(a.updatesStatePath()), 0755); err != nil {
+		return err
+	}
+	return writeFileAtomic(a.updatesStatePath(), out)
+}
+
+// currentExePath 本程序 exe 真身路径（解析软链；安装版锚它做原地交换）。
+func currentExePath() string {
+	p, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if rp, err := filepath.EvalSymlinks(p); err == nil {
+		return rp
+	}
+	if ap, err := filepath.Abs(p); err == nil {
+		return ap
+	}
+	return p
+}
+
+// findReleaseAssetURL 按附件名找下载直链（找不到返回空串）。
+func findReleaseAssetURL(assets []releaseAsset, name, sourceURL string) string {
+	for _, a := range assets {
+		if a.Name == name {
+			return publicizeURL(a.BrowserDownloadURL, sourceURL)
+		}
+	}
+	return ""
+}
+
+// fetchUpdateBlocks 下载并解析分块清单；附件里没有 blocks.json 返回 nil（调用
+// 方据此走原整包路），下载/解析失败记日志并同样返回 nil（回退整包横幅）。
+func fetchUpdateBlocks(rel releaseInfo, sourceURL string) *updateBlocks {
+	url := findReleaseAssetURL(rel.Assets, updateBlocksFile, sourceURL)
+	if url == "" {
+		return nil
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("[更新] 分块清单下载失败（回退整包路）: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[更新] 分块清单返回 HTTP %d（回退整包路）", resp.StatusCode)
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		log.Printf("[更新] 分块清单读取失败: %v", err)
+		return nil
+	}
+	var b updateBlocks
+	if err := json.Unmarshal(raw, &b); err != nil {
+		log.Printf("[更新] 分块清单不是合法 JSON: %v", err)
+		return nil
+	}
+	return &b
+}
+
+// downloadUpdateFile 下载一个更新块 zip 到临时文件并校验 sha256（空 sha 跳过
+// 校验——自家服务端发布时都算）；调用方用 cleanup 清理。
+func downloadUpdateFile(url, sha string) (zipPath string, cleanup func(), err error) {
+	resp, err := updateBlockDownload.Get(url)
+	if err != nil {
+		return "", nil, fmt.Errorf("下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", nil, fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+	}
+	tmp, err := os.MkdirTemp("", "jxupd-")
+	if err != nil {
+		return "", nil, err
+	}
+	fail := func(e error) (string, func(), error) {
+		os.RemoveAll(tmp)
+		return "", nil, e
+	}
+	zipPath = filepath.Join(tmp, "block.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		return fail(err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			f.Close()
+		}
+	}()
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, 1<<30)); err != nil {
+		f.Close()
+		return fail(fmt.Errorf("下载写入失败: %w", err))
+	}
+	f.Close()
+	if sha != "" && !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), sha) {
+		return fail(fmt.Errorf("包校验失败（sha256 不符，下载可能不完整或被篡改）"))
+	}
+	ok = true
+	return zipPath, func() { os.RemoveAll(tmp) }, nil
+}
+
+// applyBlocksPlan 应用分块更新计划（调用方已确认 silent 模式）。engine 与各
+// 组件互相独立：单块失败记LastError继续其余；engine 失败补发 update_available
+// 让整包横幅兜底。
+func (a *App) applyBlocksPlan(blocks *updateBlocks, rel releaseInfo, sourceURL string) {
+	if updateApplying {
+		return // 上一轮还在下载大块：跳过本轮（下个轮询周期再看）
+	}
+	updateApplyMu.Lock()
+	updateApplying = true
+	defer func() { updateApplyMu.Unlock(); updateApplying = false }()
+
+	// 组件块先行：各自独立，失败不影响 engine
+	if len(blocks.Components) > 0 {
+		a.applyComponentBlocks(blocks.Components, rel, sourceURL)
+	}
+	// engine 块：待生效版本已是目标则不重复下载交换
+	if e := blocks.Engine; e != nil && e.Version != "" && versionCompare(e.Version, appVersion) > 0 {
+		st := a.loadUpdateBlockState()
+		if st.EnginePending != "" && versionCompare(e.Version, st.EnginePending) <= 0 {
+			a.syncPendingToState() // 已交换过（等重启），只补横幅状态
+			return
+		}
+		if err := a.applyEngineBlock(*e, rel, sourceURL); err != nil {
+			log.Printf("[更新] 主程序分块更新失败（回退整包横幅）: %v", err)
+			setUpdateError("主程序静默更新失败: " + err.Error())
+			a.broadcast(Event{Type: "update_available", Title: e.Version})
+			return
+		}
+		log.Printf("[更新] 主程序已静默更新到 %s（当前进程仍为 %s，重启后生效）", e.Version, appVersion)
+		a.syncPendingToState()
+		a.broadcast(Event{Type: "update_ready", Title: e.Version})
+	}
+}
+
+// applyEngineBlock 下载 engine zip → 校验 → 解出 exe 暂存 exe.new → 原地交换。
+func (a *App) applyEngineBlock(b updateBlock, rel releaseInfo, sourceURL string) error {
+	url := findReleaseAssetURL(rel.Assets, b.File, sourceURL)
+	if url == "" {
+		return fmt.Errorf("附件里找不到 %s", b.File)
+	}
+	zipPath, cleanup, err := downloadUpdateFile(url, b.SHA256)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	tmp, err := os.MkdirTemp("", "jxexe-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	if err := unzip(zipPath, tmp); err != nil {
+		return fmt.Errorf("解压失败: %w", err)
+	}
+	exeSrc, err := findEngineExe(tmp)
+	if err != nil {
+		return err
+	}
+	exePath := currentExePath()
+	if exePath == "" {
+		return fmt.Errorf("取不到本程序路径")
+	}
+	// 暂存到 exe 旁（保证同卷可改名）：.new 在交换前只是普通文件，随时可清理
+	staged := exePath + ".new"
+	if err := copyFileAtomic(staged, exeSrc); err != nil {
+		return fmt.Errorf("暂存新程序失败: %w", err)
+	}
+	// 原地交换：旧 → .old（运行中可改名），.new → 正名。第二步失败回滚第一步。
+	old := exePath + ".old"
+	if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+		// 上一个 .old 还被占（古董实例仍从它跑着）：换名让路，不挡本次交换
+		old = fmt.Sprintf("%s.old-%d", exePath, time.Now().Unix())
+	}
+	if err := os.Rename(exePath, old); err != nil {
+		return fmt.Errorf("旧程序改名失败: %w", err)
+	}
+	if err := os.Rename(staged, exePath); err != nil {
+		_ = os.Rename(old, exePath)
+		return fmt.Errorf("新程序就位失败: %w", err)
+	}
+	st := a.loadUpdateBlockState()
+	st.EnginePending = b.Version
+	st.EngineArgv = os.Args
+	st.SwappedAt = time.Now().Format(time.RFC3339)
+	return a.saveUpdateBlockState(st)
+}
+
+// findEngineExe 在解压目录里找唯一的一个 .exe（发布脚本保证 zip 内只有一个）。
+func findEngineExe(dir string) (string, error) {
+	var found []string
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.EqualFold(filepath.Ext(p), ".exe") {
+			found = append(found, p)
+		}
+		return nil
+	})
+	switch len(found) {
+	case 1:
+		return found[0], nil
+	case 0:
+		return "", fmt.Errorf("engine 包里没有 exe")
+	default:
+		return "", fmt.Errorf("engine 包里有多个 exe（应有且仅有一个）")
+	}
+}
+
+// FinalizeEngineSwap 新版启动时结算上一次 engine 交换：确认版本、清残留、同步
+// 横幅状态。幂等，任何失败不阻断启动（下次启动再来一遍）。
+func (a *App) FinalizeEngineSwap() {
+	exePath := currentExePath()
+	if exePath != "" {
+		_ = os.Remove(exePath + ".new") // 上次下载了但没换成的残留
+	}
+	st := a.loadUpdateBlockState()
+	if st.EnginePending != "" {
+		switch {
+		case st.EnginePending == appVersion:
+			log.Printf("[更新] 静默更新已生效：当前版本 %s（%s 完成交换）", appVersion, st.SwappedAt)
+		case versionCompare(st.EnginePending, appVersion) < 0:
+			// 本机已比 pending 新（完整包覆盖安装等）：清账即可
+		default:
+			// 磁盘已换、内存仍旧（从 .old 等异常路径启动）：保留 pending，
+			// 重启后自然生效
+			a.syncPendingToState()
+			return
+		}
+		st.EnginePending = ""
+		st.EngineArgv = nil
+		st.SwappedAt = ""
+		_ = a.saveUpdateBlockState(st)
+	}
+	if exePath != "" {
+		_ = os.Remove(exePath + ".old") // 旧进程已不在，此刻删得动
+	}
+	a.syncPendingToState()
+}
+
+// syncPendingToState 把落盘 pending 同步进 /api/status 的横幅状态。
+func (a *App) syncPendingToState() {
+	st := a.loadUpdateBlockState()
+	pending := st.EnginePending != "" && versionCompare(st.EnginePending, appVersion) > 0
+	updateMu.Lock()
+	updateState.PendingRestart = pending
+	if pending {
+		updateState.PendingVersion = st.EnginePending
+	} else {
+		updateState.PendingVersion = ""
+	}
+	updateState.Applied = st.Applied
+	updateMu.Unlock()
+}
+
+// planComponentBlocks 算需要静默更新的组件块（id 升序）：只含本机已装且版本
+// 落后的；没装的跳过（静默更新不新增组件，新增走市场页手动装）。
+func (a *App) planComponentBlocks(blocks map[string]updateBlock) []string {
+	ids := make([]string, 0, len(blocks))
+	for id, b := range blocks {
+		m, ok := a.Components.Manifest(id)
+		if !ok {
+			continue
+		}
+		if b.Version == "" || versionCompare(b.Version, m.Version) <= 0 {
+			continue // 本地已是清单版本或更新
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// applyComponentBlocks 逐个应用组件块：成功后广播 components_updated 让前端
+// CX.refresh() 热生效。
+func (a *App) applyComponentBlocks(blocks map[string]updateBlock, rel releaseInfo, sourceURL string) {
+	ids := a.planComponentBlocks(blocks)
+	applied := []string{}
+	for _, id := range ids {
+		b := blocks[id]
+		m, _ := a.Components.Manifest(id)
+		if err := a.applyComponentBlock(id, b, rel, sourceURL); err != nil {
+			log.Printf("[更新] 组件 %s 分块更新失败: %v", id, err)
+			setUpdateError("组件 " + id + " 静默更新失败: " + err.Error())
+			continue
+		}
+		log.Printf("[更新] 组件 %s 已静默更新 %s → %s", id, m.Version, b.Version)
+		applied = append(applied, id+"→"+b.Version)
+	}
+	if len(applied) == 0 {
+		return
+	}
+	// 记账：state.Applied 供状态页展示（只记真正换成功的）；市场记账同步版本
+	// （有记录才更新，不给内置组件凭空造「市场可卸载」资格）
+	st := a.loadUpdateBlockState()
+	if st.Applied == nil {
+		st.Applied = map[string]string{}
+	}
+	appliedIDs := make([]string, 0, len(applied))
+	for _, item := range applied {
+		if i := strings.Index(item, "→"); i > 0 {
+			appliedIDs = append(appliedIDs, item[:i])
+			st.Applied[item[:i]] = blocks[item[:i]].Version
+		}
+	}
+	_ = a.saveUpdateBlockState(st)
+	recs := a.loadMarketRecs()
+	for _, id := range appliedIDs {
+		if _, has := recs["component:"+id]; has {
+			_ = a.saveMarketRec("component", id, marketInstallRec{
+				Version: blocks[id].Version, Key: id,
+				InstalledAt: time.Now().Format(time.RFC3339),
+			})
+		}
+	}
+	a.broadcast(Event{Type: "components_updated", Title: strings.Join(applied, "、")})
+}
+
+// applyComponentBlock 下载组件 zip → 校验 → 解压找根 → 杀 worker → 整目录替换
+// → Rescan。
+func (a *App) applyComponentBlock(id string, b updateBlock, rel releaseInfo, sourceURL string) error {
+	if strings.ContainsAny(id, `\/:*?"<>|`) || id == "." || id == ".." {
+		return fmt.Errorf("组件 id 不能当目录名: %s", id)
+	}
+	url := findReleaseAssetURL(rel.Assets, b.File, sourceURL)
+	if url == "" {
+		return fmt.Errorf("附件里找不到 %s", b.File)
+	}
+	zipPath, cleanup, err := downloadUpdateFile(url, b.SHA256)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	tmp, err := os.MkdirTemp("", "jxcomp-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	if err := unzip(zipPath, tmp); err != nil {
+		return fmt.Errorf("解压失败: %w", err)
+	}
+	root, err := findRootWith(tmp, "manifest.json")
+	if err != nil {
+		return err
+	}
+	var m ComponentManifest
+	if data, err := os.ReadFile(filepath.Join(root, "manifest.json")); err != nil || json.Unmarshal(data, &m) != nil {
+		return fmt.Errorf("包里没有合法的 manifest.json")
+	}
+	if strings.TrimSpace(m.ID) != id {
+		return fmt.Errorf("包内组件 id（%s）与清单条目（%s）不一致", m.ID, id)
+	}
+	// 先杀 worker：exe 形态的 worker 占着目录时删不掉，py 形态会继续用旧代码服务
+	if a.Bridge != nil {
+		a.Bridge.KillComponent(id)
+	}
+	dst := filepath.Join(a.Components.Dir(), id)
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	if err := copyDir(root, dst); err != nil {
+		return fmt.Errorf("复制组件文件失败: %w", err)
+	}
+	a.Components.Rescan()
+	if _, ok := a.Components.Manifest(id); !ok {
+		return fmt.Errorf("组件更新后未被识别（manifest.json 异常）")
+	}
+	return nil
+}
+
+/* ---------- HTTP：手动入口 ---------- */
+
+// handleUpdateCheck POST /api/update/check：立即触发一次更新检查（不等 6 小时
+// 轮询）。检查在后台跑（含大块下载），响应只是「已开始」；结果经事件流与
+// /api/status 到达。
+func (a *App) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	url := strings.TrimSpace(a.Cfg.UpdateURL)
+	if url == "" || url == "off" {
+		writeErr(w, http.StatusBadRequest, "更新检查已关闭（更新检查源为 off）")
+		return
+	}
+	go a.checkUpdateOnce(url)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "checking": true})
+}
+
+// handleUpdateRestart POST /api/update/restart：engine 已交换待生效时，拉起
+// 重启助手并整体退出（助手等本进程退出后按原启动参数拉起新 exe）。
+func (a *App) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
+	st := a.loadUpdateBlockState()
+	if st.EnginePending == "" || versionCompare(st.EnginePending, appVersion) <= 0 {
+		writeErr(w, http.StatusBadRequest, "当前没有待重启生效的更新")
+		return
+	}
+	if err := spawnRestartHelper(a, st); err != nil {
+		writeErr(w, http.StatusInternalServerError, "重启助手启动失败: "+err.Error())
+		return
+	}
+	log.Printf("[更新] 立即重启以应用 %s（旧进程即将退出，助手接力）", st.EnginePending)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	// 给响应留出送达时间再退（桌面窗口关闭同款路径：会话在 SQLite，孤儿有补扫兜底）
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		os.Exit(0)
+	}()
+}

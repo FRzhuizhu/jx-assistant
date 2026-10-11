@@ -310,6 +310,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/market", a.handleMarketView)
 	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
 	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
+	// 更新（update.go / update_blocks.go）：手动立即检查（不等 6h 轮询）与
+	// engine 交换后的立即重启（PowerShell 助手接力）；同样挂 /api/ 下远程中继天然覆盖
+	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
+	mux.HandleFunc("POST /api/update/restart", a.handleUpdateRestart)
 	mux.HandleFunc("GET /api/market/publish-meta", a.handleMarketPublishMeta) // 已装技能的发布元信息推导（弹层预填）
 	mux.HandleFunc("POST /api/market/publish", a.handleMarketPublish)         // 发布已装技能到市场服务器：先装后传（market_publish.go）
 	mux.HandleFunc("POST /api/market/unpublish", a.handleMarketUnpublish)     // 下架自己发布的市场条目（归属校验在服务端）
@@ -1068,6 +1072,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		WizardDone      *bool   `json:"wizardDone"`    // 首启向导：完成/跳过（不再自动弹）
 		RegistryURL     *string `json:"registryURL"`   // 总服务器地址（向导发现不到公司时的查询兜底）
 		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
+		UpdateMode      *string `json:"updateMode"`    // 更新方式：auto=分块静默（默认）/manual=仅提醒
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
 		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
@@ -1207,6 +1212,17 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.Cfg.UpdateURL = u // "off" 落盘成字面量，加载时转成关闭
+	}
+	if v := body.UpdateMode; v != nil {
+		m := strings.TrimSpace(*v)
+		if m == "" {
+			m = "auto"
+		}
+		if m != "auto" && m != "manual" {
+			writeErr(w, 400, "更新方式只支持 auto（分块静默）或 manual（仅提醒）")
+			return
+		}
+		a.Cfg.UpdateMode = m
 	}
 	if body.AllowShell != nil {
 		a.Cfg.AllowShell = *body.AllowShell
@@ -2991,6 +3007,19 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	if a.CCPlugins != nil {
 		body.Content = a.ccExpandSlashMessage(r.Context(), m, body.Content)
 	}
+	// 声明式组件钩子（componentbridge.go）：prompt.submit 拦截型——本栈组件
+	// 优先于 CC 兼容层。任一组件可拒绝（403+reason）或改写正文；附加上下文
+	// 在用户消息后落系统注入行（origin=component-hook），先于 CC hook 注入
+	var compExtraContext string
+	if oc := a.emitComponentHooks("prompt.submit", map[string]any{"sessionID": m.ID, "content": body.Content}); oc.Block {
+		writeErr(w, 403, "消息被组件钩子拒绝："+oc.Reason)
+		return
+	} else {
+		if oc.Content != "" {
+			body.Content = oc.Content
+		}
+		compExtraContext = oc.AdditionalContext
+	}
 	// Claude Code 插件：UserPromptSubmit hook（可拒绝消息或附加上下文）
 	var ccExtraContext string
 	if a.CCPlugins != nil && a.CCPlugins.hasAnyHooks() {
@@ -3039,6 +3068,13 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	um := TextMessage("user", body.Content)
 	sm := a.appendMessage(m, um)
 	opening := []Event{{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindChat}}
+	// 组件钩子的 additionalContext：用户消息后落一条系统注入行（先于 CC hook）
+	if compExtraContext != "" {
+		rm := a.landUserSide(m, compExtraContext, kindReport, "component-hook", func(ev Event) {
+			opening = append(opening, ev)
+		})
+		_ = rm
+	}
 	// UserPromptSubmit 的 additionalContext：用户消息后落一条系统注入行（发给模型）
 	if ccExtraContext != "" {
 		rm := a.landUserSide(m, ccExtraContext, kindReport, "plugin-hook", func(ev Event) {

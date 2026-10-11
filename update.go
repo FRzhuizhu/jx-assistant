@@ -25,11 +25,16 @@ type UpdateState struct {
 	Latest      string `json:"latest,omitempty"`      // 最新版本号（tag_name，去 v 前缀）
 	Notes       string `json:"notes,omitempty"`       // 发布说明（body 截断）
 	URL         string `json:"url,omitempty"`         // 发布页（html_url）
-	DownloadURL string `json:"downloadUrl,omitempty"` // 安装包直链（release 附件，客户端「确认更新」下载用）
+	DownloadURL string `json:"downloadUrl,omitempty"` // 安装包直链（完整安装路：横幅「确认更新」与设置页按钮共用）
 	PublishedAt string `json:"publishedAt,omitempty"`
 	Current     string `json:"current"`             // 当前运行版本
 	CheckedAt   string `json:"checkedAt,omitempty"` // 最近一次成功检查时间
-	LastError   string `json:"lastError,omitempty"` // 最近一次检查失败原因（发布源不可达等）
+	LastError   string `json:"lastError,omitempty"` // 最近一次检查/应用失败原因（发布源不可达等）
+	// 分块静默更新（update_blocks.go）
+	BlocksMode     bool              `json:"blocksMode,omitempty"`     // 发布源带分块清单（走静默分块路）
+	PendingRestart bool              `json:"pendingRestart,omitempty"` // engine 已交换，重启后生效
+	PendingVersion string            `json:"pendingVersion,omitempty"`
+	Applied        map[string]string `json:"applied,omitempty"` // 已静默应用的组件块 id→版本
 }
 
 var (
@@ -37,6 +42,7 @@ var (
 	updateState    = UpdateState{Current: appVersion}
 	updateStop     chan struct{}
 	updateNotified string // 已广播过的版本：同一版本只推一次
+	updateCheckMu  sync.Mutex
 )
 
 func updateStatePath(a *App) string { return filepath.Join(a.Cfg.DataDir, "update.json") }
@@ -201,6 +207,11 @@ func publicizeURL(raw, sourceURL string) string {
 }
 
 func (a *App) checkUpdateOnce(url string) {
+	// 手动检查与 6h 轮询可能同拍触发；已有一轮在跑就跳过（结果共享）
+	if !updateCheckMu.TryLock() {
+		return
+	}
+	defer updateCheckMu.Unlock()
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -228,8 +239,25 @@ func (a *App) checkUpdateOnce(url string) {
 		return
 	}
 	setUpdateError("")
-	applyUpdateInfo(a, rel, url)
+	// 分块静默更新（update_blocks.go）：附件里有 blocks.json 时先取清单——
+	// 清单覆盖 engine 且自动模式开启则抑制「新版本可用」整包横幅（改走静默
+	// 应用 + update_ready 就绪横幅）；清单缺失/失败完全回退整包路
+	blocks := fetchUpdateBlocks(rel, url)
+	if blocks != nil {
+		updateMu.Lock()
+		updateState.BlocksMode = true
+		updateMu.Unlock()
+	}
+	silentEngine := blocks != nil && a.silentUpdateEnabled() &&
+		blocks.Engine != nil && versionCompare(blocks.Engine.Version, appVersion) > 0
+	applyUpdateInfo(a, rel, url, silentEngine)
+	if blocks != nil && a.silentUpdateEnabled() {
+		a.applyBlocksPlan(blocks, rel, url)
+	}
 }
+
+// silentUpdateEnabled 更新方式：auto（默认）=分块静默应用；manual=只提醒不动手。
+func (a *App) silentUpdateEnabled() bool { return a.Cfg.UpdateMode != "manual" }
 
 func setUpdateError(msg string) {
 	updateMu.Lock()
@@ -240,7 +268,7 @@ func setUpdateError(msg string) {
 	}
 }
 
-func applyUpdateInfo(a *App, rel releaseInfo, sourceURL string) {
+func applyUpdateInfo(a *App, rel releaseInfo, sourceURL string, suppressBanner bool) {
 	latest := strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v")
 	notes := strings.TrimSpace(rel.Body)
 	if len(notes) > 500 {
@@ -254,7 +282,7 @@ func applyUpdateInfo(a *App, rel releaseInfo, sourceURL string) {
 	updateState.DownloadURL = download
 	updateState.PublishedAt = rel.PublishedAt
 	updateState.Available = versionCompare(latest, appVersion) > 0
-	shouldNotify := updateState.Available && updateNotified != latest
+	shouldNotify := updateState.Available && updateNotified != latest && !suppressBanner
 	if shouldNotify {
 		updateNotified = latest
 	}

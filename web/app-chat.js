@@ -2011,6 +2011,20 @@ function handleGlobalEvent(ev) {
         if (st.update && st.update.available) showUpdateBanner(st.update);
       }).catch(() => {});
       break;
+    case 'update_ready':
+      // 主程序已静默交换：就绪横幅（立即重启 / 稍后等自然重启）
+      api('/api/status').then((st) => {
+        if (st.update) showUpdateBanner(st.update);
+      }).catch(() => {});
+      break;
+    case 'components_updated':
+      // 组件已静默热更：前端半边对账增删（不刷新页面），轻提示不打扰
+      if (window.CX && CX.refresh) {
+        try { CX.refresh(); } catch (err) { console.warn('[更新] 组件热刷新失败', err); }
+      }
+      if (ev.title) toast('组件已更新：' + ev.title);
+      if (typeof refreshUpdateBox === 'function') refreshUpdateBox();
+      break;
     // 浏览器面板（桌面原生 WebView2）：browser_nav 同步工具栏地址/标题
     // （AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
     // （X/Y 复用为宽高），两个处理函数都在 app-right.js。nav 事件顺带强制
@@ -2382,12 +2396,18 @@ function buildQuestionCard(e, own) {
 
   if (isPlan) {
     // 计划：这里只给摘要，全文在右栏「计划」视图（Markdown 渲染，可反复打开）
+    // 别的对话的计划（含右下角角标堆里的卡）：点整张卡 = 跳回那个对话再打开
+    // 计划全文——原地开右栏时主对话没换，这份计划看起来就像当前对话的，误导。
+    const planFrom = q.sessionId || '';
+    const planJump = !!planFrom && planFrom !== own;
     const info = planSummaryOf(q.plan || '');
     const body = document.createElement('div');
     body.className = 'ap-body';
     body.innerHTML = '<p class="q-plan-title">' + esc(info.title) + '</p>' +
       (info.desc ? '<p class="q-plan-desc">' + esc(info.desc) + '</p>' : '') +
-      '<p class="q-plan-hint">点这张卡看计划全文（右侧边栏「计划」，Markdown 渲染）：除输入框与三个按钮外，卡片任何位置都可以点</p>';
+      '<p class="q-plan-hint">' + (planJump
+        ? '点这张卡跳回那个对话并打开计划全文（右侧边栏「计划」，Markdown 渲染）：除输入框与三个按钮外，卡片任何位置都可以点'
+        : '点这张卡看计划全文（右侧边栏「计划」，Markdown 渲染）：除输入框与三个按钮外，卡片任何位置都可以点') + '</p>';
     card.appendChild(body);
     card.appendChild(askFreeRow(q.id, '反馈修改意见后点「驳回」，或直接批准', '驳回',
       (v) => decideQuestion(q.id, v || '（未填写具体意见）')));
@@ -2401,8 +2421,13 @@ function buildQuestionCard(e, own) {
     ig.onclick = (e) => { e.stopPropagation(); decideQuestion(q.id, '__ignore__'); };
     // 整张卡可点 → 打开这份计划（输入框与按钮自己拦下冒泡，不误触）
     card.classList.add('clickable');
-    card.title = '点击查看这份计划的全文';
-    card.onclick = () => openPlanView(q.sessionId, 0, q.id);
+    card.title = planJump ? '点击跳到那个对话并查看这份计划的全文' : '点击查看这份计划的全文';
+    // 跳转要等 openSession 就位再开右栏：loadSessionInto 会重置计划视图的定位
+    // （planWantQid 等），先设会被切对话冲掉，落不到这份待审批的计划上。
+    card.onclick = async () => {
+      if (planJump) await openSession(planFrom);
+      openPlanView(planFrom, 0, q.id);
+    };
     const ok = document.createElement('button');
     ok.className = 'ok';
     ok.textContent = '批准并开始执行';
@@ -2571,6 +2596,10 @@ function renderAskDock(list) {
   const mt = dockMetrics() || { right: DOCK_GAP, width: DOCK_W, height: DOCK_HMAX, auto: false, pill: false };
   dock.style.right = mt.right + 'px';
   pill.style.right = mt.right + 'px';
+  if (pill.style.bottom) { // 窗口变矮：胶囊别被留在视口外（位置是用户拖出来记下的）
+    const b = parseFloat(pill.style.bottom) || DOCK_GAP;
+    pill.style.bottom = Math.max(DOCK_GAP, Math.min(b, window.innerHeight - (pill.offsetHeight || 36) - DOCK_GAP)) + 'px';
+  }
   dock.style.width = mt.width + 'px';
   dock.style.height = '';          // 交给内容撑，上限用 maxHeight
   dock.style.maxHeight = mt.height + 'px';
@@ -2631,9 +2660,55 @@ function renderPanels() {
   loadSessions(); // 待办清单变了：侧栏的「⏸ 待确认」标记/橙点跟着翻新（自身带合并去抖）
 }
 
-// 角标堆的两个交互：整块收起成胶囊 / 胶囊点开（点开＝用户显式要展开）
+// 角标堆的两个交互：整块收起成胶囊 / 胶囊点开（点开＝用户显式要展开）。
+// 胶囊另可整枚上下拖动（横向不动＝一直吸附右侧）：手机端默认位置压着发送
+// 按钮，拖上去即可。位置记 localStorage，刷新/重开保持；拖动超过 6px 视为
+// 拖拽不算点击（pointerup 后浏览器还会派发 click，用标志位拦下）。
+const PILL_BOTTOM_KEY = 'jx.askPillBottom';
+const askPill = $('ask-dock-pill');
+function askPillClamp(b) {
+  const h = askPill.offsetHeight || 36;
+  return Math.max(DOCK_GAP, Math.min(b, window.innerHeight - h - DOCK_GAP));
+}
+function askPillApply(b) { askPill.style.bottom = askPillClamp(b) + 'px'; }
+{ // 启动时恢复上次拖到的位置（没拖过就维持 CSS 默认 bottom:12px）
+  const v = parseFloat(lsGet(PILL_BOTTOM_KEY, '') || '');
+  if (v > 0) askPillApply(v);
+}
+let askPillDrag = null, askPillClickOff = false;
+askPill.addEventListener('pointerdown', (e) => {
+  if (e.button !== undefined && e.button !== 0) return; // 只认主键/触摸/笔
+  askPillDrag = { startY: e.clientY, startBottom: parseFloat(askPill.style.bottom) || DOCK_GAP, moved: false };
+  try { askPill.setPointerCapture(e.pointerId); } catch (err) { /* 拿不到捕获也照拖 */ }
+});
+askPill.addEventListener('pointermove', (e) => {
+  if (!askPillDrag) return;
+  const dy = askPillDrag.startY - e.clientY; // 向上拖为正 → bottom 增大（胶囊上移）
+  if (!askPillDrag.moved) {
+    if (Math.abs(dy) < 6) return; // 抖动容差：没超过它仍算点击
+    askPillDrag.moved = true;
+    askPill.classList.add('dragging');
+  }
+  askPillApply(askPillDrag.startBottom + dy);
+});
+const askPillDragEnd = () => {
+  if (!askPillDrag) return;
+  if (askPillDrag.moved) {
+    lsSet(PILL_BOTTOM_KEY, String(Math.round(parseFloat(askPill.style.bottom) || DOCK_GAP)));
+    askPillClickOff = true; // 紧随 pointerup 的 click 是拖拽收尾，不是「点开」
+    setTimeout(() => { askPillClickOff = false; }, 80);
+  }
+  askPillDrag = null;
+  askPill.classList.remove('dragging');
+};
+askPill.addEventListener('pointerup', askPillDragEnd);
+askPill.addEventListener('pointercancel', askPillDragEnd);
 $('ask-dock-min').onclick = () => setAskDockMin(true);
-$('ask-dock-pill').onclick = () => { askDock.seen = 0; setAskDockMin(false); };
+askPill.onclick = () => {
+  if (askPillClickOff) { askPillClickOff = false; return; }
+  askDock.seen = 0;
+  setAskDockMin(false);
+};
 
 // 可展空间随「对话列宽度 / 右栏开合 / 窗口缩放」变。右栏开合是有过渡动画的，过渡
 // 途中算出来的留白是中间值（会误判成「放不下」），所以这里做防抖：等布局落定再算，
@@ -3398,23 +3473,61 @@ function hideRunError(view, remember) {
 
 /* ---------- 更新横幅（服务端推送通知的统一出口） ---------- */
 
-// showUpdateBanner 新版本横幅：置顶常驻，「确认更新」直接下载安装包；
-// 在线时由 update_available 门铃事件触发，刚打开页面时从 /api/status 的 update 恢复。
+// showUpdateBanner 更新横幅（双模式，置顶常驻）：
+// ① 整包路：新版本可用，「确认更新」直接下载安装包；
+// ② 就绪路（u.pendingRestart）：主程序已静默交换，「立即重启」经助手接力生效，
+//    「稍后」等下次自然重启。在线时由 update_available/update_ready 门铃事件
+//    触发，刚打开页面时从 /api/status 的 update 恢复。
 function showUpdateBanner(u) {
   if (!u || !u.latest) return;
   const bar = document.getElementById('update-banner');
   if (!bar) return;
-  bar.querySelector('.ub-text').innerHTML =
-    '新版本 <b>' + esc(u.latest) + '</b> 可用（当前 ' + esc(u.current || '') + '）' +
-    (u.notes ? '　<span class="ub-notes">' + esc(String(u.notes).slice(0, 80)) + '</span>' : '');
-  bar.dataset.download = u.downloadUrl || '';
-  bar.dataset.url = u.url || '';
+  const actions = bar.querySelector('.ub-actions');
+  if (!actions) return;
+  if (u.pendingRestart && u.pendingVersion) {
+    // 就绪横幅：本版本点过「稍后」不再弹（下次新版本重新提醒）
+    try { if (localStorage.getItem('jxUbLater') === u.pendingVersion) return; } catch (e) {}
+    bar.querySelector('.ub-text').innerHTML =
+      '新版本 <b>' + esc(u.pendingVersion) + '</b> 已就绪（当前 ' + esc(u.current || '') +
+      '），重启软件后生效' +
+      (u.notes ? '　<span class="ub-notes">' + esc(String(u.notes).slice(0, 80)) + '</span>' : '');
+    bar.dataset.mode = 'ready';
+    bar.dataset.pendingVer = u.pendingVersion;
+    actions.innerHTML =
+      '<button class="ub-confirm" type="button">立即重启</button>' +
+      '<button class="ub-confirm ub-later" type="button">稍后</button>';
+  } else {
+    bar.querySelector('.ub-text').innerHTML =
+      '新版本 <b>' + esc(u.latest) + '</b> 可用（当前 ' + esc(u.current || '') + '）' +
+      (u.notes ? '　<span class="ub-notes">' + esc(String(u.notes).slice(0, 80)) + '</span>' : '');
+    bar.dataset.mode = 'installer';
+    bar.dataset.download = u.downloadUrl || '';
+    bar.dataset.url = u.url || '';
+    actions.innerHTML = '<button class="ub-confirm" type="button">确认更新</button>';
+  }
   bar.classList.remove('hidden');
 }
 
 $('update-banner').addEventListener('click', (e) => {
   const bar = e.currentTarget;
   if (e.target.closest('.ub-close')) { bar.classList.add('hidden'); return; }
+  if (bar.dataset.mode === 'ready') {
+    if (e.target.closest('.ub-later')) {
+      // 稍后：记下版本，本版不再弹（横幅可从设置页「立即检查」重新唤起）
+      try { localStorage.setItem('jxUbLater', bar.dataset.pendingVer || ''); } catch (err) {}
+      bar.classList.add('hidden');
+      return;
+    }
+    if (e.target.closest('.ub-confirm')) {
+      // 立即重启：后端拉起 PowerShell 助手（逃逸 Job）等本进程退出后接力新 exe
+      api('/api/update/restart', { method: 'POST' }).then(() => {
+        bar.querySelector('.ub-text').textContent = '正在重启…';
+      }).catch((err) => {
+        alert('立即重启失败：' + err.message + '\n磁盘文件已就绪，手动重启软件即可生效。');
+      });
+    }
+    return;
+  }
   if (e.target.closest('.ub-confirm')) {
     // 确认更新：直接下载安装包（发布附件直链；浏览器接管下载进度）
     const dl = bar.dataset.download;
@@ -3765,12 +3878,21 @@ function userChatLanded(msgs, content) {
   return false;
 }
 
-async function send(forceContent, view) {
-  view = view || mainView;
-  // 发送前先停语音听写（语音组件交出的钩子：把未定稿的灰字转写同步落进输入框
-  // 再硬收尾，随本条消息一起发出）。挂在 send 执行点：回车 / Ctrl+回车 / 发送
-  // 按钮 / 子对话，所有发送路径都会经过这里；没在听写时是空操作。
-  if (window.JXVoicePause) window.JXVoicePause();
+// prepareSend 是 send 的准备段：发送前钩子（可等待）→ 组装正文 → 懒建会话 →
+// 附件落盘 → 清草稿 → 置流式态。返回 null = 本次发送已处理或中止（重复触发 /
+// 空正文 / 插话排队 / 未选子对话 / 附件失败），send 就此返回；返回上下文 =
+// 进入流式阶段。_sendBusy 闸门防重入：准备段有多个 await 点（钩子/建会话/附件
+// 落盘），快速连按回车会重入——闸门期间的重复触发直接忽略；进入流式态后由
+// streaming 标志分流（改走插话/排队），闸门随即放行，任何出口都不会卡死发送。
+async function prepareSend(forceContent, view) {
+  if (view._sendBusy) return null;
+  view._sendBusy = true;
+  try {
+  // 发送前钩子（可等待，JX.awaitHooks）：组件在此刻意收尾——听写组件等尾段识别
+  // 落定再放行，随说的内容随本条消息一起发出。逐个 await、异常隔离、总超时放行，
+  // 组件卡死不会卡死发送。回车 / Ctrl+回车 / 发送按钮 / 子对话，所有发送路径都
+  // 经过这里；没有组件注册钩子时是空操作。
+  await JX.awaitHooks('send', { view });
   const input = view.input;
   const fromInput = typeof forceContent !== 'string';
   // 从输入框发出的消息组装引用段（引用胶囊 →「用户引用：”…“」前缀）；forceContent
@@ -3856,6 +3978,17 @@ async function send(forceContent, view) {
   view.state.pendingSend = { sid, content };
   renderMessages(view.state.msgs, view);
   if (view === mainView) JX.emit('send', { content });
+    return { input, content, sid, fromInput };
+  } finally {
+    view._sendBusy = false;
+  }
+}
+
+async function send(forceContent, view) {
+  view = view || mainView;
+  const pre = await prepareSend(forceContent, view);
+  if (!pre) return;
+  const { input, content, sid, fromInput } = pre;
 
   let aborted = false;
   // 服务端是否已收下这条消息：handleChat 在返回响应头之前就完成了落库并启动

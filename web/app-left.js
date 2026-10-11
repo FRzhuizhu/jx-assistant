@@ -23,8 +23,9 @@ async function loadStatus() {
         ? (ra.connected ? '手机远程访问已就绪——点击扫码接入' : '远程访问已开启，网关未连上——点击查看')
         : '开启手机远程访问——点击设置';
     }
-    // 更新横幅：SSE 无回放，刚打开页面从 /api/status 恢复「有新版本」状态
-    if (st.update && st.update.available) showUpdateBanner(st.update);
+    // 更新横幅：SSE 无回放，刚打开页面从 /api/status 恢复——有新版本（整包路）
+    // 或主程序已静默交换待重启（分块路）都置顶提示
+    if (st.update && (st.update.available || st.update.pendingRestart)) showUpdateBanner(st.update);
     // 「操作手机」能力芯片只在安卓端引擎上出现（桌面没有 device_*/adb_* 工具）
     if (!st.android) document.getElementById('perm-opt-device')?.classList.add('hidden');
     syncComposer();

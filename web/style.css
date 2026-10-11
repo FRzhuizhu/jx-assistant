@@ -257,11 +257,29 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   white-space: nowrap;
 }
 .update-banner .ub-confirm:hover { filter: brightness(1.08); }
+/* 就绪路的「稍后」按钮：次级样式，不与「立即重启」抢视觉 */
+.update-banner .ub-confirm.ub-later { background: none; color: var(--text-2); border: 1px solid var(--border, #d4d7de); }
+.update-banner .ub-confirm.ub-later:hover { color: var(--text); filter: none; }
+.update-banner .ub-actions { display: flex; gap: 8px; flex: none; }
 .update-banner .ub-close {
   border: none; background: none; color: var(--text-2); cursor: pointer;
   font-size: 13px; padding: 2px 4px;
 }
 .update-banner .ub-close:hover { color: var(--text); }
+
+/* 设置页「软件更新」分区：状态行 + 双按钮 */
+.update-man-actions { display: flex; gap: 8px; margin: 6px 0 8px; }
+.update-man-actions .pf-add:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 轻提示（toast）：右下角短暂浮出，非阻塞 */
+.app-toast {
+  position: fixed; right: 18px; bottom: 18px; z-index: 10001;
+  max-width: min(80vw, 420px); padding: 9px 14px;
+  background: var(--card, #fff); color: var(--text);
+  border: 1px solid var(--accent); border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.12); font-size: 13px;
+}
+.app-toast.hidden { display: none; }
 
 /* 关于页问题反馈 */
 .fb-kinds { display: flex; gap: 8px; margin-bottom: 8px; }
@@ -1643,12 +1661,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 
 /* 收起后的胶囊：只报条数，点它再展开（用户也可以回那个对话里处理） */
 .ask-dock-pill {
-  position: fixed; right: 12px; bottom: 12px; z-index: 240; /* 锚点与角标堆同一处（JS 写 right） */
-  display: flex; align-items: center; gap: 6px; cursor: pointer; font: inherit; font-size: 12.5px;
+  position: fixed; right: 12px; bottom: 12px; z-index: 240; /* 锚点与角标堆同一处（JS 写 right；bottom 由拖动改写并记忆） */
+  display: flex; align-items: center; gap: 6px; cursor: grab; font: inherit; font-size: 12.5px;
+  touch-action: none; user-select: none; /* 上下拖胶囊别带动页面滚动、别选中文字（手机端）；横向不动＝一直吸附右侧 */
   padding: 8px 13px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--bg); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
 }
 .ask-dock-pill.hidden { display: none; }
+.ask-dock-pill.dragging { cursor: grabbing; box-shadow: 0 12px 34px rgba(0, 0, 0, .3); }
 .ask-dock-pill:hover { border-color: rgba(77, 107, 254, .45); color: var(--accent); }
 .ask-dock-pill b {
   min-width: 18px; text-align: center; font-size: 11.5px; padding: 1px 5px; border-radius: 999px;

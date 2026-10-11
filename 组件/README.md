@@ -67,8 +67,60 @@ manifest 顶层声明 `workers` 数组，主程序通用桥按声明拉起子进
   桥是哑管，协议内容归组件
 - **生命周期**：懒启动（首请求才 spawn）、死亡自动重启、组件关闭/卸载即杀
   worker（重开懒启复活）；进程退出由顶层 kill-on-close Job 兜底
-- **限制**：每个 worker 单飞行（一次一条请求/一个 ws 会话）；请求上限 32MB、
-  超时 180 秒；市场服务端对 workers 声明的校验待硬化（当前未知字段放行，可发布）
+- **限制**：哑管 worker 单飞行（一次一条请求/一个 ws 会话）；帧模式 worker
+  （见下节）按 id 解复用可交织；请求上限 32MB、call 超时 180 秒；市场服务端
+  对 workers/hooks 声明的校验待硬化（当前未知字段放行，可发布）
+
+## 组件钩子（worker ⇄ 主程序后端的双向通道）
+
+哑管只有「前端 → worker」的单向请求。worker 需要参与主程序流程——拦截对话、
+收到生命周期事件、反查主程序状态——就在 worker 声明里加 `hooks` 订阅主程序
+钩子事件。**声明了钩子的 worker 自动启用帧协议**，没声明的维持哑管（存量组件
+零影响）：
+
+```json
+"workers": [
+  { "name": "w",
+    "command": ["{python}", "worker.py"],
+    "hooks": ["prompt.submit", "run.end"],
+    "hooksTimeoutMs": 5000,
+    "endpoints": [{ "method": "POST", "path": "do", "type": "call" }] }
+]
+```
+
+- **事件表**（拦截型要等 worker 的决定，通知型送达即止）：
+  - `prompt.submit`（**拦截型**）：用户消息提交，`data={sessionID, content}`。
+    发射点在 handleChat、CC 插件兼容层 UserPromptSubmit **之前**（本栈组件优先）。
+    worker 回 decision 三选一（字段可组合）：`{"block":true,"reason":"…"}`
+    拒绝（403+理由）、`{"content":"…"}` 改写正文、`{"additionalContext":"…"}`
+    附加上下文（用户消息后落一条系统注入行发给模型，与 CC hook 同口径）。
+    多组件按 id 序串行；任一拒绝即止；改写依次应用（后面的组件看到的是改
+    过的正文）。
+  - `run.end`（**通知型**）：一轮执行结束（含排队续跑全部完成），
+    `data={sessionID, status: done|stopped|error, error}`。
+- **帧协议**：stdin/stdout 变成带 id 的 JSON 帧，双向解复用——
+  - 桥 → worker：`{"type":"req","id":…,"body":…}`（call 端点请求，body=原请求
+    JSON；应答等 `{"type":"res","id":…,"body":…}`，body 原样回 HTTP——前端
+    调用方式不变）、`{"type":"event","id":…,"event":…,"data":{…}}`（钩子事件）、
+    `{"type":"hostres","id":…,"status":…,"body":…}`（反向调用应答）
+  - worker → 桥：`res`／`decision`（决定字段见上）／`{"type":"host","id":…,
+    "method":"GET|POST","path":"/api/…","body":{…}}`（反向调用主程序 API）
+- **反向调用**：worker 处理 req/event 时可向主程序要数据（读会话、查状态……），
+  仅限 `/api/` 前缀，权限同前端（本地信任模型——能调的 API 与页面里的一样）；
+  需要收紧时再加 manifest 权限声明。桥侧 60 秒兜底。
+- **超时与 fail-open**：拦截型等决定上限 `hooksTimeoutMs`（缺省 5000、上限
+  30000）；超时/进程死/帧解析错一律**按放行处理**并记日志——组件故障不能
+  拦住发送等主流程。
+- **为什么不做「代码注入主程序后端」**：Go 没有安全的运行时代码加载；内嵌 JS
+  引擎（goja）那条路 CC 插件兼容层的 mods 已有，属兼容层范式，组件不沿用。
+  组件统一「子进程 + 消息协议」：一套范式、可用预编译产物、市场免编译直装、
+  崩了只死自己。
+- **前端侧的钩子**：发送前收尾等可等待钩子用 `JX.hook(ev, fn)` 注册（区别于
+  `JX.on` 的同步通知）：`send()` 组装正文前 `await JX.awaitHooks('send', …)`，
+  逐个等待、异常隔离、总超时 10 秒放行；组件 dispose 里 `JX.unhook` 对称注销。
+  样板：voice 组件（发送前等听写尾段落定）。
+- 自动化验证：`componentbridge_hook_test.go`（帧协议 call、拦截决定、超时
+  fail-open、反向调用、订阅匹配——走真实桥链路，无 Python 运行时自动跳过）。
 
 **这样设计的目的（开源后的通用性）**：
 

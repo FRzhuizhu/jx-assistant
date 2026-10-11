@@ -25,6 +25,7 @@ const JX = {
   _bus: {},
   _msgActions: [],       // fn(actsRow, msg)：向消息悬停操作行追加按钮
   _settingsSections: [], // {title, mount(el)}：设置弹窗分区
+  _hooks: {},           // ev -> [fn(ctx)]：可等待钩子（区别于 _bus 的同步通知）
   on(ev, fn) { (this._bus[ev] = this._bus[ev] || []).push(fn); },
   // 退订事件（组件热卸载用）
   off(ev, fn) {
@@ -34,6 +35,30 @@ const JX = {
     if (i >= 0) a.splice(i, 1);
   },
   emit(ev, payload) { (this._bus[ev] || []).forEach((f) => { try { f(payload); } catch (e) { console.warn('[JX]', ev, e); } }); },
+  // 注册可等待钩子（组件 init 里调，dispose 里 unhook 对称注销）。钩子与 emit
+  // 通知的区别：钩子是流程的一环——发射方 await 全部钩子落定后才继续（如 send
+  // 在钩子返回前不组装消息正文），通知只求送到、不等结果。
+  hook(ev, fn) { (this._hooks[ev] = this._hooks[ev] || []).push(fn); },
+  unhook(ev, fn) {
+    const a = this._hooks[ev];
+    if (!a) return;
+    const i = a.indexOf(fn);
+    if (i >= 0) a.splice(i, 1);
+  },
+  // 顺序 await 全部钩子：单个钩子异常只告警不阻断；总超时（10 秒）到点放行并
+  // 跳过剩余——组件卡死不能把发送卡死。超时后钩子自身仍会跑完，注册方要自兜
+  // 迟到的副作用（听写组件的收尾即按此设计：自身等待上限 8 秒，小于这里）。
+  async awaitHooks(ev, ctx) {
+    const fns = (this._hooks[ev] || []).slice();
+    if (!fns.length) return;
+    const deadline = Date.now() + 10000;
+    for (const f of fns) {
+      const left = deadline - Date.now();
+      if (left <= 0) { console.warn('[JX] 钩子', ev, '总超时，跳过剩余钩子'); return; }
+      try { await Promise.race([Promise.resolve(f(ctx)), new Promise((r) => setTimeout(r, left))]); }
+      catch (e) { console.warn('[JX] 钩子', ev, e); }
+    }
+  },
   registerMessageAction(fn) {
     this._msgActions.push(fn);
     // 补挂：本地组件毫秒级加载总赶在渲染前，远程走中继秒级——历史消息的操作行
@@ -779,4 +804,17 @@ function updateSendKeyHint() {
   const el = $('input');
   if (!el) return;
   el.placeholder = sendKeyHint();
+}
+
+/* ---------- 轻提示（toast） ---------- */
+// toast：右下角短暂浮出的非阻塞通知（静默组件更新完成等「不打扰但留痕」的
+// 场景；与 alert 的区别是不抢焦点）。同一时刻只保留一条，新的顶掉旧的。
+let __toastTimer = 0;
+function toast(msg, ms) {
+  const el = $('app-toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(__toastTimer);
+  __toastTimer = setTimeout(() => el.classList.add('hidden'), ms || 5000);
 }

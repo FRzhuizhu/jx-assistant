@@ -231,7 +231,9 @@ func main() {
 	// 连接按配置即时启动；设置页的开关/身份/网关改动同样热生效。
 	app.listenPort = portNo
 	app.syncRemoteAccess()
-	// 更新检查：轮询发布源（默认 Gitea releases），新版本经事件流推给客户端
+	// 更新：先结算上一次 engine 静默交换（确认版本/清 .old 残留/恢复横幅状态），
+	// 再启动轮询
+	app.FinalizeEngineSwap()
 	StartUpdateChecker(app)
 	StartRunSweepOnce(app) // 启动 30s 后补扫一次孤儿会话（只扫一次，不做持续轮询）
 

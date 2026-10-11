@@ -167,6 +167,8 @@ async function openSettings(pane) {
   // 常规页：远程接入（服务端配置，写 remoteAccess.enabled，即时生效）
   $('set-remote-on').checked = !!(c.remoteAccess && c.remoteAccess.enabled);
   syncRemoteState(c);
+  // 网络访问页：软件更新分区（版本/最近检查/就绪状态）
+  refreshUpdateBox();
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
   selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
@@ -1064,6 +1066,7 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-publisher-name')) $('set-publisher-name').value = c.publisherName || '';
   if (document.activeElement !== $('set-registry-url')) $('set-registry-url').value = c.registryURL || '';
   if (document.activeElement !== $('set-update-url')) $('set-update-url').value = (c.updateURL === 'off' ? 'off' : (c.updateURL || ''));
+  $('set-update-mode').value = (c.updateMode === 'manual' ? 'manual' : 'auto');
   // 开关一动连接就异步建立（一般一两秒）：未连上时定时重拉状态刷新文案；
   // 连上或设置页收起即停，不做长轮询
   clearTimeout(remotePollTimer);
@@ -1126,6 +1129,73 @@ bindRemoteInput('set-market-url', 'marketURL');
 bindRemoteInput('set-publisher-name', 'publisherName');
 bindRemoteInput('set-registry-url', 'registryURL');
 bindRemoteInput('set-update-url', 'updateURL');
+// 更新方式：auto=分块静默（默认）/manual=仅提醒手动整包安装；改动即存
+bindRemoteInput('set-update-mode', 'updateMode');
+
+/* ---------- 软件更新（update_blocks.go 分块静默更新） ---------- */
+
+// refreshUpdateBox 设置页「软件更新」分区：当前/最新版本、最近检查、就绪待
+// 重启等状态一屏汇总（/api/status 的 update 字段）；设置页打开时与手动检查后刷新。
+async function refreshUpdateBox() {
+  const el = $('update-man-state');
+  const dl = $('btn-update-dl');
+  if (!el) return;
+  let st;
+  try { st = await api('/api/status'); } catch (e) { el.textContent = '状态获取失败：' + e.message; return; }
+  const u = st.update || {};
+  let text = '当前版本 ' + (u.current || '-') + '　·　最新版本 ' + (u.latest || '未知');
+  if (u.pendingRestart && u.pendingVersion) {
+    text += '　·　<b>新版本 ' + esc(u.pendingVersion) + ' 已就绪，重启软件后生效</b>';
+    dl.disabled = false;
+  } else if (u.available) {
+    text += '（有新版可装）';
+  } else if (u.latest) {
+    text += '（已是最新）';
+  }
+  if (u.checkedAt) text += '　·　上次检查 ' + esc(u.checkedAt);
+  if (u.applied && Object.keys(u.applied).length) {
+    const parts = Object.keys(u.applied).sort().map((k) => esc(k) + '→' + esc(u.applied[k]));
+    text += '　·　已静默更新组件：' + parts.join('、');
+  }
+  if (u.lastError) text += '　·　<span style="color:var(--danger)">' + esc(u.lastError) + '</span>';
+  el.innerHTML = text;
+  dl.disabled = !u.downloadUrl;
+  dl.title = u.downloadUrl ? '下载完整安装包（浏览器下载，双击安装覆盖升级）' : '发布源没有可下载的安装包';
+}
+$('btn-update-check').onclick = async () => {
+  const btn = $('btn-update-check');
+  const el = $('update-man-state');
+  btn.disabled = true;
+  btn.textContent = '正在检查…';
+  try {
+    await api('/api/update/check', { method: 'POST' });
+    if (el) el.textContent = '已开始检查（含静默下载应用，大组件可能要几分钟），稍后自动刷新…';
+    // 检查在后台跑（可能下几十上百兆的分块）：几秒后刷状态，就绪/报错经事件流也会到
+    setTimeout(refreshUpdateBox, 4000);
+    setTimeout(refreshUpdateBox, 12000);
+  } catch (e) {
+    alert('检查失败：' + e.message);
+    refreshUpdateBox();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '立即检查更新';
+  }
+};
+$('btn-update-dl').onclick = async () => {
+  let st;
+  try { st = await api('/api/status'); } catch (e) { alert('获取下载地址失败：' + e.message); return; }
+  const dl = (st.update || {}).downloadUrl;
+  if (!dl) { alert('发布源没有可下载的安装包'); return; }
+  const a = document.createElement('a');
+  a.href = dl;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
+// 设置页打开/配置刷新时同步一次更新状态（全局函数，app-chat.js 的事件处理也会调）
+window.refreshUpdateBox = refreshUpdateBox;
+
 // 重新运行接入向导（app-wizard.js 的 openWizard）
 $('btn-wizard-rerun').onclick = () => { if (typeof openWizard === 'function') openWizard(); };
 

@@ -105,6 +105,9 @@ type Config struct {
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`
+	// 更新方式：auto（默认）=发布源支持时走分块静默更新（update_blocks.go）；
+	// manual=只弹横幅提醒，由用户手动下载完整安装包更新。
+	UpdateMode string `json:"updateMode,omitempty"`
 	// 语音转写服务配置（演示记录器的讲解音频 → SRT 字幕，预留字段）：
 	// provider（如 microsoft）/ endpoint / apiKey / language。当前版本尚未
 	// 接入任何服务商（语音组件的朗读走 Edge 免密钥通道、听写走浏览器
@@ -168,7 +171,8 @@ func DefaultConfig() *Config {
 			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
 			RegKey:  "chat_p2p_v1",
 		},
-		UpdateURL: "http://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
+		UpdateURL:  "http://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
+		UpdateMode: "auto",
 	}
 }
 
@@ -256,6 +260,10 @@ func LoadConfig(path string) (*Config, error) {
 	// （转成空的话，下一次保存配置又会被补回默认，用户就关不掉了）
 	if cfg.UpdateURL == "" {
 		cfg.UpdateURL = def.UpdateURL
+	}
+	// 更新方式：老配置没有这一键时补默认 auto
+	if cfg.UpdateMode == "" {
+		cfg.UpdateMode = def.UpdateMode
 	}
 	// 敏感字段透明解密（dpapi:v1: 密文 → 明文；旧版明文原样）。
 	// 首启迁移：明文照常读入，下一次 Save 自动转密文。
