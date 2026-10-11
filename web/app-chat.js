@@ -1685,7 +1685,7 @@ function appendTurn(target, turn, key, view, isLast) {
     renderStreamingTurn(target, turn, key);
     return;
   }
-  renderFinishedTurn(target, turn, key);
+  renderFinishedTurn(target, turn, key, !!isLast);
   const seqSet = new Set();
   turn.items.forEach((it) => { if (it.seq != null) seqSet.add(it.seq); });
   if (!seqSet.size) return;
@@ -1821,10 +1821,11 @@ function renderMessages(msgs, view, opts) {
 // 已完成回合：**顶层大折叠全局统一**——回合内连续的可折叠项（思考/工具/子任务卡/
 // 上下文材料/系统通知）不分家，相邻就折进同一段（标签汇总各类计数，见 foldLabel）；
 // 段内还有各自的行级小折叠（proc-row 点开看原文、工具行点开看参数）。锚点（常显）
-// 只有三类：最终正文、长正文（plancard 计划卡同理），以及**孤立**的系统通知——
-// 前后都没有可折叠邻居的单条通知保持一眼可见；通知一旦与材料/过程相邻，
-// 就跟着一起进大折叠。
-function renderFinishedTurn(box, turn, key) {
+// 有四类：最终正文、长正文（plancard 计划卡同理）、**孤立**的系统通知（前后都没有
+// 可折叠邻居的单条通知保持一眼可见），以及**尾部通知**——最后一个回合里、下方
+// 再没有任何消息（正文/计划卡）的通知保持常显：系统中断这类提示往往就是会话
+// 的最后一条，重启后用户打开会话要靠它知道「发个继续」，折起来就看不见了。
+function renderFinishedTurn(box, turn, key, isLast) {
   const items = turn.items;
   let answerIdx = -1;
   items.forEach((it, i) => { if (it.k === 'text') answerIdx = i; });
@@ -1837,7 +1838,10 @@ function renderFinishedTurn(box, turn, key) {
   items.forEach((it, i) => {
     if (it.k !== 'note') return;
     const nb = (j) => j >= 0 && j < items.length && foldable(items[j]);
-    if (!nb(i - 1) && !nb(i + 1)) anchor.add(i); // 孤立通知常显
+    // 尾部豁免：最后一回合里，这条通知下方没有消息（正文/计划卡）——它是
+    // 最新一条消息，常显；下方一旦有消息（哪怕材料行也无所谓）按常规规则走
+    const tail = isLast && !items.slice(i + 1).some((x) => x.k === 'text' || x.k === 'plancard');
+    if (tail || (!nb(i - 1) && !nb(i + 1))) anchor.add(i);
   });
   let seg = [];
   const flushSeg = () => {
@@ -1869,8 +1873,8 @@ function renderStreamingTurn(box, turn, key) {
   }
   const foldFrom = flow.length - TAIL_ROWS;
   // 钉住常显、绝不折进过程段的两类：系统通知（note，report 通道的虚线通知块——
-  // 执行期间的中断/上传提示不能被折没；完成态里与材料/过程相邻的进顶层大折叠、
-  // 孤立的常显，见 renderFinishedTurn）与运行中的子任务卡（实时进度）。
+  // 执行期间的中断/上传提示不能被折没；完成态里与材料/过程相邻的进顶层大折叠，
+  // 孤立与尾部的常显，见 renderFinishedTurn）与运行中的子任务卡（实时进度）。
   // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
   const pinned = (it) => it.k === 'note' || it.k === 'plancard' || (it.k === 'subtask' && !it.result);
   let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段
