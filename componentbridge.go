@@ -97,14 +97,31 @@ func (m *bridgeManager) resolveCommand(def ComponentWorkerDef, dir string) ([]st
 }
 
 // pythonExe 共享便携运行时（技能/_runtime——运行时共享原则，组件不自带）。
+// 新机自愈：运行时还没装配过（全新克隆、没用过任何技能）时，借技能装配机制
+// 现场装一份并顺带装上 sherpa-onnx 轮子——远端拉下来直接点听写即可用，
+// 首次会有装配等待（走引擎日志）。运行时已在但缺 sherpa 的场景由 worker
+// 自身的 pip 自愈兜底（asr_worker.ensure_sherpa）。
 func (m *bridgeManager) pythonExe() (string, error) {
+	if py, err := m.sharedPythonPath(); err == nil {
+		return py, nil
+	}
+	if _, perr := m.app.ensureSkillRuntime([]string{"sherpa_onnx"}, []string{"sherpa-onnx"}); perr == nil {
+		if py, err := m.sharedPythonPath(); err == nil {
+			return py, nil
+		}
+	}
+	py, _ := m.sharedPythonPath()
+	return "", fmt.Errorf("便携运行时未装配（%s）：先在设置里启用任一技能触发装配，或手动放置", py)
+}
+
+func (m *bridgeManager) sharedPythonPath() (string, error) {
 	dir, err := m.app.SkillsDir()
 	if err != nil {
 		return "", err
 	}
 	py := filepath.Join(dir, "_runtime", "python", "python.exe")
 	if _, err := os.Stat(py); err != nil {
-		return "", fmt.Errorf("便携运行时未装配（%s）：先在设置里启用任一技能触发装配，或手动放置", py)
+		return py, err
 	}
 	return py, nil
 }
@@ -236,7 +253,10 @@ func (a *App) bridgeCall(w http.ResponseWriter, r *http.Request, compID string, 
 	}
 	wk.mu.Lock()
 	defer wk.mu.Unlock()
-	type res struct{ line string; err error }
+	type res struct {
+		line string
+		err  error
+	}
 	ch := make(chan res, 1)
 	go func() {
 		line, err := wk.callRaw(string(body))

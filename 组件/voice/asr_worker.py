@@ -64,9 +64,36 @@ def main():
         state["engine"] = None
         state["model"] = None
 
+    # ---------- 运行时依赖自愈 ----------
+    def ensure_sherpa():
+        """新机自愈：共享便携运行时没带 sherpa-onnx（语音组件的依赖不进技能
+        装配清单）——首次使用时从清华镜像装一次（约 20MB，秒级）。失败把
+        可执行的补救命令带回给用户。"""
+        try:
+            import sherpa_onnx  # noqa: F401
+            # 校验到属性为止：半卸载/损坏的包 import 也能成功，骗过纯导入检查
+            # （实测踩过：pyd 被存活 worker 锁住时 pip 只删一半）
+            if hasattr(sherpa_onnx, "OfflineRecognizer"):
+                return
+        except Exception:
+            pass
+        import subprocess
+        print("[voice] 首次使用/修复：安装 sherpa-onnx（清华镜像，约 20MB）…", file=sys.stderr)
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall",
+                            "--no-deps", "sherpa-onnx",
+                            "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
+        if r.returncode != 0:
+            raise RuntimeError("sherpa-onnx 自动安装失败：请手动执行 "
+                               + sys.executable + " -m pip install sherpa-onnx")
+        # 装完清模块缓存：本进程可能已 import 过坏包（sys.modules 里是旧货），
+        # 不清的话后续 import 拿到的仍是修复前的残骸（实测踩过）
+        for k in [k for k in list(sys.modules) if k == "sherpa_onnx" or k.startswith("sherpa_onnx.")]:
+            del sys.modules[k]
+
     # ---------- 加载 ----------
     def load_engine(model, device):
         """装好并返回离线引擎（不回话、不动 state——load 与流式精修共用）。"""
+        ensure_sherpa()
         if model == "xasr":
             # 小米 X-ASR：Zipformer2 transducer，中英双语、自带标点与大小写，
             # 离线/流式一体（这里用离线档），int8 约 170MB
@@ -132,6 +159,7 @@ def main():
     def ensure_online():
         if st["online"] is not None:
             return
+        ensure_sherpa()
         import sherpa_onnx
         d = models_root / "xasr-streaming"
 
