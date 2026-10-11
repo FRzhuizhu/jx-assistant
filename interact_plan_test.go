@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -306,5 +307,56 @@ func TestPlanAskHasNoTTL(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("回答后等待中的提问没被唤醒")
+	}
+}
+
+
+// 计划获批要把主循环的步数预算从头计：exit_plan_mode 获批时应置位
+// toolContext.planApproved（主循环据此重置 step）；驳回不置位（仍在计划模式，没开始执行）。
+func TestPlanApprovalSignalsStepReset(t *testing.T) {
+	run := func(answer string) bool {
+		st := testPlanStore(t)
+		a := newPlanTestApp(t, st)
+		sess := createPlanSession(t, st, "s1", "会话一", true)
+		var reset bool
+		tc := &toolContext{ctx: context.Background(), app: a, sess: sess, planApproved: &reset}
+		done := make(chan error, 1)
+		go func() {
+			_, err := runExitPlanMode(tc, json.RawMessage(`{"plan":"# 计划\n第一步 A，第二步 B"}`))
+			done <- err
+		}()
+		qid := ""
+		for i := 0; i < 500 && qid == ""; i++ {
+			a.permMu.Lock()
+			for id, q := range a.questions {
+				if q.Kind == askKindPlan && !q.decided {
+					qid = id
+				}
+			}
+			a.permMu.Unlock()
+			time.Sleep(2 * time.Millisecond)
+		}
+		if qid == "" {
+			t.Fatal("计划审批提问没挂出来")
+		}
+		if err := a.resolveQuestion(qid, answer); err != nil {
+			t.Fatalf("回传用户决定失败: %v", err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("exit_plan_mode 执行失败: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("用户决定后 exit_plan_mode 没有返回")
+		}
+		return reset
+	}
+
+	if !run("__approve__") {
+		t.Fatal("计划获批应置位步数重算信号（主循环要重新计步）")
+	}
+	if run("第二步改一下") {
+		t.Fatal("计划被驳回不该置位步数重算信号（仍留在计划模式修订，没有开始执行）")
 	}
 }

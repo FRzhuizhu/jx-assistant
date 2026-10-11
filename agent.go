@@ -842,6 +842,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	}
 	defer a.requeueSteer(sess.ID) // 正常/异常退出后残留插话转为排队，由执行体接着发
 
+	// planReset 是「计划获批、步数从头计」的信号：exit_plan_mode 获批时经
+	// toolContext.planApproved 置位，本循环在工具执行完检测并重置 step——出计划
+	// 的探索步数不再挤占执行计划的预算（两段各有一份完整的 MaxSteps）。
+	planReset := false
+
 	for step := 0; step < a.Cfg.MaxSteps; step++ {
 		a.syncRunPerms(sess) // 面板中途改权限：每步从库合并，下一步即按新权限执行
 		interjectsBefore(emit)
@@ -1037,7 +1042,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				out = "计划模式下该工具已暂停：" + tc.Function.Name + "。当前仅可只读探索；请完成调研后调用 exit_plan_mode 提交计划供用户批准。"
 			} else if run, ok := runs[tc.Function.Name]; ok {
 				tctx := &toolContext{ctx: ctx, app: a, sess: sess, emit: emit,
-					seq: asm.Seq, callID: tc.ID, toolName: tc.Function.Name}
+					seq: asm.Seq, callID: tc.ID, toolName: tc.Function.Name, planApproved: &planReset}
 				res, rerr := run(tctx, json.RawMessage(tc.Function.Arguments))
 				if ctx.Err() != nil {
 					// 执行期间会话被中断：工具已被取消信号尽力中止（能停则停），
@@ -1074,6 +1079,14 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				return err
 			}
 			return context.Canceled
+		}
+		// 计划获批：步数预算从头计（计划阶段不挤占执行阶段）。置 -1 是因为
+		// continue 会先执行 for 的 step++，下一轮 step 从 0 重新数起
+		if planReset {
+			planReset = false
+			step = -1
+			a.auditWrite(sess, map[string]any{"type": "plan_step_reset"})
+			continue
 		}
 	}
 	return errMaxSteps{n: a.Cfg.MaxSteps}

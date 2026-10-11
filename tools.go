@@ -59,6 +59,9 @@ type toolContext struct {
 	seq      int64
 	callID   string
 	toolName string
+	// planApproved 只在 RunAgent 主循环构造的 toolContext 里非 nil：exit_plan_mode
+	// 获批时置 true，主循环据此把步数预算从头计（计划阶段的探索不挤占执行阶段）。
+	planApproved *bool
 }
 
 // isRemote 判断会话是否挂载了 SSH 远程工作区。

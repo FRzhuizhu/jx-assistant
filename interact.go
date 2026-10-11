@@ -394,6 +394,11 @@ func runExitPlanMode(t *toolContext, args json.RawMessage) (string, error) {
 	// 用户批了：撤掉库里那份待审批记录（内存等待者的收尾由 requestUserAnswer 做）
 		_ = t.app.Store.ClearPendingPlan(t.sess.ID)
 		t.sess.PlanMode = false
+		// 步数重算：计划获批是新工作段的起点，主循环检测到信号就把 step 从头计
+		// （探索阶段已消耗的步数不挤占执行阶段；planApproved 只在主循环构造的 tctx 里非 nil）
+		if t.planApproved != nil {
+			*t.planApproved = true
+		}
 		_ = t.app.Store.SaveMeta(t.sess)
 		t.app.broadcast(Event{Type: "session_updated", SessionID: t.sess.ID})
 		// 决定已落实：广播「已解决」让各窗口都收掉这张审批卡（requestUserAnswer 的
