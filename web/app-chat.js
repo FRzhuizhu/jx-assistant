@@ -348,16 +348,17 @@ function diffBody(prev, cur) {
   return out.join('\n') + (out.length ? '\n————\n' : '') + String(cur ?? '');
 }
 
-// 首轮拼装的「系统提示词」行：渲染在回合用户消息上方——它就是请求消息序列的
-// 第 1 条（messages[0]），每次请求逐字节重发，不变则命中前缀缓存
+// 首轮拼装的「系统提示词」行：排在工具定义行下方、回合用户消息上方——它是
+// 请求消息序列的第 1 条（messages[0]），每次请求逐字节重发，不变则命中前缀缓存
 function sysHeadRow(sys, seq) {
   return procTextRow('系统提示词已拼装', fmtCount(String(sys).length) + ' 字 · 请求消息序列第 1 条（messages[0]）· 不变则命中前缀缓存', sys, seq);
 }
 
-// 工具定义行：渲染在「系统提示词」行下方、用户消息**之前**。它在请求里不是消息——
-// 是请求体顶层的 tools 数组（与 messages 平级，不属于消息序列，所以没有"第几条"），
-// 由服务端按自己的模板排进提示。排在消息序列之前展示，才对得上真实请求的顺序：
-// 系统提示词 → 工具定义 → 消息序列（末尾那条 user 消息是运行环境快照）。
+// 工具定义行：渲染在「系统提示词」行上方、用户消息**之前**。它在请求里不是消息——
+// 是请求体顶层的 tools 数组（与 messages 平级，不属于消息序列，所以没有"第几条"）。
+// 排在最上面：模型侧的 KV 前缀以工具定义打头（工具目录不变是前缀缓存命中的第一
+// 道前提），展示顺序与之对齐——工具定义 → 系统提示词 → 消息序列（用户消息后跟
+// 时间提示，末尾那条 user 消息是运行环境快照）。
 function toolsRow(tools, seq) {
   const row = document.createElement('div');
   row.className = 'proc-row';
@@ -404,11 +405,17 @@ function toolsChangeRow(prevTools, tools, seq) {
 }
 
 // 运行环境更新行：轮内权限提升/模式切换/能力开关/技能增减等真实变化导致环境
-// 变化时，在发生位置展示变化内容（diff）与新快照全文；首行的「用户最近发消息
-// 时间」只在用户真发消息时变——模型自己执行不会随时间流逝冒出这条行
+// 变化时，在发生位置展示变化内容（diff）与新快照全文
 function envNoteRow(text, prev, seq) {
   return procTextRow('运行环境更新', '随下次请求尾部发送 · ' + fmtCount(String(text).length) + ' 字',
     prev == null ? String(text) : diffBody(prev, text), seq);
+}
+
+// 时间提示词行：与「运行环境」同款折叠行——模型收到的每条时间消息都在这里
+// 可见（一致原则：前端所见不少于模型所收，可折叠但绝不缺失），展开即组装原文
+function timeNoteRow(text, seq) {
+  const short = (text.match(/(\d{2}:\d{2})/) || [])[1] || '';
+  return procTextRow('时间提示', '跟随上一条消息发送 · ' + short, text, seq);
 }
 
 // 压缩摘要行：摘要注入在发生位置展示（自动/手动、覆盖至第 N 条）
@@ -503,11 +510,11 @@ function toolRow(tc, result, opts = {}) {
 
 /* ---------- 折叠段：折叠条 + 隐藏容器 ---------- */
 
-// 上下文材料条目：首轮尾部材料、运行环境更新、系统提示词/工具定义变更。
-// 它们与思考/工具过程一起折叠（想核对「模型看到了什么」时再展开），
-// 渲染的两个路径（完成态/流式）都按此归类。
+  // 上下文材料条目：时间提示、首轮尾部材料、运行环境更新、系统提示词/工具定义变更。
+  // 它们与思考/工具过程一起折叠（想核对「模型看到了什么」时再展开），
+  // 渲染的两个路径（完成态/流式）都按此归类。
 function isMatItem(it) {
-  return it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange';
+  return it.k === 'time' || it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange';
 }
 
 function foldLabel(cnt) {
@@ -626,6 +633,28 @@ document.addEventListener('beforematch', (e) => {
 
 /* ---------- 回合分组与条目渲染（类型契约的分发层，见《消息类型规范.md》） ---------- */
 
+// 时间提示词的组装态（与后端 context.go 的 App.timeAfter 同一规则）：从消息自身
+// 落库时刻派生「（发送时间：YYYY-MM-DD HH:MM）」，分钟粒度。一致原则——前端
+// 所见不少于模型所收：模型收到的每条时间消息这里都要能展开看到，派生失败返回
+// 空串（后端同样跳过，两侧口径一致）。
+function timeNoteOf(m) {
+  const raw = String(m.createdAt || '').trim();
+  if (!raw) return '';
+  const d = new Date(raw.replace(' ', 'T'));
+  if (isNaN(d.getTime())) return '';
+  const p2 = (n) => String(n).padStart(2, '0');
+  return '（发送时间：' + d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +
+    ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + '）';
+}
+
+// 用户侧消息（chat 真人 / aiuser）后跟的时间提示词：作为上下文材料条目入回合，
+// 展示与运行环境同一套折叠行（见 timeNoteRow），位置与模型收到的顺序一致——
+// 紧跟在消息后面、在其后的环境材料之前。
+function pushTimeNote(st, m) {
+  const txt = timeNoteOf(m);
+  if (txt) st.cur.items.push({ k: 'time', seq: m.seq, text: txt });
+}
+
 // 行的展示类型：新行一律带显式 kind（后端保证）；旧库残留的 chat+【】前缀
 // user 行按 report 兼容（规范 §5）。此后一切分发只看 kind，不猜内容。
 function displayKindOf(m) {
@@ -645,6 +674,7 @@ const ROW_ITEM_BUILDERS = {
     if (m.role === 'user') {
       st.cur = { userMsg: m, items: [] };
       st.turns.push(st.cur);
+      pushTimeNote(st, m);
       return;
     }
     if (m.role !== 'assistant') return; // tool 行经 resultOf 配对进工具条目，不单列
@@ -662,10 +692,12 @@ const ROW_ITEM_BUILDERS = {
   },
   // AI 发出的用户消息（数字助理派发的指令/派发回报/子对话派发/待办转交）：
   // 与用户消息完全同权——开新回合，上一回合随之收口（最终输出带出复制/压缩
-  // 等回合按钮）；气泡由 userBubble 渲染为右对齐偏白的「AI 用户」变体（.ai）
+  // 等回合按钮）；后面同样跟一条时间提示词；气泡由 userBubble 渲染为左对齐
+  // 白底的「AI 用户」变体（.msg.user.ai），不可编辑重发
   aiuser(m, st) {
     st.cur = { userMsg: m, items: [] };
     st.turns.push(st.cur);
+    pushTimeNote(st, m);
   },
   // 系统注入通知：归入当前回合常显
   report(m, st) {
@@ -688,7 +720,7 @@ const ROW_ITEM_BUILDERS = {
     st.lastEnv = txt;
   },
   // 提示词拼装快照：变化驱动展示（规范 §4）——首轮完整交代拼装结构
-  // （系统提示词 + 工具定义在用户消息上方、运行环境在请求末尾，即请求真实排布），
+  // （工具定义 + 系统提示词在用户消息上方、运行环境在请求末尾，即请求真实排布），
   // 此后仅在系统提示词/工具定义变更时出折叠行；环境变化由 env 行负责
   prompt(m, st) {
     let sys = '', env = '', tools = null;
@@ -882,6 +914,7 @@ async function forkFromAnswer(m, btn) {
 function renderItem(it, opts) {
   if (it.k === 'prompttail') return promptTailRows(it.env, it.seq);
   if (it.k === 'envnote') return envNoteRow(it.text, it.prev, it.seq);
+  if (it.k === 'time') return timeNoteRow(it.text, it.seq);
   if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
   if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
   if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
@@ -1640,10 +1673,11 @@ function pendingSendOf(st, msgs, sid) {
   return ps;
 }
 
-// 渲染单个回合（用户气泡 + 过程折叠 + 完成态收尾件）；isLast 决定是否走流式尾部窗口
+// 渲染单个回合（用户气泡 + 过程折叠 + 完成态收尾件）；isLast 决定是否走流式尾部窗口。
+// 工具定义排在系统提示词上方（模型侧 KV 前缀以工具定义打头，展示对齐真实顺序）
 function appendTurn(target, turn, key, view, isLast) {
-  if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
   if (turn.headTools) target.appendChild(toolsRow(turn.headTools, turn.headToolsSeq));
+  if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
   if (turn.userMsg) target.appendChild(userBubble(turn.userMsg, view));
   if (isLast && view.state.streaming) {
     renderStreamingTurn(target, turn, key);
@@ -1782,18 +1816,30 @@ function renderMessages(msgs, view, opts) {
   if (view === mainView) scheduleFolds(); // 长消息折叠：渲染完按实际高度重算（只主对话）
 }
 
-// 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与系统通知也常显；
-// 上下文材料行（首轮尾部材料、运行环境更新、系统提示词/工具定义变更）跟
+// 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与单条系统通知也常显；
+// 连续 ≥2 条系统通知（如一口气上传多个文件的注记）折叠成一条「系统通知」段——
+// 与上下文材料同一套折叠行，多条聚一起时收起来、单条保持一眼可见；
+// 上下文材料行（时间提示、首轮尾部材料、运行环境更新、系统提示词/工具定义变更）跟
 // 思考/工具过程一起折叠——要核对「模型看到了什么、什么时候变的」时展开折叠段；
 // 其余过程按相邻常显块切分成折叠段（每段一条折叠条，显示思考/工具计数）
 function renderFinishedTurn(box, turn, key) {
   const items = turn.items;
   let answerIdx = -1;
   items.forEach((it, i) => { if (it.k === 'text') answerIdx = i; });
+  // 连续 note 段（≥2 条才成段；单条下面按锚点常显处理）
+  const noteRuns = [];
+  for (let i = 0; i < items.length; ) {
+    if (items[i].k !== 'note') { i++; continue; }
+    let j = i;
+    while (j < items.length && items[j].k === 'note') j++;
+    if (j - i >= 2) noteRuns.push([i, j]);
+    i = j;
+  }
+  const runAt = (i) => noteRuns.find(([a, b]) => i >= a && i < b);
   const anchors = new Set();
   if (answerIdx >= 0) anchors.add(answerIdx);
   items.forEach((it, i) => {
-    if (i === answerIdx) return;
+    if (i === answerIdx || runAt(i)) return;
     if (it.k === 'note' || it.k === 'plancard' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
   });
   let seg = [];
@@ -1803,6 +1849,19 @@ function renderFinishedTurn(box, turn, key) {
     seg = [];
   };
   items.forEach((it, i) => {
+    const run = runAt(i);
+    if (run) {
+      if (run[0] === i) { // 段起点：先冲掉在途过程段，再落「系统通知」折叠段
+        flushSeg();
+        const [a, b] = run;
+        const nKey = key + ':notes' + a;
+        box.appendChild(foldSection(items.slice(a, b), nKey, {
+          open: turnOpen[nKey] === true,
+          prefix: () => '已折叠 ' + (b - a) + ' 条系统通知',
+        }));
+      }
+      return;
+    }
     if (anchors.has(i)) { flushSeg(); box.appendChild(renderItem(it, { final: i === answerIdx })); }
     else seg.push(it);
   });
@@ -1826,8 +1885,9 @@ function renderStreamingTurn(box, turn, key) {
   }
   const foldFrom = flow.length - TAIL_ROWS;
   // 钉住常显、绝不折进过程段的两类：系统通知（note，report 通道的虚线通知块——
-  // 执行期间的中断/上传提示不能被折没）与运行中的子任务卡（实时进度）。
-  // 完成态把两者当 anchors 常显（见 renderFinishedTurn 的 note 分支），流式这里同一口径。
+  // 执行期间的中断/上传提示不能被折没；完成态里连续多条才折叠，见 renderFinishedTurn）
+  // 与运行中的子任务卡（实时进度）。完成态把两者当 anchors 常显（见 renderFinishedTurn
+  // 的 note 分支），流式这里同一口径——运行中的一条通知也要立即可见。
   // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
   const pinned = (it) => it.k === 'note' || it.k === 'plancard' || (it.k === 'subtask' && !it.result);
   let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段

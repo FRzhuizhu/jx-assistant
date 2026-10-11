@@ -17,10 +17,9 @@
      下面 20% 是点缀色占比，也就是「加白程度」：嫌深就调小、想更接近点缀色就调大。 */
   --mine-tint: 20%;
   --bubble-mine: color-mix(in srgb, var(--accent) var(--mine-tint), #ffffff);
-  /* AI 用户气泡底色（aiuser：数字助理派发的指令/回报）：偏白——真实用户气泡
-     是点缀色调的浅蓝（--bubble-mine），AI 说的「用户消息」近白，一眼分得清；
-     用 --text 按极低比例调进 --bg，亮暗主题同一条公式都成立 */
-  --bubble-ai: color-mix(in srgb, var(--text) 4%, var(--bg));
+  /* AI 用户气泡底色（aiuser）：白底——真实用户气泡是点缀色调的浅蓝（--bubble-mine），
+     AI 说的「用户消息」纯白+细边框，泾渭分明 */
+  --bubble-ai: #ffffff;
   --chip: #f2f3f5;
   --code-bg: #f6f8fa;
   --green: #1f9d55;
@@ -375,16 +374,19 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 
 /* AI 发出的用户消息（aiuser：数字助理派发的任务指令/派发回报/子对话派发/待办
-   转交）：与用户消息同一位（右对齐、同款圆角与内边距，继承上面的全部规则），
-   只换底色为偏白（--bubble-ai），再补一圈细边框——近白气泡在白页面上要有轮廓。
-   其余待遇与用户气泡一致：长文折叠（applyFolds 的目标选择器 .msg.user > .bubble
-   天然包含它）、悬停操作行、时间戳。 */
+   转交）：**左对齐**（AI 说的「用户消息」，在左边像「别人发来的」），**白底**
+   +一圈细边框（白气泡在白页面上靠边框成形），尾巴朝左下；内边距/字号沿用
+   用户气泡那套。操作行常驻（同助手侧的口径）、靠左：时间 + 复制，没有编辑。
+   长文折叠与用户气泡同一套（applyFolds 的 .msg.user > .bubble 天然包含它）。 */
+.msg.user.ai { align-items: flex-start; }
 .msg.user.ai .bubble {
-  background: var(--chip);              /* 旧内核兜底：支持 color-mix 时下面一行生效 */
-  background: var(--bubble-ai, var(--chip));
-  --fold-bg: var(--bubble-ai, var(--chip));
-  border: 1px solid var(--border-2);
+  background: #ffffff;                   /* 旧内核兜底：变量在主题里定义 */
+  background: var(--bubble-ai, #ffffff);
+  --fold-bg: var(--bubble-ai, #ffffff);  /* 折叠渐隐终点 = 气泡自身底色 */
+  border-radius: 14px 14px 14px 4px;     /* 尾巴朝左下 */
+  border: 1px solid var(--border);
 }
+.msg.user.ai .msg-actions { opacity: 1; justify-content: flex-start; }
 
 /* 长消息折叠（只作用于数字助理主对话里的用户位气泡：用户气泡，
    以及 AI 发出的用户消息气泡（.msg.user.ai），见 app-chat.js 的 applyFolds；数字助理的正文
