@@ -522,15 +522,17 @@ function foldLabel(cnt) {
   if (cnt.think) parts.push(cnt.think + ' 次思考');
   if (cnt.tool) parts.push(cnt.tool + ' 次工具调用');
   if (cnt.mat) parts.push(cnt.mat + ' 条上下文材料');
+  if (cnt.note) parts.push(cnt.note + ' 条系统通知');
   if (!parts.length) parts.push('已折叠 ' + cnt.rows + ' 行');
   return parts.join(' · ');
 }
 
 function secCount(items) {
-  const cnt = { think: 0, tool: 0, mat: 0, rows: items.length };
+  const cnt = { think: 0, tool: 0, mat: 0, note: 0, rows: items.length };
   for (const it of items) {
     if (it.k === 'think') cnt.think++;
     else if (it.k === 'tool' || it.k === 'subtask') cnt.tool++;
+    else if (it.k === 'note') cnt.note++;
     else if (isMatItem(it)) cnt.mat++;
   }
   return cnt;
@@ -1816,31 +1818,26 @@ function renderMessages(msgs, view, opts) {
   if (view === mainView) scheduleFolds(); // 长消息折叠：渲染完按实际高度重算（只主对话）
 }
 
-// 已完成回合：最后一段正文 = 最终输出，常显；中间长正文与单条系统通知也常显；
-// 连续 ≥2 条系统通知（如一口气上传多个文件的注记）折叠成一条「系统通知」段——
-// 与上下文材料同一套折叠行，多条聚一起时收起来、单条保持一眼可见；
-// 上下文材料行（时间提示、首轮尾部材料、运行环境更新、系统提示词/工具定义变更）跟
-// 思考/工具过程一起折叠——要核对「模型看到了什么、什么时候变的」时展开折叠段；
-// 其余过程按相邻常显块切分成折叠段（每段一条折叠条，显示思考/工具计数）
+// 已完成回合：**顶层大折叠全局统一**——回合内连续的可折叠项（思考/工具/子任务卡/
+// 上下文材料/系统通知）不分家，相邻就折进同一段（标签汇总各类计数，见 foldLabel）；
+// 段内还有各自的行级小折叠（proc-row 点开看原文、工具行点开看参数）。锚点（常显）
+// 只有三类：最终正文、长正文（plancard 计划卡同理），以及**孤立**的系统通知——
+// 前后都没有可折叠邻居的单条通知保持一眼可见；通知一旦与材料/过程相邻，
+// 就跟着一起进大折叠。
 function renderFinishedTurn(box, turn, key) {
   const items = turn.items;
   let answerIdx = -1;
   items.forEach((it, i) => { if (it.k === 'text') answerIdx = i; });
-  // 连续 note 段（≥2 条才成段；单条下面按锚点常显处理）
-  const noteRuns = [];
-  for (let i = 0; i < items.length; ) {
-    if (items[i].k !== 'note') { i++; continue; }
-    let j = i;
-    while (j < items.length && items[j].k === 'note') j++;
-    if (j - i >= 2) noteRuns.push([i, j]);
-    i = j;
-  }
-  const runAt = (i) => noteRuns.find(([a, b]) => i >= a && i < b);
-  const anchors = new Set();
-  if (answerIdx >= 0) anchors.add(answerIdx);
+  const foldable = (it) => it.k !== 'text' && it.k !== 'plancard';
+  const anchor = new Set();
+  if (answerIdx >= 0) anchor.add(answerIdx);
   items.forEach((it, i) => {
-    if (i === answerIdx || runAt(i)) return;
-    if (it.k === 'note' || it.k === 'plancard' || (it.k === 'text' && isLongText(it.text))) anchors.add(i);
+    if (it.k === 'plancard' || (it.k === 'text' && isLongText(it.text))) anchor.add(i);
+  });
+  items.forEach((it, i) => {
+    if (it.k !== 'note') return;
+    const nb = (j) => j >= 0 && j < items.length && foldable(items[j]);
+    if (!nb(i - 1) && !nb(i + 1)) anchor.add(i); // 孤立通知常显
   });
   let seg = [];
   const flushSeg = () => {
@@ -1849,20 +1846,7 @@ function renderFinishedTurn(box, turn, key) {
     seg = [];
   };
   items.forEach((it, i) => {
-    const run = runAt(i);
-    if (run) {
-      if (run[0] === i) { // 段起点：先冲掉在途过程段，再落「系统通知」折叠段
-        flushSeg();
-        const [a, b] = run;
-        const nKey = key + ':notes' + a;
-        box.appendChild(foldSection(items.slice(a, b), nKey, {
-          open: turnOpen[nKey] === true,
-          prefix: () => '已折叠 ' + (b - a) + ' 条系统通知',
-        }));
-      }
-      return;
-    }
-    if (anchors.has(i)) { flushSeg(); box.appendChild(renderItem(it, { final: i === answerIdx })); }
+    if (anchor.has(i)) { flushSeg(); box.appendChild(renderItem(it, { final: i === answerIdx })); }
     else seg.push(it);
   });
   flushSeg();
@@ -1885,9 +1869,8 @@ function renderStreamingTurn(box, turn, key) {
   }
   const foldFrom = flow.length - TAIL_ROWS;
   // 钉住常显、绝不折进过程段的两类：系统通知（note，report 通道的虚线通知块——
-  // 执行期间的中断/上传提示不能被折没；完成态里连续多条才折叠，见 renderFinishedTurn）
-  // 与运行中的子任务卡（实时进度）。完成态把两者当 anchors 常显（见 renderFinishedTurn
-  // 的 note 分支），流式这里同一口径——运行中的一条通知也要立即可见。
+  // 执行期间的中断/上传提示不能被折没；完成态里与材料/过程相邻的进顶层大折叠、
+  // 孤立的常显，见 renderFinishedTurn）与运行中的子任务卡（实时进度）。
   // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
   const pinned = (it) => it.k === 'note' || it.k === 'plancard' || (it.k === 'subtask' && !it.result);
   let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段

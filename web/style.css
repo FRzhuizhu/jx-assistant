@@ -17,9 +17,6 @@
      下面 20% 是点缀色占比，也就是「加白程度」：嫌深就调小、想更接近点缀色就调大。 */
   --mine-tint: 20%;
   --bubble-mine: color-mix(in srgb, var(--accent) var(--mine-tint), #ffffff);
-  /* AI 用户气泡底色（aiuser）：白底——真实用户气泡是点缀色调的浅蓝（--bubble-mine），
-     AI 说的「用户消息」纯白+细边框，泾渭分明 */
-  --bubble-ai: #ffffff;
   --chip: #f2f3f5;
   --code-bg: #f6f8fa;
   --green: #1f9d55;
@@ -374,16 +371,16 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 
 /* AI 发出的用户消息（aiuser：数字助理派发的任务指令/派发回报/子对话派发/待办
-   转交）：**左对齐**（AI 说的「用户消息」，在左边像「别人发来的」），**白底**
-   +一圈细边框（白气泡在白页面上靠边框成形），尾巴朝左下；内边距/字号沿用
-   用户气泡那套。操作行常驻（同助手侧的口径）、靠左：时间 + 复制，没有编辑。
+   转交）：**左对齐**（AI 说的「用户消息」，在左边像「别人发来的」），**灰底**
+   （--chip 中性灰 + 一圈细边框——微信是灰底页配白气泡，我们页面是白底，
+   倒过来就是白页配灰气泡），尾巴朝左下；内边距/字号沿用用户气泡那套。
+   操作行常驻（同助手侧的口径）、靠左：时间 + 复制，没有编辑。
    长文折叠与用户气泡同一套（applyFolds 的 .msg.user > .bubble 天然包含它）。 */
 .msg.user.ai { align-items: flex-start; }
 .msg.user.ai .bubble {
-  background: #ffffff;                   /* 旧内核兜底：变量在主题里定义 */
-  background: var(--bubble-ai, #ffffff);
-  --fold-bg: var(--bubble-ai, #ffffff);  /* 折叠渐隐终点 = 气泡自身底色 */
-  border-radius: 14px 14px 14px 4px;     /* 尾巴朝左下 */
+  background: var(--chip);
+  --fold-bg: var(--chip);                 /* 折叠渐隐终点 = 气泡自身底色 */
+  border-radius: 14px 14px 14px 4px;      /* 尾巴朝左下 */
   border: 1px solid var(--border);
 }
 .msg.user.ai .msg-actions { opacity: 1; justify-content: flex-start; }
@@ -2175,8 +2172,6 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   --danger: #ff9d8f;
   /* 暗色主题：用户气泡不能加白（否则亮底配亮字），改成「点缀色调暗」的同色系深色 */
   --bubble-mine: color-mix(in srgb, var(--accent) 34%, var(--bg));
-  /* AI 用户气泡：比页面底色稍亮一档（暗色下「偏白」=浅于底色，不能真用白） */
-  --bubble-ai: color-mix(in srgb, var(--text) 9%, var(--bg));
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .modal-card { background: #1d2026; }
