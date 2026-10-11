@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1014,17 +1015,33 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		hideConsoleWindow(cmd) // 默认压窗：桌面形态没有控制台可复用，不压就是一个个黑窗
 	}
 	cmd.Env = sandboxEnv(true)
-	out, err := cmd.CombinedOutput()
+	// 整树终止 + 强制收口（proctree_windows.go）：CombinedOutput 内部把
+	// Start+Wait 一体化，没机会在启动后挂 job，这里等价展开（同 buffer 合并
+	// stdout/stderr），供 attach 介入
+	tree := armTreeKill(cmd)
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if serr := cmd.Start(); serr != nil {
+		tree.finish()
+		return "", serr
+	}
+	tree.attach(cmd)
+	err := cmd.Wait()
+	tree.finish() // 残留孙进程（adb server 这类守护进程）随 job 句柄关闭清场
+	out := buf.Bytes()
 	note := ""
 	if ctx.Err() == context.DeadlineExceeded {
 		note += "\n[命令超时被终止]"
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		note += "\n[命令进程已退出，但残留的后台子进程占着输出管道，已强制收口并终止其进程树]"
 	}
 	if len(out) > 64*1024 {
 		out = out[:64*1024]
 		note += "\n[输出过长已截断]"
 	}
 	res := strings.TrimRight(decodeCmdOutput(out), "\r\n") + note
-	if err != nil && ctx.Err() == nil {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, exec.ErrWaitDelay) {
 		res += fmt.Sprintf("\n[进程退出异常: %v]", err)
 	}
 	if strings.TrimSpace(res) == "" {

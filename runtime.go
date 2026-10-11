@@ -136,14 +136,18 @@ func (a *App) runOf(id string) *sessionRun {
 	return r
 }
 
-// stopRun 请求停止会话执行（协作式取消：模型流、工具、等待都会收到 ctx 取消）。
+// stopRun 请求停止会话执行（协作式取消：模型流、工具、等待都会收到 ctx 取消），
+// 并连带终止该会话全部后台作业——停止要彻底：作业的 ctx 独立挂 Background()
+// （跨轮存活是它的常态），不在这里一并取消的话，停止后会话看着空闲、
+// 作业还在后台跑（见 jobs.go 的 stopSessionJobs）。
 // 同时把「用户手动停止」这件事落库（见 store.go 的 StopRecord）：只记内存的话，
 // 服务一重启意图就丢了，启动恢复把「用户主动叫停」误报成「服务重启中断」，
 // 数字助理据此还会重新派发/续跑用户已经叫停的任务。
 func (a *App) stopRun(id string) bool {
+	jobsKilled := a.stopSessionJobs(id)
 	r := a.runOf(id)
 	if r == nil {
-		return false
+		return jobsKilled > 0 // 执行体不在跑但作业还在：终止了作业也算停止成功
 	}
 	r.mu.Lock()
 	first := !r.stopped // 连点停止只记一次，不把计数打花

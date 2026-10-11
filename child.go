@@ -25,7 +25,9 @@ package main
 //     完整环境，保留自己的 argv 形态；压窗仍走同一个 hideConsoleWindow。
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -277,7 +279,17 @@ func runArgv(ctx context.Context, r sandboxRun) (string, error) {
 	if !r.Visible {
 		hideConsoleWindow(cmd) // 默认压窗（GUI 程序要看得见就设 Visible=true）
 	}
-	out, err := cmd.CombinedOutput()
+	tree := armTreeKill(cmd)
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if serr := cmd.Start(); serr != nil {
+		tree.finish()
+		return "", serr
+	}
+	tree.attach(cmd)
+	err := cmd.Wait()
+	tree.finish()
+	out := buf.Bytes()
 	note := ""
 	if ctx.Err() == context.DeadlineExceeded {
 		note = "[命令超时被终止]"
@@ -291,28 +303,34 @@ func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func()
 	r = a.childDefaults(r)
 	if r.Argv != nil {
 		r.Timeout = 0 // 异步：不限时，终止只经 ctx
-		cmd := argvCmd(ctx, r, w)
+		cmd, tree := argvCmd(ctx, r, w)
 		if err := cmd.Start(); err != nil {
+			tree.finish()
 			return nil, err
 		}
+		tree.attach(cmd)
 		entry := a.registerChild(r, cmd.Process.Pid)
 		done := make(chan struct{}, 1)
 		go func() {
 			err := cmd.Wait()
+			tree.finish() // 作业结束：job 句柄关闭，残留孙进程清场
 			entry.setExit(childExitInfo(err, ctx))
 			close(done)
 		}()
 		return func() bool { <-done; return true }, nil
 	}
 	if r.Policy == permFull {
-		cmd := shellCmd(ctx, r, w)
+		cmd, tree := shellCmd(ctx, r, w)
 		if err := cmd.Start(); err != nil {
+			tree.finish()
 			return nil, err
 		}
+		tree.attach(cmd)
 		entry := a.registerChild(r, cmd.Process.Pid)
 		done := make(chan struct{}, 1)
 		go func() {
 			err := cmd.Wait()
+			tree.finish() // 同上：整树纪律对后台 shell 作业一致
 			entry.setExit(childExitInfo(err, ctx))
 			close(done)
 		}()
@@ -331,7 +349,8 @@ func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func()
 }
 
 // shellCmd 起一个「输出进 w」的 shell 子进程（不受限档位的异步路径）。
-func shellCmd(ctx context.Context, r sandboxRun, w io.Writer) *exec.Cmd {
+// 返回的 procTree 由调用方在 Start 成功后 attach、Wait 返回后 finish。
+func shellCmd(ctx context.Context, r sandboxRun, w io.Writer) (*exec.Cmd, *procTree) {
 	var cmd *exec.Cmd
 	if strings.ToLower(strings.TrimSpace(r.Shell)) == "cmd" {
 		cmd = exec.CommandContext(ctx, "cmd", "/C", r.Command)
@@ -344,10 +363,10 @@ func shellCmd(ctx context.Context, r sandboxRun, w io.Writer) *exec.Cmd {
 		hideConsoleWindow(cmd)
 	}
 	cmd.Stdout, cmd.Stderr = w, w
-	return cmd
+	return cmd, armTreeKill(cmd)
 }
 
-func argvCmd(ctx context.Context, r sandboxRun, w io.Writer) *exec.Cmd {
+func argvCmd(ctx context.Context, r sandboxRun, w io.Writer) (*exec.Cmd, *procTree) {
 	cmd := exec.CommandContext(ctx, r.Argv[0], r.Argv[1:]...)
 	cmd.Dir = r.Dir
 	cmd.Env = sandboxEnv(true)
@@ -355,7 +374,7 @@ func argvCmd(ctx context.Context, r sandboxRun, w io.Writer) *exec.Cmd {
 		hideConsoleWindow(cmd)
 	}
 	cmd.Stdout, cmd.Stderr = w, w
-	return cmd
+	return cmd, armTreeKill(cmd)
 }
 
 // ---------- 产品内部小工具入口 ----------
@@ -384,11 +403,20 @@ func runToolChildEnv(ctx context.Context, exe string, args []string, dir string,
 		cmd.Env = env
 	}
 	hideConsoleWindow(cmd) // 内部小工具同样悄悄跑
-	out, err := cmd.CombinedOutput()
+	tree := armTreeKill(cmd)
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if serr := cmd.Start(); serr != nil {
+		tree.finish()
+		return "", serr
+	}
+	tree.attach(cmd)
+	err := cmd.Wait()
+	tree.finish()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("超时（%v）", timeout)
 	}
-	return strings.TrimRight(decodeCmdOutput(out), "\r\n"), err
+	return strings.TrimRight(decodeCmdOutput(buf.Bytes()), "\r\n"), err
 }
 
 // childExitInfo 把 Wait 的结果翻译成登记表里的退出文案。
@@ -400,6 +428,9 @@ func childExitInfo(err error, ctx context.Context) string {
 		if ctx.Err() == context.Canceled {
 			return "被终止"
 		}
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return "已收口（残留后台子进程一并终止）"
 	}
 	if err != nil {
 		return fmt.Sprintf("exit %v", err)

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -129,12 +130,40 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 		defer cancel()
 		wait()
 		if ctx.Err() != nil {
-			j.setExit("被 job_kill 终止")
+			j.setExit("被终止（job_kill 或会话停止）")
 			return
 		}
 		j.setExit("exit 0")
 	}()
 	return j, nil
+}
+
+// stopSessionJobs 终止某会话全部仍在运行的后台作业，返回终止数。
+// 会话停止 = 「这一摊全停」（产品决策：运行逻辑清晰明确优先于作业跨轮存活），
+// 由 stopRun 统一收口调用；正常轮末（finishRun）不走这里，作业照旧跨轮存活。
+func (a *App) stopSessionJobs(id string) int {
+	a.jobsMu.Lock()
+	mine := []*jobRun{}
+	for _, j := range a.jobs {
+		if j.SessionID == id {
+			mine = append(mine, j)
+		}
+	}
+	a.jobsMu.Unlock()
+	n := 0
+	for _, j := range mine {
+		select {
+		case <-j.done:
+			continue
+		default:
+		}
+		j.cancel()
+		n++
+	}
+	if n > 0 {
+		log.Printf("[停止] 会话 %s 的 %d 个后台作业已一并终止", id, n)
+	}
+	return n
 }
 
 func (a *App) getJob(id, sessionID string) (*jobRun, error) {

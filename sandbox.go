@@ -121,12 +121,15 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		cmd.Env = sandboxEnv(false)
 		cmd.Stdout = w
 		cmd.Stderr = w
+		tree := armTreeKill(cmd)
 		if err := cmd.Start(); err != nil {
+			tree.finish()
 			os.RemoveAll(tempDir)
 			return nil, fmt.Errorf("sandbox unavailable: %w", err)
 		}
+		tree.attach(cmd)
 		waitDone := make(chan struct{}, 1)
-		go func() { _ = cmd.Wait(); os.RemoveAll(tempDir); close(waitDone) }()
+		go func() { _ = cmd.Wait(); tree.finish(); os.RemoveAll(tempDir); close(waitDone) }()
 		return func() bool { <-waitDone; return true }, nil
 	case isAndroidRuntime:
 		// 安卓后台作业：同前台，无 OS 级沙箱；内置运行时优先、未就绪回落系统 sh
@@ -145,11 +148,14 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		}
 		cmd.Stdout = w
 		cmd.Stderr = w
+		tree := armTreeKill(cmd)
 		if err := cmd.Start(); err != nil {
+			tree.finish()
 			return nil, fmt.Errorf("sandbox unavailable: %w", err)
 		}
+		tree.attach(cmd)
 		waitDone := make(chan struct{}, 1)
-		go func() { _ = cmd.Wait(); close(waitDone) }()
+		go func() { _ = cmd.Wait(); tree.finish(); close(waitDone) }()
 		return func() bool { <-waitDone; return true }, nil
 	default:
 		return nil, fmt.Errorf("sandbox unavailable: 当前平台暂无沙箱后端")
