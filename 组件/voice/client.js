@@ -45,6 +45,7 @@
   let active = false;    // 组件是否激活：dispose 后立刻失效，兜住还在飞的异步回调
   let msgAction = null;  // 已注册的消息操作行钩子（注销用）
   const busHooks = [];   // 已挂的事件总线回调 [{ev, fn}]（注销用）
+  let sendHook = null;   // 已注册的发送前钩子（可等待；注销用）
 
   /* ---------- 偏好（localStorage，命名空间 cx:voice） ---------- */
 
@@ -1013,29 +1014,38 @@
         }).catch(() => { /* 草稿失败不打扰：定稿还会再识别一遍 */ });
       };
       // 定稿：自上次定稿的全部音频整段重识别（全上下文，更准），替换灰字草稿
+      // 撤下全部草稿灰字（定稿专用）
+      const clearDrafts = () => {
+        for (const i of draftSlots) { sess.segs.delete(i); sess.committed.delete(i); }
+        draftSlots.length = 0;
+        renderShadow();
+      };
+      // 定稿：自上次定稿的全部音频整段重识别（全上下文，更准），替换灰字草稿。
+      // 无缝衔接的关键：灰字要等定稿文字到手的那一刻才撤（同一同步块里撤灰
+      // 字、落黑字，一帧完成替换）——先撤后等会让内容「消失几秒」，像丢了。
       const finalizeSeg = () => {
         draftEpoch += 1;             // 在途草稿全部作废：本段音频由定稿接管（含尾巴短语）
         seg = []; segSpeechMs = 0; speechMs = 0; silenceMs = 0;
         const frames = sinceFinal;
         const spoken = sinceFinalMs;
         sinceFinal = []; sinceFinalMs = 0; finalSilenceMs = 0; padMs = 0;
-        // 撤下草稿灰字（定稿文字即将替换它们）
-        for (const i of draftSlots) { sess.segs.delete(i); sess.committed.delete(i); }
-        draftSlots.length = 0;
-        renderShadow();
-        if (spoken < SPEECH_MIN_MS || frames.length * 256 < 1600) return;
+        if (spoken < SPEECH_MIN_MS || frames.length * 256 < 1600) { clearDrafts(); return; }
         post(joinFrames(frames)).then((d) => {
-          if (!active) return; // 组件卸载：迟到文字不落
+          if (!active || sess.done) return; // 组件卸载/会话已收尾：迟到的定稿不落（防污染下一条草稿；灰字已由 finish 的 commitAll 兜底）
           if (d.text) {
+            clearDrafts(); // 黑字到手此刻才撤灰字，同一帧完成替换
             commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
             segCount += 1;
           }
+          // 识别为空：保留灰字草稿（有内容总比空白强）
         }).catch((e) => {
           if (!active || sess.done) return;
           failCount += 1;
           if (failCount === 1) voiceToast(voiceLocalHint(e && e.message) || '有一句识别失败（网络/服务波动），继续说即可');
+          // 识别失败：保留灰字草稿，内容不消失；下轮定稿或 finish 的 commitAll 接手
         });
       };
+
       node.onaudioprocess = (ev) => {
         if (ended) return;
         const f = ev.inputBuffer.getChannelData(0);
@@ -1246,20 +1256,30 @@
     };
 
     // 交给快捷键引擎的控制器（点按=toggle，长按=start/stop；pauseForSend=发送前
-    // 同步落定灰字并硬收尾，见 window.JXVoicePause）
+    // 收尾并等待落定，见 init 里注册的 JX send 钩子）
     return {
       active: () => sess.active,
       toggle: () => btn.onclick(),
       start: () => { if (!sess.active) btn.onclick(); },
       stop: () => { if (sess.active) btn.onclick(); },
+      // 发送前收尾（可等待）：走与用户按停相同的收尾路径——本地引擎定稿尾段
+      //（整段重识别，比草稿准）并等在途识别清零，浏览器引擎等引擎吐完最后一句
+      //（finish 会把灰字/最后定稿落进输入框）。会话真正落定（done）后才放行，
+      // 随说的内容随这条消息一起发出，不再「先发出、文字迟到」。VOICE_TAIL_WAIT_MS
+      // 兜底：等不到就按已有内容落定硬收尾（迟到结果由 finalizeSeg 的 done 检查
+      // 丢弃，不污染下一条草稿）。
       pauseForSend: () => {
-        if (!sess.active) return;
-        commitAll(); // 未定稿转写同步落进输入框（随本条消息一起发出）
-        const rec = sess.rec;
-        sess.stopping = true;
-        // 本地引擎：放弃这次录音（迟到的识别结果不该污染下一条草稿）
-        try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
-        finish(''); // 硬收尾：不等引擎尾包（迟到的定稿会在发送后污染下一条草稿）
+        if (!sess.active) return Promise.resolve();
+        if (!sess.done) stopByUser();
+        return new Promise((resolve) => {
+          const t0 = Date.now();
+          const tick = () => {
+            if (sess.done) { resolve(); return; }
+            if (Date.now() - t0 >= VOICE_TAIL_WAIT_MS) { finish(''); resolve(); return; }
+            setTimeout(tick, 120);
+          };
+          tick();
+        });
       },
     };
   }
@@ -1612,14 +1632,18 @@
       installShortcutEngine();
       refreshShortcutPlaceholders();
 
-      // 发送前先停听写：app-core 的回车发送路径调用（同步落定灰字后硬收尾，
-      // 让随说的内容随本条消息一起发出）
-      window.JXVoicePause = () => {
+      // 发送前收尾听写（可等待钩子）：send() 在组装消息正文前 await 本钩子，
+      // 听写中的尾段识别先落定再放行——随说的内容随这条消息一起发出。main/sub
+      // 并行等待（各自内部上限 8 秒，小于钩子层 10 秒总超时，不会被提前放行）
+      sendHook = async () => {
+        const jobs = [];
         for (const k of ['main', 'sub']) {
           const c = voiceCtl[k];
-          if (c && c.pauseForSend) c.pauseForSend();
+          if (c && c.pauseForSend) jobs.push(Promise.resolve(c.pauseForSend()));
         }
+        await Promise.all(jobs);
       };
+      if (JX.hook) JX.hook('send', sendHook);
 
       // 设置区以独立分区页呈现（设置 → 语音，位于「内置组件」之后）：
       // pane 字段交给 app-settings.js 动态挂导航项与页面容器，组件关掉即撤
@@ -1639,7 +1663,8 @@
 
       // 快捷键引擎与占位提示收尾
       removeShortcutEngine();
-      try { delete window.JXVoicePause; } catch (e) { window.JXVoicePause = undefined; }
+      if (sendHook && JX.unhook) JX.unhook('send', sendHook);
+      sendHook = null;
       window.JXVoiceHint = '';
       if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
       restoreSubPlaceholder();
