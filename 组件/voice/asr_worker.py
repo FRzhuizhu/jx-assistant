@@ -20,10 +20,9 @@ stdout 纪律：协议应答走原 fd1 的独立句柄；启动时把 sys.stdout
 当日志收。
 
 落位（组件自包含）：本脚本与模型都在 组件/voice/ 里——
-  组件/voice/asr_worker.py        本文件
-  组件/voice/models/xasr/         离线模型（精修/整段识别）
-  组件/voice/models/xasr-streaming/ 流式模型（实时灰字）
-运行时用共享便携 Python（技能/_runtime/python，装 sherpa-onnx）。
+  组件/voice/asr_worker.py   本文件
+  组件/voice/models/xasr/    离线模型（草稿与定稿共用；流式模型已删省 163MB）
+运行时用共享便携 Python（技能/_runtime/python，sherpa-onnx 缺失自装）。
 （评估期的 paraformer/sensevoice/qwen 分支已删——结论见 git 历史 054c19e881。）
 """
 import base64
@@ -150,100 +149,6 @@ def main():
                "infer_ms": infer_ms, "rtf": round(infer_ms / max(audio_ms, 1), 3),
                "model": state["model"], "sampwidth": sw})
 
-    # ---------- 流式识别（X-ASR streaming 实时灰字 + 端点检测 + 离线精修黑字） ----------
-    # 实时层：OnlineRecognizer（480ms 档）边收边出 partial；端点（用户停顿）触发时
-    # 用离线 X-ASR（精度与标点更完整）重转该段，作为最终文字返回——对应前端
-    # 「灰色实时字 → 黑色精修字」的两段式体验。协议严格一行请求一行应答。
-    st = {"online": None, "stream": None, "seg": [], "started": False}
-
-    def ensure_online():
-        if st["online"] is not None:
-            return
-        ensure_sherpa()
-        import sherpa_onnx
-        d = models_root / "xasr-streaming"
-
-        def one(pattern):
-            hits = sorted(glob.glob(str(d / "**" / pattern), recursive=True))
-            return hits[0] if hits else None
-
-        enc, dec, joi, tok = (one("encoder*.int8.onnx"), one("decoder*.onnx"),
-                              one("joiner*.int8.onnx"), one("tokens.txt"))
-        if not (enc and dec and joi and tok):
-            raise RuntimeError(f"流式模型文件不完整：{d}")
-        kwargs = {}
-        # 断句时机由前端统一控制（3 秒停顿，手机/电脑同一实现）：服务端关掉
-        # 端点检测避免双重切句——worker 只负责收流、出实时 partial（灰字）、
-        # 收到 stream_flush/stream_end 时用离线模型精修该段（黑字）。
-        # （enable_endpoint_detection 默认即关，这里显式声明意图）
-        kwargs = {"enable_endpoint_detection": False}
-        try:
-            st["online"] = sherpa_onnx.OnlineRecognizer.from_transducer(
-                encoder=enc, decoder=dec, joiner=joi, tokens=tok, num_threads=4, **kwargs)
-        except TypeError:
-            st["online"] = sherpa_onnx.OnlineRecognizer.from_transducer(
-                encoder=enc, decoder=dec, joiner=joi, tokens=tok, num_threads=4)
-        print("[asr-stream] 端点检测关闭：断句由前端 3 秒停顿驱动（stream_flush）", file=sys.stderr)
-
-    def refine_offline(samples_i16):
-        """离线 X-ASR 精修一段（int16 样本）——精度/标点完整版。静默装载：
-        不走 load()（那会多发一条 loaded 应答，打乱一行一答的桥接协议）。"""
-        import numpy as np
-        if state["model"] != "xasr" or state["engine"] is None:
-            state["engine"] = load_engine("xasr", "cpu")
-            state["model"] = "xasr"
-        engine = state["engine"]
-        s2 = engine.create_stream()
-        s2.accept_waveform(16000, samples_i16.astype(np.float32) / 32768.0)
-        engine.decode_stream(s2)
-        return (s2.result.text or "").strip()
-
-    def stream_reset():
-        st["stream"] = st["online"].create_stream()
-        st["seg"] = []
-
-    def feed_chunk(pcm_b64):
-        import numpy as np
-        raw = base64.b64decode(pcm_b64)
-        samples = np.frombuffer(raw, dtype=np.int16)
-        st["seg"].append(samples.copy())
-        st["stream"].accept_waveform(16000, samples.astype(np.float32) / 32768.0)
-        online = st["online"]
-        while online.is_ready(st["stream"]):
-            online.decode_stream(st["stream"])
-        text = (online.get_result(st["stream"]) or "").strip()
-        if online.is_endpoint(st["stream"]):
-            # 端点：该段定稿——先离线精修（同一条应答里带回），再重开流
-            seg_samples = np.concatenate(st["seg"]) if st["seg"] else np.zeros(0, dtype=np.int16)
-            refined = refine_offline(seg_samples) if len(seg_samples) >= 1600 else ""
-            stream_reset()
-            reply({"ok": True, "event": "final", "text": refined or text})
-            return
-        reply({"ok": True, "event": "partial", "text": text})
-
-    def stream_flush():
-        """前端检测到停顿（3 秒）时调用：精修当前段（黑字）并重开流，录音继续。"""
-        import numpy as np
-        seg_samples = np.concatenate(st["seg"]) if st["seg"] else np.zeros(0, dtype=np.int16)
-        text = (st["online"].get_result(st["stream"]) or "").strip()
-        refined = refine_offline(seg_samples) if len(seg_samples) >= 1600 else ""
-        stream_reset()
-        reply({"ok": True, "event": "final", "text": refined or text})
-
-    def stream_finish():
-        import numpy as np
-        online = st["online"]
-        st["stream"].input_finished()
-        while online.is_ready(st["stream"]):
-            online.decode_stream(st["stream"])
-        text = (online.get_result(st["stream"]) or "").strip()
-        seg_samples = np.concatenate(st["seg"]) if st["seg"] else np.zeros(0, dtype=np.int16)
-        refined = refine_offline(seg_samples) if len(seg_samples) >= 1600 else ""
-        stream_reset()
-        if refined or text:
-            reply({"ok": True, "event": "final", "text": refined or text})
-        reply({"ok": True, "event": "done"})
-
     # ---------- 主循环 ----------
     for line in sys.stdin:
         line = line.strip()
@@ -253,21 +158,6 @@ def main():
             req = json.loads(line)
             if req.get("cmd") == "load":
                 load(req.get("model", ""), req.get("device", "cpu"))
-            elif req.get("cmd") == "stream_start":
-                ensure_online()
-                stream_reset()
-                st["started"] = True
-                reply({"ok": True})
-            elif req.get("cmd") == "stream_chunk":
-                feed_chunk(req.get("pcm_b64", ""))
-            elif req.get("cmd") == "stream_flush":
-                stream_flush()
-            elif req.get("cmd") == "stream_end":
-                if st["started"]:
-                    st["started"] = False
-                    stream_finish()
-                else:
-                    reply({"ok": True, "event": "done"})
             elif req.get("cmd") == "transcribe":
                 transcribe(req.get("wav_b64") or req.get("wavB64") or "")
             elif req.get("cmd") == "shutdown":

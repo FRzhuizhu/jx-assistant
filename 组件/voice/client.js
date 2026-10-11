@@ -184,11 +184,6 @@
     return (p === 'browser' && SR) ? 'browser' : 'xasr';
   }
   function dictationIsLocal() { return dictationEngine() !== 'browser'; }
-  /* 本地识别出字模式（临时对比开关，评估流式模型的实际价值后择一保留）：
-   * stream=流式（说话实时灰字，停顿用离线模型精修落黑字——桌面默认）；
-   * whole=非流式（停顿约 3 秒该句直接出字，与手机远程同款，只用离线模型）。
-   * 远程 https 页面开不了 ws，无论选什么都走 whole。 */
-  function asrWholeMode() { return String(pref.get('asrMode', 'stream')) === 'whole'; }
 
   /* 本地通道起不来时的可执行提示：缺 worker（组件文件不完整）、缺运行时依赖
    * （sherpa-onnx 未装进共享便携运行时）、缺模型文件（组件/voice/models/ 未就绪）
@@ -939,55 +934,42 @@
       for (const [i, seg] of sess.segs) {
         if (t - seg.changedAt >= VOICE_SETTLE_MS) ready.push(i);
       }
-      if (ready.length > 0) commitSegs(ready); else renderShadow();
+      // 本地引擎的灰字是草稿（定稿时会整段替换），不参与 2.5 秒静置落黑
+      if (ready.length > 0 && !dictationIsLocal()) commitSegs(ready); else renderShadow();
       const remain = maxDictateSec() * 1000 - (t - sess.startedAt);
       if (remain <= 0) { stopByUser(); return; }
       setCount(remain <= 9000 ? Math.ceil(remain / 1000) : null);
     };
-    /* ---------- 本地引擎：按停顿逐句识别（客户端能量 VAD 切句） ----------
-     * 录音期间做音量活动检测：说完一句停顿约 0.7 秒即切出该段、异步上传
-     * X-ASR 转写、文字落进输入框，录音继续——「一小段一小段地出」，不必
-     * 整段说完才识别。噪声底自适应跟踪（长时最低能量），阈值 = max(固定下限,
-     * 噪声底×3.5)；句间长静音不入段；单句超 18s 强切；点停时未发的尾段补发。
-     * 多段在途由服务端 worker 排队串行（X-ASR 约 60 倍实时，队列秒清）。 */
-    const wsHint = () => ((location.protocol !== 'https:' && !asrWholeMode())
-      ? '录音中·实时转写：说话出灰字，停顿约 3 秒自动落成正文；点麦克风结束'
-      : '录音中…说完一句停顿约 3 秒自动出字；点麦克风结束');
-    /* ---------- 本地引擎：前端统一停顿切句（3 秒），手机/电脑同一实现 ----------
-     * 断句时机完全在前端：说完一句停顿 3 秒 → 该句定稿。电脑（http 页面，有
-     * WebSocket）：说话期间实时灰字（stream_chunk→partial），停顿 3 秒发
-     * stream_flush 由离线模型精修落黑字，录音无缝继续；手机远程（https 开不了
-     * ws）：同样 3 秒停顿，只是该句走整段 POST 识别（经中继隧道），无灰字但
-     * 逐句出字。服务端端点检测已关闭，不会双重切句。
-     *
+    const wsHint = () => '录音中·说话出灰字草稿，停顿约 3 秒定稿成正文；点麦克风结束';
+    /* ---------- 本地引擎：伪流式（离线模型两档停顿），手机/电脑同一实现 ----------
+     * 流式模型已删（163MB 太重且终稿质量逊于离线）。用离线模型 + 双停顿阈值
+     * 复刻流式体验：
+     *   短停顿（~0.6s）→ 该短语快速识别 → 灰字草稿（「听到了」的即时反馈，
+     *                     多个短语可叠在灰字层）
+     *   长停顿（3s）/按钮结束/18s 强切 → 自上次定稿的全部音频整段重识别
+     *                     → 黑字定稿，替换灰字草稿（全上下文更准、标点完整）
+     * 全部走 HTTP POST（桌面/远程同一条路，远程经中继隧道天然可达）；
+     * 桌面/远程体验完全一致。VAD：噪声底自适应，阈值=max(0.008, 底×3.5)。
      * ── 本地模型身份（仅注释记录，用户端文案一律只说「本地语音识别模型」）──
-     * 小米 X-ASR（Zipformer2 transducer，中英双语、原生标点与大小写，
-     * 约 100 万小时训练，评估期对比 Paraformer/SenseVoice/Qwen3-ASR 后定标）。
-     * 两个模型都随组件目录（models/）分发、跑在共享便携运行时的 sherpa-onnx 上：
-     *   models/xasr/           离线版（精修落字/整段识别，int8 约 168MB）
-     *     https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-zipformer-transducer-zh-en-punct-int8-2026-06-03.tar.bz2
-     *   models/xasr-streaming/ 流式版 480ms 档（实时灰字，int8 约 163MB）
-     *     https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2 */
+     * 小米 X-ASR 离线版（Zipformer2 transducer，中英双语、原生标点，int8 约
+     * 168MB，评估对比定标），随组件目录分发、跑共享便携运行时 sherpa-onnx：
+     *   models/xasr/  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-zipformer-transducer-zh-en-punct-int8-2026-06-03.tar.bz2 */
     const makeLocalRec = (stream) => {
       const ctx = new AudioContext({ sampleRate: 16000 });
       const src = ctx.createMediaStreamSource(stream);
       const node = ctx.createScriptProcessor(4096, 1, 1);
-      const canStream = location.protocol !== 'https:' && !asrWholeMode();
       const SPEECH_MIN_MS = 350;    // 短于此视为噪声毛刺，丢弃
-      const PAUSE_FLUSH_MS = 3000;  // 停顿 3 秒 = 一句话说完，绝对阈值
-      const SEG_MAX_MS = 18000;     // 不停顿连续说超 18 秒也强制出句
-      let seg = [];                 // 当前句的帧（Float32，从首个语音帧起收）
-      let speechMs = 0, silenceMs = 0;
+      const DRAFT_PAUSE_MS = 600;   // 短停顿：出灰字草稿（该短语快速识别）
+      const FINAL_PAUSE_MS = 3000;  // 长停顿：定稿（自上次定稿的全部音频重识别）
+      const SEG_MAX_MS = 18000;     // 连续不停顿超 18 秒强制定稿
+      let seg = [];                 // 当前短语的帧
+      let speechMs = 0, silenceMs = 0, segSpeechMs = 0;
       let noiseFloor = 0.004;       // 环境噪声底（RMS，自适应）
-      let ws = null, wsReady = false, wsFail = false;
-      let ended = false, segCount = 0, failCount = 0, doneCb = null;
-      let pendingPost = 0;   // 在途的整段识别（无 WS / 通道挂了时的兜底路径）：收尾要等它
-      const i16ToB64 = (i16) => {
-        const u8 = new Uint8Array(i16.buffer);
-        let bin = '';
-        for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
-        return btoa(bin);
-      };
+      let sinceFinal = [];          // 自上次定稿的全部语音帧（含短语间静音间隙）
+      let sinceFinalMs = 0;
+      let ended = false, segCount = 0, failCount = 0;
+      let pendingPost = 0;          // 在途识别（草稿+定稿）：按停收尾要等它清零
+      const draftSlots = [];        // 灰字层里草稿占用的槽位号（定稿时撤下）
       const teardownMic = () => {
         if (ended) return true;
         ended = true;
@@ -995,65 +977,53 @@
         try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
         return false;
       };
-      if (canStream) {
-        try { ws = new WebSocket('ws://' + location.host + '/api/c/voice/asr/stream'); } catch (e) { ws = null; }
-      }
-      if (ws) {
-        ws.onopen = () => { wsReady = true; ws.send('{"cmd":"stream_start"}'); };
-        ws.onmessage = (ev) => {
-          let d = null;
-          try { d = JSON.parse(ev.data); } catch (e) { return; }
-          if (!d.ok) { voiceToast(voiceLocalHint(d.err) || ('识别通道错误：' + (d.err || ''))); return; }
-          if (d.event === 'partial') {
-            // 实时灰字：当前句（可能跨多小句，flush 前的缓冲）增量
-            sess.segs.set(0, { text: d.text || '', final: false, changedAt: Date.now() });
-            sess.retries = 0;
-            renderShadow();
-          } else if (d.event === 'final') {
-            // 停顿 3 秒（或收尾）：灰字撤下、离线精修的黑字落定
-            sess.segs.delete(0);
-            sess.committed.delete(0);
-            renderShadow();
-            if (d.text) {
-              commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
-              segCount += 1;
-            }
-          } else if (d.event === 'done') {
-            if (doneCb) doneCb();
-          }
-        };
-        ws.onclose = () => {
-          wsReady = false;
-          if (!ended) wsFail = true; // 意外断开：后续帧转投整段缓冲
-          if (doneCb) doneCb();
-        };
-        ws.onerror = () => { };
-      }
-      const flushSeg = () => {
-        const spoken = speechMs;
-        const frames = seg;
-        seg = []; speechMs = 0; silenceMs = 0;
-        if (spoken < SPEECH_MIN_MS) return; // 毛刺：丢
-        if (ws && wsReady && !wsFail) {
-          try { ws.send('{"cmd":"stream_flush"}'); } catch (e) { /* 收尾兜底 */ }
-          return;
-        }
-        // 无 WS（手机远程/通道断了）：该句整段 POST（经中继隧道可达）
+      const joinFrames = (frames) => {
         const total = frames.reduce((n, c) => n + c.length, 0);
-        if (total < 1600) return;
         const floats = new Float32Array(total);
         let off = 0;
         for (const c of frames) { floats.set(c, off); off += c.length; }
+        return floats;
+      };
+      const post = (floats) => {
         pendingPost += 1;
-        voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000)).then((d) => {
-          pendingPost -= 1;
-          if (!active) return; // 组件已卸载：迟到的文字不再落
+        return voiceASRTranscribe(dictationEngine(), 'cpu', voicePcmToWavB64(floats, 16000))
+          .finally(() => { pendingPost -= 1; });
+      };
+      // 灰字草稿：短停顿时该短语的快速识别（即时反馈「听到了」）
+      const draftSeg = () => {
+        const frames = seg;
+        const spoken = segSpeechMs;
+        seg = []; segSpeechMs = 0;
+        if (spoken < SPEECH_MIN_MS || frames.length * 256 < 1600) return;
+        post(joinFrames(frames)).then((d) => {
+          if (!active || sess.done) return;
+          if (d.text) {
+            const idx = sess.segs.size ? Math.max(...Array.from(sess.segs.keys())) + 1 : 0;
+            sess.segs.set(idx, { text: d.text, final: false, changedAt: Date.now() });
+            draftSlots.push(idx);
+            sess.retries = 0;
+            renderShadow();
+          }
+        }).catch(() => { /* 草稿失败不打扰：定稿还会再识别一遍 */ });
+      };
+      // 定稿：自上次定稿的全部音频整段重识别（全上下文，更准），替换灰字草稿
+      const finalizeSeg = () => {
+        draftSeg(); // 收编当前未停顿完的尾短语
+        const frames = sinceFinal;
+        const spoken = sinceFinalMs;
+        sinceFinal = []; sinceFinalMs = 0;
+        // 撤下草稿灰字（定稿文字即将替换它们）
+        for (const i of draftSlots) { sess.segs.delete(i); sess.committed.delete(i); }
+        draftSlots.length = 0;
+        renderShadow();
+        if (spoken < SPEECH_MIN_MS || frames.length * 256 < 1600) return;
+        post(joinFrames(frames)).then((d) => {
+          if (!active) return; // 组件卸载：迟到文字不落
           if (d.text) {
             commitText(view, d.text + (/[。！？.!?\s]$/.test(d.text) ? '' : ' '));
             segCount += 1;
           }
         }).catch((e) => {
-          pendingPost -= 1;
           if (!active || sess.done) return;
           failCount += 1;
           if (failCount === 1) voiceToast(voiceLocalHint(e && e.message) || '有一句识别失败（网络/服务波动），继续说即可');
@@ -1068,22 +1038,20 @@
         const frameMs = (f.length / ctx.sampleRate) * 1000;
         const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
         if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
-        if (isSpeech || speechMs > 0) {
+        if (isSpeech) {
           const f32 = new Float32Array(f);
-          seg.push(f32);
-          if (ws && wsReady && !wsFail) {
-            const i16 = new Int16Array(f.length);
-            for (let i = 0; i < f.length; i++) {
-              const s = Math.max(-1, Math.min(1, f[i]));
-              i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-            }
-            if (ws.bufferedAmount < 262144) ws.send(JSON.stringify({ cmd: 'stream_chunk', pcm_b64: i16ToB64(i16) }));
-          }
+          seg.push(f32); sinceFinal.push(f32);
+          speechMs += frameMs; segSpeechMs += frameMs; sinceFinalMs += frameMs;
+          silenceMs = 0;
+        } else if (speechMs > 0) {
+          silenceMs += frameMs;
+          if (sinceFinalMs > 0) sinceFinal.push(new Float32Array(f)); // 短语间间隙也进定稿段（离线模型带 VAD 训练）
         }
-        if (isSpeech) { speechMs += frameMs; silenceMs = 0; }
-        else if (speechMs > 0) silenceMs += frameMs;
-        if (speechMs >= SPEECH_MIN_MS && silenceMs >= PAUSE_FLUSH_MS) flushSeg();
-        else if (speechMs >= SEG_MAX_MS) flushSeg();
+        if (segSpeechMs >= SPEECH_MIN_MS && silenceMs >= DRAFT_PAUSE_MS) draftSeg();
+        if (sinceFinalMs >= FINAL_PAUSE_MS || sinceFinalMs >= SEG_MAX_MS) {
+          finalizeSeg();
+          speechMs = 0; silenceMs = 0;
+        }
       };
       src.connect(node);
       node.connect(ctx.destination); // 某些引擎要求节点入图才会回调
@@ -1092,9 +1060,8 @@
         try { ctx.close(); } catch (e) { /* 已关 */ }
         return 'ok';
       };
-      // 收尾等待：尾句若还在整段识别中（无 WS / 通道挂了），等它回来再下结论。
-      // 原先直接 finish，于是出现「刚按停就报未识别到语音内容、一秒后文字才落进
-      // 输入框」的误报（用户报过）。等到在途请求清零，或超过上限为止。
+      // 收尾等待：尾段定稿若还在途中，等它回来再下结论（防「刚按停就报
+      // 未识别到、一秒后文字才落」的误报）；等在途清零或超上限。
       const settleThen = (cb, capMs) => {
         const t0 = Date.now();
         const tick = () => {
@@ -1105,30 +1072,22 @@
       };
       const api = {
         isLocal: true,
-        // 正常按停：WS=stream_end 精修尾段后收尾；无 WS=尾句补发，等在途识别回来再收尾
+        // 正常按停：尾段定稿（等在途识别回来）再收尾
         stop() {
           if (stopAll() === 'ended') return;
-          if (ws && wsReady && !wsFail) {
-            const finishUp = () => { try { ws.close(); } catch (e) { /* */ } finish(segCount > 0 ? '' : '未识别到语音内容'); };
-            doneCb = () => { doneCb = null; setTimeout(finishUp, 0); };
-            try { ws.send('{"cmd":"stream_end"}'); } catch (e) { finishUp(); }
-            setTimeout(() => { if (doneCb) { doneCb = null; finishUp(); } }, 3000); // done 不来的兜底
-            return;
-          }
-          flushSeg();
+          finalizeSeg();
           settleThen(() => {
             if (sess.done || sess.rec !== api) return; // 已收尾或已开始新一轮：这次结论作废
             finish(segCount > 0 ? '' : '未识别到语音内容');
           }, VOICE_TAIL_WAIT_MS);
         },
-        // 放弃（发送前暂停/组件卸载）：停麦即止，迟到的结果不污染下一条草稿
-        abort() {
-          teardownMic();
-          if (ws) { doneCb = null; try { ws.close(); } catch (e) { /* */ } }
-        },
+        // 放弃（发送前暂停/组件卸载）：停麦即止。已在灰字层的草稿由
+        // pauseForSend 的 commitAll 同步落黑（那是已识别的真文字，随消息发出）
+        abort() { teardownMic(); },
       };
       return api;
     };
+
     const startLocal = () => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         finish('当前页面无法访问麦克风（需 https 或本机地址）');
@@ -1428,19 +1387,6 @@
     engSel.onchange = () => { pref.set('engine', engSel.value); };
     row('听写引擎', engSel);
 
-    // 本地识别出字模式（临时对比开关）：流式=实时灰字+停顿精修（桌面默认，
-    // 用流式+离线两个模型）；非流式=停顿直接出字（只用离线模型，与手机远程
-    // 同款）——对比后择一保留，另一个模型从组件里移除
-    const asrModeSel = document.createElement('select');
-    asrModeSel.className = 'sp-select';
-    const sm1 = document.createElement('option');
-    sm1.value = 'stream'; sm1.textContent = '流式（实时灰字 + 停顿精修）·默认';
-    const sm2 = document.createElement('option');
-    sm2.value = 'whole'; sm2.textContent = '非流式（停顿直接出字，与手机远程一致）';
-    asrModeSel.append(sm1, sm2);
-    asrModeSel.value = String(pref.get('asrMode', 'stream')) === 'whole' ? 'whole' : 'stream';
-    asrModeSel.onchange = () => { pref.set('asrMode', asrModeSel.value); };
-    row('出字模式', asrModeSel);
 
     note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 3 秒自动'
       + '落成正文（电脑端另有实时灰字预览）。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
