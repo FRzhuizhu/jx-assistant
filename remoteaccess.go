@@ -560,9 +560,14 @@ func bridgeCore(ctx context.Context, client *http.Client, port int, fr relayReqF
 	// 再 base64/传输，膨胀只作用于压缩后字节。除 JSON 外也压 text/css、
 	// text/javascript 等组件资产（中继按流量走，文本压缩率高）；SSE/流式响应
 	// 必须排除——gzip 内部缓冲不及时吐，会拖走对话流的实时性。
-	ct := resp.Header.Get("Content-Type")
-	wantGz := fr.Headers["x-p2p-gzip"] == "1" && ct != "text/event-stream" &&
-		(strings.HasPrefix(ct, "application/json") || strings.HasPrefix(ct, "text/"))
+	// 排除判断必须取「媒体类型」部分（去掉 "; charset=utf-8" 等参数后再比对）：
+	// 服务端 SSE 端点发的都是 text/event-stream; charset=utf-8，历史实现按
+	// 全串精确比对永远不相等 → 对话流/事件流全被套进 gzip，flate 攒着不吐，
+	// 远程端整个输出期间收不到帧（发送后「发送中」占位干等数秒、页面毫无
+	// 实时更新，直到缓冲灌满才一次性吐出一大块）。
+	mt := strings.ToLower(strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0]))
+	wantGz := fr.Headers["x-p2p-gzip"] == "1" && mt != "text/event-stream" &&
+		(strings.HasPrefix(mt, "application/json") || strings.HasPrefix(mt, "text/"))
 	head := map[string]any{
 		"t": "head", "id": fr.ID,
 		"status":      resp.StatusCode,
