@@ -4658,12 +4658,47 @@ const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读
 /* 窄屏（手机）输入工具栏一行排时权限芯片的短名（chip 的 data-short，CSS 换显，
    机制同左侧栏入口按钮）：全名六七个字会把模型标签挤没，短名保住可读性 */
 const PERM_SHORTS = { 'read-only': '只读', 'workspace-write': '读写', 'full': '完全' };
+/* ---------- 模式前端定制点 ----------
+   基础前端一套不变；工作模式要对界面做定向增补时，在自己 CHAT_MODES 那一项挂
+   ui 对象：mount(view) 首次把控件挂进该视图（常驻 DOM，之后只切显隐），返回根
+   元素；sync(view, s, el) 每次 syncComposer 跟着刷状态——在基础刷新之后执行，
+   可以覆盖基础设置（如接管「计划」胶囊的显示）。applyModeUI 是唯一分发点：
+   未挂 ui 的模式零影响，基础前端不认识任何具体控件，模式对主前端的改动代码
+   全部收在模式自己那一项里。 */
+
+// 编程模式定制：计划（先出方案再执行）在编码场景是高频操作，开关直接进工具栏
+// ——权限芯片右侧一枚「计划」胶囊 + 小号苹果开关（.sw-mini），点按即切换计划
+// 模式（复用 toggleModeFlag：与目标模式互斥、PATCH 会话或改首页草稿，失败回刷）
+const codingModeUI = {
+  mount(view) {
+    const label = document.createElement('label');
+    label.className = 'mflag mflag-toggle hidden';
+    label.title = '计划模式：先出方案再执行';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    const sw = document.createElement('span');
+    sw.className = 'sw-mini';
+    sw.setAttribute('aria-hidden', 'true');
+    label.append('计划', box, sw);
+    box.addEventListener('change', () => toggleModeFlag('planMode', view));
+    viewEl(view, 'perm-chip').after(label);
+    return label;
+  },
+  // 开关自身已表达开/关状态：本模式下「计划✕」胶囊不再重复显示（目标胶囊不受影响）
+  sync(view, s, el) {
+    const box = el.querySelector('input');
+    if (box) box.checked = !!s.planMode;
+    viewEl(view, 'flag-plan').classList.remove('on');
+    viewEl(view, 'mode-flags').classList.toggle('hidden', !viewEl(view, 'flag-goal').classList.contains('on'));
+  },
+};
+
 // 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
 // 扩展模式（设计人员等）＝在这里加一项 + 后端加对应提示词分支，
 // 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
 const CHAT_MODES = [
   { v: 'office', label: '标准办公', desc: '面向日常办公：文档、资料、表格、沟通文案，成果落文件' },
-  { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件' },
+  { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件', ui: codingModeUI },
   { v: 'skill-create', label: '创建技能', desc: '看用户演示操作（自动截屏＋录音）→ 总结成给其他 AI 照做的技能教程；默认完全访问' },
 ];
 const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', label: '标准办公', desc: '' };
@@ -4742,6 +4777,37 @@ async function patchDraftOrSession(fields, view) {
 }
 
 // 同步 composer 芯片显示（权限/模式徽标/模型）——按视图更新对应那套控件
+// 当前视图的工作模式：有会话看会话（子对话继承父会话模式），无会话只有主
+// 对话区取首页草稿的选择；右栏没选子对话返回 ''（chatModeOf 回退到无定制的默认）
+function viewChatMode(view) {
+  const vcur = view.state.cur;
+  if (vcur) return vcur.mode || '';
+  return view === mainView ? (homeDraft.mode || '') : '';
+}
+
+// 模式前端定制的应用点（机制见 CHAT_MODES 上方「模式前端定制点」注释）：
+// 当前模式挂了 ui 就「首挂 + 刷状态」，没挂就把本视图已挂的模式控件全部隐藏
+const _modeUIMounted = new WeakMap(); // view → { [mode]: 控件根元素 }
+function applyModeUI(view) {
+  const mode = viewChatMode(view);
+  const ui = chatModeOf(mode).ui;
+  const mounted = _modeUIMounted.get(view) || {};
+  if (!ui) {
+    for (const el of Object.values(mounted)) if (el) el.classList.add('hidden');
+    return;
+  }
+  let el = mounted[mode];
+  if (!el) {
+    el = ui.mount(view);
+    mounted[mode] = el;
+    _modeUIMounted.set(view, mounted);
+  }
+  for (const [m, e] of Object.entries(mounted)) if (e && m !== mode) e.classList.add('hidden');
+  if (!el) return;
+  el.classList.remove('hidden');
+  ui.sync(view, sessionOrDraftFor(view), el);
+}
+
 function syncComposer(view) {
   view = view || mainView;
   const vcur = view.state.cur;
@@ -4755,6 +4821,7 @@ function syncComposer(view) {
   viewEl(view, 'flag-goal').classList.toggle('on', s.goalMode);
   viewEl(view, 'flag-goal').title = s.goalMode ? ('目标模式：' + (s.goalText || '（未填写目标）')) : '目标模式';
   viewEl(view, 'mode-flags').classList.toggle('hidden', !s.planMode && !s.goalMode);
+  applyModeUI(view); // 模式前端定制：在基础刷新之后跑、可覆盖上面的设置（两个视图都跑）
   if (vcur) viewEl(view, 'input').placeholder = sendKeyHint(); // 占位跟随发送快捷键设置
   refreshCtxChip(view);
   renderAttachments(view); // 附件区跟随视图/会话（换会话时放掉上一轮的附件）
