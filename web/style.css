@@ -2404,8 +2404,9 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
      保住胶囊壳），实在不够整组换行到第二行（换行阈值＝右组的 min-width，
      即各按钮下限之和）。右组 grow 吸收富余空间、模型芯片顶到最右，发送键
      贴右缘。权限芯片窄屏换短名（只读/读写/完全，JS 在 syncComposer 同步
-     data-short，同左侧栏机制），箭头纯装饰隐掉；执行态（停止键在场）圆环
-     让位——它的价值主要在发送前 */
+     data-short，同左侧栏机制），箭头纯装饰隐掉；执行态（停止键在场）时
+     由模型芯片缩短让位——上下文圆环保留在场（2026-10-11 用户敲定：执行中
+     也要看得到上下文用量；10-10 首版曾藏圆环，不符合设计意图，已撤） */
   .composer-bar { flex-wrap: wrap; justify-content: flex-start; }
   .composer-left { margin-right: 0; flex: none; flex-wrap: nowrap; }
   .composer-left > * { flex: none; }
@@ -2423,7 +2424,13 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .composer-bar .chip-btn .caret { display: none; }
-  .composer-bar:has(.stop:not(.hidden)) .ctx-ring { display: none; }
+  .composer-bar:has(.stop:not(.hidden)) .composer-right > .chip-btn {
+    flex: 0 1 auto; max-width: 118px;
+  }
+  /* 执行态（停止键在场）：模型芯片不再 grow 撑满并限宽（118px），位置让给
+     多出来的停止键——上下文圆环保留在场（上面 10-10 首版藏圆环的规则已撤）。
+     右组里唯一的 chip-btn 就是模型芯片（权限芯片在左组），主/子对话两套
+     输入区同一命中；下限仍由 min-width: 46px 兜底，宽度不够 span 省略号截断 */
 
   /* 首页输入卡与对话页同宽：对话页输入卡在 #composer-wrap（#main 直下，左右
      各留 10px，卡片宽 = 视口 - 20）；首页槽位在 .home 里，外面隔着 .msg-col
