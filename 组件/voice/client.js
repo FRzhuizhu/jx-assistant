@@ -184,6 +184,11 @@
     return (p === 'browser' && SR) ? 'browser' : 'xasr';
   }
   function dictationIsLocal() { return dictationEngine() !== 'browser'; }
+  /* 本地识别出字模式（临时对比开关，评估流式模型的实际价值后择一保留）：
+   * stream=流式（说话实时灰字，停顿用离线模型精修落黑字——桌面默认）；
+   * whole=非流式（停顿约 3 秒该句直接出字，与手机远程同款，只用离线模型）。
+   * 远程 https 页面开不了 ws，无论选什么都走 whole。 */
+  function asrWholeMode() { return String(pref.get('asrMode', 'stream')) === 'whole'; }
 
   /* 本地通道起不来时的可执行提示：缺 worker（组件文件不完整）、缺运行时依赖
    * （sherpa-onnx 未装进共享便携运行时）、缺模型文件（组件/voice/models/ 未就绪）
@@ -945,7 +950,7 @@
      * 整段说完才识别。噪声底自适应跟踪（长时最低能量），阈值 = max(固定下限,
      * 噪声底×3.5)；句间长静音不入段；单句超 18s 强切；点停时未发的尾段补发。
      * 多段在途由服务端 worker 排队串行（X-ASR 约 60 倍实时，队列秒清）。 */
-    const wsHint = () => (location.protocol !== 'https:'
+    const wsHint = () => ((location.protocol !== 'https:' && !asrWholeMode())
       ? '录音中·实时转写：说话出灰字，停顿约 3 秒自动落成正文；点麦克风结束'
       : '录音中…说完一句停顿约 3 秒自动出字；点麦克风结束');
     /* ---------- 本地引擎：前端统一停顿切句（3 秒），手机/电脑同一实现 ----------
@@ -967,7 +972,7 @@
       const ctx = new AudioContext({ sampleRate: 16000 });
       const src = ctx.createMediaStreamSource(stream);
       const node = ctx.createScriptProcessor(4096, 1, 1);
-      const canStream = location.protocol !== 'https:';
+      const canStream = location.protocol !== 'https:' && !asrWholeMode();
       const SPEECH_MIN_MS = 350;    // 短于此视为噪声毛刺，丢弃
       const PAUSE_FLUSH_MS = 3000;  // 停顿 3 秒 = 一句话说完，绝对阈值
       const SEG_MAX_MS = 18000;     // 不停顿连续说超 18 秒也强制出句
@@ -1422,6 +1427,20 @@
     engSel.value = String(pref.get('engine', 'xasr')) === 'browser' ? 'browser' : 'xasr';
     engSel.onchange = () => { pref.set('engine', engSel.value); };
     row('听写引擎', engSel);
+
+    // 本地识别出字模式（临时对比开关）：流式=实时灰字+停顿精修（桌面默认，
+    // 用流式+离线两个模型）；非流式=停顿直接出字（只用离线模型，与手机远程
+    // 同款）——对比后择一保留，另一个模型从组件里移除
+    const asrModeSel = document.createElement('select');
+    asrModeSel.className = 'sp-select';
+    const sm1 = document.createElement('option');
+    sm1.value = 'stream'; sm1.textContent = '流式（实时灰字 + 停顿精修）·默认';
+    const sm2 = document.createElement('option');
+    sm2.value = 'whole'; sm2.textContent = '非流式（停顿直接出字，与手机远程一致）';
+    asrModeSel.append(sm1, sm2);
+    asrModeSel.value = String(pref.get('asrMode', 'stream')) === 'whole' ? 'whole' : 'stream';
+    asrModeSel.onchange = () => { pref.set('asrMode', asrModeSel.value); };
+    row('出字模式', asrModeSel);
 
     note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 3 秒自动'
       + '落成正文（电脑端另有实时灰字预览）。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
