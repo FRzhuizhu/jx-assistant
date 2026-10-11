@@ -259,10 +259,11 @@ async function loadSessionInto(id, tok) {
 
 /* ---------- 消息渲染（回合分组 + 折叠体系，逻辑对齐数字助理2 的 dsh-transcript-fold） ---------- */
 
-// 折叠阈值：流式尾部窗口行数；中间正文豁免阈值（非空行数 / 全角当量字数，全角记 1 半角记 0.5）
+// 折叠阈值：流式尾部窗口行数；中间正文豁免阈值（非空行数 / 显示宽度「字」数，
+// 全角记 1、半角 3 个记 1，见 cjkWidth——英文按字符数会虚高，看着短却被判长）
 const TAIL_ROWS = 10;
 const LONG_TEXT_LINES = 3;
-const LONG_TEXT_CHARS = 85;
+const LONG_TEXT_CHARS = 100;
 
 // 旧库兼容判定（只读旧数据用，新行一律带显式 kind，见《消息类型规范.md》§5）：
 // 历史库里系统注入的通知曾是 kind=chat 的 user 行，只能按正文前缀识别。
@@ -274,13 +275,17 @@ function isSysNote(txt) {
     txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>') || txt.startsWith('【交付完成】');
 }
 
+// 显示宽度（按「字」计）：CJK/全角 1 字，英文与半角符号 3 个才算 1 字——折叠
+// 判定看的是视觉长度，纯字符计数会让英文多的段落「看着短却被判长」（半角在
+// 等宽视角只有全角的一半，比例字体里更窄，按 1/3 折算）
 function cjkWidth(t) {
   let w = 0;
-  for (const ch of String(t || '')) w += ch.charCodeAt(0) >= 0x2e80 ? 1 : 0.5;
+  for (const ch of String(t || '')) w += ch.charCodeAt(0) >= 0x2e80 ? 1 : 1 / 3;
   return w;
 }
 
-// 中间正文够长则常显不折叠（其上下各折一条折叠条）
+// 中间正文够长则常显不折叠（其上下各折一条折叠条）。阈值按显示宽度而非字符数
+// （见 cjkWidth），英文按 1/3 折算——同样 100「字」的视觉长度才常显。
 function isLongText(t) {
   t = String(t || '').trim();
   if (!t) return false;
@@ -1821,14 +1826,24 @@ function renderMessages(msgs, view, opts) {
 // 已完成回合：**顶层大折叠全局统一**——回合内连续的可折叠项（思考/工具/子任务卡/
 // 上下文材料/系统通知）不分家，相邻就折进同一段（标签汇总各类计数，见 foldLabel）；
 // 段内还有各自的行级小折叠（proc-row 点开看原文、工具行点开看参数）。锚点（常显）
-// 有四类：最终正文、长正文（plancard 计划卡同理）、**孤立**的系统通知（前后都没有
-// 可折叠邻居的单条通知保持一眼可见），以及**尾部通知**——最后一个回合里、下方
-// 再没有任何消息（正文/计划卡）的通知保持常显：系统中断这类提示往往就是会话
-// 的最后一条，重启后用户打开会话要靠它知道「发个继续」，折起来就看不见了。
+// 有四类：回合收尾答案（最后一条正文且其行无伴随工具调用——打断回合的最后一条
+// 正文不算，见下方 answerIdx）、长正文（显示宽度豁免，isLongText；plancard 计划卡
+// 同理）、**孤立**的系统通知（前后都没有可折叠邻居的单条），以及**尾部通知**——
+// 最后一个回合里、下方再没有任何消息（正文/计划卡）的通知保持常显：系统中断
+// 这类提示往往就是会话的最后一条，重启后用户打开会话要靠它知道「发个继续」。
 function renderFinishedTurn(box, turn, key, isLast) {
   const items = turn.items;
+  // 回合的收尾答案 = 最后一条正文，且它自己所在的助手行**没有伴随工具调用**
+  // （「正文+工具调用」是过程交代，不是收尾）。被打断的回合（系统中断/执行中断）
+  // 停在半路，最后一条正文往往来自这种行——不能按最终输出对待：不挂操作按钮、
+  // 不常显，按过程正文常规折叠（否则出现「短句带一排按钮还不折叠」的怪相）。
   let answerIdx = -1;
-  items.forEach((it, i) => { if (it.k === 'text') answerIdx = i; });
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].k !== 'text') continue;
+    const calls = items[i].m && items[i].m.tool_calls;
+    answerIdx = (!calls || !calls.length) ? i : -1;
+    break;
+  }
   const foldable = (it) => it.k !== 'text' && it.k !== 'plancard';
   const anchor = new Set();
   if (answerIdx >= 0) anchor.add(answerIdx);
