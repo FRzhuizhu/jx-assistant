@@ -342,6 +342,16 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	b.WriteString("- 审批卡上用户点「始终允许」= 常设授权：命令升级点亮对应能力开关（如「允许工作区外执行命令」），工作区外写入把会话权限提升为完全访问（捆绑能力一并点亮），之后该类动作不再逐次审批\n")
 	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")
 	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录（含 API Key）；不可逆的破坏性命令会被危险命令护栏拦截（护栏默认开启，用户可在设置中关闭）\n")
+	// git 远程同步：沙箱内远程 git 必败（受限令牌拿不到 TLS 凭据、MSYS 传输
+	// 进程起不来）——事实说在前面，模型才不会先在 run_command 里撞墙（与
+	// browser_* 的「关着时说明后果与正确出路」同款公告）。
+	if a.gitToolEnabled() && (sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "skill-create") {
+		if sess.Remote != nil {
+			b.WriteString("- git 远程操作（fetch/pull/push/clone）在命令沙箱内会失败；远程同步工具 git_sync 不支持 SSH 远程工作区会话，请在远程目录内用 run_command 操作\n")
+		} else {
+			b.WriteString("- git：本地操作（status/add/commit/log 等）在命令沙箱内正常，直接 run_command；远程操作（fetch/pull/push/clone）沙箱内**必失败**（与权限档无关，是受限令牌的硬限制），用 git_sync 工具（宿主通道，凭据走系统 git 配置，只读档不可用；完全访问或已开「允许工作区外执行命令」时也可直接用命令行）\n")
+		}
+	}
 	// 能力开关只对带这些工具的模式（task/office/coding/skill-create）有意义。工具定义常驻目录
 	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
 	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截

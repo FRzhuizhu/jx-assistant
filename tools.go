@@ -118,6 +118,10 @@ func (a *App) toolsFor(mode string) []Tool {
 	// 待办与定时任务工具（组件 todo-scheduler）：除辅助对话（定位是只答疑）外
 	// 各模式都有；组件关掉时为空。
 	todos := a.todoTools()
+	// Git 远程同步工具（组件 git-panel）：同一组件门控模式；只挂实操模式
+	// （沙箱内远程 git 全灭，git_sync 是工作区内读写档下唯一的远程通道，
+	// 见 gittools.go 文件头）。组件关掉时为空。
+	gits := a.gitTools()
 	var tools []Tool
 	if mode == "assistant" {
 		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), a.dispatchSubTool(), a.listExpertsTool(), sendToSessionTool(),
@@ -141,7 +145,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
-		}, skillCreate...), append(append(append(append(append(todos, append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
+		}, skillCreate...), append(append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
 	}
 	return append(tools, readUserSkillTool())
 }

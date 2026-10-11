@@ -1041,7 +1041,14 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   分隔条可拖）——更改区为 VSCode 式清单（暂存/取消暂存/提交/AI 摘要/逐行 diff；已暂存与未暂存的文件可右键「移出跟踪」变未跟踪），
   图谱区为分支泳道图（全部分支拓扑、合并分叉、引用徽标、HEAD 高亮、提交详情），
   顶栏可选仓库、切换本地分支、「⟲ 同步」（fetch → 快进或无冲突自动合并 → push 当前分支；无上游/分叉冲突/推送被拒等一律原样退回并弹卡建议回对话新建工作任务）和「?」悬停帮助（列面板没做的 Git 能力，引导去对话里说）。宿主半边在 `gitpanel.go`，写边界只有暂存/取消暂存/
-  提交/移出跟踪/切换本地分支/同步（上述安全范围），不做 reset/revert/discard/stash/rebase）、
+  提交/移出跟踪/切换本地分支/同步（上述安全范围），不做 reset/revert/discard/stash/rebase。
+  组件还提供**模型工具 `git_sync`**（`gittools.go`，与面板共用 gitSync 执行缝）：
+  沙箱内 git 远程操作全灭（MSYS 传输进程共享内存被拒 + schannel 拿不到 TLS
+  凭据句柄，2026-10 实测，见《Git远程同步工具-改动说明.md》），本工具是
+  工作区内读写档下模型唯一的远程通道——宿主进程全令牌 fetch/pull/push/sync，
+  报错原样回模型；只读档调用被拦；完全访问/已开「允许工作区外执行命令」时
+  描述引导模型直接用命令行。工具注册随组件开关（todoTools 同款组件门控），
+  环境快照公告一行「本地 git 直接 run_command、远程用 git_sync」）、
   `dangerous-cmd-guard`（危险命令硬拦截，只有 manifest、没有浏览器半边）、
   `voice`（语音（朗读与听写），**零配置**——朗读走后端、听写走浏览器，都不需要
   任何密钥。**朗读（TTS）**：宿主半边在 `voiceapi.go`，直连微软 Edge「大声朗读」
@@ -1294,6 +1301,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `market_publish.go` / `market_publish_test.go` / `market_publish_meta_test.go` | 市场·技能发布（**先装后传**）：只能发布已装到 `技能/user/` 的技能——后端从安装目录现场打 zip、走 inspectSkillZip/rewriteSkillZip 校验链（恰好一处 SKILL.md、内容体检、结构规整）、元信息按回退链补全（id 候选含中文→英文词表 `skillIDFromChinese`，词表只在 Go 一份），流式转发服务端用户端点 `/api/market/publish`；`GET /api/market/publish-meta` 给弹层预填；下架走 `/api/market/unpublish`——**归属校验与「挪进服务端回收站」都在服务端**，客户端只发消息（本地姓名比对只是按钮显隐的 UX） |
 | `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行 / 模型工具 |
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
+| `gittools.go` | git_sync 模型工具（组件 `git-panel`）：与面板共用 gitSync 执行缝的宿主通道远程同步，绕开沙箱内远程 git 必败的限制（背景与实测见《Git远程同步工具-改动说明.md》） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页、市场页（`app-market.js`：左侧栏底部入口、主区整页视图 body.market-mode、三 tab+搜索+一键装卸；组件装卸后 `CX.refresh()` 热生效） |
 > **服务端已独立成仓库**（`D:\智能体工作区\jxaiserver`，module jxai-server）：远程访问中继 + 技能/组件/插件市场（含 /admin 管理页）+ 更新分发（日期+V序号版本体系）+ 公司接入（登记/UDP 发现/按人发 new-api 令牌/每月额度）。本仓库只保留客户端半边（market.go 市场客户端、wizard.go 接入向导、update.go 更新检查——与服务端的协议契约见各自文件头注释）；其部署与用法见该仓库 README/部署。开发完全分开，两边接口变更需双侧同步。
