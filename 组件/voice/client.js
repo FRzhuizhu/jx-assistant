@@ -968,6 +968,8 @@
       let sinceFinal = [];          // 自上次定稿的全部语音帧（含短语间静音间隙）
       let sinceFinalMs = 0;
       let ended = false, segCount = 0, failCount = 0;
+      let draftEpoch = 0;          // 草稿代际：定稿时 +1，在途草稿的迟到应答按过期丢弃
+                                   // （防「定稿已在路上、旧草稿又把重复文字塞回灰字层」的竞态）
       let pendingPost = 0;          // 在途识别（草稿+定稿）：按停收尾要等它清零
       const draftSlots = [];        // 灰字层里草稿占用的槽位号（定稿时撤下）
       const teardownMic = () => {
@@ -995,8 +997,9 @@
         const spoken = segSpeechMs;
         seg = []; segSpeechMs = 0;
         if (spoken < SPEECH_MIN_MS || frames.length * 256 < 1600) return;
+        const ep = draftEpoch;
         post(joinFrames(frames)).then((d) => {
-          if (!active || sess.done) return;
+          if (!active || sess.done || ep !== draftEpoch) return; // 已被定稿接管：草稿作废
           if (d.text) {
             const idx = sess.segs.size ? Math.max(...Array.from(sess.segs.keys())) + 1 : 0;
             sess.segs.set(idx, { text: d.text, final: false, changedAt: Date.now() });
@@ -1008,7 +1011,8 @@
       };
       // 定稿：自上次定稿的全部音频整段重识别（全上下文，更准），替换灰字草稿
       const finalizeSeg = () => {
-        draftSeg(); // 收编当前未停顿完的尾短语
+        draftEpoch += 1;             // 在途草稿全部作废：本段音频由定稿接管（含尾巴短语）
+        seg = []; segSpeechMs = 0; speechMs = 0; silenceMs = 0;
         const frames = sinceFinal;
         const spoken = sinceFinalMs;
         sinceFinal = []; sinceFinalMs = 0;
