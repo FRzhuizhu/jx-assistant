@@ -21,7 +21,7 @@ function mcpConnectorCard(s) {
   if (!s.enabled) badges.push('已停用');
   else if (s.connected) badges.push(`已连接 · ${s.toolCount} 个工具`);
   else if (s.lastError) badges.push('连接失败');
-  else badges.push('未连接');
+  else badges.push('待命 · 按需启动');
   const fromCatalog = (s.source || '').startsWith('catalog:');
   const cmdLine = (s.type === 'http' || s.type === 'sse')
     ? s.url : [s.command, ...(s.args || [])].filter(Boolean).join(' ');

@@ -112,7 +112,7 @@ type CCPlugin struct {
 	Agents      []ccAgentEntry
 	HooksCfg    []ccHookRule // settings hooks（已按事件名分组前的扁平规则）
 	ModModules  []string     // mods 的 JS 模块（相对 Root 路径）
-	MCPDefs     map[string]ccMCPServerDef
+	MCPDefs     map[string]mcpServerDef
 
 	state *ccPluginState // 安装记录（Enabled/DisabledComps/UserConfig 的读写都经注册表锁）
 }
@@ -250,7 +250,7 @@ func (r *CCPluginRegistry) loadOne(key string, st *ccPluginState) (*CCPlugin, er
 		Key: key, Marketplace: st.Marketplace, Name: m.Name,
 		Root: root, DataDir: filepath.Join(r.root, "data", key),
 		Manifest: m, state: st,
-		MCPDefs: map[string]ccMCPServerDef{},
+		MCPDefs: map[string]mcpServerDef{},
 	}
 	if err := os.MkdirAll(p.DataDir, 0755); err != nil {
 		return nil, err

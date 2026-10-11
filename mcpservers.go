@@ -1,17 +1,21 @@
 package main
 
 // 独立 MCP 服务器注册表：不装整个 Claude Code 插件，直接添加一个 MCP
-// 服务（stdio 命令或 http/sse 地址），像技能一样开关管理。连接复用
-// ccplugin_mcp.go 的 mcpClient（宿主用 mcpPlainHost：仅 ${环境变量} 展开）。
+// 服务（stdio 命令或 http/sse 地址），像技能一样开关管理。协议客户端在
+// mcpclient.go（与插件桥共用实现，宿主用 mcpPlainHost：仅 ${环境变量} 展开）。
 // 加载机制对齐用户技能——清单先行、内容按需：环境快照只列连接器
 // （PromptBlock），模型按需 mcp_read_connector 看工具清单、mcp_call_tool
 // 执行；两个工具常驻目录且定义恒定，连接器增删不扰动工具目录与前缀缓存
 // （此前把每个工具以 mcp__<服务器>__<工具> 全量注册，目录随连接器膨胀、
 // 缓存命中大幅下降，且工具过多误导模型——已废弃）。
-// 信任边界与 CC 插件的 mcp 组件一致：显式添加并启用 = 放行该服务器的
-// 工具调用，不再逐工具审批。状态落 <dataDir>/mcp-servers.json；安装器
-// （mcpcatalog.go）拉取的桥代码放 <dataDir>/mcp-servers/<id>/，每桥独立
-// venv，互不污染。设置页有独立的「MCP 连接器」分区（mcpservers_api.go）。
+// 进程同样按需（懒启动）：引擎启动期不拉起任何连接器——启动零 MCP 进程，
+// 首次调用（mcp_read_connector / mcp_call_tool 的调用自愈）或用户显式动作
+// （设置页测试 / 开关启用 / 安装）才建立连接；连接建立后常驻复用，死亡
+// 自愈重启。清单只来自状态文件，与连接状态无关（启动自检契约不受影响）。
+// 信任边界：显式添加并启用 = 放行该服务器的工具调用，不再逐工具审批。
+// 状态落 <dataDir>/mcp-servers.json；安装器（mcpcatalog.go）拉取的桥代码
+// 放 <dataDir>/mcp-servers/<id>/，每桥独立 venv，互不污染。设置页有独立
+// 的「MCP 连接器」分区（mcpservers_api.go）。
 
 import (
 	"context"
@@ -47,8 +51,8 @@ type mcpServerEntry struct {
 }
 
 // def 转成 mcpClient 用的服务器定义。
-func (e *mcpServerEntry) def() ccMCPServerDef {
-	return ccMCPServerDef{
+func (e *mcpServerEntry) def() mcpServerDef {
+	return mcpServerDef{
 		Type: e.Type, Command: e.Command, Args: e.Args,
 		Env: e.Env, URL: e.URL, Headers: e.Headers,
 	}
@@ -92,7 +96,8 @@ type MCPServersRegistry struct {
 	installMu sync.Mutex // 目录安装器串行化（同一时间只装一个桥）
 }
 
-// InitMCPServers 读状态文件并构建客户端（不连接；连接由 StartAll/Test 触发）。
+// InitMCPServers 读状态文件构建清单（不连接——连接按需：模型调用自愈或
+// 用户显式测试/启用触发，引擎启动期零 MCP 进程）。
 func InitMCPServers(app *App, dataDir string) *MCPServersRegistry {
 	root, err := filepath.Abs(filepath.Join(dataDir, "mcp-servers"))
 	if err != nil {
@@ -319,22 +324,8 @@ func (r *MCPServersRegistry) connectOne(ctx context.Context, name string) error 
 	return nil
 }
 
-// StartAll 后台连接全部启用的服务器（引擎启动时调用，失败记日志不阻断）。
-func (r *MCPServersRegistry) StartAll() {
-	r.mu.Lock()
-	names := []string{}
-	for _, s := range r.file.Servers {
-		if s.Enabled {
-			names = append(names, s.Name)
-		}
-	}
-	r.mu.Unlock()
-	for _, n := range names {
-		r.connectAsync(n)
-	}
-}
-
-// ShutdownAll 关闭全部连接（进程退出前调用）。
+// ShutdownAll 关闭全部连接（进程退出前调用；顶层 kill-on-close Job Object
+// 兜底清场，本方法目前无调用方，留作优雅退出的挂点）。
 func (r *MCPServersRegistry) ShutdownAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -443,7 +434,7 @@ func (r *MCPServersRegistry) PromptBlock() string {
 	if b.Len() == 0 {
 		return ""
 	}
-	return "# MCP 连接器清单（要用某连接器的工具时，先调 mcp_read_connector 读它的工具清单与参数，再用 mcp_call_tool 执行；未连接的连接器调用会报错，可让用户在设置里测试）\n" + b.String()
+	return "# MCP 连接器清单（要用某连接器的工具时，先调 mcp_read_connector 读它的工具清单与参数，再用 mcp_call_tool 执行；连接器平时不运行，首次调用会自动启动、约需数秒）\n" + b.String()
 }
 
 // ReadConnector 返回一个连接器的完整工具文档（名称/描述/参数 schema）；
@@ -528,7 +519,7 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 	return []Tool{
 		{
 			Spec: toolSpec("mcp_read_connector",
-				"读取一个 MCP 连接器（设计软件/服务整合包）的工具清单与用法：每个工具的名称、说明、参数 schema。环境快照的「MCP 连接器清单」只列连接器名字与描述；要用某连接器的工具之前，先调用本工具看清单。",
+				"读取一个 MCP 连接器（设计软件/服务整合包）的工具清单与用法：每个工具的名称、说明、参数 schema。环境快照的「MCP 连接器清单」只列连接器名字与描述；要用某连接器的工具之前，先调用本工具看清单。连接器平时不运行，调用本工具会自动启动它（首次约需数秒）。",
 				objSchema(map[string]any{
 					"name": strProp("连接器名，来自环境快照里的 MCP 连接器清单"),
 				}, "name")),
@@ -638,7 +629,7 @@ func (r *MCPServersRegistry) RemoveBySource(source string) []string {
 
 // UpsertFromDefs 批量注册（市场安装/拖拽 json 导入用）：source 标来源，
 // desc 为缺省描述；返回注册成功的服务器名与首个错误。
-func (r *MCPServersRegistry) UpsertFromDefs(defs map[string]ccMCPServerDef, source, desc string) ([]string, error) {
+func (r *MCPServersRegistry) UpsertFromDefs(defs map[string]mcpServerDef, source, desc string) ([]string, error) {
 	names := make([]string, 0, len(defs))
 	for n := range defs {
 		names = append(names, n)
@@ -668,24 +659,24 @@ func (r *MCPServersRegistry) UpsertFromDefs(defs map[string]ccMCPServerDef, sour
 // {"名":{...}} 扁平、单个服务器对象本体（此时用 fallbackName 当服务器名，
 // 常取导入文件名）。每个服务器须为 stdio（command）或 http/sse（url）。
 // 与服务端 readMCPPackage 同语义（两端各持一份最小实现）。
-func parseMCPServersDoc(data []byte, fallbackName string) (map[string]ccMCPServerDef, error) {
-	defs := map[string]ccMCPServerDef{}
+func parseMCPServersDoc(data []byte, fallbackName string) (map[string]mcpServerDef, error) {
+	defs := map[string]mcpServerDef{}
 	var wrapped struct {
-		MCPServers map[string]ccMCPServerDef `json:"mcpServers"`
+		MCPServers map[string]mcpServerDef `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(data, &wrapped); err == nil && len(wrapped.MCPServers) > 0 {
 		defs = wrapped.MCPServers
-	} else if flat := map[string]ccMCPServerDef{}; json.Unmarshal(data, &flat) == nil && mcpDefsValid(flat) {
+	} else if flat := map[string]mcpServerDef{}; json.Unmarshal(data, &flat) == nil && mcpDefsValid(flat) {
 		defs = flat
 	} else {
-		var one ccMCPServerDef
+		var one mcpServerDef
 		if err := json.Unmarshal(data, &one); err != nil || (strings.TrimSpace(one.Command) == "" && one.URL == "") {
 			return nil, fmt.Errorf("不是可识别的 MCP 配置（支持 {\"mcpServers\":{...}}、{\"名\":{...}} 或单服务器对象三种形态）")
 		}
 		if !mcpServerNameRe.MatchString(fallbackName) {
 			return nil, fmt.Errorf("单服务器形态需要合法服务器名（文件名 %q 不符：字母开头、仅字母数字连字符）", fallbackName)
 		}
-		defs = map[string]ccMCPServerDef{fallbackName: one}
+		defs = map[string]mcpServerDef{fallbackName: one}
 	}
 	for n, d := range defs {
 		t := strings.ToLower(strings.TrimSpace(d.Type))
@@ -705,7 +696,7 @@ func parseMCPServersDoc(data []byte, fallbackName string) (map[string]ccMCPServe
 
 // mcpDefsValid 报告扁平解析结果是否真像「名→定义」而不是把单服务器对象
 // 的字段名当成了键（command/url 字段非空的定义才可信）。
-func mcpDefsValid(flat map[string]ccMCPServerDef) bool {
+func mcpDefsValid(flat map[string]mcpServerDef) bool {
 	ok := 0
 	for _, d := range flat {
 		if strings.TrimSpace(d.Command) != "" || strings.TrimSpace(d.URL) != "" {

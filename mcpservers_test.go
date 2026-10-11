@@ -1,7 +1,8 @@
 package main
 
 // mcpservers.go / mcpcatalog.go 的单元测试：名称域与定义校验、状态文件
-// 落盘回读、插件层注册、目录完整性与 tar.gz 解压（含路径穿越防护）。
+// 落盘回读、清单段与常驻工具恒定性、读取守卫、目录完整性与 tar.gz 解压
+// （含路径穿越防护）。
 
 import (
 	"archive/tar"
@@ -253,7 +254,7 @@ func TestParseMCPServersDoc(t *testing.T) {
 
 func TestMCPUpsertFromDefsAndRemoveBySource(t *testing.T) {
 	r := newTestMCPR(t)
-	defs := map[string]ccMCPServerDef{
+	defs := map[string]mcpServerDef{
 		"alpha": {Command: "python"},
 		"beta":  {Type: "http", URL: "https://x/mcp"},
 	}

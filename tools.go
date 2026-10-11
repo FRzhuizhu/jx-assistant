@@ -140,17 +140,18 @@ func (a *App) toolsFor(mode string) []Tool {
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
-		}, skillCreate...), append(append(append(append(append(todos, append(a.ccMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
+		}, skillCreate...), append(append(append(append(append(todos, append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
 	}
 	return append(tools, readUserSkillTool())
 }
 
-// ccMCPTools 返回 MCP 相关工具：CC 插件 MCP 服务器与 mods 的动态工具
-// （mcp__<插件>_<服务器>__<工具> / mcp__<插件名>__<工具>），加上独立 MCP
-// 连接器的两个常驻按需工具（mcp_read_connector / mcp_call_tool——清单
-// 先行、内容按需，连接器增删不改变工具目录形状，见 mcpservers.go）。
-// 插件工具集只在重载边界变化，会话中保持稳定（前缀缓存契约）。
-func (a *App) ccMCPTools() []Tool {
+// pluginAndMCPTools 返回 MCP 相关的全部工具：CC 插件执行型组件的动态
+// 工具（mcp__<插件>_<服务器>__<工具> / mods 的 mcp__<插件名>__<工具>，
+// 只在重载边界变化）加上独立 MCP 连接器的两个常驻按需工具
+// （mcp_read_connector / mcp_call_tool——清单先行、内容按需，连接器增删
+// 不改变工具目录形状，见 mcpservers.go）。插件工具集只在重载边界变化，
+// 会话中保持稳定（前缀缓存契约）。
+func (a *App) pluginAndMCPTools() []Tool {
 	var out []Tool
 	if a.CCPlugins != nil {
 		out = append(out, a.CCPlugins.MCPTools()...)

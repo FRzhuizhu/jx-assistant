@@ -137,9 +137,10 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.CCPlugins = InitCCPlugins(a, cfg.DataDir)
 	a.CCPlugins.MCPStartAll()
 	a.CCPlugins.ModsStartAll()
-	// 独立 MCP 服务器注册表：用户直连的 MCP 服务（mcpservers*.go），后台连接
+	// 独立 MCP 服务器注册表（mcpservers*.go）：只载清单不连接——连接器
+	// 懒启动，模型首次调用或用户显式测试/启用时才拉起进程（启动期零
+	// MCP 进程；与技能同位而非与插件同位）
 	a.MCPServers = InitMCPServers(a, cfg.DataDir)
-	a.MCPServers.StartAll()
 	// 主体发现插件兼容层：各层（DSH、Claude Code…）经 registerPluginLayer
 	// 自注册，主体只按 PluginLayer 契约调用——统一清单与总开关走 /api/plugins，
 	// 主体不认识任何具体插件格式

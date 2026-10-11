@@ -1123,9 +1123,9 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   三处合并，名称即 dispatch_sub 参数）；hooks（settings 形态）→ 事件桥 +
   命令/http 执行器（stdin JSON、exit 2 阻断、stdout JSON decision 协议：
   permissionDecision/updatedInput/updatedToolOutput/additionalContext）；
-  `.mcp.json` → 纯 Go MCP 客户端（stdio 行帧 JSON-RPC 与 streamable HTTP），
-  工具名 `mcp__<插件>_<服务器>__<工具>` 保持 Claude 原样（插件 hooks 的
-  matcher 可直接匹配）。
+  `.mcp.json` → 纯 Go MCP 客户端（mcpclient.go，与独立连接器共用；stdio
+  行帧 JSON-RPC 与 streamable HTTP），工具名 `mcp__<插件>_<服务器>__<工具>`
+  保持 Claude 原样（插件 hooks 的 matcher 可直接匹配）。
 - **mods（`{"modules":["./register.js"]}` 形态）**：goja 纯 Go 内嵌 JS 运行时
   （四平台一致含安卓）。ESM→CJS 薄转换（import/export 行级改写，mod 的
   import 形态受 Claude 规范约束故可行）；`register(on)` 装载时调用一次；
@@ -1143,8 +1143,9 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   命令同样过护栏。
 - **接入点**：agent.go（工具循环 PreToolUse→tool.call→执行→PostToolUse、
   收尾 Stop/SubagentStop→turn.complete、开轮 SessionStart）；handleChat
-  （斜杠展开→UserPromptSubmit→prompt.submit）；tools.go 的 ccMCPTools()
-  （MCP+mod 工具，只在重载边界变化——前缀缓存契约）；experts.go（动态专家）；
+  （斜杠展开→UserPromptSubmit→prompt.submit）；tools.go 的
+  pluginAndMCPTools()（插件 MCP+mod 工具与独立连接器常驻工具的装配，
+  只在重载边界变化——前缀缓存契约）；experts.go（动态专家）；
   skill_manager.go 的 read_skill（用户技能查不到回落插件技能）。
 - **API**：`GET /api/cc-plugins`（清单+市场）、`POST /api/cc-plugins/toggle`
   （总开关/组件开关/userConfig 三合一）、`/install`、`/uninstall`、
@@ -1155,12 +1156,12 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   验证）+ ccplugin_mod_test.go（goja 语法矩阵/ESM 转换/handler 链/mods
   端到端：官方 first-mod 示例原文全链路）。
 
-## 独立 MCP 连接器（mcpservers*.go / mcpcatalog.go）
+## 独立 MCP 连接器（mcpservers*.go / mcpcatalog.go / mcpclient.go）
 
 不装整个 CC 插件、直接添加一个 MCP 服务的注册表（stdio 命令或 http/sse
-地址）。连接复用 ccplugin_mcp.go 的 mcpClient（宿主经 mcpHost 接口注入：
-插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替换，独立侧 mcpPlainHost
-只做 ${环境变量}）。
+地址）。协议客户端在 mcpclient.go（与 CC 插件桥共用同一实现；宿主经
+mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替换，
+独立侧 mcpPlainHost 只做 ${环境变量}）。
 
 - **按需加载（技能式）**：一个连接器可带几十个工具，全量注册会撑爆工具
   目录、打断前缀缓存、误导模型（第一版正是这么做的，已废弃
@@ -1169,6 +1170,11 @@ Claude 分区管理；输入框 `/` 触发插件命令弹层。
   模型按需 `mcp_read_connector(name)` 读工具清单与参数 schema、
   `mcp_call_tool(connector, tool, arguments)` 执行。两个工具常驻目录且
   定义恒定，连接器增删只动环境快照尾部，工具目录形状与前缀缓存不受扰动。
+- **进程懒启动**：引擎启动期不拉起任何连接器进程（启动零 MCP 进程，
+  无弹窗）；首次 `mcp_read_connector`/`mcp_call_tool`（调用自愈）或用户
+  显式动作（设置页测试/开关启用/安装）才建立连接，连接后常驻复用、死亡
+  自愈重启。stdio 子进程 spawn 过 hideConsoleWindow（mcpclient.go），
+  Windows 桌面形态不弹控制台黑窗。
 - **状态**：`<dataDir>/mcp-servers.json`（增删/开关/来源 manual 或
   catalog:<id>）；桥代码与各桥独立 venv 落 `<dataDir>/mcp-servers/<id>/`。
   信任边界与 CC 插件 mcp 组件一致：显式添加并启用 = 放行该连接器工具，
