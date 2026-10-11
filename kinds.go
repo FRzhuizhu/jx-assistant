@@ -8,6 +8,13 @@ package main
 // 对话内容（发给模型）
 const kindChat = "chat" // 正常对话：role=user/assistant/tool；assistant 行可带 thinking 与 tool_calls（复合行，前端拆条展示）
 
+// AI 发出的用户消息：role=user，但说话的是 AI 不是真人——数字助理派发的任务
+// 指令（dispatch_task/dispatch_sub/send_to_session）、派发回报、待办转交。
+// 系统对待与用户消息完全一致：开新回合、组装时后面跟一条时间提示词（time
+// 通道，见规范 §1.2）、发模型就是 user 消息；前端右对齐偏白的「AI 用户」气泡
+// （可复制、不可编辑重发）。origin 沿用 report 的子类记法（task/dispatch/todo）。
+const kindAiUser = "aiuser"
+
 // 上下文注入（发给模型的拼装材料；历史行不进上下文，组装时现场归位）
 const (
 	kindSummary = "summary" // 压缩摘要（origin=auto/manual，covers_up_to 标覆盖边界）

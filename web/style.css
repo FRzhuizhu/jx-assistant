@@ -17,6 +17,10 @@
      下面 20% 是点缀色占比，也就是「加白程度」：嫌深就调小、想更接近点缀色就调大。 */
   --mine-tint: 20%;
   --bubble-mine: color-mix(in srgb, var(--accent) var(--mine-tint), #ffffff);
+  /* AI 用户气泡底色（aiuser：数字助理派发的指令/回报）：偏白——真实用户气泡
+     是点缀色调的浅蓝（--bubble-mine），AI 说的「用户消息」近白，一眼分得清；
+     用 --text 按极低比例调进 --bg，亮暗主题同一条公式都成立 */
+  --bubble-ai: color-mix(in srgb, var(--text) 4%, var(--bg));
   --chip: #f2f3f5;
   --code-bg: #f6f8fa;
   --green: #1f9d55;
@@ -370,8 +374,20 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   margin-bottom: 2px;
 }
 
-/* 长消息折叠（只作用于数字助理主对话里「用户自己发的灰色气泡」：用户气泡，
-   以及作为「用户消息变体」的派发通知气泡，见 app-chat.js 的 applyFolds；数字助理的正文
+/* AI 发出的用户消息（aiuser：数字助理派发的任务指令/派发回报/子对话派发/待办
+   转交）：与用户消息同一位（右对齐、同款圆角与内边距，继承上面的全部规则），
+   只换底色为偏白（--bubble-ai），再补一圈细边框——近白气泡在白页面上要有轮廓。
+   其余待遇与用户气泡一致：长文折叠（applyFolds 的目标选择器 .msg.user > .bubble
+   天然包含它）、悬停操作行、时间戳。 */
+.msg.user.ai .bubble {
+  background: var(--chip);              /* 旧内核兜底：支持 color-mix 时下面一行生效 */
+  background: var(--bubble-ai, var(--chip));
+  --fold-bg: var(--bubble-ai, var(--chip));
+  border: 1px solid var(--border-2);
+}
+
+/* 长消息折叠（只作用于数字助理主对话里的用户位气泡：用户气泡，
+   以及 AI 发出的用户消息气泡（.msg.user.ai），见 app-chat.js 的 applyFolds；数字助理的正文
    （.md）不折叠、多长都完整显示（foldTargets 的目标选择器里没有它）。判定用
    **实际渲染高度**（行高 × 6）而不是字符数——对话区宽度、字号一变每行能放多少
    字就变。折叠态：按 6 行高度裁剪 + 底部渐隐到气泡自身底色 + 居中「展开」小按钮；
@@ -520,16 +536,15 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 .dc-btn:hover { background: var(--hover); }
 
-/* 系统注入的回报/中断/派发通知（含派发到目标任务会话里的那条需求消息）：
-   它是数字助理说的话，不是用户说的——所以做成「用户气泡的变体」：
-   沿用用户气泡原来那套灰底（--chip）、同款内边距/圆角/字号，但左对齐
-   （像微信里「别人发的」），尾巴朝左下；右侧浅蓝的自发消息一眼就能分清。
-   右侧紧跟的用户气泡是浅蓝底，两者不会混淆。 */
+/* 系统注入的通知（report 通道：上传/中断/回退/交付/工具目录变更/目标续跑提示）：
+   左侧细边框虚线通知样式——克制的系统注记，不占对话的视觉权重（2026-09 初版
+   原样回退：09-29 曾整体改成「用户气泡的变体」灰底气泡、为让派发通知长得像
+   对话气泡；派发类消息现已独立成 aiuser 通道，report 不再需要扮演气泡）。 */
 .msg.sysnote { display: flex; margin-bottom: 14px; }
 .msg.sysnote .bubble {
-  max-width: 86%; background: var(--chip); color: var(--text);
-  border-radius: 14px 14px 14px 4px;
-  padding: 10px 15px;
+  max-width: 86%; background: var(--bg); color: var(--text-2);
+  border: 1px dashed var(--border); border-radius: 4px 12px 12px 12px;
+  padding: 8px 13px; font-size: .9em;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
 }
 
@@ -2158,6 +2173,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   --danger: #ff9d8f;
   /* 暗色主题：用户气泡不能加白（否则亮底配亮字），改成「点缀色调暗」的同色系深色 */
   --bubble-mine: color-mix(in srgb, var(--accent) 34%, var(--bg));
+  /* AI 用户气泡：比页面底色稍亮一档（暗色下「偏白」=浅于底色，不能真用白） */
+  --bubble-ai: color-mix(in srgb, var(--text) 9%, var(--bg));
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .modal-card { background: #1d2026; }

@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -1091,25 +1090,6 @@ func (s *Store) LastSeq(id string) (int64, error) {
 	var n int64
 	err := s.db.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM messages WHERE session_id=?`, id).Scan(&n)
 	return n, err
-}
-
-// LastUserMessageAt 取会话里最新一条**真人用户消息**的落库时刻（kind=chat + role=user；
-// 系统代发的 report 行、环境快照/摘要/审计等注入行都不算——重试、目标续跑、回报
-// 续跑都不会刷新它）。环境快照首行的「用户最近发消息时间」用它当唯一时间来源：
-// 只在用户真发了消息时变，模型自己执行期间不随时间流逝变化，环境快照因此不会
-// 凭空多发「环境更新」。会话里还没有用户消息（纯派发/待办驱动的会话）时返回 false。
-func (s *Store) LastUserMessageAt(id string) (time.Time, bool) {
-	var raw string
-	err := s.db.QueryRow(`SELECT created_at FROM messages
-		WHERE session_id=? AND kind='chat' AND role='user' ORDER BY seq DESC LIMIT 1`, id).Scan(&raw)
-	if err != nil {
-		return time.Time{}, false
-	}
-	t, perr := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(raw), time.Local)
-	if perr != nil {
-		return time.Time{}, false
-	}
-	return t, true
 }
 
 // RawMessagesAll 读取会话全部消息（含摘要行），供上下文组装与压缩使用。

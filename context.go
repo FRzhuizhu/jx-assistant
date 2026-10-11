@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 // 上下文管理：组装管线（系统提示词 + 活跃摘要 + 规则压缩视图 + 近期原文）
@@ -21,7 +22,7 @@ const (
 	resultKeepLimit = 200 // 工具结果保留的开头长度
 )
 
-// round 是一轮对话：一条用户消息（chat/report）到下一条用户消息之前的全部。
+// round 是一轮对话：一条用户消息（chat/aiuser/report）到下一条用户消息之前的全部。
 type round struct {
 	startSeq, endSeq int64
 }
@@ -29,6 +30,8 @@ type round struct {
 // splitRounds 按用户消息分轮；开头若无用户消息（不应发生），并入第一轮。
 // 继承标记行（inherit）不是对话内容，跳过——否则它会自成伪轮，
 // 让子对话的压缩时机比同样长度的普通会话早一轮。
+// aiuser（AI 发出的用户消息）与真人用户消息同权开轮：派发指令/派发回报
+// 落地即开启一个新回合（前端同样按回合收口、给上一回合带出操作按钮）。
 func splitRounds(msgs []*StoredMessage) []round {
 	rounds := []round{}
 	cur := round{}
@@ -37,7 +40,7 @@ func splitRounds(msgs []*StoredMessage) []round {
 		if m.Kind == inheritKind {
 			continue
 		}
-		if m.Kind == "chat" && m.Role == "user" || m.Kind == "report" {
+		if m.Kind == "chat" && m.Role == "user" || m.Kind == "report" || m.Kind == kindAiUser {
 			if started {
 				cur.endSeq = m.Seq - 1
 				if cur.endSeq < cur.startSeq {
@@ -151,9 +154,31 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 			msg.ReasoningContent = m.Thinking
 		}
 		out = append(out, msg)
+		// 时间提示词（独立时间通道）：每条用户侧对话消息——真人用户（chat）与
+		// AI 发出的用户消息（aiuser）——后面跟一条只含发送时刻的短 user 消息。
+		// 组装期从该消息自身的落库时刻派生，**不落库**（历史查询工具与前端消息
+		// 流都看不到噪音行）；同一份存储重复组装逐字节相同，前缀缓存不受影响。
+		// 环境快照因此不再含时间行，用户发消息不再连带触发一条「环境更新」。
+		out = append(out, a.timeAfter(m)...)
 	}
 	// 全序列修复工具调用配对（协议硬要求；残缺可能出现在任何位置，见函数注释）
 	return repairToolPairing(out)
+}
+
+// timeAfter 是时间提示词通道的组装形态：用户侧对话消息（chat 真人发言与
+// aiuser 派发指令/回报）后面跟的那条时间消息。返回单条或空——时刻解析不出
+// （理论上不发生，所有行落库都带 now() 时间戳）时宁缺毋滥。
+// 内容取该消息自己的落库时刻（用户在哪一刻说的话就记哪一刻），分钟粒度与
+// 旧环境快照时间行一致；不是挂钟，模型自己执行期间不会凭空多出新的时间消息。
+func (a *App) timeAfter(m *StoredMessage) []Message {
+	if m.Role != "user" || (m.Kind != kindChat && m.Kind != kindAiUser) {
+		return nil
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(m.CreatedAt), time.Local)
+	if err != nil {
+		return nil
+	}
+	return []Message{TextMessage("user", "（发送时间："+t.Format("2006-01-02 15:04")+"）")}
 }
 
 // repairToolPairing 修复工具调用配对。OpenAI 兼容网关硬校验「assistant 的每个
@@ -467,6 +492,11 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 				continue
 			}
 			add("消息", m.Message)
+			// 时间提示词与 buildContext 同一派生口径（用户侧对话消息后跟一条
+			// 时间消息），计入「消息」类——它确实随请求发出、占 token
+			for _, tm := range a.timeAfter(m) {
+				add("消息", tm)
+			}
 		}
 	}
 

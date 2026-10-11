@@ -292,19 +292,14 @@ func promptHash(s string) string {
 // 新快照（见 maybeAppendEnvSnapshot 的 diff 逻辑）；组装时首条整份进历史、
 // 后续按行差分为短「环境更新」（见 buildContext），已发送的前缀绝不改写。
 //
-// 首行的「用户最近发消息时间」= 会话里最新一条**真人用户消息**的落库时刻
-// （Store.LastUserMessageAt）：用户在哪一刻说的话，就记哪一刻。它不是挂钟——
-// 模型自己执行期间（工具调用之间、目标模式续跑、各种系统注入回合）不会随时间
-// 流逝变化，所以环境快照不会再凭空多发「环境更新」；用户真发了新消息，这一行
-// 才随新快照更新一次。会话里还没有用户消息（纯派发/待办驱动的会话）时不出这一行。
-// 其余条目都是真实状态（工作区/权限/能力/技能/模式），变化时照旧发一条只带
-// 变化行的「环境更新」——重发由变化驱动，不由时间驱动。
+// 快照里**不含时间**：时间不在环境条目里（它只随消息走、不随权限/能力变），
+// 每条用户侧消息后面跟的那条时间提示词由组装期派生（context.go 的 timeNoteOf）。
+// 这样环境快照只在真实环境变化（权限/能力/模式/工作区/技能）时才重发，用户
+// 发消息不再连带触发一条「环境更新」。其余条目都是真实状态，变化时照旧发一条
+// 只带变化行的「环境更新」——重发由变化驱动。
 func (a *App) envPrompt(sess *SessionMeta) string {
 	b := &strings.Builder{}
 	b.WriteString("# 运行环境快照（最新，取代更早的快照）\n")
-	if t, ok := a.Store.LastUserMessageAt(sess.ID); ok {
-		b.WriteString("- 用户最近发消息时间：" + t.Format("2006-01-02 15:04") + "\n")
-	}
 	if sess.Remote != nil {
 		r := sess.Remote
 		b.WriteString("- 运行环境：SSH 远程工作区 " + r.Display() + "（类 Unix；命令经远程 shell 执行，run_command 的 shell 参数忽略，路径为 POSIX 格式）\n")
@@ -816,7 +811,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 
 	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
-	// 落库身份取待生效项自带的 kind/origin（用户插话=chat，派发注入=report）。
+	// 落库身份取待生效项自带的 kind/origin（用户插话=chat，派发注入=aiuser）。
 	interjectsBefore := func(emit func(Event)) bool {
 		got := false
 		for _, pm := range a.drainSteer(sess.ID) {

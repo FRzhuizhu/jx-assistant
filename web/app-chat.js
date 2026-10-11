@@ -630,7 +630,7 @@ document.addEventListener('beforematch', (e) => {
 // user 行按 report 兼容（规范 §5）。此后一切分发只看 kind，不猜内容。
 function displayKindOf(m) {
   const k = m.kind;
-  if (k === 'chat' || k === 'report' || k === 'summary' || k === 'env' || k === 'prompt' || k === 'inherit' || k === 'request' || k === 'audit') return k;
+  if (k === 'chat' || k === 'report' || k === 'aiuser' || k === 'summary' || k === 'env' || k === 'prompt' || k === 'inherit' || k === 'request' || k === 'audit') return k;
   if ((!k || k === 'chat') && m.role === 'user' && isSysNote(String(m.content ?? ''))) return 'report';
   return 'chat';
 }
@@ -659,6 +659,13 @@ const ROW_ITEM_BUILDERS = {
         seq: m.seq, tc, result: st.resultOf[tc.id],
       });
     }
+  },
+  // AI 发出的用户消息（数字助理派发的指令/派发回报/子对话派发/待办转交）：
+  // 与用户消息完全同权——开新回合，上一回合随之收口（最终输出带出复制/压缩
+  // 等回合按钮）；气泡由 userBubble 渲染为右对齐偏白的「AI 用户」变体（.ai）
+  aiuser(m, st) {
+    st.cur = { userMsg: m, items: [] };
+    st.turns.push(st.cur);
   },
   // 系统注入通知：归入当前回合常显
   report(m, st) {
@@ -756,17 +763,19 @@ function actTime(iso, side) {
   return el;
 }
 
-// 用户消息气泡：右下悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息开放
-// （kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。
+// 用户消息气泡：右下悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息
+// 开放（kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。AI 发出的
+// 用户消息（kind=aiuser，数字助理派发的指令/回报）同款气泡但底色偏白（.ai），
+// 操作行有时间与复制、没有编辑——它是 AI 说的，不能编辑重发。
 function userBubble(m, view) {
   const wrap = document.createElement('div');
-  wrap.className = 'msg user';
+  wrap.className = 'msg user' + (m.kind === 'aiuser' ? ' ai' : '');
   wrap.dataset.seq = m.seq; // 搜索命中定位用
   const b = document.createElement('div');
   b.className = 'bubble';
   appendQuotedBody(b, String(m.content ?? '')); // 带引用前缀的消息拆成灰色引用行 + 正文
   wrap.appendChild(b);
-  if (m.kind === 'chat' && view) {
+  if ((m.kind === 'chat' || m.kind === 'aiuser') && view) {
     const acts = document.createElement('div');
     acts.className = 'msg-actions user-acts';
     acts.appendChild(actTime(m.createdAt)); // 发送时间：排在复制按钮左边
@@ -781,12 +790,14 @@ function userBubble(m, view) {
       });
     };
     acts.appendChild(cp);
-    const ed = document.createElement('button');
-    ed.className = 'act-copy act-edit';
-    ed.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>编辑';
-    ed.title = '修改这条消息并重新发送；它之后的对话记录将被移除';
-    ed.onclick = () => editUserMsg(m, view, wrap);
-    acts.appendChild(ed);
+    if (m.kind === 'chat') {
+      const ed = document.createElement('button');
+      ed.className = 'act-copy act-edit';
+      ed.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>编辑';
+      ed.title = '修改这条消息并重新发送；它之后的对话记录将被移除';
+      ed.onclick = () => editUserMsg(m, view, wrap);
+      acts.appendChild(ed);
+    }
     wrap.appendChild(acts);
   }
   return wrap;
@@ -976,8 +987,8 @@ function subTaskCard(tc, result) {
   return d;
 }
 
-/* ---------- 长消息折叠（只作用于数字助理主对话里「用户自己发的灰色气泡」：
-   用户气泡，以及作为「用户消息变体」的派发通知气泡（同样是灰底气泡）。
+/* ---------- 长消息折叠（只作用于数字助理主对话里的用户位气泡：
+   用户气泡，以及 AI 发出的用户消息气泡（.msg.user.ai，偏白）。
    **数字助理的正文回复（.msg.assistant 的 .md）不在折叠目标里**——那是模型给出的
    正常回复，多长都完整展开显示，不裁剪、不出「展开 / 收起」控件（见 applyFolds）。 ----------
    需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
@@ -1004,8 +1015,8 @@ function foldEnabled() {
   return !!(state.cur && state.cur.mode === 'assistant');
 }
 
-// 折叠目标：主对话里已定稿的用户气泡与派发通知气泡（后者是
-// 「用户消息的变体」，同样是长消息）。**数字助理的正文（.msg.assistant > .md）
+// 折叠目标：主对话里已定稿的用户气泡与 AI 用户气泡（kind=aiuser，
+// 同样可能是长任务描述）。**数字助理的正文（.msg.assistant > .md）
 // 刻意不在目标里**：那是模型给出的正常回复，多长都完整显示，不裁剪、不出折叠
 // 控件（用户气泡的折叠效果保持不变）。跳过流式中的那块（边流边折叠会一直遮住
 // 最新输出）与编辑态/排队态占位气泡（临时形态，带虚线边框）。
@@ -1575,11 +1586,12 @@ document.addEventListener('click', (e) => {
      消息事件都不再拽回，滚回底部或点「回到底部」才恢复跟随；jump=true
      （打开会话/首次渲染）强制到底。 */
 
-// 尾部 = 从最后一个真实用户消息起的回合；没有真实用户消息则返回 -1（全算尾部）
+// 尾部 = 从最后一个真实用户消息起的回合（AI 发出的用户消息 kind=aiuser 也是
+// 回合起点——派发回报开启的回合同样要收口重建）；没有则返回 -1（全算尾部）
 function lastTurnStart(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (m.role === 'user' && !isSysNote(String(m.content ?? ''))) return i;
+    if (m.role === 'user' && (m.kind === 'aiuser' || !isSysNote(String(m.content ?? '')))) return i;
   }
   return -1;
 }
@@ -1722,8 +1734,8 @@ function renderMessages(msgs, view, opts) {
   }
   // 已插话、等下一次调用模型生效的消息：直接落在对话最底下（与已发送的用户消息
   // 同一套气泡外观，只多一个「插话中」角标），落库后由 message 事件替换成正常气泡。
-  // 数字助理派发注入的插话（kind=report，比如派发到正在执行的会话）例外：它是
-  // 「数字助理说的话」，按 sysnote 那套左对齐通知渲染，落库后形态一致。
+  // 数字助理派发注入的插话（kind=aiuser）按「AI 用户」气泡渲染（右对齐偏白，
+  // 落库后形态一致）；report 类系统通知仍走 sysnote 那套左对齐通知。
   (st.pendingSteer || []).forEach((pm) => {
     if (pm.kind === 'report') {
       const nw = document.createElement('div');
@@ -1737,7 +1749,7 @@ function renderMessages(msgs, view, opts) {
       return;
     }
     const wrap = document.createElement('div');
-    wrap.className = 'msg user pending-steer';
+    wrap.className = 'msg user' + (pm.kind === 'aiuser' ? ' ai' : '') + ' pending-steer';
     wrap.dataset.pendingSteer = pm.id;
     const b = document.createElement('div');
     b.className = 'bubble';
@@ -1813,10 +1825,10 @@ function renderStreamingTurn(box, turn, key) {
     return;
   }
   const foldFrom = flow.length - TAIL_ROWS;
-  // 钉住常显、绝不折进过程段的两类：系统通知（note＝「数字助理派发」这类灰底气泡，
-  // 正在执行时它正是"这次派发到底要我做什么"的唯一线索）与运行中的子任务卡（实时进度）。
-  // 完成态把两者当 anchors 常显（见 renderFinishedTurn 的 note 分支），流式这里同一口径——
-  // 否则派发通知会在执行期间跟着上下文材料一起被折起来，跑完才重新露出来。
+  // 钉住常显、绝不折进过程段的两类：系统通知（note，report 通道的虚线通知块——
+  // 执行期间的中断/上传提示不能被折没）与运行中的子任务卡（实时进度）。
+  // 完成态把两者当 anchors 常显（见 renderFinishedTurn 的 note 分支），流式这里同一口径。
+  // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
   const pinned = (it) => it.k === 'note' || it.k === 'plancard' || (it.k === 'subtask' && !it.result);
   let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段
   const flush = () => {

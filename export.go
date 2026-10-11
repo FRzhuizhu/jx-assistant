@@ -202,12 +202,15 @@ func (st *timelineState) render(b *strings.Builder, m *StoredMessage) {
 		tlLine(b, m.CreatedAt, fmt.Sprintf("继承主对话 %s 的历史 %d 条（含当时的摘要与压缩状态）", im.Parent, im.Count))
 	case "summary":
 		st.renderSummary(b, m)
-	default: // chat / report 等对话行
+	default: // chat / aiuser / report 等对话行
 		switch m.Role {
 		case "user":
-			if isSysNote(m.Text()) || m.Kind == "report" {
+			switch {
+			case m.Kind == kindAiUser:
+				tlLine(b, m.CreatedAt, "AI 发出的用户消息（派发指令/回报/待办转交，作为 user 消息发给模型）")
+			case isSysNote(m.Text()) || m.Kind == "report":
 				tlLine(b, m.CreatedAt, "系统注入（回报/中断/上传，之后作为 user 消息发给模型）")
-			} else {
+			default:
 				tlLine(b, m.CreatedAt, "用户消息")
 			}
 			tlQuote(b, expText(m.Text()))

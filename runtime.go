@@ -298,7 +298,8 @@ type delivery struct {
 // （handleChat / handleInterject）与数字助理派发注入共用同一套语义——
 // 空闲就落库并占住执行权，执行中就走同一套排队/插话队列（按 jx.midrun 偏好），
 // 不再另开一条特殊通道。kind/origin 决定消息身份（chat=用户气泡，
-// report=数字助理通知），语义上的差异只体现在这里，投递行为完全一致。
+// aiuser=AI 发出的用户消息，report=系统通知），语义上的差异只体现在这里，
+// 投递行为完全一致。
 func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *delivery {
 	lock := a.sessLock(m.ID)
 	lock.Lock()
@@ -333,9 +334,9 @@ func subQueueNote(sub *SessionMeta, mode, note string) string {
 
 // landUserSide 是「用户侧消息落库」的唯一收口：chat（真实用户发言）走
 // appendMessage——锚定本轮环境时间、刷新会话活动时间，与用户自己发完全一致；
-// 注入类（report 等）走 appendRow，并按 AGENT.md 的约定显式刷新会话时间
-// （touchesActivity 的口径不含注入行，不能去改它）。落库后广播同型 message
-// 事件：emit 非空时走本轮订阅通道（执行体内部），否则走全局广播。
+// aiuser（AI 发出的用户消息）与注入类（report 等）走 appendRow，并按 AGENT.md
+// 的约定显式刷新会话时间（touchesActivity 的口径不含这两类行，不能去改它）。
+// 落库后广播同型 message 事件：emit 非空时走本轮订阅通道（执行体内部），否则走全局广播。
 func (a *App) landUserSide(m *SessionMeta, content, kind, origin string, emit func(Event)) *StoredMessage {
 	if kind == "" {
 		kind = kindChat
@@ -757,7 +758,7 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	}
 	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
 		Message: TextMessage("user", head+"\n\n"+summary+"\n\n"+followUp),
-		Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
+		Kind:    kindAiUser, Origin: "dispatch", CreatedAt: now(),
 	})
 	// 用户主动叫停的**不自动触发**父会话那一轮（那正是「助理自作主张」的来源）：
 	// 回报照旧落库、照旧广布 report_ready（前端可见），父会话下一轮自然带着这条

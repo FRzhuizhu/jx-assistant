@@ -122,8 +122,10 @@ func dispatchTaskTool() Tool {
 
 // deliverSub 把派发需求投递进目标会话——走与用户发消息同一套投递（见 runtime.go
 // 的 deliverToSession）：目标空闲=落库并起 runSubAgent；正在执行=按 jx.midrun 偏好排队/插话。
+// 落库身份是 kind=aiuser（AI 发出的用户消息）：系统按用户消息同等对待（开新回合、
+// 组装时后面跟一条时间提示词），前端是右对齐偏白的「AI 用户」气泡。
 func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
-	d := t.app.deliverToSession(sub, text, kindReport, "task")
+	d := t.app.deliverToSession(sub, text, kindAiUser, "task")
 	if !d.Started {
 		return subQueueNote(sub, d.Mode, note)
 	}

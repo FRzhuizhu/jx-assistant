@@ -234,7 +234,7 @@ func (a *App) reapInterruptedSession(s *SessionMeta) {
 		if _, perr := a.Store.Get(owner); perr == nil {
 			_ = a.Store.AppendRow(owner, &StoredMessage{
 				Message: TextMessage("user", reportText),
-				Kind:    kindReport, Origin: "dispatch", CreatedAt: now(),
+				Kind:    kindAiUser, Origin: "dispatch", CreatedAt: now(),
 			})
 		}
 	}
