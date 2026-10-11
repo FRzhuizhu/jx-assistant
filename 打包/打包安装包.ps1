@@ -99,6 +99,18 @@ if (-not (Test-Path (Join-Path $asrDir "asr_worker.py"))) {
 }
 Copy-Item $asrDir (Join-Path $stage "asr") -Recurse -Force
 
+# MD 查看器（装完即有）：单文件 exe 全自包含（WebView2 托管程序集与查看器
+# 模板均已内嵌），随包只带 exe + 使用说明两个文件；.md 关联由安装器装完时
+# 以 /register 静默写入（见 安装包.iss [Run]），缺 exe 拒绝出包。
+Write-Host "== 暂存 MD 查看器（md-viewer/）"
+$mdvDir = Join-Path $root "md-viewer"
+if (-not (Test-Path (Join-Path $mdvDir "MD查看器.exe"))) {
+  throw "md-viewer\MD查看器.exe 缺失：$mdvDir（装完即有的 MD 查看器必须随包）"
+}
+New-Item -ItemType Directory -Path (Join-Path $stage "md-viewer") | Out-Null
+Copy-Item (Join-Path $mdvDir "MD查看器.exe") (Join-Path $stage "md-viewer") -Force
+Copy-Item (Join-Path $mdvDir "使用说明.txt") (Join-Path $stage "md-viewer") -Force
+
 Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
 
 Write-Host "== Inno Setup 编译安装包（LZMA2 压缩，耐心等待）"

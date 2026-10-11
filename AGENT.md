@@ -262,7 +262,10 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   识别的 Python worker `asr_worker.py` 与模型 `models/` 自包含在组件本体内，
   跑在共享便携运行时上；缺它时该档报「未找到语音组件 worker」，听写默认走云端不受影响），
   脚本会校验组件目录存在且至少含一个带 `manifest.json` 的组件；④
-  `使用说明.md`。给打包脚本加新的暂存项时，同步更新本清单。
+  `使用说明.md`；⑤ `md-viewer/` MD 查看器——单文件 exe 全自包含（WebView2 与
+  模板已内嵌），随包只带 exe + 使用说明，装完由安装器 `/register` 静默关联 .md、
+  卸载时 `/unregister` 还原（缺 exe 拒绝出包）。给打包脚本加新的暂存项时，
+  同步更新本清单。
 
 ## Electron 壳（jx-desktop，迁移期新形态）
 

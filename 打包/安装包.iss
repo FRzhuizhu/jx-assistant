@@ -45,6 +45,9 @@ Source: "stage\组件\*"; DestDir: "{app}\组件"; Flags: ignoreversion recurses
 ; 本地语音识别 worker（asr/asr_worker.py，跑在 技能\_runtime 的便携运行时上）：语音组件
 ; 「本地语音识别模型」档经 /api/voice/asr/* 调它，缺文件时该档报「未找到 asr/asr_worker.py」
 Source: "stage\asr\*"; DestDir: "{app}\asr"; Flags: ignoreversion recursesubdirs createallsubdirs
+; MD 查看器（装完即有）：单文件 exe 全自包含，随包只带 exe + 使用说明；
+; .md 关联由下方 [Run] 装完时 /register 静默写入（HKCU，无需提权）
+Source: "stage\md-viewer\*"; DestDir: "{app}\md-viewer"; Flags: ignoreversion
 Source: "stage\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -53,10 +56,16 @@ Name: "{group}\卸载{#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Parameters: "-desktop"; Tasks: desktopicon
 
 [Run]
+; 装完/升级后静默注册 .md 关联（幂等；注册的是 exe 自身所在路径），
+; /register 纯写注册表即退，不弹任何窗口
+Filename: "{app}\md-viewer\MD查看器.exe"; Parameters: "/register"; WorkingDir: "{app}\md-viewer"; Flags: runhidden
 Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "运行{#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; 卸载前先结束运行中的程序（exe 被占用会导致文件删不净）
+; 卸载前先取消 .md 关联（还原注册时备份的原打开方式）并结束驻留查看器，
+; 再结束主程序——exe 被占用会导致文件删不净
+Filename: "{app}\md-viewer\MD查看器.exe"; Parameters: "/unregister"; WorkingDir: "{app}\md-viewer"; Flags: runhidden; RunOnceId: "UnregisterMdViewer"
+Filename: "taskkill"; Parameters: "/IM MD查看器.exe /F"; Flags: runhidden; RunOnceId: "KillMdViewer"
 Filename: "taskkill"; Parameters: "/IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "KillApp"
 
 [UninstallDelete]
@@ -114,6 +123,8 @@ var
   rc: Integer;
 begin
   Exec(ExpandConstant('{cmd}'), '/C taskkill /IM {#MyAppExeName} /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  // 查看器可能以托盘宿主驻留，覆盖安装时同样要腾出 exe
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /IM MD查看器.exe /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
 end;
 
 function InitializeSetup(): Boolean;
