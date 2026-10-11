@@ -946,7 +946,8 @@
      * 复刻流式体验：
      *   短停顿（~0.6s）→ 该短语快速识别 → 灰字草稿（「听到了」的即时反馈，
      *                     多个短语可叠在灰字层）
-     *   长停顿（3s）/按钮结束/18s 强切 → 自上次定稿的全部音频整段重识别
+     *   长停顿（尾随静音满 3s）/按钮结束/连续说超 18s 强切 → 自上次定稿的全部
+ *                     音频整段重识别（静音垫限量 1.5s，近似停顿中点切分）
      *                     → 黑字定稿，替换灰字草稿（全上下文更准、标点完整）
      * 全部走 HTTP POST（桌面/远程同一条路，远程经中继隧道天然可达）；
      * 桌面/远程体验完全一致。VAD：噪声底自适应，阈值=max(0.008, 底×3.5)。
@@ -965,8 +966,10 @@
       let seg = [];                 // 当前短语的帧
       let speechMs = 0, silenceMs = 0, segSpeechMs = 0;
       let noiseFloor = 0.004;       // 环境噪声底（RMS，自适应）
-      let sinceFinal = [];          // 自上次定稿的全部语音帧（含短语间静音间隙）
-      let sinceFinalMs = 0;
+      let sinceFinal = [];          // 自上次定稿的全部语音帧（短语间静音间隙限量收录）
+      let sinceFinalMs = 0;         // 定稿段内的有声总时长
+      let finalSilenceMs = 0;       // 尾随静音计时：满 3 秒才定稿（真停顿，非说话时长）
+      let padMs = 0;                // 定稿段内已收录的静音垫（间隙+尾部，上限 1.5 秒）
       let ended = false, segCount = 0, failCount = 0;
       let draftEpoch = 0;          // 草稿代际：定稿时 +1，在途草稿的迟到应答按过期丢弃
                                    // （防「定稿已在路上、旧草稿又把重复文字塞回灰字层」的竞态）
@@ -1015,7 +1018,7 @@
         seg = []; segSpeechMs = 0; speechMs = 0; silenceMs = 0;
         const frames = sinceFinal;
         const spoken = sinceFinalMs;
-        sinceFinal = []; sinceFinalMs = 0;
+        sinceFinal = []; sinceFinalMs = 0; finalSilenceMs = 0; padMs = 0;
         // 撤下草稿灰字（定稿文字即将替换它们）
         for (const i of draftSlots) { sess.segs.delete(i); sess.committed.delete(i); }
         draftSlots.length = 0;
@@ -1046,13 +1049,19 @@
           const f32 = new Float32Array(f);
           seg.push(f32); sinceFinal.push(f32);
           speechMs += frameMs; segSpeechMs += frameMs; sinceFinalMs += frameMs;
-          silenceMs = 0;
+          silenceMs = 0; finalSilenceMs = 0;
         } else if (speechMs > 0) {
-          silenceMs += frameMs;
-          if (sinceFinalMs > 0) sinceFinal.push(new Float32Array(f)); // 短语间间隙也进定稿段（离线模型带 VAD 训练）
+          silenceMs += frameMs; finalSilenceMs += frameMs;
+          // 间隙/尾部静音限量入定稿段（垫上限 1.5s，近似「在停顿中点切分」：
+          // 真停顿触发时尾部垫≈1.5s；不足 3s 的呼吸停顿全量保留不分段）
+          if (sinceFinalMs > 0 && padMs < 1500) {
+            sinceFinal.push(new Float32Array(f));
+            padMs += frameMs;
+          }
         }
         if (segSpeechMs >= SPEECH_MIN_MS && silenceMs >= DRAFT_PAUSE_MS) draftSeg();
-        if (sinceFinalMs >= FINAL_PAUSE_MS || sinceFinalMs >= SEG_MAX_MS) {
+        // 定稿=真停顿（尾随静音满 3 秒）；SEG_MAX 为连续说话的强制上限（防永不停顿）
+        if (sinceFinalMs >= SEG_MAX_MS || (sinceFinalMs >= SPEECH_MIN_MS && finalSilenceMs >= FINAL_PAUSE_MS)) {
           finalizeSeg();
           speechMs = 0; silenceMs = 0;
         }
