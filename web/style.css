@@ -374,7 +374,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
    转交）：**左对齐**（AI 说的「用户消息」，在左边像「别人发来的」），**灰底**
    （--chip 中性灰 + 一圈细边框——微信是灰底页配白气泡，我们页面是白底，
    倒过来就是白页配灰气泡），尾巴朝左下；内边距/字号沿用用户气泡那套。
-   操作行常驻（同助手侧的口径）、靠左：时间 + 复制，没有编辑。
+   操作行悬停显隐（与用户气泡同一交互）、靠左：时间 + 复制，没有编辑。
    长文折叠与用户气泡同一套（applyFolds 的 .msg.user > .bubble 天然包含它）。 */
 .msg.user.ai { align-items: flex-start; }
 .msg.user.ai .bubble {
@@ -383,7 +383,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   border-radius: 14px 14px 14px 4px;      /* 尾巴朝左下 */
   border: 1px solid var(--border);
 }
-.msg.user.ai .msg-actions { opacity: 1; justify-content: flex-start; }
+.msg.user.ai .msg-actions { justify-content: flex-start; }
 
 /* 长消息折叠（只作用于数字助理主对话里的用户位气泡：用户气泡，
    以及 AI 发出的用户消息气泡（.msg.user.ai），见 app-chat.js 的 applyFolds；数字助理的正文
@@ -550,12 +550,14 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 /* 助手消息：通栏 Markdown */
 .msg.assistant { margin-bottom: 6px; }
 .msg.assistant .md { line-height: 1.75; word-break: break-word; }
-/* 助手最终输出的操作行（复制/压缩/分支/朗读 + 时间）常驻显示：这几个是常用入口，
-   藏在悬停后面反而找不到；用户气泡那侧的复制/编辑/时间仍按悬停显隐 */
+/* 操作行（复制/压缩/分支/朗读 + 时间）一律悬停显隐——与用户气泡同一交互：
+   曾把助手侧改常驻（怕入口找不到），电脑端中间常驻一排按钮让按钮与下一条
+   用户消息的间距显得又短又乱；改回悬停后，行仍在布局里占位（opacity 不塌陷），
+   平时正好化作一段干净留白，悬停即现。 */
 .msg-actions {
   display: flex; gap: 4px; margin: 2px 0 18px; opacity: 0; transition: opacity .15s;
 }
-.msg.assistant .msg-actions { opacity: 1; }
+.msg.assistant:hover .msg-actions { opacity: 1; }
 .act-copy {
   display: flex; align-items: center; gap: 5px;
   background: none; border: none; color: var(--text-3);
@@ -564,7 +566,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .act-copy:hover { background: var(--hover); color: var(--text-2); }
 /* 操作行上的消息时间：用户消息里排在「复制」左边，模型最终输出里靠最右
    （act-time-end 用 margin-left:auto 顶到行尾）；字号与颜色跟行动作按钮同级，
-   保持克制。助手侧的操作行常驻显示，它自然也就常驻。 */
+   保持克制。操作行悬停才显，时间跟着悬停出现。 */
 .act-time { align-self: center; font-size: .82em; color: var(--text-3); white-space: nowrap; }
 .act-time-end { margin-left: auto; }
 
