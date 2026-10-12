@@ -594,8 +594,10 @@ function setSecOpen(sec, open) {
 
 /* 继承段：子对话开头的「来自主对话」历史，整段折叠成一条，点开是完整对话流。
    内部复用主线渲染（用户气泡 + 回合渲染），所以外观与正文完全一致；
-   父对话的系统提示词快照行也在其中（一目了然「含系统提示词」）。 */
-function inheritBlock(items, resultOf, sid) {
+   父对话的系统提示词快照行也在其中（一目了然「含系统提示词」）。
+   turns 由 renderMessages 分组后传入（分组状态上的基线随 turns.base 带出，
+   供正文段接着比——子对话首条 prompt 快照与父相同时不再重复显示）。 */
+function inheritBlock(turns, items, sid) {
   const key = sid + ':inherit';
   const sec = document.createElement('div');
   sec.className = 'tf-sec inherit';
@@ -612,7 +614,6 @@ function inheritBlock(items, resultOf, sid) {
   bar.insertAdjacentHTML('beforeend', chev('tf-chev'));
   const body = document.createElement('div');
   body.className = 'tf-body';
-  const turns = groupTurns(items, resultOf);
   turns.forEach((turn, ti) => {
     if (turn.sysHead) body.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
     if (turn.headTools) body.appendChild(toolsRow(turn.headTools, turn.headToolsSeq));
@@ -773,10 +774,14 @@ const ROW_ITEM_BUILDERS = {
 // assistant 消息按序拆成思考/正文/工具条目，tool 消息经 resultOf 配对进条目。
 // 每次请求都会完整重发系统提示词（协议如此）——「不变」= 逐字节相同，
 // 前缀缓存据此命中，所以上下文材料只在变化时展示。
-function groupTurns(msgs, resultOf) {
+// base（可空）：分组状态的初始基线——子对话的正文段从这里接过继承段分组后的
+// 基线，自己首条 prompt 快照与父对话逐字节相同时就不再显示「工具定义/系统
+// 提示词」折叠行（它们已折在「来自主对话」段里；真换了模式/工具集才显示变更行）。
+function groupTurns(msgs, resultOf, base) {
   const st = {
     turns: [], cur: null, resultOf,
     sawPrompt: false, lastSys: '', lastToolsJson: '', lastTools: null, lastEnv: null,
+    ...(base || {}),
   };
   st.ensure = () => {
     if (!st.cur) { st.cur = { userMsg: null, items: [] }; st.turns.push(st.cur); }
@@ -785,6 +790,7 @@ function groupTurns(msgs, resultOf) {
     const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
     if (build) build(m, st);
   }
+  st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv };
   return st.turns;
 }
 
@@ -1737,30 +1743,28 @@ function renderMessages(msgs, view, opts) {
   }
   const sid = (st.cur && st.cur.id) || '';
   // 子对话开头的继承段（后端克隆父对话时写入的标记行 + N 条历史）：
-  // 折叠成一条「来自主对话」折叠条，其余消息照常渲染
-  let inherited = null, rest = msgs, off = 0;
+  // 折叠成一条「来自主对话」折叠条，其余消息照常渲染。继承段先分组，
+  // 正文段从它分组后的基线接着比——子对话自己的 prompt 快照与父对话相同
+  // 时不再重复显示「工具定义/系统提示词」（真变了才出变更行）。
+  let inherited = null, rest = msgs, off = 0, inhTurns = null;
   if (msgs[0].kind === 'inherit') {
     let n = 0;
     try { n = JSON.parse(String(msgs[0].content ?? '{}')).count || 0; } catch (e) { /* 坏行就当没有继承段 */ }
     inherited = msgs.slice(1, 1 + n);
     rest = msgs.slice(1 + n);
     off = 1 + n;
+    inhTurns = groupTurns(inherited, resultOf);
   }
   const kRel = lastTurnStart(rest);
   const k = kRel < 0 ? off : off + kRel; // 前缀长度：无真实用户消息时继承段之后全算尾部
-  const turns = groupTurns(rest, resultOf);
+  const turns = groupTurns(rest, resultOf, inhTurns && inhTurns.base);
   // 前缀可复用：同会话、分界没动、分界前最后一条 seq 未变、前缀 DOM 还在
   const reusable = st._pfxSid === sid && st._pfxLen === k && k > 0
     && msgs[k - 1] && msgs[k - 1].seq === st._pfxSeq
     && st._pfxNodes > 0 && box.children.length >= st._pfxNodes;
   if (!reusable) {
     box.innerHTML = '';
-    if (inherited && inherited.length) box.appendChild(inheritBlock(inherited, resultOf, sid));
-    if (inherited && !rest.length) {
-      const empty = document.createElement('div');
-      empty.innerHTML = view.emptyHTML;
-      box.appendChild(empty);
-    }
+    if (inhTurns) box.appendChild(inheritBlock(inhTurns, inherited, sid));
     turns.forEach((turn, ti) => {
       if (ti === turns.length - 1) return; // 最后一回合属尾部
       appendTurn(box, turn, sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti), view, false);
@@ -1777,6 +1781,15 @@ function renderMessages(msgs, view, opts) {
   view._renderTs = Date.now();
   while (box.children.length > st._pfxNodes) box.removeChild(box.lastChild);
   const tail = document.createDocumentFragment();
+  // 继承段有了、还没有任何自有消息：空态引导文案画在**尾部**（不是前缀）——
+  // 首条消息到达时随尾部一起消失。画进前缀的话，前缀复用判定（分界与末条
+  // seq 都没变）会让它残留，消息从空态标题下面长出来、滚动时才被「顶」出
+  // 视口（曾经的「用户消息一点点往上顶、盖过空态」就是这么来的）。
+  if (inherited && !rest.length) {
+    const empty = document.createElement('div');
+    empty.innerHTML = view.emptyHTML;
+    tail.appendChild(empty);
+  }
   const last = turns[turns.length - 1];
   if (last) {
     appendTurn(tail, last, sid + ':' + (last.userMsg ? last.userMsg.seq : 'head' + (turns.length - 1)), view, true);
