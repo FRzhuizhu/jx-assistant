@@ -3,7 +3,7 @@
 # 用法（在仓库根目录）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File 打包\打包安装包.ps1
 # 可选参数：
-#   -Version     版本号（默认=今天日期+V1，如 20261008V1；同日重出多版手动传 V2 V3）
+#   -Version     版本号（默认=今天日期-1，如 20261008-1；同日重出多版手动传 -2 -3），同时注入程序内 appVersion
 #   -ExeSource   使用已构建好的发行 exe（默认现场 go build；
 #                需要排除工作区未完成改动时，先在干净 worktree 里构建再传入）
 #   -SkillsSource 技能目录来源（默认仓库根的 技能\，含 _runtime 便携运行时）
@@ -16,7 +16,7 @@ param(
   [string]$ExeSource = "",
   [string]$SkillsSource = ""
 )
-if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "V1" }
+if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "-1" }
 
 $ErrorActionPreference = "Stop"
 $packDir = $PSScriptRoot
@@ -71,7 +71,7 @@ if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
   Write-Host "== 编译主程序（注入桌面模式默认值）"
-  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1" -o $exe $root
+  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1 -X main.appVersion=$Version" -o $exe $root
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }
 

@@ -202,12 +202,11 @@ async function openSettings(pane) {
     renderNav();
   }
   bindFeedbackForm();
-  // 关于页信息
+  // 关于页信息：只显示版本号（模型名/连接状态等展示已按需求移除）
   try {
     const st = await api('/api/status');
-    $('about-version').textContent = '版本 ' + (st.version || '-') + ' · ' + (st.model || '');
-    $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
-  } catch (e) { $('about-status').textContent = '服务状态未知'; }
+    $('about-version').textContent = '版本 ' + (st.version || '-');
+    } catch (e) { /* 状态取不到时保留页面默认版本文本 */ }
   loadAboutShell();
 }
 

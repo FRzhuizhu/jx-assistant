@@ -8,13 +8,19 @@
 
 #define MyAppName "坚祥数字助理GO"
 #define MyAppExeName "坚祥数字助理GO.exe"
-// 文件版本号必须是纯数字四段（每段 0-65535）：日期版本 20261012V1 转为 2026.10.12.1；
+// 文件版本号必须是纯数字四段（每段 0-65535）：日期版本 20261013-1（旧写法 20261012V1）转为 2026.10.13.1；
 // 传统语义版本（如 1.0.3）沿用原行为补 .0 → 1.0.3.0
 #if Pos("V", MyAppVersion) > 0
   #define MIVYear Copy(MyAppVersion, 1, 4)
   #define MIVMonth Copy(MyAppVersion, 5, 2)
   #define MIVDay Copy(MyAppVersion, 7, 2)
   #define MIVRev Copy(MyAppVersion, Pos("V", MyAppVersion) + 1, 8)
+  #define MyAppFileVersion MIVYear + "." + MIVMonth + "." + MIVDay + "." + MIVRev
+#elif Pos("-", MyAppVersion) > 0
+  #define MIVYear Copy(MyAppVersion, 1, 4)
+  #define MIVMonth Copy(MyAppVersion, 5, 2)
+  #define MIVDay Copy(MyAppVersion, 7, 2)
+  #define MIVRev Copy(MyAppVersion, Pos("-", MyAppVersion) + 1, 8)
   #define MyAppFileVersion MIVYear + "." + MIVMonth + "." + MIVDay + "." + MIVRev
 #else
   #define MyAppFileVersion MyAppVersion + ".0"

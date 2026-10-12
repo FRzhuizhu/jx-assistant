@@ -26,7 +26,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const appVersion = "20261010V2" // 版本号体系：日期+V序号（同日发多版用 V2 V3），恒新于旧点分号（见 update.go 的 versionCompare）
+var appVersion = "20261013-1" // 版本号体系：日期-序号（同日发多版用 -2 -3；旧写法 20261010V2 由 update.go 兼容识别）。打包脚本经 -X main.appVersion 注入实际版本，保证与安装包一致
 
 // App 持有配置与会话存储，是所有 HTTP 处理器的宿主。
 type App struct {
