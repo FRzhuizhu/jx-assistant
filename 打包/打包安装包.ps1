@@ -33,7 +33,11 @@ if (-not (Test-Path $pyExe)) {
 # 模块在便携运行时里真实可导入——装配是按需触发的，开发机上没跑过的
 # 技能依赖可能没装，缺着出包会让最终用户在离线机器上踩坑，故缺一不出包。
 $modules = @{}
-Get-ChildItem $SkillsSource -Directory | Where-Object {
+# ★ 2026-10-12：递归扫描（含 user\ 子目录的用户技能，跳过 _runtime）——非递归会漏掉用户技能的依赖声明、校验假通过（实测曾漏 pywin32 全家；微信操作就在 user\ 下）
+Get-ChildItem $SkillsSource -Recurse -Depth 2 -Directory | Where-Object {
+  $_.FullName -notmatch '\\_runtime(\\|$)' -and
+  Test-Path (Join-Path $_.FullName "manifest.json")
+} | ForEach-Object {
   Test-Path (Join-Path $_.FullName "manifest.json")
 } | ForEach-Object {
   # manifest 是 UTF-8：PS5.1 的 Get-Content 默认按 GBK 读会把中文读成
