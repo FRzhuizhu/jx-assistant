@@ -329,6 +329,9 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		} else {
 			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
 		}
+		// 只读档通道公告：被拒后怎么申请、哪些通道整体不可用——模型不用撞墙试
+		b.WriteString("- 只读档提权：文件写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full（或 danger-full-access）+ 一句 justification 重试一次即可申请放行（弹审批）；要连续多个写动作或用整档不可用的通道时，用 request_permission(target, justification) 一次性申请切档（弹审批卡，批准后立即生效）\n")
+		b.WriteString("- 只读档不可用通道：git_sync、MCP 连接器（mcp_read_connector / mcp_call_tool / 插件 mcp__*）、register_skill、CC 插件 mod 的写/执行——一律被拦，报错都带申请出路；需要时先 request_permission 切档再用\n")
 	case permFull:
 		b.WriteString("- 权限模式：完全访问——读写与命令不受限（助手自身配置/数据仍受保护）；已捆绑开启「允许工作区外执行命令」「操作浏览器」「操作电脑」能力\n")
 	default:

@@ -259,9 +259,9 @@ func askUserQuestionTool() Tool {
 
 func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Question  string   `json:"question"`
-		Options   []string `json:"options"`
-		AllowFree *bool    `json:"allow_free"`
+		Question  string          `json:"question"`
+		Options   json.RawMessage `json:"options"` // schema 声明为字符串，但数组也是合理给法：两种都收
+		AllowFree *bool           `json:"allow_free"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -271,9 +271,20 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("question 不能为空")
 	}
 	options := []string{}
-	for _, o := range p.Options {
-		if s := strings.TrimSpace(o); s != "" {
-			options = append(options, s)
+	if len(p.Options) > 0 {
+		var arr []string
+		var one string
+		switch {
+		case json.Unmarshal(p.Options, &arr) == nil:
+		case json.Unmarshal(p.Options, &one) == nil:
+			arr = strings.Split(one, "\n")
+		default:
+			return "", fmt.Errorf("options 应为字符串数组或换行分隔的字符串")
+		}
+		for _, o := range arr {
+			if s := strings.TrimSpace(o); s != "" {
+				options = append(options, s)
+			}
 		}
 	}
 	if len(options) > 6 {
@@ -299,6 +310,69 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 		return "（用户跳过了这个问题。）", nil
 	}
 	return "用户回答：" + ans, nil
+}
+
+// requestPermissionTool 是通用的「提权申请」入口：模型把「把会话切到更宽
+// 权限档」作为一次显式请求交给用户决定（弹审批卡），批准后立即切档并随
+// 环境快照公告、权限芯片同步刷新。它补拒绝驱动的盲区：git_sync、MCP
+// 连接器、register_skill 这类只读档整体不可用的通道，以及可预判要连续
+// 多个写动作的场景——一次申请整档畅通，比逐个动作撞墙申请高效。
+func requestPermissionTool() Tool {
+	return Tool{
+		Spec: toolSpec("request_permission",
+			"申请把当前会话的权限档位调宽（只读 → 工作区内读写 → 完全访问），弹审批卡由用户决定，批准后立即生效（权限芯片同步刷新）。适用于：任务确需写入而当前只读（git_sync、MCP 连接器、register_skill 等通道在只读档整体不可用），或可预判要连续多个写动作（一次申请比逐个撞墙申请高效）。仅在被真实拦住或明确预判做不了时使用，不要为省事预防性申请；用户拒绝或超时后本轮终局：如实说明并停止，不要绕过。",
+			objSchema(map[string]any{
+				"target": map[string]any{
+					"type":        "string",
+					"enum":        []string{permWorkspace, permFull, "danger-full-access"},
+					"description": "申请切到的权限档：workspace-write（工作区内读写）或 full / danger-full-access（完全访问），必须比当前档宽",
+				},
+				"justification": strProp("一句话向用户说明为什么要调宽权限（展示在审批卡上）"),
+			}, "target", "justification")),
+		Run: runRequestPermission,
+	}
+}
+
+func runRequestPermission(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Target        string `json:"target"`
+		Justification string `json:"justification"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	target := strings.TrimSpace(p.Target)
+	if target == "danger-full-access" {
+		target = permFull // 官方词汇表的 full 档别名
+	}
+	cur := permModeOf(t.sess)
+	if target != permWorkspace && target != permFull {
+		return "", fmt.Errorf("target 仅支持 %s / %s / danger-full-access，收到 %q", permWorkspace, permFull, p.Target)
+	}
+	if sandboxPolicyRank(target) <= sandboxPolicyRank(cur) {
+		return "", fmt.Errorf("当前会话已是「%s」，target=%s 不比它宽，无需申请；更宽才值得申请，或直接执行", permModeLabel(cur), target)
+	}
+	just := strings.TrimSpace(p.Justification)
+	if just == "" {
+		return "", fmt.Errorf("justification 不能为空：一句话说明为什么要调宽权限（给用户看的理由）")
+	}
+	summary := fmt.Sprintf("把会话权限从「%s」调宽到「%s」｜理由：%s", permModeLabel(cur), permModeLabel(target), truncateRunes(just, 120))
+	if t.emit != nil {
+		t.emit(Event{Type: "tool_wait", Name: t.toolName, Output: "等待用户审批（申请调整会话权限）…"})
+	}
+	approved, _, timedOut := t.app.requestApproval(t.ctx, t.sess, t.toolName, summary,
+		fmt.Sprintf("当前会话为「%s」，模型申请切到「%s」（批准后立即生效，本会话后续动作按新档执行）", permModeLabel(cur), permModeLabel(target)))
+	if !approved {
+		if timedOut {
+			return "", fmt.Errorf("等待审批超时（上限 %s），按拒绝处理：会话保持「%s」。可请用户直接在权限芯片上调档，或稍后重新发起", approvalTTL, permModeLabel(cur))
+		}
+		return "", fmt.Errorf("用户未批准调整权限，会话保持「%s」。本轮终局：如实说明并停止，不要换法绕过", permModeLabel(cur))
+	}
+	wasMode, wasTools := permModeOf(t.sess), t.sess.Tools
+	t.app.switchSessionPerm(t.sess, target)
+	// 「权限变更」即时落地：注记随新环境快照落库（env 通道），权限芯片同步刷新
+	t.app.landPermChange(t.sess, permSrcApproval, wasMode, wasTools, t.emit)
+	return fmt.Sprintf("已批准：会话权限已从「%s」切换为「%s」，后续动作按新档执行，不再逐次申请", permModeLabel(wasMode), permModeLabel(target)), nil
 }
 
 func enterPlanModeTool() Tool {

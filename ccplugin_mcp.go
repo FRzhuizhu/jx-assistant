@@ -151,6 +151,10 @@ func (r *CCPluginRegistry) MCPTools() []Tool {
 					Name: full, Description: ccToolDesc(tl, c.fullName), Parameters: params,
 				}},
 				Run: func(t *toolContext, args json.RawMessage) (string, error) {
+					// 只读档：插件 MCP 工具不经命令沙箱也不走文件围栏，统一拦下
+					if err := requireNotReadOnly(t, "调用插件 MCP 工具 "+full); err != nil {
+						return "", err
+					}
 					return t.app.CCPlugins.mcpCall(t.ctx, full, args)
 				},
 			})

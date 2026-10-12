@@ -143,7 +143,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
-			askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
+			askUserQuestionTool(), requestPermissionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
 		}, skillCreate...), append(append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
 	}
@@ -456,7 +456,7 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 文本）。既有文件本会话 read 过才能覆盖（观察策略）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：工作区内读写档只允许写工作区与系统临时目录内，被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
+		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 文本）。既有文件本会话 read 过才能覆盖（观察策略）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：工作区内读写档只允许写工作区与系统临时目录内；只读档写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("目标文件路径（相对或绝对）"),
 				"content":             strProp("要写入的完整内容"),
@@ -502,7 +502,7 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func editFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
+		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。只读档被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("文件路径"),
 				"old_string":          strProp("要被替换的原文（需保证唯一）"),

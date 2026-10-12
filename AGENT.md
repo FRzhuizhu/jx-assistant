@@ -321,6 +321,17 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   `read-only`（沙箱内执行、禁止任何写入）/ `workspace-write`（默认；只能写
   工作区与沙箱私有临时目录，联网不限）/ `full`（不受限，官方
   danger-full-access 语义）。
+- **只读档的提权申请**（`perm.go`，2026-10-13 补全）：拒绝驱动升级按目标
+  给「够用的最宽档」——write/edit 在只读档被拒后，写围栏内目标可带
+  `sandbox_permissions=workspace-write` 申请（「始终允许」= 会话切到工作区
+  内读写，不再一跳到顶）、围栏外目标才要 `full`；另有 `request_permission`
+  工具（interact.go）一次性申请切档，弹审批卡、批准立即生效并落「权限
+  变更」注记——覆盖整档不可用的通道与可预判的连续写动作。只读档统一
+  拦截的宿主直连通道（`requireNotReadOnly`）：git_sync、MCP 连接器
+  （mcp_read_connector / mcp_call_tool / 插件 mcp__*）、register_skill、
+  CC 插件 mod 写/执行——这些既不经命令沙箱也不走文件围栏，报错统一
+  指路 request_permission / 权限芯片。审批等待区分「拒绝」与「超时」
+  （requestApproval 第三返回值），报错分开让模型能如实转述。
 - **文件工具三道防线**（`perm.go`/`fsatomic.go`，对齐官方 fs-sandbox/
   fs-observation-policy/fs-local writeFileAtomic；文件工具跑在主进程不经
   OS 沙箱，须自带边界）：① 进程内路径围栏 `writeFenceAllows`——写前

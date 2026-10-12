@@ -436,7 +436,7 @@ func runTodoTaskDelete(t *toolContext, args json.RawMessage) (string, error) {
 	if !ok {
 		return fmt.Sprintf("找不到任务 %q；用 todo_task_list 看现有 id。", id), nil
 	}
-	approved, _ := t.app.requestApproval(t.ctx, t.sess, "todo_task_delete",
+	approved, _, _ := t.app.requestApproval(t.ctx, t.sess, "todo_task_delete",
 		fmt.Sprintf("删除待办任务「%s」（%s）。删除后不可恢复。", v.Title, describeSchedule(v.Schedule)),
 		"模型请求删除一条待办/定时任务。执行记录会保留，任务本身不可恢复。")
 	if !approved {
@@ -478,7 +478,7 @@ func runTodoTaskRun(t *toolContext, args json.RawMessage) (string, error) {
 	if !ok {
 		return fmt.Sprintf("找不到任务 %q；用 todo_task_list 看现有 id。", id), nil
 	}
-	approved, _ := t.app.requestApproval(t.ctx, t.sess, "todo_task_run",
+	approved, _, _ := t.app.requestApproval(t.ctx, t.sess, "todo_task_run",
 		fmt.Sprintf("立即执行待办任务「%s」（%s，%s）。", v.Title, describeSchedule(v.Schedule), describeExecutor(&v.TaskItem)),
 		"模型请求立刻执行一条待办/定时任务，不等它的定时点。")
 	if !approved {

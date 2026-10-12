@@ -519,7 +519,7 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 	return []Tool{
 		{
 			Spec: toolSpec("mcp_read_connector",
-				"读取一个 MCP 连接器（设计软件/服务整合包）的工具清单与用法：每个工具的名称、说明、参数 schema。环境快照的「MCP 连接器清单」只列连接器名字与描述；要用某连接器的工具之前，先调用本工具看清单。连接器平时不运行，调用本工具会自动启动它（首次约需数秒）。",
+				"读取一个 MCP 连接器（设计软件/服务整合包）的工具清单与用法：每个工具的名称、说明、参数 schema。环境快照的「MCP 连接器清单」只列连接器名字与描述；要用某连接器的工具之前，先调用本工具看清单。连接器平时不运行，调用本工具会自动启动它（首次约需数秒）。只读模式下不可用（会拉起连接器进程）：被拒后可用 request_permission 申请切档。",
 				objSchema(map[string]any{
 					"name": strProp("连接器名，来自环境快照里的 MCP 连接器清单"),
 				}, "name")),
@@ -530,6 +530,9 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 				if err := json.Unmarshal(args, &p); err != nil {
 					return "", err
 				}
+				if err := requireNotReadOnly(t, "读取 MCP 连接器清单（会拉起连接器进程）"); err != nil {
+					return "", err
+				}
 				if t.app.MCPServers == nil {
 					return "", fmt.Errorf("MCP 注册表未初始化")
 				}
@@ -538,7 +541,7 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 		},
 		{
 			Spec: toolSpec("mcp_call_tool",
-				"执行一个 MCP 连接器里的工具。先用 mcp_read_connector 看过该连接器的工具清单与参数 schema，再按 schema 填 arguments 调用本工具。",
+				"执行一个 MCP 连接器里的工具。先用 mcp_read_connector 看过该连接器的工具清单与参数 schema，再按 schema 填 arguments 调用本工具。只读模式下不可用（MCP 工具会驱动外部软件读写文件）：被拒后可用 request_permission 申请切档。",
 				objSchema(map[string]any{
 					"connector": strProp("连接器名，来自环境快照里的 MCP 连接器清单"),
 					"tool":      strProp("工具名，来自 mcp_read_connector 的清单"),
@@ -555,6 +558,9 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 					Arguments json.RawMessage `json:"arguments"`
 				}
 				if err := json.Unmarshal(args, &p); err != nil {
+					return "", err
+				}
+				if err := requireNotReadOnly(t, "调用 MCP 连接器工具"); err != nil {
 					return "", err
 				}
 				if t.app.MCPServers == nil {

@@ -524,7 +524,7 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 func registerSkillTool() Tool {
 	return Tool{
 		Spec: toolSpec("register_skill",
-			"把一个技能目录注册进用户技能库（目录必须含 SKILL.md）。注册后技能进入各任务会话的环境快照技能清单，可用 read_skill 读回验证。技能已注册过、要更新时带 update=true（用当前目录内容覆盖旧版）。",
+			"把一个技能目录注册进用户技能库（目录必须含 SKILL.md）。注册后技能进入各任务会话的环境快照技能清单，可用 read_skill 读回验证。技能已注册过、要更新时带 update=true（用当前目录内容覆盖旧版）。只读模式下不可用（会写用户技能库）：被拒后可用 request_permission 申请切档。",
 			objSchema(map[string]any{
 				"path":   strProp("技能目录路径（相对或绝对；目录里需有 SKILL.md）"),
 				"update": boolProp("技能已存在时先删旧版再装（默认 false）"),
@@ -535,6 +535,9 @@ func registerSkillTool() Tool {
 				Update bool   `json:"update"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			if err := requireNotReadOnly(t, "注册技能（会写入用户技能库）"); err != nil {
 				return "", err
 			}
 			abs, err := t.resolve(p.Path)
