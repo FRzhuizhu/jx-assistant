@@ -1,13 +1,18 @@
 package com.jianxiang.link
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
+import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -28,7 +33,16 @@ import kotlin.math.abs
  *
  * - 每台电脑一个独立 WebView Profile（WebView 114+），缓存/localStorage 互不串门；
  *   首页「清空缓存/删除」即删这个 Profile
- * - 应用级「首页」浮条（2026-10-12 改造）：原生 TextView 胶囊浮在 WebView 之上、
+ * - HTTPS 优先（2026-10-12）：入口先按 https 同端口加载，把该网关加进自签白名单
+ *   （onReceivedSslError 对已配对 host 自动「继续访问」）——语音输入需要安全上下文；
+ *   网关不支持 https（握手失败/连不上）自动回落 http，一切如旧。浏览器扫码照旧走
+ *   http，只有壳子享受 https
+ * - 麦克风权限链：Manifest RECORD_AUDIO + onPermissionRequest 对已配对 host 的
+ *   AUDIO_CAPTURE 先申请运行时权限再 grant（语音听写的采集入口）
+ * - 返回键（2026-10-12）：交给网页的返回键守卫——对话页→呼出左栏、左栏→收回
+ *   对话页、弹窗/设置页逐层收敛（网页自带 popstate 两级返回）；3 秒内第二次
+ *   返回 = 回壳首页（不能拦住用户退不出去）
+ * - 应用级「首页」浮条：原生 TextView 胶囊浮在 WebView 之上、
  *   屏幕水平绝对居中，与网页布局完全解耦——此前把按钮注入网页顶栏，编程模式下
  *   顶栏内容变多会把右侧栏按钮挤到第二行；浮条盖在网页上，网页爱怎么排怎么排
  * - 原生上下边缘手势：从屏幕顶缘往下滑 / 底缘往上滑回首页（参数对齐电脑端左右栏
@@ -41,6 +55,16 @@ class DeviceActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var failBox: View
     private var loadUrlNow: String = ""
+
+    // HTTPS 优先状态：先试 https 同端口，主 frame 加载失败即回落 http（一次定论）
+    private var httpsTried = false
+    private var httpsOk = false
+
+    // 麦克风：网页 PermissionRequest 暂存（等运行时权限结果回来再 grant）
+    private var pendingAudioReq: PermissionRequest? = null
+
+    // 返回键：3 秒内第二次 = 回首页
+    private var lastBackAt = 0L
 
     // 边缘手势状态：0=无 1=顶缘 2=底缘
     private var edge = 0
@@ -121,17 +145,46 @@ class DeviceActivity : Activity() {
 
             override fun onPageFinished(v: WebView, url: String?) {
                 super.onPageFinished(v, url)
+                if (url != null && url.startsWith("https://")) httpsOk = true
+            }
+
+            override fun onReceivedSslError(v: WebView, handler: android.webkit.SslErrorHandler, error: android.net.http.SslError) {
+                // 自签白名单：只放行已配对网关（扫码建立过配对关系的 host），
+                // 其余一律走默认拒绝——不放行陌生站点
+                val host = try { Uri.parse(error.url).host } catch (e: Exception) { null }
+                if (host != null && host.equals(dev.host, ignoreCase = true)) {
+                    handler.proceed()
+                } else {
+                    handler.cancel()
+                }
             }
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 super.onReceivedError(v, req, err)
                 if (req.isForMainFrame && req.url.toString() == loadUrlNow) {
-                    runOnUiThread { showFail() }
+                    fallbackOrFail()
                 }
             }
         }
 
         web.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(req: PermissionRequest) {
+                // 语音听写的采集入口：只对已配对 host 放行麦克风（AUDIO_CAPTURE）。
+                // 应用须先持 RECORD_AUDIO 运行时权限，才能 grant 给网页
+                val host = try { req.origin.host } catch (e: Exception) { null }
+                val audio = req.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                if (audio && host != null && host.equals(dev.host, ignoreCase = true)) {
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        req.grant(req.resources)
+                    } else {
+                        pendingAudioReq = req
+                        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
+                    }
+                } else {
+                    req.deny()
+                }
+            }
+
             override fun onShowFileChooser(
                 v: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams,
             ): Boolean {
@@ -155,8 +208,29 @@ class DeviceActivity : Activity() {
         if (u.port > 0) u.port else (if (u.scheme == "https") 443 else 80)
 
     private fun loadEntry() {
-        loadUrlNow = dev.entryUrl()
+        // HTTPS 优先：语音输入需要安全上下文；网关多为自签证书——onReceivedSslError
+        // 对已配对 host 自动放行。不支持 https（握手/连接失败）由 onReceivedError 回落
+        httpsTried = false
+        httpsOk = false
+        val httpUrl = dev.entryUrl()
+        loadUrlNow = if (dev.scheme == "http") {
+            httpsTried = true
+            "https://" + httpUrl.removePrefix("http://")
+        } else {
+            httpUrl
+        }
         web.loadUrl(loadUrlNow)
+    }
+
+    /** 主 frame 加载失败：https 尝试失败 → 回落 http；http 也失败 → 失败浮层 */
+    private fun fallbackOrFail() {
+        if (httpsTried && !httpsOk) {
+            httpsTried = false
+            loadUrlNow = dev.entryUrl() // 原 http 入口
+            web.loadUrl(loadUrlNow)
+            return
+        }
+        runOnUiThread { showFail() }
     }
 
     private fun showFail() {
@@ -176,9 +250,43 @@ class DeviceActivity : Activity() {
         }
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_AUDIO) {
+            val req = pendingAudioReq
+            pendingAudioReq = null
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                try { req?.grant(req.resources) } catch (e: Exception) {}
+            } else {
+                try { req?.deny() } catch (e: Exception) {}
+                Toast.makeText(this, "未授予麦克风权限，语音输入不可用", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /* ---------- 返回键：交给网页守卫，双击直出 ---------- */
+
     override fun onBackPressed() {
-        // 系统返回 = 回首页（应用内的页面返回用它自己的返回按钮/手势）
-        super.onBackPressed()
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBackAt <= 3000) {
+            // 3 秒内第二次：回壳首页（不能拦住用户退不出去）
+            finish()
+            return
+        }
+        lastBackAt = now
+        // 第一次：交给网页的返回键守卫（对话页→呼出左栏 / 左栏→收回对话页 /
+        // 弹窗→关弹窗）；设置页走它自己的两级返回（goBack 触发 popstate）
+        web.evaluateJavascript(BACK_JS) { res ->
+            val r = (res ?: "").trim('"')
+            if (r == "settings" && web.canGoBack()) {
+                web.goBack()
+            } else if (r == "chat") {
+                runOnUiThread {
+                    Toast.makeText(this, "再按一次返回首页", Toast.LENGTH_SHORT).show()
+                }
+            }
+            // open/close/popover：网页已消费本次返回
+        }
     }
 
     override fun onDestroy() {
@@ -250,5 +358,32 @@ class DeviceActivity : Activity() {
     companion object {
         const val EXTRA_ID = "id"
         private const val REQ_FILE = 3
+        private const val REQ_AUDIO = 4
+
+        /**
+         * 返回键分派脚本（每次即时注入，不驻留——换页/路由重建都不怕）。
+         * 优先级复刻网页返回键守卫（app-left.js backGuardPop）：设置页（它自己有
+         * 两级 popstate 返回，壳子只负责 goBack 触发）> 弹出菜单（直接关）>
+         * 左栏开关（对话页→呼出 / 左栏开→收回，正是窄屏 toggleSidebar 的行为）。
+         * 返回值：settings | popover | open | close | chat
+         */
+        private const val BACK_JS = """
+            (function(){
+              try {
+                var set = document.getElementById('settings');
+                if (set && !set.classList.contains('hidden')) return 'settings';
+                if (document.querySelector('.popover:not(.hidden)')) {
+                  if (typeof closePopovers === 'function') closePopovers();
+                  return 'popover';
+                }
+                if (typeof isNarrow === 'function' && isNarrow() &&
+                    typeof toggleSidebar === 'function') {
+                  toggleSidebar();
+                  return document.body.classList.contains('sb-show') ? 'open' : 'close';
+                }
+                return 'chat';
+              } catch (e) { return 'chat'; }
+            })()
+        """
     }
 }
