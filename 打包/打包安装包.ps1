@@ -36,9 +36,7 @@ $modules = @{}
 # ★ 2026-10-12：递归扫描（含 user\ 子目录的用户技能，跳过 _runtime）——非递归会漏掉用户技能的依赖声明、校验假通过（实测曾漏 pywin32 全家；微信操作就在 user\ 下）
 Get-ChildItem $SkillsSource -Recurse -Depth 2 -Directory | Where-Object {
   $_.FullName -notmatch '\\_runtime(\\|$)' -and
-  Test-Path (Join-Path $_.FullName "manifest.json")
-} | ForEach-Object {
-  Test-Path (Join-Path $_.FullName "manifest.json")
+  (Test-Path (Join-Path $_.FullName "manifest.json"))
 } | ForEach-Object {
   # manifest 是 UTF-8：PS5.1 的 Get-Content 默认按 GBK 读会把中文读成
   # 乱码导致 JSON 解析失败、模块清单漏收（校验假通过），必须显式指定
@@ -93,15 +91,14 @@ if ($compCount -eq 0) { throw "组件目录里没有任何带 manifest.json 的�
 Copy-Item $compDir (Join-Path $stage "组件") -Recurse -Force
 Write-Host "== 内置组件 $compCount 个已暂存"
 
-# 本地语音识别的 Python worker（asr/asr_worker.py，跑在 技能\_runtime 的便携运行时上）：
-# 与 技能/、组件/ 同口径随包——缺它时语音组件的「本地语音识别模型」档一按听写就报
-# 「未找到 asr/asr_worker.py」（听写默认走云端，本地档可选，但缺文件仍要出包前拦住）。
-Write-Host "== 暂存本地语音识别 worker（asr/）"
-$asrDir = Join-Path $root "asr"
-if (-not (Test-Path (Join-Path $asrDir "asr_worker.py"))) {
-  throw "asr\asr_worker.py 缺失：$asrDir（本地语音识别通道的 worker，必须随包）"
+# 本地语音识别 worker 已随「组件/voice」自包含（worker 与模型迁入组件本体，
+# 见提交 623f93cb77），上方「暂存内置组件」已把它整体带入 stage\组件\voice；
+# 这里只做防呆校验：组件里缺 worker 同样拒绝出包（缺文件时语音组件的
+# 「本地语音识别模型」档一按听写就报「未找到 asr_worker.py」）。
+$asrWorker = Join-Path $compDir "voice\asr_worker.py"
+if (-not (Test-Path $asrWorker)) {
+  throw "组件\voice\asr_worker.py 缺失：$asrWorker（本地语音识别 worker 随组件分发，必须存在）"
 }
-Copy-Item $asrDir (Join-Path $stage "asr") -Recurse -Force
 
 # MD 查看器（装完即有）：单文件 exe 全自包含（WebView2 托管程序集与查看器
 # 模板均已内嵌），随包只带 exe + 使用说明两个文件；.md 关联由安装器装完时
