@@ -19,6 +19,8 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.WebChromeClient.CustomViewCallback
+import android.webkit.URLUtil
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
@@ -66,6 +68,10 @@ class DeviceActivity : Activity() {
     // 返回键：3 秒内第二次 = 回首页
     private var lastBackAt = 0L
 
+    // 全屏视频状态（onShowCustomView/onHideCustomView 用）
+    private var fullscreenView: View? = null
+    private var fullscreenCb: CustomViewCallback? = null
+
     // 边缘手势状态：0=无 1=顶缘 2=底缘
     private var edge = 0
     private var x0 = 0f
@@ -103,6 +109,12 @@ class DeviceActivity : Activity() {
         // 的竞态；已授予时此调用无感。之后网页 getUserMedia 到来即 grant
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO_PRE)
+        }
+        // Android 13+：下载完成通知权限（拒绝只是少个通知，下载本身不受阻）
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), REQ_AUDIO_PRE)
         }
 
         // 每台电脑独立缓存域（WebView 114+；旧版本退化为共享默认域+键级清理）
@@ -212,18 +224,78 @@ class DeviceActivity : Activity() {
             override fun onShowFileChooser(
                 v: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams,
             ): Boolean {
+                // 用 FileChooserParams.createIntent（带网页声明的 accept 类型），
+                // 兜底 ACTION_GET_CONTENT 全类型。系统 SAF 选择器自带全部权限，
+                // 应用自身无需任何存储权限
                 filePathCallback?.onReceiveValue(null)
                 filePathCallback = cb
                 try {
-                    val i = Intent(Intent.ACTION_GET_CONTENT)
-                    i.addCategory(Intent.CATEGORY_OPENABLE)
-                    i.type = "*/*"
+                    val i = try { params.createIntent() } catch (e: Exception) {
+                        Intent(Intent.ACTION_GET_CONTENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        }
+                    }
                     startActivityForResult(Intent.createChooser(i, "选择文件"), REQ_FILE)
                 } catch (e: Exception) {
                     filePathCallback = null
                     return false
                 }
                 return true
+            }
+
+            // 全屏视频（网页 requestFullscreen）：WebView 默认无响应，须实现
+            // onShowCustomView。最简版：盖满 Activity 根布局，退出还原
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (fullscreenView != null) {
+                    callback.onCustomViewHidden()
+                    return
+                }
+                fullscreenView = view
+                fullscreenCb = callback
+                (window.decorView as? android.widget.FrameLayout)?.addView(
+                    view,
+                    android.widget.FrameLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+                web.visibility = View.GONE
+                findViewById<android.widget.TextView>(R.id.home_chip).visibility = View.GONE
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+
+            override fun onHideCustomView() {
+                val v = fullscreenView ?: return
+                fullscreenView = null
+                (window.decorView as? android.widget.FrameLayout)?.removeView(v)
+                web.visibility = View.VISIBLE
+                findViewById<android.widget.TextView>(R.id.home_chip).visibility = View.VISIBLE
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                fullscreenCb?.onCustomViewHidden()
+                fullscreenCb = null
+            }
+        }
+
+        // 下载：WebView 默认点下载链接无响应，必须挂 DownloadListener →
+        // 系统 DownloadManager 落到公共 Downloads（下载不需要应用存储权限）
+        web.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+            try {
+                val req = android.app.DownloadManager.Request(Uri.parse(url))
+                    .setMimeType(mimeType)
+                    .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                val name = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                req.setDestinationInExternalPublicDir(
+                    android.os.Environment.DIRECTORY_DOWNLOADS, name,
+                )
+                val cookies = android.webkit.CookieManager.getInstance().getCookie(url)
+                if (cookies != null) req.addRequestHeader("cookie", cookies)
+                val dm = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
+                dm.enqueue(req)
+                android.widget.Toast.makeText(this, "开始下载：$name", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                android.util.Log.d("JxLink", "download fail: ${e.message}")
+                android.widget.Toast.makeText(this, "下载失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -291,6 +363,11 @@ class DeviceActivity : Activity() {
     /* ---------- 返回键：交给网页守卫，双击直出 ---------- */
 
     override fun onBackPressed() {
+        // 全屏视频先退全屏（不退出页面）
+        if (fullscreenView != null) {
+            web.webChromeClient?.onHideCustomView()
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         if (now - lastBackAt <= 3000) {
             // 3 秒内第二次：回壳首页（不能拦住用户退不出去）
@@ -315,6 +392,11 @@ class DeviceActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // 全屏视频残留兜底（正在全屏时退出页面）
+        fullscreenView?.let {
+            (window.decorView as? android.widget.FrameLayout)?.removeView(it)
+            fullscreenView = null
+        }
         try {
             (web.parent as? android.view.ViewGroup)?.removeView(web)
             web.destroy()

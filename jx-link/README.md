@@ -17,6 +17,15 @@
   2026-10-12 改造，此前注入网页顶栏的方案在编程模式下会把右侧栏按钮挤到第二行），
   点击回首页；从屏幕**顶缘下滑 / 底缘上滑**
   也回首页（仅认从边缘起手的滑动，中间滑对话不受影响，参数对齐电脑端左右栏手势）。
+- **浏览器配套（2026-10-13 补齐）**：权限清单对齐浏览器类应用——
+  RECORD_AUDIO + MODIFY_AUDIO_SETTINGS（缺后者报 Could not start audio source）、
+  ACCESS_NETWORK_STATE（navigator.onLine 等网络感知）、POST_NOTIFICATIONS
+  （Android 13+，下载完成通知；拒绝仅少通知）。文件上传走系统 SAF 选择器
+  （content:// 授权回传，**应用自身零存储权限**）；文件下载挂 DownloadManager
+  落公共 Downloads（WebView 默认点下载链接无响应，必须实现 DownloadListener）；
+  网页全屏视频实现 onShowCustomView/onHideCustomView（默认也是无响应）。
+  上传与麦克风已在模拟器（带音频）实测：picker 选图回传 File（名/大小/MIME 全对）、
+  getUserMedia OK。
 - **HTTPS 优先（2026-10-12）**：语音输入需要安全上下文（getUserMedia 仅 HTTPS）。
   壳子把 http 入口自动升级为 https 同端口加载，配对网关的自签证书自动「继续访问」
   （白名单只放行已配对 host，陌生站点照旧拒绝）；网关不支持 https 时自动回落
