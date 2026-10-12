@@ -64,7 +64,7 @@ func runSkillEntry(t *toolContext, skillID string, args []string, timeout time.D
 func pdfTool() Tool {
 	return Tool{
 		Spec: toolSpec("pdf",
-			"读取 PDF 文件。mode=diagnose 判断文字层是否可信（永远先跑它）；text 抽取文字；table 抽表格；image 把页面渲染成 PNG（自动以图片信封返回，配合 read_image 通路查看，扫描件/乱码件的正确通路）；embed 抽取内嵌图片。技能运行时随软件内置，无需用户安装环境。",
+			"读取 PDF 文件。mode=diagnose 判断文字层是否可信（永远先跑它）；text 抽取文字；table 抽表格；image 把页面渲染成 PNG（自动以图片信封返回，配合 read_image 通路查看，扫描件/乱码件的正确通路）；embed 抽取内嵌图片。要基于 PDF 内容产出或修改文档时，先出 MD 草稿（产出大纲 / 修改点清单）交用户确认后再动手。技能运行时随软件内置，无需用户安装环境。",
 			objSchema(map[string]any{
 				"mode":     map[string]any{"type": "string", "enum": []string{"diagnose", "text", "table", "image", "embed"}, "description": "读取模式"},
 				"path":     strProp("PDF 文件路径（相对或绝对）"),
