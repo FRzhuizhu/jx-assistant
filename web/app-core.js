@@ -678,6 +678,7 @@ function removeSessionLocalData(id) {
     localStorage.removeItem('jx.q.' + id); // 会话删除：引用草稿的本地痕迹一并清掉
     localStorage.removeItem('jx.subq.' + id);
   } catch (e) {}
+  delete rpSess[id]; // 右栏的会话作用域状态（app-right.js）：会话没了，状态跟着作废
   delete subActs[id];
   delete subDone[id];
   delete dotDone[id];

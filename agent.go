@@ -902,7 +902,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					uu := u
 					usage = &uu
 					sess.UsagePrompt += int64(u.PromptTokens)
-					sess.UsageCacheHit += int64(u.PromptCacheHit)
+					sess.UsageCacheHit += int64(u.CacheHit())
 					sess.UsageOutput += int64(u.CompletionTokens)
 					sess.UsageCalls++
 					_ = a.Store.TouchRunMeta(sess) // 只回写用量列，不覆盖并发的权限等配置改动

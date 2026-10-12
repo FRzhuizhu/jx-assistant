@@ -620,6 +620,18 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   一体（自己的 HTML/JS/CSS + 直连同源 API），加新面板只需建目录 + 一行
   `rpRegister`。「浏览器」视图是 native 型：工具栏/状态条为本界面 DOM，网页
   区域是占位 div，桌面模式下原生 WebView2 控件按上报矩形精确覆盖（见下）。
+- **右栏跟会话走（会话作用域状态，app-right.js 的 rpSess）**：右栏的开合、
+  正在看的视图、各视图内的选择（子对话选中、计划选中、文件页地址、Git 仓库）
+  都是**按对话独立**的状态——切换对话时整体切到目标对话自己的右栏（`openSession`
+  的 `rpSnapshot`/`rpRestoreSession`；回首页走 `resetEmpty` 的空态恢复），跨对话
+  共通的只有对话区宽度。视图经 `rpRegister` 的 `saveSession()`/`restoreSession(saved)`
+  挂点交出/就位自己的会话态，**视图与组件不再各自监听会话切换**（git 面板曾经的
+  `session:open` 监听、计划视图在 `loadSessionInto` 里的专有重置都已删掉，统一
+  走这条）；`browser` 这类全局态视图不挂钩子，切对话时行为不变。晚于会话切换
+  注册的视图（组件热加载）由 `rpRegister` 补恢复。状态只存内存：刷新页面回默认
+  （收起），会话删除随 `removeSessionLocalData` 一并清掉。**待审批计划自动打开
+  （`maybeAutoOpenPlan`）在恢复之后跑**，必要时把右栏翻到计划视图——审批优先于
+  恢复。
 - **两侧开合动画**：左右侧栏共用同一个 `slidePane()`（宽度过渡，起始宽先于
   `.anim` 提交保证起点正确；`transitionend` + 460ms 兜底双保险定版；拖拽调宽
   即时生效不经动画；`prefers-reduced-motion` 下自动禁用）；左侧栏宽度可拖
@@ -679,7 +691,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   摘要 / 环境快照 / 其他，堆叠进度条）与**缓存命中率**。纯展示无点击。数据来自
   `GET /api/sessions/{id}/context`：按 buildContext 同一组装规则估算各分类
   token；命中率来自每次模型调用流尾 `usage`（`stream_options.include_usage`，
-  含 DeepSeek 的 `prompt_cache_hit_tokens`），按会话累计落库（sessions 表
+  命中量按端点字段名归一，见 `Usage.CacheHit`：DeepSeek 的 `prompt_cache_hit_tokens`、OpenAI/智谱 GLM 的 `prompt_tokens_details.cached_tokens`、Anthropic 兼容层的 `cache_read_input_tokens`），按会话累计落库（sessions 表
   `usage_prompt/usage_cache_hit/usage_calls` 三列，迁移 0005）。
 - **对话区选中文字浮窗**：在主对话区或右栏子对话区选中文字后，浮出深色胶囊
   工具条（对齐主流 AI 编程助手的选区交互）：**复制**、**引用到下方输入框**

@@ -60,6 +60,7 @@ function resetEmpty() {
   $('sess-title').textContent = '数字助理';
   $('mode-badge').classList.add('hidden');
   rpClose();
+  rpRestoreSession(''); // 回首页：右栏各视图的会话态统一清空（Git 仓库跟随、子对话、计划、文件页）
   placeComposer();
   // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
   $('input').value = homeDraft.text || '';
@@ -84,6 +85,7 @@ function goHomeNewTask() {
   narrowClosePanels(); // 窄屏：从左栏浮层发起，选中目标即收起浮层
   if (marketOpen()) closeMarket(); // 新工作任务也是一张「对话页」：回首页即关掉市场页
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
+  if (state.cur) rpSnapshot(state.cur.id); // 回首页前记住这个对话的右栏状态（resetEmpty 会收起右栏）
   navTok.main++;          // 作废在途的会话加载（回首页是同步完成的导航）
   navBusy.main = false;
   state._pfxSid = null;   // 消息区的增量渲染缓存随之失效
@@ -104,6 +106,9 @@ async function openSession(id) {
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
+  // 右栏跟对话走：离开旧对话前快照它的右栏状态（同对话重开/兜底刷新不动右栏）
+  const oldSid = state.cur && state.cur.id;
+  if (oldSid && oldSid !== id) rpSnapshot(oldSid);
   const tok = ++navTok.main;
   navBusy.main = true;
   // 乐观切换：整包会话数据（含全部历史）在远程访问下要几秒，等待期间界面一步不动，
@@ -113,6 +118,9 @@ async function openSession(id) {
   // （refreshCurrent 等）都以目标为准，旧会话的晚到事件不可能再把界面顶回去
   const brief = (state.sessions || []).find((s) => s.id === id);
   if (brief && (!state.cur || state.cur.id !== id)) optimisticSwitch(mainView, brief);
+  // 右栏切到目标对话自己的状态（开合/视图/各视图选择；没记忆＝默认收起+空态）。
+  // 放在乐观切换之后：各视图的就位逻辑以 state.cur 为准，此刻它已是目标对话
+  if (oldSid !== id) rpRestoreSession(id);
   try {
     await loadSessionInto(id, tok);
   } catch (e) {
@@ -239,9 +247,9 @@ async function loadSessionInto(id, tok) {
   refreshDrawer();
   refreshCtxChip();
   loadProgress();
-  planSid = id;
-  planSel = ''; planPinned = ''; planWantSeq = 0; planWantQid = ''; // 换了对话：右栏计划的选择重置
-  if (rpActive === 'plan') loadPlanView();
+  // 右栏各视图已随切换就位（openSession 的 rpRestoreSession，计划/子对话/文件/Git
+  // 统一走那里）；这里只剩「本对话来了没自动开过的待审批计划」这一件事——
+  // 它在恢复之后跑，必要时把右栏翻到计划视图（比恢复优先：审批等不起）
   maybeAutoOpenPlan();
   renderMessages(state.msgs, mainView, { jump: true });
   renderQueueDock(mainView);
@@ -2496,8 +2504,8 @@ function buildQuestionCard(e, own) {
     // 整张卡可点 → 打开这份计划（输入框与按钮自己拦下冒泡，不误触）
     card.classList.add('clickable');
     card.title = planJump ? '点击跳到那个对话并查看这份计划的全文' : '点击查看这份计划的全文';
-    // 跳转要等 openSession 就位再开右栏：loadSessionInto 会重置计划视图的定位
-    // （planWantQid 等），先设会被切对话冲掉，落不到这份待审批的计划上。
+    // 跳转要等 openSession 就位再开右栏：切换对话时 rpRestoreSession 会清掉
+    // 一次性定位（planWantQid 等），先设会被切对话冲掉，落不到这份待审批的计划上。
     card.onclick = async () => {
       if (planJump) await openSession(planFrom);
       openPlanView(planFrom, 0, q.id);
@@ -3033,7 +3041,20 @@ $('plan-reject').onclick = () => {
   const v = $('plan-feedback').value.trim();
   decideQuestion(planCur.pendingId, v || '（未填写具体意见）');
 };
-rpRegister('plan', { title: '计划', order: 2, onOpen: () => { if (!planSid && state.cur) planSid = state.cur.id; loadPlanView(); } });
+rpRegister('plan', {
+  title: '计划', order: 2,
+  onOpen: () => { if (!planSid && state.cur) planSid = state.cur.id; loadPlanView(); },
+  // 会话态：视图绑定的会话（可能是子对话——从它的计划卡点开）+ 用户选中的那份
+  saveSession: () => ({ sid: planSid, sel: planSel, pinned: planPinned }),
+  restoreSession: (d) => {
+    planSid = (d && d.sid) || '';
+    planSel = (d && d.sel) || '';
+    planPinned = (d && d.pinned) || '';
+    planWantSeq = 0; planWantQid = ''; // 一次性定位是跳转意图，不跨对话
+    // 数据不在这里拉：面板开着时 rpOpen('plan') 的 onOpen 会 loadPlanView；
+    // 收着时等用户点开页签再拉（旧对话的正文不会被画出来）
+  },
+});
 
 /* ---------- 进度面板（progress_write）：对话区右上角的一枚浮窗，可折叠 ---------- */
 // 定位只有一个锚点：对话区（#main）的右上角。折叠＝一枚「进度」胶囊，展开＝从同一个

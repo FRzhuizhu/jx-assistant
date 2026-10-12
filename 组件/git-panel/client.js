@@ -9,9 +9,10 @@
  *     SVG 贝塞尔曲线画合并分叉，引用徽标标注分支/远程/标签，HEAD 高亮，紧凑单行），
  *     分支行可展开本地/远程分支清单，点提交看完整信息、文件清单与分文件 diff，可加载更早；
  *   - 布局：默认上下堆叠，可一键切左右分栏；分隔条可拖，比例与方向落盘记忆；
- *   - 跟随当前会话的工作区（JX 'session:open' 换仓库，'message:done' 自动刷新——
- *     AI 在对话里做的提交/合并，图谱随后就变）；面板打开 / 切仓库 / 页面重新可见
- *     时刷新一次，另有 12 秒轻量轮询（仅 status）。
+ *   - 跟随当前会话的工作区（右栏跟对话走：会话切换经 rpRegister 的
+ *     saveSession/restoreSession 统一恢复，选过的仓库一并记在该对话名下；
+ *     'message:done' 自动刷新——AI 在对话里做的提交/合并，图谱随后就变）；
+ *     面板打开 / 切仓库 / 页面重新可见时刷新一次，另有 12 秒轻量轮询（仅 status）。
  *
  * 安全与边界（与宿主半边 gitpanel.go 对应）：仓库只能选宿主扫描出的候选；
  * 写操作：暂存 / 取消暂存 / 提交 / 切换本地分支（分支名限宿主列出的清单，
@@ -186,7 +187,6 @@
     repoSel.title = '切换仓库（候选由服务端扫描）';
     repoSel.onchange = () => {
       S.repo = repoSel.value;
-      lsSet('jx.gitp.repo', S.repo);
       S.commits = []; S.branches = null; S.detail = null; S.commit = null;
       // 仓库换了：提交信息框清空，别把上一个仓库的信息提交到另一个仓库
       S.commitMsg = '';
@@ -1062,19 +1062,6 @@
 
   /* ---------- 数据加载 ---------- */
 
-  function syncSession() {
-    const cur = (typeof state !== 'undefined' && state.cur && state.cur.id) || '';
-    if (cur !== S.session) {
-      S.session = cur;
-      S.repo = ''; // 会话换了，工作区多半也换了：回默认仓库
-      S.commits = []; S.branches = null; S.detail = null; S.commit = null;
-      S.commitMsg = ''; // 同上：跟着工作区一起换的还有提交信息框
-      S.opError = '';
-      syncCommitBar();
-      lsSet('jx.gitp.repo', '');
-    }
-  }
-
   async function loadStatus() {
     try {
       const d = await gitGet('status');
@@ -1138,7 +1125,6 @@
   }
 
   function refreshAll() {
-    syncSession();
     loadStatus();
     loadGraph(true);
     loadBranches();
@@ -1147,7 +1133,7 @@
 
   /* ---------- 生命周期 ---------- */
 
-  let onSessionOpen = null, onMessageDone = null, onVisible = null;
+  let onMessageDone = null, onVisible = null;
 
   CX.register({
     id: ID,
@@ -1165,18 +1151,28 @@
       applyLayout();
       const body = $id('rp-body');
       if (body && !root.parentNode) body.appendChild(root);
+      // 会话切换经 rpRegister/rpRestoreSession 的 saveSession/restoreSession 挂点
+      // 统一驱动（右栏跟对话走），组件不再自己监听 session:open
       rpRegister('git', {
         title: 'Git',
-        onOpen() { syncSession(); refreshAll(); },
+        onOpen() { refreshAll(); },
+        saveSession() { return { repo: S.repo }; },
+        restoreSession(d) {
+          S.session = (typeof state !== 'undefined' && state.cur && state.cur.id) || '';
+          S.repo = (d && d.repo) || ''; // 会话换了，工作区多半也换了：恢复它选过的仓库，没有就默认
+          S.commits = []; S.branches = null; S.detail = null; S.commit = null;
+          S.commitMsg = ''; // 同上：跟着工作区一起换的还有提交信息框
+          S.opError = '';
+          syncCommitBar();
+          // 数据不在这里拉：面板开着时 rpOpen('git') 的 onOpen 会 refreshAll；
+          // 收着时等用户点开页签再拉
+        },
       });
       if (typeof rpRenderTabs === 'function') rpRenderTabs();
-      syncSession();
       render();
 
-      onSessionOpen = () => { syncSession(); if (rpActive === 'git') refreshAll(); };
       onMessageDone = () => { if (rpActive === 'git') { loadStatus(); loadGraph(true); } };
       onVisible = () => { if (rpActive === 'git' && !document.hidden) loadStatus(); };
-      JX.on('session:open', onSessionOpen);
       JX.on('message:done', onMessageDone);
       document.addEventListener('visibilitychange', onVisible);
       S.timer = setInterval(() => {
@@ -1185,8 +1181,7 @@
     },
     dispose() {
       if (S.timer) { clearInterval(S.timer); S.timer = null; }
-      JX._bus['session:open'] = (JX._bus['session:open'] || []).filter((f) => f !== onSessionOpen);
-      JX._bus['message:done'] = (JX._bus['message:done'] || []).filter((f) => f !== onMessageDone);
+      JX.off('message:done', onMessageDone);
       document.removeEventListener('visibilitychange', onVisible);
       delete rpViews.git;
       commitBar = null; // 提交框节点随 root 一起丢弃：下次激活重建（文本仍在 S.commitMsg 里）

@@ -44,9 +44,9 @@ type SessionMeta struct {
 	// 数字助理派发的工作任务是顶层会话（左侧任务列表可见）；dispatched_by 记
 	// 派发它的助理会话 id，作为回报链（服务重启的中断回报 / list_sessions 标记）。
 	DispatchedBy string `json:"dispatchedBy,omitempty"`
-	Archived   bool             `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
-	Unread     bool             `json:"unread,omitempty"`   // 标为未读：侧栏红点
-	Status     string           `json:"status,omitempty"`   // idle | running
+	Archived     bool   `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
+	Unread       bool   `json:"unread,omitempty"`   // 标为未读：侧栏红点
+	Status       string `json:"status,omitempty"`   // idle | running
 	// 最近一轮异常中断的类型（step=达到步数上限 / error=执行失败 / restart=服务在
 	// 执行期间重启，空=正常收口）：左侧栏把时间位换成「⚠ 已中断」提醒，与
 	// 「⟳ 运行中」同槽、天然互斥。值存在 meta 表（Store.SetLastStop），只由会话
@@ -54,12 +54,12 @@ type SessionMeta struct {
 	LastStop string `json:"lastStop,omitempty"`
 	// 累计用量（来自每次模型调用的流尾 usage，按 token 累加而非按次平均，
 	// 供上下文面板「Token 用量」分组：缓存命中% = hit/prompt）
-	UsagePrompt   int64 `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和（输入）
-	UsageCacheHit int64 `json:"usageCacheHit,omitempty"` // 历次调用 prompt_cache_hit_tokens 总和（缓存读取）
-	UsageOutput   int64 `json:"usageOutput,omitempty"`   // 历次调用 completion_tokens 总和（输出）
-	UsageCalls    int64 `json:"usageCalls,omitempty"`    // 模型调用次数
-	CreatedAt  string           `json:"createdAt"`
-	UpdatedAt  string           `json:"updatedAt"`
+	UsagePrompt   int64  `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和（输入）
+	UsageCacheHit int64  `json:"usageCacheHit,omitempty"` // 历次调用命中的缓存读取 token 总和（各端点字段名已归一）
+	UsageOutput   int64  `json:"usageOutput,omitempty"`   // 历次调用 completion_tokens 总和（输出）
+	UsageCalls    int64  `json:"usageCalls,omitempty"`    // 模型调用次数
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 func newID() string {

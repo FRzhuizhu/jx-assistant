@@ -115,7 +115,7 @@ func (r *ChatRequest) ApplyThinking(level string) {
 
 // StreamCallbacks 把流式输出回调给调用方：思考增量、正文增量、完整的工具调用
 // 与流尾的用量统计（DeepSeek/GLM 等兼容网关在最后一个 chunk 附带 usage，
-// 含 prompt_cache_hit_tokens 前缀缓存命中量）。
+// 含各形态的前缀缓存命中量，见 Usage.CacheHit）。
 type StreamCallbacks struct {
 	OnText      func(string)
 	OnReasoning func(string)
@@ -127,13 +127,62 @@ type StreamCallbacks struct {
 	OnRequest func(url string, body []byte)
 }
 
-// Usage 是流尾统计块（OpenAI 兼容 + DeepSeek 缓存命中扩展）。
+// Usage 是流尾统计块（OpenAI 兼容）。缓存命中量各端点字段名不一，取用一律
+// 走 CacheHit/CacheMiss，别直接读字段：
+//   - OpenAI/智谱 GLM：prompt_tokens_details.cached_tokens（OpenAI 标准口径；
+//     智谱 coding 端点实测只报这个——只认 DeepSeek 字段会让面板把明明命中的
+//     调用记成 0%）
+//   - DeepSeek：prompt_cache_hit_tokens / prompt_cache_miss_tokens（旧口径）
+//   - 部分网关的 Anthropic 兼容层：cache_read_input_tokens
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	PromptCacheHit   int `json:"prompt_cache_hit_tokens"`
 	PromptCacheMiss  int `json:"prompt_cache_miss_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// OpenAI 标准形态：{"prompt_tokens_details":{"cached_tokens":N}}
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// Anthropic 兼容层形态：usage 里的缓存读取量
+	CacheReadTokens int `json:"cache_read_input_tokens,omitempty"`
+}
+
+// PromptTokensDetails 是 OpenAI 标准 usage 明细块（cached_tokens=命中前缀量）。
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CacheHit 取本次调用命中的前缀缓存 token 数：各端点字段名归一（取最大非零）。
+func (u Usage) CacheHit() int {
+	hit := u.PromptCacheHit
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > hit {
+		hit = u.PromptTokensDetails.CachedTokens
+	}
+	if u.CacheReadTokens > hit {
+		hit = u.CacheReadTokens
+	}
+	return hit
+}
+
+// ReportsCache 报告本次 usage 是否带缓存统计：端点完全不报时用它区分
+// 「没命中」与「没统计」（前者由 CacheMiss 推出未命中量，后者两者皆 0）。
+func (u Usage) ReportsCache() bool {
+	return u.PromptCacheHit > 0 || u.PromptCacheMiss > 0 ||
+		u.PromptTokensDetails != nil || u.CacheReadTokens > 0
+}
+
+// CacheMiss 取未命中部分：端点明报 miss 就照用；只报命中量的端点（OpenAI
+// 口径）按 prompt-hit 推出；端点压根没报缓存统计则返回 0。
+func (u Usage) CacheMiss() int {
+	if u.PromptCacheMiss > 0 {
+		return u.PromptCacheMiss
+	}
+	if !u.ReportsCache() {
+		return 0
+	}
+	if hit := u.CacheHit(); u.PromptTokens > hit {
+		return u.PromptTokens - hit
+	}
+	return 0
 }
 
 // StreamChat 向解析后的 LLM 目标发起一轮流式对话。

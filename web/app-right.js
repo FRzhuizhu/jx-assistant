@@ -14,15 +14,73 @@
 
 const RP_MIN = 300;          // 右栏最小宽
 const RP_CONTENT_MIN = 640;  // 对话区最小宽（与拖把手一致）
-/* 视图注册表：id → { title, type, src, onOpen }（计划/文件…以后往这加）。
+/* 视图注册表：id → { title, type, src, onOpen, saveSession, restoreSession }
+   （计划/文件…以后往这加）。
    type 缺省 native：容器是 index.html 里的静态 DOM（id=rp-view-<id>），行为
    代码挂在本仓 js；type=iframe：视图是一个独立面板页（web/panel/<name>，
    经 rpContainerFor 惰性创建 iframe，首开加载、此后常驻不重载）——面板页
-   自成一体（自己的 HTML/JS/CSS + 直连同源 API），与主界面仅共享源。 */
+   自成一体（自己的 HTML/JS/CSS + 直连同源 API），与主界面仅共享源。
+   saveSession()/restoreSession(saved)：右栏跟会话走的统一挂点——每个视图把
+   「属于哪个会话的选择」（子对话选中、计划选中、文件页地址、Git 仓库…）
+   交给这里，切换对话时由 rpSnapshot / rpRestoreSession 统一快照与恢复，
+   视图自己不再各自监听会话切换（browser 这类全局态视图不挂，行为不变）。 */
 const rpViews = {};
 let rpActive = null;
 
-function rpRegister(id, def) { rpViews[id] = def; }
+/* ---------- 右栏的会话作用域状态：每个对话独立记住自己的右栏 ----------
+   右栏跟对话走：开合、正在看的视图、各视图内的选择都按会话保存，切换对话时
+   整体切到目标对话自己的状态；跨会话共通的只有对话区宽度（jx.contentWidth，
+   见上方宽度契约）。会话被删除时随 removeSessionLocalData 一并清掉。
+   状态只存内存：刷新页面回到默认（收起）——右栏是「对话进行中的工作台摆设」，
+   保存的子对话/文件可能早已被删，跨重启恢复只会带一批过期状态回来。 */
+const rpSess = {}; // 会话id -> { open: bool, view: '', views: { <视图id>: saveSession() 的返回值 } }
+
+function rpSessionOf(sid) {
+  return rpSess[sid] || (rpSess[sid] = { open: false, view: '', views: {} });
+}
+
+// 离开会话前快照右栏当前状态（openSession 切到别的对话 / goHomeNewTask 回首页时调；
+// 会话被删除不用调——它的状态直接随 removeSessionLocalData 作废）
+function rpSnapshot(sid) {
+  if (!sid) return;
+  const panel = $('rpanel');
+  const st = rpSessionOf(sid);
+  st.open = !!(panel && !panel.classList.contains('hidden'));
+  st.view = rpActive || rpLastView || ''; // 开着记当前视图；收着记上次看的（rpClose 已统一记录）
+  st.views = {};
+  for (const [id, def] of Object.entries(rpViews)) {
+    if (typeof def.saveSession !== 'function') continue;
+    try { st.views[id] = def.saveSession(); } catch (e) { /* 单视图快照失败不拖累整体 */ }
+  }
+}
+
+// 换到目标会话：所有视图先就位该会话的状态（含未激活的——之后点开页签看到的
+// 也是本会话内容），再按该会话的记忆开合面板。没有记忆的对话＝默认态（收起 +
+// 各视图空），所以哪怕视图没挂 save/restore 钩子，切换本身也会把旧对话的
+// 子对话/计划/文件从右栏清出去。maybeAutoOpenPlan（本对话来了待审批计划）
+// 在这之后跑，可以覆盖恢复结果。
+function rpRestoreSession(sid) {
+  // sid 为空 = 回首页态：不建条目，所有视图清空、右栏收起（Git 等组件的会话跟随一并归位）
+  const st = sid ? rpSessionOf(sid) : { open: false, view: '', views: {} };
+  for (const [id, def] of Object.entries(rpViews)) {
+    if (typeof def.restoreSession !== 'function') continue;
+    try { def.restoreSession(st.views[id]); } catch (e) { /* 单视图失败不拖累整体 */ }
+  }
+  if (st.view) rpLastView = st.view; // 收着展开时回到本会话上次看的视图
+  if (st.open && st.view && rpViews[st.view]) rpOpen(st.view);
+  else rpClose();
+}
+
+function rpRegister(id, def) {
+  rpViews[id] = def;
+  // 视图晚于会话切换注册（组件热加载 / 组件加载晚于首个 openSession）：
+  // 当前会话的右栏状态已初始化过（rpSess 有条目），这里补恢复这个视图，
+  // 否则它带着初始（或上一次）的会话选择直到下次切换
+  const sid = state.cur && state.cur.id;
+  if (sid && rpSess[sid] && typeof def.restoreSession === 'function') {
+    try { def.restoreSession(rpSess[sid].views[id]); } catch (e) { /* 单视图失败不拖累整体 */ }
+  }
+}
 
 // 取（必要时创建）视图容器：native 用静态 DOM，iframe 视图惰性建 iframe 挂进 #rp-body
 function rpContainerFor(view) {
@@ -33,7 +91,7 @@ function rpContainerFor(view) {
   el.id = 'rp-view-' + view;
   el.className = 'rp-view rp-view-iframe';
   const f = document.createElement('iframe');
-  f.src = def.src;
+  f.src = def.src || 'about:blank'; // 没声明 src 的视图（如文件页）：空白起步，由打开/恢复逻辑填地址
   f.title = def.title || view;
   el.appendChild(f);
   $('rp-body').appendChild(el);
@@ -112,6 +170,7 @@ function rpClose() {
   const panel = $('rpanel');
   if (!panel || panel.classList.contains('hidden')) return;
   document.body.classList.remove('rp-open');
+  rpLastView = rpActive || rpLastView; // 收起前记下正看的视图：✕ 按钮与 toggle 都走这里，展开时回到它
   rpActive = null;
   setRpanelBtn(false);
   if (typeof renderPanels === 'function') renderPanels(); // 右栏收起：它的子对话待办转回主对话区
@@ -143,7 +202,8 @@ function rpToggle(view) {
   else rpClose();
 }
 
-/* 顶栏最右的开合按钮（与左侧栏按钮同款交互）：收起后再展开回到上次看的视图 */
+/* 顶栏最右的开合按钮（与左侧栏按钮同款交互）：收起后再展开回到上次看的视图
+   （rpClose 里已统一记录，这里只需展开） */
 let rpLastView = null; // 收起前在看的视图 id
 
 function setRpanelBtn(open) {
@@ -161,7 +221,6 @@ function toggleRpanel() {
     const first = Object.keys(rpViews)[0];
     rpOpen(rpLastView && rpViews[rpLastView] ? rpLastView : first);
   } else {
-    rpLastView = rpActive;
     rpClose();
   }
 }
@@ -262,6 +321,30 @@ function renderSubDDPop() {
   pop.appendChild(neu);
 }
 
+// 子对话视图回空态：当前主对话没有选中的子对话（没建过，或保存的那个已被删除）。
+// 换主对话时 rpRestoreSession 走这里把上一个对话的子对话彻底清出右栏。
+function subClearCurrent() {
+  if (subState.streaming) detachStream(subView); // 只放开本地流，子对话在后台照旧跑完
+  navTok.sub++;        // 作废在途的子对话加载：晚到的旧响应不得再落地
+  navBusy.sub = false;
+  subState.cur = null;
+  subState.msgs = [];
+  subState.pendingSteer = []; subState.pendingQueue = [];
+  subState.checkpoints = []; subState.deliveries = [];
+  subState.streamText = ''; subState.streamThinking = '';
+  subState.queuePaused = false; subState.queueHeld = false;
+  subState._loading = false; subState._pfxSid = null;
+  hideRunError(subView);
+  subRenderHeader();
+  renderQueueDock(subView);
+  syncComposer(subView);     // 右栏输入区控件回空态（无会话的中性默认）
+  syncComposerPad(subView);
+  renderPanels();            // 子对话的待办卡随之回到主对话区/角标堆
+  subView.col.innerHTML = '<div class="empty"><h2>子对话</h2><p>顶部下拉选择或新建子对话；数字助理派发的子对话也出现在这里。</p></div>';
+  $('sub-input').value = ''; // 没有选中的子对话：不留上一个子对话的草稿
+  autoGrow($('sub-input'));
+}
+
 // 子对话只在右栏显示，绝不切换主对话区
 async function openSubSession(id) {
   // 右栏换子对话：同样先放开本地这条流（后端执行照旧，回来自动接上）
@@ -304,8 +387,11 @@ async function openSubSession(id) {
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
     if (!subState.streaming && (data.running || subState.cur.status === 'running')) attachRun(subView);
   } catch (e) {
+    if (tok !== navTok.sub) return;
+    // 会话已被删除（换对话时恢复的子对话可能早没了）：回空态，别留一个永远失败的重试
+    if (e && e.status === 404) { subClearCurrent(); return; }
     // 加载失败：留在目标子对话的壳里给原因与重试（openSession 同款语义）
-    if (tok === navTok.sub) showChatLoadError(subView, e.message, () => {
+    showChatLoadError(subView, e.message, () => {
       // 重试先手动补加载反馈：subState.cur 已是目标子对话，乐观分支会跳过
       subView.state._loading = true;
       showChatLoading(subView);
@@ -341,7 +427,18 @@ $('sub-send').onclick = () => send(null, subView);
 $('sub-stop').onclick = () => stopRun(subView);
 $('sub-input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => send(null, subView)));
 $('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
-rpRegister('subs', { title: '子对话', order: 1, onOpen: () => { refreshDrawer(); syncComposer(subView); } }); // 右侧边栏：注册首个视图
+rpRegister('subs', { // 右侧边栏：注册首个视图
+  title: '子对话', order: 1,
+  onOpen: () => { refreshDrawer(); syncComposer(subView); },
+  // 会话态：这个主对话正看着哪个子对话（'' = 没选中）
+  saveSession: () => (subState.cur && subState.cur.id) || '',
+  restoreSession: (saved) => {
+    refreshDrawer(); // 子对话清单跟着主对话换（乐观阶段就刷，下拉里别闪上一个对话的清单）
+    const subId = saved || '';
+    if (subId) openSubSession(subId);
+    else subClearCurrent();
+  },
+});
 
 /* ---------- 浏览器视图（桌面=原生 WebView2 面板 / Electron=<webview> / 网页=占位提示） ---------- */
 /* 工具栏与状态条由本界面渲染；旧桌面壳的网页区域是 #bpw-stage 占位 div，原生
@@ -458,8 +555,24 @@ rpRegister('browser', {
 /* ---------- 文件视图（代码/文本查看页，桌面/网页/远程三端一致） ---------- */
 /* iframe 挂 /api/fileview（fileview.go 渲染的自包含页：等宽 + 行号 + 截断保护），
  * 不依赖右栏原生 WebView2 面板与 file://——原生面板是 overlay 子窗口，矩形同步
- * 偶发失联时用户只看到空白；查看页是普通 HTML，网页端与远程手机端同样能看。 */
-rpRegister('file', { title: '文件', type: 'iframe', order: 2 });
+ * 偶发失联时用户只看到空白；查看页是普通 HTML，网页端与远程手机端同样能看。
+ * 会话态＝iframe 当前地址：文件页属于打开它的那个对话，切换对话时整体切换。 */
+rpRegister('file', {
+  title: '文件', type: 'iframe', order: 2,
+  saveSession: () => {
+    const cont = $('rp-view-file');
+    if (!cont) return ''; // 从没开过文件页：没有可记的
+    const f = cont.querySelector('iframe');
+    return (f && f.src && f.src !== 'about:blank') ? f.src : '';
+  },
+  restoreSession: (src) => {
+    const cont = $('rp-view-file');
+    if (!cont) return; // 没开过就没有可清的；有保存地址时容器必然已建（save 端保证）
+    const f = cont.querySelector('iframe');
+    const u = src || 'about:blank';
+    if (f && f.src !== u) f.src = u;
+  },
+});
 
 function openInFileViewer(sid, path) {
   const u = '/api/fileview?sid=' + encodeURIComponent(sid) + '&path=' + encodeURIComponent(path);
