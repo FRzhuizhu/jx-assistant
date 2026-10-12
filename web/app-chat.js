@@ -791,6 +791,7 @@ function groupTurns(msgs, resultOf, base) {
     if (build) build(m, st);
   }
   st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv };
+  st.turns.base = st.base; // 挂在返回的 turns 上：renderMessages 接力给正文段的分组
   return st.turns;
 }
 
@@ -1839,6 +1840,13 @@ function renderMessages(msgs, view, opts) {
   // 刚发出、等回显的「发送中」占位（最末位，晚于插话）
   const ps = pendingSendOf(st, msgs, sid);
   if (ps) tail.appendChild(pendingSendBubble(ps.content));
+  // live 气泡（正在流式输出的那团）尾部重建时被删掉又还没被 liveRender 重建：
+  // 已在 DOM 里的话挪进尾部、钉在插话上方——插话/发送占位始终是最底下等待者
+  const live = document.getElementById(view.liveId);
+  if (live && st.streaming) {
+    const anchor = tail.querySelector('[data-pending-steer], .msg.pending-send');
+    if (anchor) tail.insertBefore(live, anchor); else tail.appendChild(live);
+  }
   box.appendChild(tail);
   followScroll(view, jump);
   if (view === mainView) scheduleFolds(); // 长消息折叠：渲染完按实际高度重算（只主对话）
@@ -1931,6 +1939,16 @@ function renderStreamingTurn(box, turn, key) {
 }
 
 let rafPending = false;
+// live 气泡（正在流式输出的思考/正文）的落位：插话气泡是「还没生效、排在
+// 所有进行中内容之后等待」的排队者——live 永远插在它上方，插话钉在最底
+// （此前的 bug：插话渲染后 live 重建被 appendChild 到末尾，插话反被顶到
+// 「正在思考的输出」上面，看起来像已经插队进了上下文）。
+function liveInsert(view, el) {
+  const col = view.col;
+  const anchor = col.querySelector('[data-pending-steer], .msg.pending-send');
+  if (anchor) col.insertBefore(el, anchor);
+  else col.appendChild(el);
+}
 function liveRender(view) {
   view = view || mainView;
   if (rafPending) return;
@@ -1947,7 +1965,7 @@ function liveRender(view) {
           '<div class="proc-head">' + chev('p-chev') + '<span class="p-name">思考中…</span></div>' +
           '<div class="proc-body"><div class="tk-text"></div></div>' +
         '</div><div class="md"></div>';
-      view.col.appendChild(el);
+      liveInsert(view, el);
       bindProcToggle(el.querySelector('#' + view.liveId + '-think'));
     }
     const tk = el.querySelector('.proc-row');
