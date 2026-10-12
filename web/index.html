@@ -548,7 +548,7 @@
             <div class="set-field">
               <div class="sf-label">对话中途发送行为</div>
               <div id="sel-midrun"></div>
-              <p class="sf-desc">插话不打断执行：消息在模型下一次调用前注入本轮；等待则排入队列，本轮彻底结束后逐条发送。</p>
+              <p class="sf-desc">插话不打断执行：消息会插队进去，模型下一步就能看到；等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
           </div>
           <div class="gen-section">
@@ -631,7 +631,7 @@
                 <input id="set-remote-host" class="pf-input" style="flex:1" autocomplete="off" spellcheck="false">
                 <input id="set-remote-port" class="pf-input" type="number" min="1" max="65535" style="width:90px">
               </div>
-              <p class="sf-desc">中继网关（210 网关 server.js）的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
+              <p class="sf-desc">中继网关的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
             </div>
           </div>
           <div class="gen-section">
@@ -639,7 +639,7 @@
             <div class="set-field">
               <div class="sf-label">市场服务器</div>
               <input id="set-market-url" class="pf-input" placeholder="http://网关地址:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">jxai-server 市场的清单地址（同一台服务器上与中继网关共用端口）；填好即用，改动即时生效。留空则市场页显示未配置。</p>
+              <p class="sf-desc">市场的清单地址；填好即用，改动即时生效。留空则市场页显示未配置。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">发布者姓名</div>
@@ -664,7 +664,7 @@
             <div class="set-field">
               <div class="sf-label">更新检查源</div>
               <input id="set-update-url" class="pf-input" placeholder="http://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">软件更新检查地址（jxai-server 的 /updates/latest，或 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。</p>
+              <p class="sf-desc">软件更新检查地址（填 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">软件更新</div>
@@ -715,7 +715,6 @@
                 <label class="pr-toggle"><input type="checkbox" id="set-snapshot-on"><span></span></label>
                 <span class="sf-desc" id="set-snapshot-state"></span>
               </div>
-              <p class="sf-desc">write_file / edit_file 与 snapshot_file 的改动前内容会存进工作区的 .jxai/snapshots，供编辑历史消息或按轮撤销时回退文件；关闭后不再记录新快照。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">自动清理（天）</div>
@@ -730,7 +729,7 @@
         <div class="set-pane" id="set-pane-experts">
           <h3>子对话专家</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">名称即调用参数：主对话派发子对话时填 expert=名称，追加提示词、默认模型与上下文继承完全按该专家的预设生效（换模型可用 model 参数）。下方每个名称与后端可调用的专家清单同源一致；停用的专家对主对话不可见；名称要保持唯一。</div>
+            <div class="tip-inline" style="margin:0 0 10px">停用的专家对主对话不可见；名称要保持唯一。</div>
             <button id="expert-add-btn" class="pf-add">＋ 添加专家</button>
           </div>
           <div class="gen-section">
@@ -754,7 +753,7 @@
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
           <div class="prov-section skill-drop-zone">
-            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把显示名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。<b>支持把 .zip 压缩包或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
+            <div class="tip-inline" style="margin:0 0 10px">技能 = 带说明与脚本的能力包。<b>支持把 .zip 压缩包或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
             <button id="skill-add-btn" class="pf-add">＋ 添加技能</button>
           </div>
           <div class="gen-section">
@@ -792,7 +791,7 @@
         <div class="set-pane" id="set-pane-plugins">
           <h3>插件</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">统一插件页：主体发现各「插件兼容层」，各层发现自己生态的插件，下方按来源体系分组。支持安装的体系在此提供安装入口（当前：Claude Code 格式）；hooks / mods / MCP 属执行型组件，默认关闭、需逐个显式开启。输入框输入 / 可触发插件命令。独立 MCP 服务在「MCP」分区管理。</div>
+            <div class="tip-inline" style="margin:0 0 10px">当前支持 Claude Code 格式的插件安装；输入框输入 / 可触发插件命令。独立 MCP 服务在「MCP」分区管理。</div>
             <div class="ccp-install-row">
               <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL（Claude Code 格式）" />
               <button id="ccp-install-btn" class="pf-add">安装</button>

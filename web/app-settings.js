@@ -1944,7 +1944,7 @@ function buildExpertCard(e) {
   grid.className = 'pf-two ex-form-grid';
   const inName = document.createElement('input');
   inName.className = 'pf-input';
-  inName.placeholder = '专家名称（主对话派发时填它）';
+  inName.placeholder = '专家名称';
   inName.value = e.name;
   inName.oninput = () => { e.name = inName.value; };
   grid.appendChild(mk('名称', inName));
@@ -1961,7 +1961,7 @@ function buildExpertCard(e) {
 
   const inDesc = document.createElement('input');
   inDesc.className = 'pf-input';
-  inDesc.placeholder = '给主对话看的选用依据（会列进 dispatch_sub 的工具说明）';
+  inDesc.placeholder = '给主对话看的选用依据';
   inDesc.value = e.description;
   inDesc.oninput = () => { e.description = inDesc.value; };
   form.appendChild(mk('描述', inDesc, true));
