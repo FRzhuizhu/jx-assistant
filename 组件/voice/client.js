@@ -1132,14 +1132,31 @@
         finish('当前页面无法访问麦克风（需 https 或本机地址）');
         return;
       }
-      navigator.mediaDevices.getUserMedia({
+      // 开麦两级：先带效果链（回声消除+降噪），失败降级到最简 {audio:true} 再试一次
+      // （2026-10-12 真机排查：部分设备/WebView 对效果链初始化失败，报
+      // 「Could not start audio source」——降级后可正常打开；两级都败才算真失败）
+      const openMic = () => navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      }).then((stream) => {
+      }).catch((e1) => {
+        console.error('[voice] mic with effects failed:', e1 && e1.name, e1 && e1.message);
+        return navigator.mediaDevices.getUserMedia({ audio: true })
+          .catch((e2) => { throw e1; }); // 降级也败：报原始错误（更有诊断价值）
+      });
+      openMic().then((stream) => {
         if (!sess.active || sess.done) { // 会话已被收掉（快速点按）：直接放掉麦克风
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
-        sess.rec = makeLocalRec(stream);
+        // 构造即持有麦克风：构造抛异常必须当场停流，否则 AudioRecord 被占死，
+        // 之后每次开麦都「Could not start audio source」（真机踩过）
+        try {
+          sess.rec = makeLocalRec(stream);
+        } catch (e) {
+          console.error('[voice] makeLocalRec failed:', e && e.message);
+          stream.getTracks().forEach((t) => t.stop());
+          finish('本地识别初始化失败：' + (e && e.message ? e.message : e));
+          return;
+        }
         sess.live = true;
         clearT('connectTimer');
         setSpin(false);
