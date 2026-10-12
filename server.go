@@ -52,6 +52,7 @@ type App struct {
 	approvals       map[string]*Approval     // 等待用户决定的越权审批（perm.go）
 	permNotes       map[string]string        // 待落快照的「权限变更」注记（perm.go，env 通道）
 	observedFiles   sync.Map                 // 会话内已观察文件集（观察策略，perm.go）
+	skillGuideOnce  sync.Map                 // 会话内已随工具结果附带过 SKILL.md 指南的技能（key: 会话id\x00技能id，tool_docs.go 的 appendSkillGuide）
 	questions       map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
 	jobsMu          sync.Mutex
 	jobs            map[string]*jobRun // 会话内后台作业（jobs.go）
