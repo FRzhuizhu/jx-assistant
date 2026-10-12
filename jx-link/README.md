@@ -22,6 +22,10 @@
   （白名单只放行已配对 host，陌生站点照旧拒绝）；网关不支持 https 时自动回落
   http，一切如旧——浏览器扫码访问仍是 http，只有壳子享受 https。麦克风经
   `onPermissionRequest` 对配对 host 放行（首次弹系统权限框）。
+  **麦克风权限清单是两个**：RECORD_AUDIO（运行时）+ **MODIFY_AUDIO_SETTINGS**
+  （普通权限）——缺后者时 getUserMedia 报 `NotReadableError: Could not start
+  audio source`（真机与模拟器都复现，2026-10-13 修复）。origin 匹配兼容
+  `blob:https://host:port/...`（P2P 直连模式的远程外壳挂在 blob origin 上）。
 - **返回键（2026-10-12）**：第一次交给网页的返回键守卫——对话页→呼出左栏、
   左栏→收回对话页、弹窗/设置页逐层收敛（设置页走它自己的两级 popstate 返回）；
   **3 秒内第二次返回 = 回壳首页**（不拦用户退出）。
