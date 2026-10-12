@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1A1D24">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/scan_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginTop="60dp"
+        android:gravity="center"
+        android:text="对准电脑端 设置 · 网络访问 的二维码"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:shadowColor="#99000000"
+        android:shadowDx="0" android:shadowDy="1" android:shadowRadius="6" />
+
+    <Button
+        android:id="@+id/btn_torch"
+        android:layout_width="wrap_content"
+        android:layout_height="44dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="48dp"
+        android:background="@drawable/bg_btn_secondary"
+        android:paddingStart="28dp"
+        android:paddingEnd="28dp"
+        android:text="手电筒"
+        android:textColor="@color/text1"
+        android:textSize="15sp"
+        android:stateListAnimator="@null" />
+
+    <TextView
+        android:id="@+id/perm_hint"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#F5F6F8"
+        android:gravity="center"
+        android:padding="40dp"
+        android:text="需要相机权限才能扫码\n请在系统设置里允许「助理连接」使用相机"
+        android:textColor="@color/text2"
+        android:textSize="14sp"
+        android:lineSpacingExtra="4dp"
+        android:visibility="gone" />
+</FrameLayout>

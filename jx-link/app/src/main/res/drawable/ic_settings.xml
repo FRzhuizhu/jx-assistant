@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 设置（齿轮，路径与电脑端顶栏设置图标同源） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12,12m-3,0a3,3 0 1,1 6,0a3,3 0 1,1 -6,0"
+        android:strokeWidth="2" android:strokeColor="#1F2329"
+        android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"/>
+    <path android:pathData="M19.4,15a1.7,1.7 0 0,0 0.34,1.87l0.06,0.06a2,2 0 1,1 -2.83,2.83l-0.06,-0.06a1.7,1.7 0 0,0 -1.87,-0.34a1.7,1.7 0 0,0 -1,1.55V21a2,2 0 1,1 -4,0v-0.09a1.7,1.7 0 0,0 -1,-1.55a1.7,1.7 0 0,0 -1.87,0.34l-0.06,0.06a2,2 0 1,1 -2.83,-2.83l0.06,-0.06a1.7,1.7 0 0,0 0.34,-1.87a1.7,1.7 0 0,0 -1.55,-1H3a2,2 0 1,1 0,-4h0.09a1.7,1.7 0 0,0 1.55,-1a1.7,1.7 0 0,0 -0.34,-1.87l-0.06,-0.06a2,2 0 1,1 2.83,-2.83l0.06,0.06a1.7,1.7 0 0,0 1.87,0.34h0a1.7,1.7 0 0,0 1,-1.55V3a2,2 0 1,1 4,0v0.09a1.7,1.7 0 0,0 1,1.55h0a1.7,1.7 0 0,0 1.87,-0.34l0.06,-0.06a2,2 0 1,1 2.83,2.83l-0.06,0.06a1.7,1.7 0 0,0 -0.34,1.87v0a1.7,1.7 0 0,0 1.55,1H21a2,2 0 1,1 0,4h-0.09a1.7,1.7 0 0,0 -1.55,1z"
+        android:strokeWidth="2" android:strokeColor="#1F2329"
+        android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"/>
+</vector>

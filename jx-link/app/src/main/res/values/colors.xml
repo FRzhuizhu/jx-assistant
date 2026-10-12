@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与电脑端 UI 同族配色：浅底、蓝主色 -->
+    <color name="bg">#F5F6F8</color>
+    <color name="card">#FFFFFF</color>
+    <color name="border">#E2E4E9</color>
+    <color name="accent">#4D6BFE</color>
+    <color name="text1">#1F2329</color>
+    <color name="text2">#8A909C</color>
+    <color name="ok">#2EA043</color>
+    <color name="offline">#9AA0A6</color>
+    <color name="danger">#D43C3C</color>
+
+    <!-- 自适应图标背景色：与桌面端 logo（白底黑图形）保持一致，同主壳 -->
+    <color name="launcher_bg">#FFFFFF</color>
+</resources>

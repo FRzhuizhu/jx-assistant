@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FFFFFF">
+
+    <WebView
+        android:id="@+id/web"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 应用级首页浮条：原生胶囊浮在网页之上、屏幕水平绝对居中（top|center_horizontal），
+         不参与网页布局——网页顶栏爱怎么排怎么排，浮条只负责盖在中间。点击回首页 -->
+    <TextView
+        android:id="@+id/home_chip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:background="@drawable/bg_home_chip"
+        android:drawableStart="@drawable/ic_home"
+        android:drawablePadding="5dp"
+        android:elevation="4dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxWidth="200dp"
+        android:minHeight="30dp"
+        android:paddingStart="13dp"
+        android:paddingEnd="13dp"
+        android:singleLine="true"
+        android:text="设备名"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <!-- 加载失败浮层：网关不可达/长时间打不开时给出口 -->
+    <LinearLayout
+        android:id="@+id/load_fail"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_card"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/fail_msg"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="连接不上这台电脑"
+            android:textColor="@color/text1"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="请检查电脑端是否在线、网关是否可达\n或稍后重试"
+            android:textColor="@color/text2"
+            android:textSize="13sp"
+            android:lineSpacingExtra="3dp" />
+
+        <Button
+            android:id="@+id/btn_retry"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_btn_primary"
+            android:text="重试"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:stateListAnimator="@null" />
+
+        <Button
+            android:id="@+id/btn_back_home"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_btn_secondary"
+            android:text="返回首页"
+            android:textColor="@color/text1"
+            android:textSize="15sp"
+            android:stateListAnimator="@null" />
+    </LinearLayout>
+</FrameLayout>
