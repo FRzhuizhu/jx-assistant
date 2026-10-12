@@ -98,6 +98,13 @@ class DeviceActivity : Activity() {
             setOnClickListener { finish() }
         }
 
+        // 预申请麦克风（2026-10-12 修）：首次进设备页就把系统权限框弹掉，
+        // 消除「网页请求麦克风 → 系统框弹出 → 用户切去设置 → 网页侧超时被拒」
+        // 的竞态；已授予时此调用无感。之后网页 getUserMedia 到来即 grant
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO_PRE)
+        }
+
         // 每台电脑独立缓存域（WebView 114+；旧版本退化为共享默认域+键级清理）
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
             try {
@@ -168,10 +175,26 @@ class DeviceActivity : Activity() {
         }
 
         web.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(msg: android.webkit.ConsoleMessage): Boolean {
+                // 网页 console 转发到 logcat（tag JxLinkJS）：远程页面静默失败时定位用
+                android.util.Log.d(
+                    "JxLinkJS",
+                    "${msg.message()} @ ${msg.sourceId()}:${msg.lineNumber()}",
+                )
+                return true
+            }
+
             override fun onPermissionRequest(req: PermissionRequest) {
                 // 语音听写的采集入口：只对已配对 host 放行麦克风（AUDIO_CAPTURE）。
-                // 应用须先持 RECORD_AUDIO 运行时权限，才能 grant 给网页
-                val host = try { req.origin.host } catch (e: Exception) { null }
+                // 应用须先持 RECORD_AUDIO 运行时权限，才能 grant 给网页。
+                // origin 可能是 blob:https://host:port/uuid（P2P 直连模式的远程外壳
+                // 页面挂在 blob origin 上）——Uri.parse 对 blob: 取 host 是 null，
+                // 必须剥掉 blob: 前缀再解析，否则会被误判成陌生站点而 deny
+                val u = req.origin
+                val host = try {
+                    if (u.scheme == "blob") Uri.parse(u.toString().removePrefix("blob:")).host
+                    else u.host
+                } catch (e: Exception) { null }
                 val audio = req.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
                 if (audio && host != null && host.equals(dev.host, ignoreCase = true)) {
                     if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -181,6 +204,7 @@ class DeviceActivity : Activity() {
                         requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
                     }
                 } else {
+                    android.util.Log.d("JxLink", "deny permission origin=$u host=$host devHost=${dev.host}")
                     req.deny()
                 }
             }
@@ -252,7 +276,7 @@ class DeviceActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_AUDIO) {
+        if (requestCode == REQ_AUDIO || requestCode == REQ_AUDIO_PRE) {
             val req = pendingAudioReq
             pendingAudioReq = null
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
@@ -359,6 +383,7 @@ class DeviceActivity : Activity() {
         const val EXTRA_ID = "id"
         private const val REQ_FILE = 3
         private const val REQ_AUDIO = 4
+        private const val REQ_AUDIO_PRE = 5 // 进设备页预申请（结果与网页请求共用一段处理）
 
         /**
          * 返回键分派脚本（每次即时注入，不驻留——换页/路由重建都不怕）。

@@ -370,7 +370,12 @@
     scKeyUp = (e) => {
       if (!active) return;
       const k = normKey(e);
-      if (k) heldKey.delete(k);
+      if (k) {
+        // keyup 也拦一道（keydown 已拦）：Windows 上 Alt 松开会触发系统菜单/工具栏
+        // 焦点转移等默认行为，防焦点被带离输入框（2026-10-12）
+        if (shortcutAlternatives().some((a) => a.includes(k))) e.preventDefault();
+        heldKey.delete(k);
+      }
       shortcutFire('release');
     };
     scMouseDown = (e) => {
@@ -885,8 +890,19 @@
       try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
       // 收尾必须把常驻提示收掉（录音中…/正在识别…）：否则它会挂在输入框下面
       // 不消失（用户报过：整段说完、消息都发出去了还显示「已出 N 句」）
-      if (msg) setHint(msg, 4000); else setHint('');
+      if (msg) setHint(msg, 8000); else setHint('');
       if (toast) voiceToast(toast);
+      // 焦点归还（2026-10-12 修）：点按钮开启听写后焦点一直挂在麦克风按钮上，
+      // 按 Alt 停止后按回车，激活的是按钮（反复开关语音）而不是发送。收尾时
+      // 若焦点还停在本按钮或游离在 body 上（开启语音前没点过输入框），把光标
+      // 还给输入框并放到末尾——回车即可发送。焦点在别处（如设置页）时不打扰。
+      const ae = document.activeElement;
+      if (ae === btn || ae === document.body) {
+        try {
+          view.input.focus();
+          view.input.setSelectionRange(view.input.value.length, view.input.value.length);
+        } catch (e) { /* 非 text 控件忽略 */ }
+      }
     };
     // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾；
     // 等待期按钮转圈 +「正在识别…」，让用户知道识别还在跑（这一秒原先没有任何反馈）。
@@ -1131,9 +1147,11 @@
         setHint(wsHint(), 0);
       }).catch((e) => {
         const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
+        // 诊断留痕（壳子端 onConsoleMessage 转发到 logcat，现场排查用）
+        console.error('[voice] getUserMedia failed:', e && e.name, e && e.message);
         finish(desktopShell() && !denied
           ? '麦克风不可用：请检查 Windows 设置 → 隐私 → 麦克风'
-          : (denied ? '麦克风未授权：请在浏览器里允许麦克风权限' : '麦克风不可用：' + (e && e.message ? e.message : e)));
+          : (denied ? '麦克风未授权：请在系统弹窗允许「助理连接」使用麦克风（手机系统设置 → 应用 → 助理连接 → 权限 → 麦克风）' : '麦克风不可用：' + (e && e.message ? e.message : e)));
       });
     };
 
@@ -1241,6 +1259,13 @@
       setProgressHint(dictationIsLocal() ? '正在打开麦克风…' : '正在连接语音服务…');
       if (sess.sweepTimer) clearInterval(sess.sweepTimer);
       sess.sweepTimer = setInterval(sweep, VOICE_SWEEP_MS);
+      // 开启听写即把光标交给输入框（2026-10-12 修）：点按钮开启时焦点此刻正落在
+      // 按钮上，不交走的话之后按回车会反复触发本按钮（开关语音）而不是发送；
+      // 语音文字的落点本来就是输入框，光标放末尾，说完/打字无缝衔接。
+      try {
+        view.input.focus();
+        view.input.setSelectionRange(view.input.value.length, view.input.value.length);
+      } catch (e) { /* 非 text 控件忽略 */ }
       startOnce();
     };
 
