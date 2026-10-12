@@ -890,7 +890,7 @@
       try { if (rec && rec.isLocal) rec.abort(); else if (rec) rec.stop(); } catch (e) { /* 已结束 */ }
       // 收尾必须把常驻提示收掉（录音中…/正在识别…）：否则它会挂在输入框下面
       // 不消失（用户报过：整段说完、消息都发出去了还显示「已出 N 句」）
-      if (msg) setHint(msg, 8000); else setHint('');
+      if (msg) setHint(msg, 4000); else setHint('');
       if (toast) voiceToast(toast);
       // 焦点归还（2026-10-12 修）：点按钮开启听写后焦点一直挂在麦克风按钮上，
       // 按 Alt 停止后按回车，激活的是按钮（反复开关语音）而不是发送。收尾时
@@ -1132,31 +1132,14 @@
         finish('当前页面无法访问麦克风（需 https 或本机地址）');
         return;
       }
-      // 开麦两级：先带效果链（回声消除+降噪），失败降级到最简 {audio:true} 再试一次
-      // （2026-10-12 真机排查：部分设备/WebView 对效果链初始化失败，报
-      // 「Could not start audio source」——降级后可正常打开；两级都败才算真失败）
-      const openMic = () => navigator.mediaDevices.getUserMedia({
+      navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      }).catch((e1) => {
-        console.error('[voice] mic with effects failed:', e1 && e1.name, e1 && e1.message);
-        return navigator.mediaDevices.getUserMedia({ audio: true })
-          .catch((e2) => { throw e1; }); // 降级也败：报原始错误（更有诊断价值）
-      });
-      openMic().then((stream) => {
+      }).then((stream) => {
         if (!sess.active || sess.done) { // 会话已被收掉（快速点按）：直接放掉麦克风
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
-        // 构造即持有麦克风：构造抛异常必须当场停流，否则 AudioRecord 被占死，
-        // 之后每次开麦都「Could not start audio source」（真机踩过）
-        try {
-          sess.rec = makeLocalRec(stream);
-        } catch (e) {
-          console.error('[voice] makeLocalRec failed:', e && e.message);
-          stream.getTracks().forEach((t) => t.stop());
-          finish('本地识别初始化失败：' + (e && e.message ? e.message : e));
-          return;
-        }
+        sess.rec = makeLocalRec(stream);
         sess.live = true;
         clearT('connectTimer');
         setSpin(false);
@@ -1164,11 +1147,9 @@
         setHint(wsHint(), 0);
       }).catch((e) => {
         const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
-        // 诊断留痕（壳子端 onConsoleMessage 转发到 logcat，现场排查用）
-        console.error('[voice] getUserMedia failed:', e && e.name, e && e.message);
         finish(desktopShell() && !denied
           ? '麦克风不可用：请检查 Windows 设置 → 隐私 → 麦克风'
-          : (denied ? '麦克风未授权：请在系统弹窗允许「助理连接」使用麦克风（手机系统设置 → 应用 → 助理连接 → 权限 → 麦克风）' : '麦克风不可用：' + (e && e.message ? e.message : e)));
+          : (denied ? '麦克风未授权：请在浏览器里允许麦克风权限' : '麦克风不可用：' + (e && e.message ? e.message : e)));
       });
     };
 
