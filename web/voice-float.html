@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<!-- 全局语音输入法 · 胶囊浮窗页（voicefloat_windows.go 创建的置顶小窗口加载）
+  · 交互：Go 侧经 ExecuteScript 调 __vgStart(epoch) / __vgStop() / __vgDone(pasted)；
+    收尾结果用 POST /api/voice/global/finish {text, epoch} 回传（代数校验防串场）。
+  · 识别：与 组件/voice/client.js 同一套本地引擎节奏——0.6 秒短停顿出草稿
+    （半透明白字实时显示在胶囊里）、3 秒长停顿定稿（亮白字）、连续 18 秒强制
+    定稿、结束时尾段整段精修；POST /api/c/voice/asr/transcribe（语音组件 worker）。
+  · 落字：会话内只累积不落任何输入框；结束后 Go 侧统一「剪贴板 + Ctrl+V」。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>语音输入</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: transparent; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --accent: #4d6bfe;
+  }
+  #pill {
+    box-sizing: border-box; height: 100%; display: flex; align-items: center;
+    gap: 10px; padding: 0 16px; border-radius: 24px;
+    background: var(--accent); color: #fff;
+    box-shadow: 0 6px 24px rgba(0,0,0,.28);
+    transition: opacity .18s ease;
+  }
+  #pill.dim { opacity: .82; }
+  .mic { flex: none; width: 18px; height: 18px; }
+  .mic rect, .mic path { fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
+  .waves { flex: none; display: flex; align-items: center; gap: 3px; height: 18px; }
+  .waves i {
+    width: 3px; border-radius: 2px; background: rgba(255,255,255,.95);
+    animation: wv 1s ease-in-out infinite;
+  }
+  .waves i:nth-child(1) { height: 6px; animation-delay: -.1s; }
+  .waves i:nth-child(2) { height: 12px; animation-delay: -.3s; }
+  .waves i:nth-child(3) { height: 16px; animation-delay: -.5s; }
+  .waves i:nth-child(4) { height: 10px; animation-delay: -.7s; }
+  .waves.paused i { animation-play-state: paused; opacity: .45; }
+  @keyframes wv { 0%,100% { transform: scaleY(.55); } 50% { transform: scaleY(1); } }
+  #text {
+    flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+    font-size: 14px; line-height: 20px; display: flex; justify-content: flex-end;
+  }
+  #text .final { color: #fff; }
+  #text .draft { color: rgba(255,255,255,.55); }
+  #text .hint { color: rgba(255,255,255,.75); }
+  #tail { flex: none; font-size: 11.5px; color: rgba(255,255,255,.6); white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div id="pill" class="dim">
+    <svg class="mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
+    <div class="waves" id="waves"><i></i><i></i><i></i><i></i></div>
+    <div id="text"><span class="hint">正在聆听…（再按侧键结束）</span></div>
+    <div id="tail"></div>
+  </div>
+<script>
+(function () {
+  'use strict';
+  var SPEECH_MIN_MS = 350, DRAFT_PAUSE_MS = 600, FINAL_PAUSE_MS = 3000, SEG_MAX_MS = 18000;
+  var TAIL_WAIT_MS = 8000;
+
+  var pill = document.getElementById('pill');
+  var waves = document.getElementById('waves');
+  var textEl = document.getElementById('text');
+  var tailEl = document.getElementById('tail');
+
+  var st = {
+    epoch: 0, running: false, finalText: '', draftText: '',
+    pending: 0, ctx: null, stream: null, node: null,
+    aborted: false, doneNotified: false
+  };
+
+  // 主题色：跟随主程序设置（/api/config 的 accentColor，缺省默认蓝）
+  fetch('/api/config').then(function (r) { return r.json(); }).then(function (c) {
+    if (c && c.accentColor) document.body.style.setProperty('--accent', c.accentColor);
+  }).catch(function () {});
+
+  function render() {
+    if (!st.running && !st.finalText && !st.draftText) return;
+    textEl.innerHTML = '';
+    if (st.finalText) {
+      var f = document.createElement('span'); f.className = 'final';
+      f.textContent = st.finalText; textEl.appendChild(f);
+    }
+    if (st.draftText) {
+      var d = document.createElement('span'); d.className = 'draft';
+      d.textContent = st.draftText; textEl.appendChild(d);
+    }
+    // 长文字：右对齐自然显示最新内容（flex justify-end + nowrap 截头）
+  }
+  function showHint(msg, tail) {
+    textEl.innerHTML = '';
+    var h = document.createElement('span'); h.className = 'hint'; h.textContent = msg;
+    textEl.appendChild(h);
+    tailEl.textContent = tail || '';
+  }
+
+  /* ---------- 与组件同款的采集/识别（16k 单声道 → WAV base64 → worker） ---------- */
+  function pcmToWavB64(floats, sr) {
+    var len = floats.length, buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
+    function wstr(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
+    wstr(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); wstr(8, 'WAVE');
+    wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    wstr(36, 'data'); v.setUint32(40, len * 2, true);
+    for (var i = 0; i < len; i++) {
+      var s = Math.max(-1, Math.min(1, floats[i]));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    var u8 = new Uint8Array(buf), bin = '';
+    for (i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  function transcribe(floats) {
+    st.pending += 1;
+    return fetch('/api/c/voice/asr/transcribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'transcribe', model: 'xasr', device: 'cpu', wav_b64: pcmToWavB64(floats, 16000) })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).finally(function () { st.pending -= 1; });
+  }
+  function joinFrames(frames) {
+    var total = 0, i;
+    for (i = 0; i < frames.length; i++) total += frames[i].length;
+    var out = new Float32Array(total), off = 0;
+    for (i = 0; i < frames.length; i++) { out.set(frames[i], off); off += frames[i].length; }
+    return out;
+  }
+
+  /* ---------- 会话 ---------- */
+  window.__vgStart = function (epoch) {
+    if (st.running && st.epoch === epoch) return;
+    // 复用窗口的残留状态整体复位（快速开关、异常中断都靠这里兜住）
+    teardownMic();
+    st.epoch = epoch; st.running = true; st.aborted = false; st.doneNotified = false;
+    st.finalText = ''; st.draftText = ''; st.pending = 0;
+    waves.classList.remove('paused');
+    showHint('正在聆听…（再按侧键结束）');
+    pill.classList.remove('dim');
+    navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+    }).then(function (stream) {
+      if (!st.running || st.epoch !== epoch) { // 已被新会话顶替
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
+      st.stream = stream;
+      var ctx = new AudioContext({ sampleRate: 16000 });
+      st.ctx = ctx;
+      var src = ctx.createMediaStreamSource(stream);
+      var node = ctx.createScriptProcessor(4096, 1, 1);
+      st.node = node;
+      runVAD(node);
+      src.connect(node);
+      node.connect(ctx.destination);
+    }).catch(function (e) {
+      fail(e && e.name === 'NotAllowedError' ? '麦克风未授权' : '麦克风不可用');
+    });
+  };
+
+  // VAD：与组件 makeLocalRec 同一套阈值与噪声底自适应
+  function runVAD(node) {
+    var seg = [], speechMs = 0, silenceMs = 0, segSpeechMs = 0;
+    var noiseFloor = 0.004;
+    var sinceFinal = [], sinceFinalMs = 0, finalSilenceMs = 0, padMs = 0;
+    var draftEpoch = 0, ended = false;
+    node.onaudioprocess = function (ev) {
+      if (ended || !st.running) return;
+      var f = ev.inputBuffer.getChannelData(0), sum = 0, i;
+      for (i = 0; i < f.length; i++) sum += f[i] * f[i];
+      var rms = Math.sqrt(sum / f.length);
+      var frameMs = (f.length / 16000) * 1000;
+      var isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
+      if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
+      if (isSpeech) {
+        var f32 = new Float32Array(f);
+        seg.push(f32); sinceFinal.push(f32);
+        speechMs += frameMs; segSpeechMs += frameMs; sinceFinalMs += frameMs;
+        silenceMs = 0; finalSilenceMs = 0;
+      } else if (speechMs > 0) {
+        silenceMs += frameMs; finalSilenceMs += frameMs;
+        if (sinceFinalMs > 0 && padMs < 1500) {
+          sinceFinal.push(new Float32Array(f));
+          padMs += frameMs;
+        }
+      }
+      // 短停顿：草稿（胶囊里半透明白字，即时反馈）
+      if (segSpeechMs >= SPEECH_MIN_MS && silenceMs >= DRAFT_PAUSE_MS) {
+        var frames = seg, spoken = segSpeechMs;
+        seg = []; segSpeechMs = 0;
+        if (spoken >= SPEECH_MIN_MS && frames.length * 256 >= 1600) {
+          var ep = draftEpoch;
+          transcribe(joinFrames(frames)).then(function (d) {
+            if (!st.running || ep !== draftEpoch || !d || !d.text) return;
+            st.draftText = (st.draftText + d.text).slice(-120); // 胶囊限宽：显示尾部
+            render();
+          }).catch(function () {});
+        }
+      }
+      // 长停顿 3 秒 / 连续 18 秒：定稿（整段重识别，替换草稿）
+      if (sinceFinalMs >= SEG_MAX_MS || (sinceFinalMs >= SPEECH_MIN_MS && finalSilenceMs >= FINAL_PAUSE_MS)) {
+        draftEpoch += 1;
+        seg = []; segSpeechMs = 0; speechMs = 0; silenceMs = 0;
+        var fr2 = sinceFinal, sp2 = sinceFinalMs;
+        sinceFinal = []; sinceFinalMs = 0; finalSilenceMs = 0; padMs = 0;
+        st.draftText = '';
+        if (sp2 >= SPEECH_MIN_MS && fr2.length * 256 >= 1600) {
+          transcribe(joinFrames(fr2)).then(function (d) {
+            if (!st.running || !d || !d.text) return;
+            st.finalText += d.text;
+            render();
+          }).catch(function () { /* 失败保留：结束时整段还有一次机会 */ });
+        }
+      }
+    };
+    st.teardownVAD = function () { ended = true; node.onaudioprocess = null; };
+  }
+
+  function teardownMic() {
+    if (st.teardownVAD) { try { st.teardownVAD(); } catch (e) {} st.teardownVAD = null; }
+    if (st.node) { try { st.node.disconnect(); } catch (e) {} st.node = null; }
+    if (st.stream) { st.stream.getTracks().forEach(function (t) { t.stop(); }); st.stream = null; }
+    if (st.ctx) { try { st.ctx.close(); } catch (e) {} st.ctx = null; }
+  }
+
+  window.__vgStop = function () {
+    if (!st.running) return;
+    st.running = false;
+    waves.classList.add('paused');
+    showHint('正在收尾…', '');
+    teardownMic();
+    // 等在途识别清零（≤8s），把最后未定稿的文字一并带回
+    var t0 = Date.now();
+    (function tick() {
+      if (st.pending === 0 || Date.now() - t0 >= TAIL_WAIT_MS) {
+        notifyDone();
+        return;
+      }
+      setTimeout(tick, 120);
+    })();
+  };
+
+  function notifyDone() {
+    if (st.doneNotified) return;
+    st.doneNotified = true;
+    var text = (st.finalText + st.draftText).trim();
+    st.lastEmpty = text === '';
+    st.finalText = ''; st.draftText = '';
+    fetch('/api/voice/global/finish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text, epoch: st.epoch })
+    }).catch(function () {});
+  }
+
+  function fail(msg) {
+    if (!st.running) return;
+    st.running = false;
+    teardownMic();
+    waves.classList.add('paused');
+    showHint(msg, '');
+    st.doneNotified = true;
+    fetch('/api/voice/global/finish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '', epoch: st.epoch })
+    }).catch(function () {});
+  }
+
+  window.__vgDone = function (pasted) {
+    waves.classList.add('paused');
+    var msg = pasted ? '已输入 ✓' : (st.lastEmpty ? '未识别到语音' : '已复制到剪贴板');
+    showHint(msg, '');
+    pill.classList.add('dim');
+  };
+})();
+</script>
+</body>
+</html>
