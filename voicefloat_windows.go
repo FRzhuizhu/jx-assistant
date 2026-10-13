@@ -9,7 +9,8 @@ package main
 // 窗口纪律：
 //   - WS_POPUP 无边框 + WS_EX_TOPMOST 置顶 + WS_EX_NOACTIVATE 不抢键盘焦点
 //     （听写期间用户继续在目标程序里打字/光标不动）+ WS_EX_TOOLWINDOW 不进
-//     任务栏与 Alt+Tab；Win11 上用 DWM 圆角偏好包出胶囊感（Win10 退化为方角）。
+//     任务栏与 Alt+Tab；SetWindowRgn 把窗口裁成真胶囊（圆角半径=高/2，
+//     CreateRoundRectRgn），页面铺满主题色即得胶囊观感，Win10/Win11 一致。
 //   - 所有 COM / 窗口调用一律发生在桌面壳的**主 UI 线程**（与 browser_panel
 //     同一纪律，经 mainWndDispatch 投递）：WebView2 的第二个环境必须在主线程
 //     创建——2026-10-13 实测在自建线程上创建时 go-webview2 的环境回调会拿到
@@ -46,14 +47,13 @@ const (
 	vfSWHide           = 0
 	vfSWShowNoActivate = 4
 	vfSPIGetWorkArea   = 48
-	vfDwmWACorner      = 33 // DWMWA_WINDOW_CORNER_PREFERENCE
-	vfDwmCornerRound   = 2  // DWMWCP_ROUND
 )
 
 var (
 	procVfSystemParametersInfo = windows.NewLazySystemDLL("user32.dll").NewProc("SystemParametersInfoW")
 	procVfIsWindow             = windows.NewLazySystemDLL("user32.dll").NewProc("IsWindow")
-	procVfDwmSetWindowAttr     = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
+	procVfSetWindowRgn         = windows.NewLazySystemDLL("user32.dll").NewProc("SetWindowRgn")
+	procVfCreateRoundRectRgn   = windows.NewLazySystemDLL("gdi32.dll").NewProc("CreateRoundRectRgn")
 	// 剪贴板写（读在 clipboard_windows.go；这三个只在写路径用）
 	procVfEmptyClipboard    = windows.NewLazySystemDLL("user32.dll").NewProc("EmptyClipboard")
 	procVfSetClipboardData  = windows.NewLazySystemDLL("user32.dll").NewProc("SetClipboardData")
@@ -126,8 +126,9 @@ func vfCreateOnUI() (err error) {
 			err = fmt.Errorf("WebView2 初始化崩溃（go-webview2 回调异常）: %v", r)
 		}
 	}()
-	// 尺寸与落位：宽 580、高 48（物理像素），工作区底部居中、任务栏上方 14px
-	const wfW, wfH = 580, 48
+	// 尺寸与落位：宽 400、高 56（物理像素，微信浮窗的比例），工作区底部居中、
+	// 任务栏上方 14px
+	const wfW, wfH = 400, 56
 	l, _, r, b := vfWorkArea()
 	if r <= l || b <= 0 { // 拿不到工作区（异常环境）：退到主屏右下角估算
 		l, r, b = 0, 1920, 1040
@@ -148,9 +149,14 @@ func vfCreateOnUI() (err error) {
 	if hwnd == 0 {
 		return fmt.Errorf("CreateWindowExW 失败: %v", err)
 	}
-	// Win11 圆角偏好（胶囊观感）；旧系统调用失败直接忽略
-	_, _, _ = procVfDwmSetWindowAttr.Call(hwnd, uintptr(vfDwmWACorner),
-		uintptr(unsafe.Pointer(&[]int32{vfDwmCornerRound}[0])), 4)
+	// 真胶囊：窗口区域裁成圆角半径=高/2 的圆角矩形。此前靠页面里自画的圆角
+	// 胶囊 + DWM 小圆角（约 8px），矩形窗口的四角在胶囊弧线外露出一条"圆角
+	// 矩形包裹"的底色边——窗口本身裁成胶囊后页面只需铺满主题色（2026-10-13）。
+	rgn, _, _ := procVfCreateRoundRectRgn.Call(0, 0, uintptr(wfW), uintptr(wfH),
+		uintptr(wfH/2), uintptr(wfH/2))
+	if rgn != 0 {
+		procVfSetWindowRgn.Call(hwnd, rgn, 1)
+	}
 
 	// 麦克风免授权：环境创建参数（创建后立即还原，不影响别的环境）
 	const autoGrantMic = "--use-fake-ui-for-media-stream"

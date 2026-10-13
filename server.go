@@ -1059,6 +1059,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"voiceGlobal": map[string]any{
 			"enabled": a.Cfg.VoiceGlobal.Enabled == nil || *a.Cfg.VoiceGlobal.Enabled,
 			"mode":    map[bool]string{true: "hold", false: "tap"}[a.Cfg.VoiceGlobal.Mode == "hold"],
+			"altKey":  a.Cfg.VoiceGlobal.AltKey == nil || *a.Cfg.VoiceGlobal.AltKey,
 		},
 		"accentColor": a.Cfg.AccentColor,
 	})
@@ -1096,6 +1097,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		VoiceGlobal *struct {
 			Enabled *bool  `json:"enabled"` // 全局语音输入法开关（装卸系统钩子，热生效）
 			Mode    string `json:"mode"`    // tap=点按切换（默认）| hold=按住说话
+			AltKey  *bool  `json:"altKey"`  // 独按 Alt 的全局键盘钩子（页面副快捷键含 Alt 时 true）
 		} `json:"voiceGlobal"`
 		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：全局语音浮窗等独立环境取色
 		Providers *[]struct {
@@ -1261,6 +1263,9 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			a.Cfg.VoiceGlobal.Mode = m
+		}
+		if body.VoiceGlobal.AltKey != nil {
+			a.Cfg.VoiceGlobal.AltKey = body.VoiceGlobal.AltKey
 		}
 	}
 	if body.AccentColor != nil {

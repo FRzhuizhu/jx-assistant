@@ -121,7 +121,26 @@
     if (Array.isArray(v)) return v.length ? v : [];
     return which === 'main' ? ['mouse-side'] : ['alt'];
   }
-  function setShortcutSlot(which, v) { pref.set(which === 'main' ? 'scMain' : 'scSub', v); }
+  function setShortcutSlot(which, v) {
+    pref.set(which === 'main' ? 'scMain' : 'scSub', v);
+    syncGlobalAltKey(); // 副快捷键变了 → 同步 Go 侧独按 Alt 全局钩子的开关
+  }
+
+  // 副快捷键（默认独按 Alt）在窗口外的全局触发靠 Go 侧的键盘钩子
+  //（voiceglobal_windows.go，WebView2 页面收不到别的程序里的按键）：页面把
+  // 自己的副快捷键配置同步过去——副键含 Alt 才启用钩子，改成别的/清空就关
+  // 掉，否则全局 Alt 会与页面配置脱节（用户清空快捷键后按 Alt 仍弹浮窗）。
+  let vgAltKeyLast = null;
+  function syncGlobalAltKey() {
+    if (!desktopShell() || window.JX_REMOTE) return;
+    const want = shortcutSlot('sub').includes('alt');
+    if (want === vgAltKeyLast) return;
+    vgAltKeyLast = want;
+    fetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceGlobal: { altKey: want } }),
+    }).catch(() => { vgAltKeyLast = null; }); // 失败：下次变更/重启再同步
+  }
 
   // 触发备选＝两个槽里没被停用的那些
   function shortcutAlternatives() {
@@ -165,6 +184,7 @@
   const heldKey = new Set();   // 当前按着的键盘键
   const heldMouse = new Set(); // 当前按着的鼠标键
   let holdSession = false;     // 长按会话进行中
+  let holdGlobal = false;      // 本次长按会话的落点：true=全局浮窗，false=本地输入框
   let firedLatch = false;      // 点按已触发，等快捷键全部松开后复位
   let captureMode = false;     // 设置页录制快捷键时暂停引擎
   let captureCtl = null;       // 当前录制会话（重复点击录制按钮时作废旧会话）
@@ -241,42 +261,57 @@
   }
 
   // 独按修饰键状态（如默认备选里的 Alt）：按住期间按了别的键就解除，
-  // 防止用户按 Alt+X 组合时误触语音
-  let armedSolo = null; // { key, started }（started=hold 模式已开说话）
+  // 防止用户按 Alt+X 组合时误触语音；global＝布防时定的落点（全局浮窗/本地）
+  let armedSolo = null; // { key, started, global }（started=hold 模式已开说话）
 
   function cancelSolo() {
     if (!armedSolo) return;
     if (armedSolo.started) {
       holdSession = false;
-      const ctl = activeVoiceCtl();
-      if (ctl && ctl.active()) ctl.stop();
+      if (armedSolo.global) {
+        fetch('/api/voice/global/stop', { method: 'POST' }).catch(() => {});
+      } else {
+        const ctl = activeVoiceCtl();
+        if (ctl && ctl.active()) ctl.stop();
+      }
     }
     armedSolo = null;
   }
 
   function shortcutFire(action, key) { // action: 'press' | 'release'；key＝本次按下的那个键
     if (!active || captureMode || !document.hasFocus()) return;
-    // 全局转发（2026-10-13 全局语音输入法）：桌面壳里焦点不在主/子输入框
-    //（git 面板、设置页、右栏浏览器等任何地方）时，快捷键不再把听写落到主
-    // 输入框，而是转发给后端弹全局胶囊浮窗（voiceglobal_windows.go，结束后
-    // 粘贴回这里的输入框/复制到剪贴板）。与微信输入法同款两分法：对话框内
-    // 走原有灰字听写，对话框外走浮窗。请求失败（浏览器形态/远程端/旧版后端）
-    // 静默忽略，本次按键不触发本地听写——避免浮窗与本地双开抢麦克风。
-    if (desktopShell() && !window.JX_REMOTE && action === 'press') {
-      const ae0 = document.activeElement;
-      if (!ae0 || (ae0.id !== 'input' && ae0.id !== 'sub-input')) {
-        fetch('/api/voice/global/start', { method: 'POST' }).catch(() => {});
-        return;
-      }
-      // 对称防双录：焦点在输入框、即将开本地听写——先静默收掉可能开着的
-      // 全局浮窗会话（用户浮窗没关就切回来按快捷键的场景）；stop 只收不 toggle。
-      fetch('/api/voice/global/stop', { method: 'POST' }).catch(() => {});
-    }
-    const ctl = activeVoiceCtl();
-    if (!ctl) return;
     lastInputAt = Date.now(); // 刷新"最近一次真实输入"时刻（残留清理心跳用）
     const alts = shortcutAlternatives();
     const mode = voiceShortcutMode();
+    // 全局语音输入法的页面侧分工（2026-10-13）：桌面壳里焦点不在主/子输入框
+    //（git 面板、设置页、右栏浏览器等任何地方）时，快捷键触发不再把听写落到
+    // 主输入框，而是转发后端弹全局胶囊浮窗（voiceglobal_windows.go，结束后
+    // 粘贴回这里的输入框/复制到剪贴板），与微信输入法同款两分法。转发只发生
+    // 在下方「确实按下了某个快捷键」的判定点——此前它挂在函数开头、组合判定
+    // 之前，每次鼠标按下（包括普通左键）都会撞进来直接开浮窗，在软件里点哪
+    // 都弹（2026-10-13 修）。请求失败（浏览器形态/远程端/旧版后端）静默忽略，
+    // 本次不触发本地听写——避免浮窗与本地双开抢麦克风。
+    const inMainInput = (() => {
+      const ae = document.activeElement;
+      return !!ae && (ae.id === 'input' || ae.id === 'sub-input');
+    })();
+    const desktopGlobal = desktopShell() && !window.JX_REMOTE;
+    const fire = (what, useGlobal) => { // what: 'toggle' | 'start' | 'stop'
+      if (useGlobal) {
+        fetch('/api/voice/global/' + (what === 'toggle' ? 'start' : what), { method: 'POST' }).catch(() => {});
+        return;
+      }
+      if (desktopGlobal && what !== 'stop') {
+        // 对称防双录：即将开本地听写——先静默收掉可能开着的全局浮窗会话（用户
+        // 浮窗没关就切回来按快捷键的场景）；stop 只收不 toggle。
+        fetch('/api/voice/global/stop', { method: 'POST' }).catch(() => {});
+      }
+      const ctl = activeVoiceCtl();
+      if (!ctl) return;
+      if (what === 'toggle') ctl.toggle();
+      else if (what === 'start') { if (!ctl.active()) ctl.start(); }
+      else if (ctl.active()) ctl.stop();
+    };
 
     if (action === 'press') {
       // 1) 非独按修饰键的备选：完整按住即触发
@@ -289,11 +324,15 @@
         // 普通鼠标点击都补成"组合成立"→ 点「上传文件」却开了听写。详见
         // 语音误触发排查（点上传文件启动听写）2026-10-10.md。
         if (key && !alt.includes(key)) continue;
+        const g = desktopGlobal && !inMainInput;
         if (mode === 'hold') {
-          if (!holdSession && !ctl.active()) { holdSession = true; ctl.start(); }
+          if (holdSession) return;
+          if (!g) { const c0 = activeVoiceCtl(); if (c0 && c0.active()) return; }
+          holdSession = true; holdGlobal = g;
+          fire(g ? 'toggle' : 'start', g);
         } else if (!firedLatch) {
           firedLatch = true; // 一次完整按下只触发一回，全松开后复位
-          ctl.toggle();
+          fire('toggle', g);
         }
         return;
       }
@@ -302,11 +341,13 @@
         // 同样要求"就是这次按下了这个修饰键"才布防（残留的修饰键不再布防）
         if (alt.length === 1 && isModKey(alt[0]) && altHeld(alt) && alt[0] === key) {
           if (!armedSolo) {
-            armedSolo = { key: alt[0], started: false };
-            if (mode === 'hold' && !ctl.active()) {
-              holdSession = true;
+            const g = desktopGlobal && !inMainInput;
+            armedSolo = { key: alt[0], started: false, global: g };
+            if (mode === 'hold') {
+              if (!g) { const c0 = activeVoiceCtl(); if (c0 && c0.active()) return; }
+              holdSession = true; holdGlobal = g;
               armedSolo.started = true;
-              ctl.start();
+              fire(g ? 'toggle' : 'start', g);
             }
           }
           return;
@@ -321,9 +362,9 @@
       if (!heldKey.has(k) && !heldMouse.has(k)) { // 独按松开
         if (armedSolo.started) {
           holdSession = false;
-          if (ctl.active()) ctl.stop();
+          fire('stop', armedSolo.global);
         } else if (mode === 'tap') {
-          ctl.toggle();
+          fire('toggle', armedSolo.global);
         }
         armedSolo = null;
         firedLatch = false;
@@ -334,7 +375,7 @@
       const anyHeld = alts.some((a) => altHeld(a)) || (armedSolo && armedSolo.started);
       if (!anyHeld) {
         holdSession = false;
-        if (ctl.active()) ctl.stop();
+        fire('stop', holdGlobal);
       }
     }
     if (!alts.some((a) => altHeld(a)) && !armedSolo) firedLatch = false;
@@ -363,8 +404,12 @@
     cancelSolo();
     if (holdSession) {
       holdSession = false;
-      const ctl = activeVoiceCtl();
-      if (ctl && ctl.active()) ctl.stop();
+      if (holdGlobal) {
+        fetch('/api/voice/global/stop', { method: 'POST' }).catch(() => {});
+      } else {
+        const ctl = activeVoiceCtl();
+        if (ctl && ctl.active()) ctl.stop();
+      }
     }
   }
 
@@ -1658,11 +1703,12 @@
     subWrap.appendChild(resetBtn);
     subWrap.appendChild(clearBtn);
     row('副快捷键', subWrap);
-    note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
-      + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键）。'
-      + '「清空」＝停用全部快捷键（只点按钮听写）；「恢复默认」＝主侧键、副 Alt。'
-      + '仅在本窗口聚焦时生效，失焦自动松手。纯字母/数字单键在输入框里打字时不会'
-      + '触发，加修饰键或换功能键即可。');
+      note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
+        + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键）。'
+        + '「清空」＝停用全部快捷键（只点按钮听写）；「恢复默认」＝主侧键、副 Alt。'
+        + '桌面版里侧键和独按 Alt 在**全电脑任何程序**里都有效（全局浮窗听写），'
+        + '其余组合仅在本窗口聚焦时生效，失焦自动松手。纯字母/数字单键在输入框里'
+        + '打字时不会触发，加修饰键或换功能键即可。');
 
     resetBtn.onclick = () => {
       if (captureCtl) captureCtl.cancel();
@@ -1690,10 +1736,10 @@
     if (desktopShell() && !window.JX_REMOTE) {
       group('全局语音输入法（桌面版）');
       note('对话框之外的任意位置（本软件其他面板、以及全电脑任何程序的光标处）按'
-        + '鼠标侧键：屏幕底部弹出胶囊浮窗听写，再按一次结束，文字自动粘贴进光标处；'
-        + '那里不可输入时留在剪贴板（浮窗提示「已复制」）。识别节奏与对话框内一致'
-        + '（停顿约 0.6 秒出草稿、3 秒定稿）。对话框内（主/子输入框）仍走上面的'
-        + '灰字听写，互不打扰。');
+        + '鼠标侧键或独按 Alt 键：屏幕底部弹出胶囊浮窗听写，再按一次结束，文字自动'
+        + '粘贴进光标处；那里不可输入时留在剪贴板（浮窗提示「文字已复制」）。识别'
+        + '节奏与对话框内一致（停顿约 0.6 秒出草稿、3 秒定稿）。对话框内（主/子'
+        + '输入框）仍走上面的灰字听写，互不打扰。');
       const vgToggle = document.createElement('input');
       vgToggle.type = 'checkbox';
       vgToggle.checked = true;
@@ -1752,6 +1798,7 @@
 
       // 快捷键引擎 + 输入框占位灰字的语音提示
       installShortcutEngine();
+      syncGlobalAltKey(); // 已存的副快捷键偏好 → 同步 Go 侧 Alt 全局钩子
       refreshShortcutPlaceholders();
 
       // 发送前收尾听写（可等待钩子）：send() 在组装消息正文前 await 本钩子，

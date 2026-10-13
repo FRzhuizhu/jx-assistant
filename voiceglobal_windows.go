@@ -4,9 +4,10 @@ package main
 
 // 全局语音输入法（胶囊浮窗听写）：把语音组件升级成类输入法体验——
 // 在「软件对话框之外」的任意位置（本软件 git 面板/设置页等输入框、以及全电脑
-// 任何程序的光标处）按全局快捷键（默认鼠标侧键，点按切换）→ 屏幕底部弹出
-// 胶囊浮窗（voicefloat_windows.go + web/voice-float.html）听写，再按一次结束，
-// 文字粘贴进触发时的输入位置；那里不可输入则留在剪贴板（浮窗提示「已复制」）。
+// 任何程序的光标处）按全局快捷键（默认鼠标侧键点按切换；独按 Alt 为副）→
+// 屏幕底部弹出胶囊浮窗（voicefloat_windows.go + web/voice-float.html）听写，
+// 再按一次结束，文字粘贴进触发时的输入位置；那里不可输入则留在剪贴板
+//（浮窗提示「文字已复制」）。
 //
 // 快捷键分工（与微信输入法一致的两分法）：
 //   - 前台窗口属于本进程 → 钩子放行，页面内组件自己处理：焦点在主/子输入框
@@ -33,7 +34,7 @@ import (
 	"unsafe"
 )
 
-const wmXButtonUp = 0x020C
+const wmXButtonUp = 0x020C // vkMenu（VK_MENU＝Alt）已在 tool_computer_windows.go 定义
 
 var (
 	vgMu        sync.Mutex
@@ -41,6 +42,7 @@ var (
 	vgHookTID   uint32
 	vgHookDone  chan struct{}
 	vgEnabled   atomic.Bool
+	vgAltKey    atomic.Bool // 独按 Alt 的全局触发开关（页面副快捷键含 Alt 时开；默认开）
 	vgHoldMode  atomic.Bool
 	vgSession   atomic.Bool // 全局会话进行中（听写已开始、未收尾）
 	vgEpoch     atomic.Int64
@@ -48,6 +50,8 @@ var (
 	vgApp       *App           // runDesktop 注入：shellEval 停掉页面内听写用
 	vgCh        = make(chan vgEvent, 16)
 	vgWorkerOnce sync.Once
+	vgAltSt     vgAltState // 独按 Alt 判定状态（只在钩子线程读写）
+	vgAltStarted bool      // 长按模式：Alt 按下沿已开启会话（松开/混键时收掉）
 )
 
 type vgEvent struct{ kind int } // 0=toggle 1=start(hold按下) 2=end(hold松开)
@@ -68,6 +72,7 @@ func voiceGlobalApply(app *App, baseURL string) {
 		mode = "hold"
 	}
 	vgHoldMode.Store(mode == "hold")
+	vgAltKey.Store(app.Cfg == nil || app.Cfg.VoiceGlobal.AltKey == nil || *app.Cfg.VoiceGlobal.AltKey)
 	wasEnabled := vgEnabled.Swap(enabled)
 	if enabled == wasEnabled {
 		vgEnabled.Store(enabled)
@@ -172,6 +177,126 @@ func vgPost(ev vgEvent) {
 	}
 }
 
+// ---------- 键盘钩子（WH_KEYBOARD_LL，只认「独按 Alt」＝副快捷键） ----------
+//
+// 副快捷键默认是 Alt：别的程序在前台时页面收不到按键，必须由系统级键盘钩子
+// 代办。只观察、绝不吞（返回值永远放行）——Alt 是系统修饰键，吞了会废掉所有
+// 程序的菜单与组合键。独按判定与页面组件同款语义：按下后到松开前没混入任何
+// 其他键（Alt+Tab、Alt+F4、AltGr 打字都算组合）才触发；点按模式在**松开沿**
+// toggle，长按模式按下沿开、松开沿收。注入事件（SendInput）一律不算。
+
+// 独按 Alt 的判定状态（只在钩子线程里读写，无需加锁；抽出纯逻辑便于测试）。
+type vgAltState struct {
+	down    bool     // Alt 当前按着
+	solo    bool     // 本次 Alt 按下后尚未混入其他键（独按候选）
+	started bool     // 长按模式：本次按下已开会（松开/混键时收掉）
+	held    [256]bool // 其他键的按下状态（识别"先按住别的键再点 Alt"的组合）
+}
+
+func (s *vgAltState) anyHeld() bool {
+	for i := range s.held {
+		if s.held[i] { // held 里只记非 Alt 键（见 vgAltStep）
+			return true
+		}
+	}
+	return false
+}
+
+// vgAltStep 喂一个键盘事件，返回该沿的动作：fireDown＝按下沿（长按模式的开
+// 始沿，是否真的开会由调用方按 enabled/前台再判）、fireUp＝独按松开沿（点按
+// 模式的 toggle 沿 / 长按模式的结束沿）、cancelHold＝长按中混入其他键（立即
+// 收会话）。injected（SendInput 注入）事件只维护物理按下状态，绝不触发。
+func vgAltStep(s *vgAltState, vk uint32, down, injected bool) (fireDown, fireUp, cancelHold bool) {
+	if vk != vkMenu {
+		if vk < 256 {
+			s.held[vk] = down
+		}
+		if s.down && down && !injected {
+			s.solo = false // Alt+其他键：组合（Alt+Tab/Alt+F4/AltGr…），解除独按
+			if s.started {
+				s.started = false
+				cancelHold = true
+			}
+		}
+		return
+	}
+	if down {
+		if !s.down { // 首次按下；系统重发的 repeat 忽略
+			s.down = true
+			// 独按＝按下前没有别的键按着（先按 F 再点 Alt 也是 Alt+F 组合）
+			// 且本事件不是注入的
+			s.solo = !injected && !s.anyHeld()
+			if s.solo {
+				fireDown = true
+			}
+		}
+		return
+	}
+	if !s.down {
+		return
+	}
+	s.down = false
+	solo := s.solo && !injected
+	s.solo = false
+	if solo {
+		fireUp = true
+	}
+	return
+}
+
+func vgKbdHookCallback() uintptr {
+	var once sync.Once
+	var cb uintptr
+	once.Do(func() {
+		cb = syscall.NewCallback(func(nCode int32, wParam uintptr, lParam unsafe.Pointer) uintptr {
+			if nCode >= 0 {
+				down := wParam == wmKeydown || wParam == wmSysKeydown
+				up := wParam == wmKeyup || wParam == wmSysKeyup
+				if down || up {
+					k := (*kbdllHookStruct)(lParam)
+					fd, fu, ch := vgAltStep(&vgAltSt, k.VkCode, down, k.Flags&llkhfInjected != 0)
+					if fd {
+						vgAltHandle(true)
+					} else if fu {
+						vgAltHandle(false)
+					} else if ch {
+						vgPost(vgEvent{kind: 2}) // 长按中混键：别拖着会话（Alt+Tab 场景）
+					}
+				}
+			}
+			// 键盘事件一概放行：只观察，触发与否全靠上面投递的事件
+			r, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, uintptr(lParam))
+			return r
+		})
+	})
+	return cb
+}
+
+// vgAltHandle 独按 Alt 的按下沿（down=true）/松开沿。前台是本进程时让页面内
+// 组件自己处理（WebView2 若把 Alt 传进了页面，那里是同一套语义；钩子再触发
+// 会双开）。维护 vgAltStarted（长按模式是否已由 Alt 开会）。
+func vgAltHandle(down bool) {
+	if !vgEnabled.Load() || !vgAltKey.Load() || vgForegroundIsSelf() {
+		return
+	}
+	if vgHoldMode.Load() {
+		if down {
+			if !vgSession.Load() {
+				vgAltStarted = true
+				vgPost(vgEvent{kind: 1})
+			}
+		} else if vgAltStarted {
+			vgAltStarted = false
+			vgPost(vgEvent{kind: 2})
+		}
+		return
+	}
+	// 点按：独按在松开沿 toggle（按下沿不动，避免与 Alt 组合键抢跑）
+	if !down {
+		vgPost(vgEvent{kind: 0})
+	}
+}
+
 func voiceGlobalInstall() {
 	vgMu.Lock()
 	defer vgMu.Unlock()
@@ -203,7 +328,7 @@ func voiceGlobalInstall() {
 	// 进了 for-range 阻塞，w.Run() 永远执行不到，桌面壳整个冻死（浏览器面板
 	// 创建排不上队只是最先暴露的症状）。
 	go vgWorkerOnce.Do(vgWorker)
-	log.Printf("[语音输入法] 已启用：鼠标侧键 %s（任意位置听写，结束自动粘贴/复制）",
+	log.Printf("[语音输入法] 已启用：鼠标侧键 %s + 独按 Alt（任意位置听写，结束自动粘贴/复制）",
 		map[bool]string{true: "长按", false: "点按"}[vgHoldMode.Load()])
 }
 
@@ -225,8 +350,8 @@ func voiceGlobalUninstall() {
 	log.Printf("[语音输入法] 已停用")
 }
 
-// vgHookLoop 专用线程安装低级鼠标钩子并跑消息循环（recorder_windows.go 同款；
-// 低级钩子要求安装线程有消息循环且保持存活），WM_QUIT 退出并卸钩。
+// vgHookLoop 专用线程安装低级鼠标+键盘钩子并跑消息循环（recorder_windows.go
+// 同款；低级钩子要求安装线程有消息循环且保持存活），WM_QUIT 退出并卸钩。
 func vgHookLoop(ready chan<- uint32, errCh chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -234,6 +359,10 @@ func vgHookLoop(ready chan<- uint32, errCh chan<- error) {
 	if hMouse == 0 {
 		errCh <- err
 		return
+	}
+	hKbd, _, errKbd := procSetWindowsHookEx.Call(whKeyboardLL, vgKbdHookCallback(), 0, 0)
+	if hKbd == 0 { // 键盘钩子失败不致命：鼠标侧键（主快捷键）仍可用
+		log.Printf("[语音输入法] 键盘钩子安装失败（独按 Alt 副快捷键不可用）: %v", errKbd)
 	}
 	tid, _, _ := procGetCurrentThreadID.Call()
 	ready <- uint32(tid)
@@ -243,6 +372,9 @@ func vgHookLoop(ready chan<- uint32, errCh chan<- error) {
 		if r == 0 || r == ^uintptr(0) {
 			break
 		}
+	}
+	if hKbd != 0 {
+		procUnhookWindowsHookEx.Call(hKbd)
 	}
 	procUnhookWindowsHookEx.Call(hMouse)
 }

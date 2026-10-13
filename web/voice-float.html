@@ -1,58 +1,71 @@
 <!DOCTYPE html>
 <!-- 全局语音输入法 · 胶囊浮窗页（voicefloat_windows.go 创建的置顶小窗口加载）
+  · 窗口本体已被 Go 侧 SetWindowRgn 裁成真胶囊（圆角半径=高/2），页面只负责
+    铺满主题色与内容——不要再自画圆角胶囊，矩形底会在胶囊弧线外露出一条
+    "圆角矩形包裹"的边（2026-10-13 修）。配色跟随主题色（/api/config 的
+    accentColor，缺省默认蓝）。
   · 交互：Go 侧经 ExecuteScript 调 __vgStart(epoch) / __vgStop() / __vgDone(pasted)；
     收尾结果用 POST /api/voice/global/finish {text, epoch} 回传（代数校验防串场）。
-  · 识别：与 组件/voice/client.js 同一套本地引擎节奏——0.6 秒短停顿出草稿
-    （半透明白字实时显示在胶囊里）、3 秒长停顿定稿（亮白字）、连续 18 秒强制
-    定稿、结束时尾段整段精修；POST /api/c/voice/asr/transcribe（语音组件 worker）。
+  · 形态（微信式，内部只留三样东西）：
+      聆听 = 左端白圆钮（主题色麦克风）+ 中间白字（0.6 秒停顿出半透明草稿、
+             3 秒长停顿定稿亮白、连续 18 秒强制定稿，与组件同款节奏）；
+      结束 = 左端白色转圈，文字变暗；
+      完成 = 左端 ✓，文字：文字已输入 / 文字已复制 / 未识别到语音。
   · 落字：会话内只累积不落任何输入框；结束后 Go 侧统一「剪贴板 + Ctrl+V」。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>语音输入</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: transparent; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   body {
     font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     --accent: #4d6bfe;
+    background: var(--accent); color: #fff;
   }
   #pill {
     box-sizing: border-box; height: 100%; display: flex; align-items: center;
-    gap: 10px; padding: 0 16px; border-radius: 24px;
-    background: var(--accent); color: #fff;
-    box-shadow: 0 6px 24px rgba(0,0,0,.28);
-    transition: opacity .18s ease;
+    gap: 12px; padding: 0 20px 0 10px;
   }
-  #pill.dim { opacity: .82; }
-  .mic { flex: none; width: 18px; height: 18px; }
-  .mic rect, .mic path { fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
-  .waves { flex: none; display: flex; align-items: center; gap: 3px; height: 18px; }
-  .waves i {
-    width: 3px; border-radius: 2px; background: rgba(255,255,255,.95);
-    animation: wv 1s ease-in-out infinite;
+  #orb { /* 聆听态：白色圆钮，内嵌主题色麦克风 */
+    flex: none; width: 36px; height: 36px; border-radius: 50%;
+    background: #fff; display: flex; align-items: center; justify-content: center;
   }
-  .waves i:nth-child(1) { height: 6px; animation-delay: -.1s; }
-  .waves i:nth-child(2) { height: 12px; animation-delay: -.3s; }
-  .waves i:nth-child(3) { height: 16px; animation-delay: -.5s; }
-  .waves i:nth-child(4) { height: 10px; animation-delay: -.7s; }
-  .waves.paused i { animation-play-state: paused; opacity: .45; }
-  @keyframes wv { 0%,100% { transform: scaleY(.55); } 50% { transform: scaleY(1); } }
+  #orb svg { width: 18px; height: 18px; display: block; }
+  #orb rect, #orb path { fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; }
+  #spin { /* 结束态：白色转圈 */
+    display: none; flex: none; width: 28px; height: 28px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.35); border-top-color: #fff;
+    animation: spin .8s linear infinite;
+  }
+  #check { /* 完成态：白色对勾 */
+    display: none; flex: none; width: 20px; height: 20px;
+  }
+  #check path { fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
   #text {
     flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
-    font-size: 14px; line-height: 20px; display: flex; justify-content: flex-end;
+    font-size: 14.5px; line-height: 20px; display: flex; justify-content: flex-end;
   }
   #text .final { color: #fff; }
   #text .draft { color: rgba(255,255,255,.55); }
   #text .hint { color: rgba(255,255,255,.75); }
-  #tail { flex: none; font-size: 11.5px; color: rgba(255,255,255,.6); white-space: nowrap; }
+  #pill.st-ending #orb { display: none; }
+  #pill.st-ending #spin { display: block; }
+  #pill.st-ending #text { opacity: .65; }
+  #pill.st-done #orb { display: none; }
+  #pill.st-done #spin { display: none; }
+  #pill.st-done #check { display: block; }
+  #pill.st-done #text { opacity: 1; }
+  #pill.noicon.st-done #check { display: none; } /* 失败提示：不打勾 */
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
-  <div id="pill" class="dim">
-    <svg class="mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
-    <div class="waves" id="waves"><i></i><i></i><i></i><i></i></div>
-    <div id="text"><span class="hint">正在聆听…（再按侧键结束）</span></div>
-    <div id="tail"></div>
+  <div id="pill" class="st-listening">
+    <div id="orb"><svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg></div>
+    <div id="spin"></div>
+    <svg id="check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg>
+    <div id="text"><span class="hint">正在聆听…</span></div>
   </div>
 <script>
 (function () {
@@ -61,14 +74,12 @@
   var TAIL_WAIT_MS = 8000;
 
   var pill = document.getElementById('pill');
-  var waves = document.getElementById('waves');
   var textEl = document.getElementById('text');
-  var tailEl = document.getElementById('tail');
 
   var st = {
     epoch: 0, running: false, finalText: '', draftText: '',
     pending: 0, ctx: null, stream: null, node: null,
-    aborted: false, doneNotified: false
+    aborted: false, doneNotified: false, failMsg: null
   };
 
   // 主题色：跟随主程序设置（/api/config 的 accentColor，缺省默认蓝）
@@ -76,8 +87,10 @@
     if (c && c.accentColor) document.body.style.setProperty('--accent', c.accentColor);
   }).catch(function () {});
 
+  function setStage(s) { pill.className = 'st-' + s; }
+
   function render() {
-    if (!st.running && !st.finalText && !st.draftText) return;
+    if (!st.finalText && !st.draftText) return;
     textEl.innerHTML = '';
     if (st.finalText) {
       var f = document.createElement('span'); f.className = 'final';
@@ -89,11 +102,10 @@
     }
     // 长文字：右对齐自然显示最新内容（flex justify-end + nowrap 截头）
   }
-  function showHint(msg, tail) {
+  function showHint(msg) {
     textEl.innerHTML = '';
     var h = document.createElement('span'); h.className = 'hint'; h.textContent = msg;
     textEl.appendChild(h);
-    tailEl.textContent = tail || '';
   }
 
   /* ---------- 与组件同款的采集/识别（16k 单声道 → WAV base64 → worker） ---------- */
@@ -135,11 +147,11 @@
     if (st.running && st.epoch === epoch) return;
     // 复用窗口的残留状态整体复位（快速开关、异常中断都靠这里兜住）
     teardownMic();
-    st.epoch = epoch; st.running = true; st.aborted = false; st.doneNotified = false;
+    st.epoch = epoch; st.running = true; st.aborted = false; st.doneNotified = false; st.failMsg = null;
     st.finalText = ''; st.draftText = ''; st.pending = 0;
-    waves.classList.remove('paused');
-    showHint('正在聆听…（再按侧键结束）');
-    pill.classList.remove('dim');
+    setStage('listening');
+    pill.classList.remove('noicon');
+    showHint('正在聆听…');
     navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
     }).then(function (stream) {
@@ -229,8 +241,8 @@
   window.__vgStop = function () {
     if (!st.running) return;
     st.running = false;
-    waves.classList.add('paused');
-    showHint('正在收尾…', '');
+    setStage('ending');
+    if (!st.finalText && !st.draftText) showHint('正在结束…');
     teardownMic();
     // 等在途识别清零（≤8s），把最后未定稿的文字一并带回
     var t0 = Date.now();
@@ -259,8 +271,7 @@
     if (!st.running) return;
     st.running = false;
     teardownMic();
-    waves.classList.add('paused');
-    showHint(msg, '');
+    st.failMsg = msg;
     st.doneNotified = true;
     fetch('/api/voice/global/finish', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -269,10 +280,10 @@
   }
 
   window.__vgDone = function (pasted) {
-    waves.classList.add('paused');
-    var msg = pasted ? '已输入 ✓' : (st.lastEmpty ? '未识别到语音' : '已复制到剪贴板');
-    showHint(msg, '');
-    pill.classList.add('dim');
+    setStage('done');
+    var msg = pasted ? '文字已输入' : (st.lastEmpty ? '未识别到语音' : '文字已复制');
+    if (st.failMsg) { msg = st.failMsg; pill.classList.add('noicon'); }
+    showHint(msg);
   };
 })();
 </script>

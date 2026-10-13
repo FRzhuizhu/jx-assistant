@@ -128,10 +128,12 @@ type Config struct {
 	AccentColor string `json:"accentColor,omitempty"`
 }
 
-// VoiceGlobalCfg 全局语音输入法配置段（Enabled=nil＝默认开启；Mode tap/hold）。
+// VoiceGlobalCfg 全局语音输入法配置段（Enabled=nil＝默认开启；Mode tap/hold；
+// AltKey=nil＝默认启用——独按 Alt 的全局键盘钩子，页面副快捷键改掉 Alt 后置 false）。
 type VoiceGlobalCfg struct {
 	Enabled *bool  `json:"enabled,omitempty"`
 	Mode    string `json:"mode,omitempty"` // tap（默认）| hold
+	AltKey  *bool  `json:"altKey,omitempty"`
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的
