@@ -27,6 +27,7 @@ import (
 	"log"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -42,7 +43,6 @@ var (
 	vgHookTID   uint32
 	vgHookDone  chan struct{}
 	vgEnabled   atomic.Bool
-	vgAltKey    atomic.Bool // 独按 Alt 的全局触发开关（页面副快捷键含 Alt 时开；默认开）
 	vgHoldMode  atomic.Bool
 	vgSession   atomic.Bool // 全局会话进行中（听写已开始、未收尾）
 	vgEpoch     atomic.Int64
@@ -50,8 +50,8 @@ var (
 	vgApp       *App           // runDesktop 注入：shellEval 停掉页面内听写用
 	vgCh        = make(chan vgEvent, 16)
 	vgWorkerOnce sync.Once
-	vgAltSt     vgAltState // 独按 Alt 判定状态（只在钩子线程读写）
-	vgAltStarted bool      // 长按模式：Alt 按下沿已开启会话（松开/混键时收掉）
+	vgKbd       atomic.Pointer[vgKbdCfg] // 生效中的键盘快捷键配置（页面同步，apply 换入）
+	vgKbdSt     vgKbdState               // 键盘判定状态（只在钩子线程读写）
 )
 
 type vgEvent struct{ kind int } // 0=toggle 1=start(hold按下) 2=end(hold松开)
@@ -72,7 +72,13 @@ func voiceGlobalApply(app *App, baseURL string) {
 		mode = "hold"
 	}
 	vgHoldMode.Store(mode == "hold")
-	vgAltKey.Store(app.Cfg == nil || app.Cfg.VoiceGlobal.AltKey == nil || *app.Cfg.VoiceGlobal.AltKey)
+	// 键盘快捷键组合同步自页面（voiceGlobal.kbd；没同步过＝默认独按 Alt）。
+	// 长按标志一并烘进配置，钩子状态机免第二次原子读。
+	kbdNames := [][]string{{"alt"}}
+	if app.Cfg != nil && len(app.Cfg.VoiceGlobal.Kbd) > 0 {
+		kbdNames = app.Cfg.VoiceGlobal.Kbd
+	}
+	vgKbd.Store(vgBuildKbdCfg(kbdNames, vgHoldMode.Load()))
 	wasEnabled := vgEnabled.Swap(enabled)
 	if enabled == wasEnabled {
 		vgEnabled.Store(enabled)
@@ -177,69 +183,229 @@ func vgPost(ev vgEvent) {
 	}
 }
 
-// ---------- 键盘钩子（WH_KEYBOARD_LL，只认「独按 Alt」＝副快捷键） ----------
+// ---------- 键盘钩子（WH_KEYBOARD_LL，监测配置成快捷键的键盘组合） ----------
 //
-// 副快捷键默认是 Alt：别的程序在前台时页面收不到按键，必须由系统级键盘钩子
-// 代办。只观察、绝不吞（返回值永远放行）——Alt 是系统修饰键，吞了会废掉所有
-// 程序的菜单与组合键。独按判定与页面组件同款语义：按下后到松开前没混入任何
-// 其他键（Alt+Tab、Alt+F4、AltGr 打字都算组合）才触发；点按模式在**松开沿**
-// toggle，长按模式按下沿开、松开沿收。注入事件（SendInput）一律不算。
+// 快捷键是可配置的（主/副两槽，支持独键与组合键）：页面把槽位里的**键盘组合**
+// 经 /api/config（voiceGlobal.kbd）同步过来，这里照配置监测——配置是什么就认
+// 什么：组合键（如 Alt+A）只在组合完整按下时触发，单按其中一个键（如单按 A、
+// 或单按 Alt）不响应；独按修饰键（如默认的 Alt）点按在松开沿触发，按住期间
+// 混入任何其他键（Alt+Tab/Alt+F4…）即解除。只观察、绝不吞键（Alt/Ctrl 等
+// 是系统修饰键，吞了会废掉所有程序的菜单与组合键）；注入事件（SendInput）
+// 一律忽略。
 
-// 独按 Alt 的判定状态（只在钩子线程里读写，无需加锁；抽出纯逻辑便于测试）。
-type vgAltState struct {
-	down    bool     // Alt 当前按着
-	solo    bool     // 本次 Alt 按下后尚未混入其他键（独按候选）
-	started bool     // 长按模式：本次按下已开会（松开/混键时收掉）
-	held    [256]bool // 其他键的按下状态（识别"先按住别的键再点 Alt"的组合）
-}
-
-func (s *vgAltState) anyHeld() bool {
-	for i := range s.held {
-		if s.held[i] { // held 里只记非 Alt 键（见 vgAltStep）
-			return true
+// vgVKName 页面键名 → VK 码（键名与组件 normKey 同一套）。
+func vgVKName(s string) (uint32, bool) {
+	switch s {
+	case "ctrl":
+		return 0x11, true
+	case "alt":
+		return 0x12, true
+	case "shift":
+		return 0x10, true
+	case "meta": // Win 键（左枚举；右 Win 0x5C 也按它认）
+		return 0x5B, true
+	case "space":
+		return 0x20, true
+	}
+	if len(s) == 1 {
+		c := s[0]
+		if c >= 'a' && c <= 'z' {
+			return uint32(c-'a') + 0x41, true
+		}
+		if c >= '0' && c <= '9' {
+			return uint32(c-'0') + 0x30, true
 		}
 	}
-	return false
+	if len(s) == 2 && s[0] == 'f' && s[1] >= '1' && s[1] <= '9' { // F1..F9
+		return uint32(s[1]-'1') + 0x70, true
+	}
+	if len(s) == 3 && s[0] == 'f' && s[1] == '1' && s[2] >= '0' && s[2] <= '2' { // F10..F12
+		return uint32(s[2]-'0') + 0x78, true
+	}
+	return 0, false
 }
 
-// vgAltStep 喂一个键盘事件，返回该沿的动作：fireDown＝按下沿（长按模式的开
-// 始沿，是否真的开会由调用方按 enabled/前台再判）、fireUp＝独按松开沿（点按
-// 模式的 toggle 沿 / 长按模式的结束沿）、cancelHold＝长按中混入其他键（立即
-// 收会话）。injected（SendInput 注入）事件只维护物理按下状态，绝不触发。
-func vgAltStep(s *vgAltState, vk uint32, down, injected bool) (fireDown, fireUp, cancelHold bool) {
-	if vk != vkMenu {
-		if vk < 256 {
-			s.held[vk] = down
+func vgIsModVK(vk uint32) bool {
+	return vk == 0x10 || vk == 0x11 || vk == 0x12 || vk == 0x5B
+}
+
+// vgKbdCfg 一份生效中的键盘快捷键配置（apply 时构建、原子换入，钩子线程只读）。
+type vgKbdCfg struct {
+	combos [][]uint32 // 非独按组合（含单功能键如 F9）：组合**完整按下沿**触发
+	solos  []uint32   // 独按修饰键（Alt/Ctrl/Shift/Win 单键）：点按松开沿触发
+	hold   bool       // 长按模式（构建时从 vgHoldMode 烘进来）
+	label  string     // 人类可读描述（安装日志用）
+}
+
+func vgVKDisplay(s string) string {
+	switch s {
+	case "ctrl":
+		return "Ctrl"
+	case "alt":
+		return "Alt"
+	case "shift":
+		return "Shift"
+	case "meta":
+		return "Win"
+	case "space":
+		return "空格"
+	}
+	return strings.ToUpper(s)
+}
+
+func vgBuildKbdCfg(names [][]string, hold bool) *vgKbdCfg {
+	c := &vgKbdCfg{hold: hold}
+	var parts []string
+	for _, combo := range names {
+		if len(combo) == 0 || len(combo) > 4 {
+			continue
 		}
-		if s.down && down && !injected {
-			s.solo = false // Alt+其他键：组合（Alt+Tab/Alt+F4/AltGr…），解除独按
-			if s.started {
-				s.started = false
-				cancelHold = true
+		vks := make([]uint32, 0, len(combo))
+		for _, k := range combo {
+			vk, ok := vgVKName(k)
+			if !ok {
+				vks = nil
+				break
 			}
+			vks = append(vks, vk)
 		}
+		if len(vks) == 0 {
+			continue
+		}
+		disp := make([]string, len(combo))
+		for i, k := range combo {
+			disp[i] = vgVKDisplay(k)
+		}
+		parts = append(parts, strings.Join(disp, "+"))
+		if len(vks) == 1 && vgIsModVK(vks[0]) {
+			c.solos = append(c.solos, vks[0])
+		} else {
+			c.combos = append(c.combos, vks)
+		}
+	}
+	if len(parts) == 0 {
+		c.label = "无键盘快捷键"
+	} else {
+		c.label = strings.Join(parts, "、")
+	}
+	return c
+}
+
+// vgKbdState 键盘判定状态（只在钩子线程里读写，无需加锁；抽出纯逻辑便于测试）。
+type vgKbdState struct {
+	held      [256]bool
+	armed     uint32 // 布防中的独按修饰键 VK（0=无；布防后混入其他键即解除）
+	armedHold bool   // 布防的独按键已在长按模式开会
+	kbdHold   bool   // 键盘开启的长按会话进行中
+	latch     int    // 点按已触发的组合下标+1（组合键全松开后复位；0=无）
+}
+
+// vgKbdStep 喂一个键盘事件，返回动作：fireTap＝点按 toggle；fireStart／
+// fireStop＝长按开会／收会。injected（SendInput 注入）事件一律无动作。
+func vgKbdStep(s *vgKbdState, cfg *vgKbdCfg, vk uint32, down, injected bool) (fireTap, fireStart, fireStop bool) {
+	if cfg == nil || injected || vk == 0 || vk >= 256 {
 		return
 	}
 	if down {
-		if !s.down { // 首次按下；系统重发的 repeat 忽略
-			s.down = true
-			// 独按＝按下前没有别的键按着（先按 F 再点 Alt 也是 Alt+F 组合）
-			// 且本事件不是注入的
-			s.solo = !injected && !s.anyHeld()
-			if s.solo {
-				fireDown = true
+		if s.held[vk] {
+			return // 系统重发的 repeat
+		}
+		// 布防中的独按键遇到别的键：解除（Alt+X 组合保护；长按已开会的立即收）
+		if s.armed != 0 && s.armed != vk {
+			s.armed = 0
+			if s.armedHold {
+				s.armedHold = false
+				s.kbdHold = false
+				fireStop = true
+			}
+		}
+		s.held[vk] = true
+		// 组合完整按下沿：本次按下的键属于该组合且组合自此完整
+		for i, combo := range cfg.combos {
+			hit, complete := false, true
+			for _, k := range combo {
+				if k == vk {
+					hit = true
+				}
+				if !s.held[k] {
+					complete = false
+				}
+			}
+			if !hit || !complete {
+				continue
+			}
+			if cfg.hold {
+				if !s.kbdHold {
+					s.kbdHold = true
+					fireStart = true
+				}
+			} else if s.latch != i+1 {
+				s.latch = i + 1
+				fireTap = true
+			}
+		}
+		// 独按修饰键布防
+		if s.armed == 0 {
+			for _, m := range cfg.solos {
+				if m == vk {
+					s.armed = m
+					if cfg.hold {
+						s.armedHold = true
+						s.kbdHold = true
+						fireStart = true
+					}
+					break
+				}
 			}
 		}
 		return
 	}
-	if !s.down {
+	// 松开沿
+	s.held[vk] = false
+	if s.armed == vk {
+		s.armed = 0
+		if s.armedHold {
+			s.armedHold = false
+			s.kbdHold = false
+			fireStop = true
+		} else if !cfg.hold {
+			fireTap = true // 独按点按：松开沿 toggle
+		}
 		return
 	}
-	s.down = false
-	solo := s.solo && !injected
-	s.solo = false
-	if solo {
-		fireUp = true
+	if s.kbdHold { // 长按会话还在的判定：组合仍完整或独按仍布防
+		active := s.armedHold
+		if !active {
+			for _, combo := range cfg.combos {
+				complete := true
+				for _, k := range combo {
+					if !s.held[k] {
+						complete = false
+						break
+					}
+				}
+				if complete {
+					active = true
+					break
+				}
+			}
+		}
+		if !active {
+			s.kbdHold = false
+			fireStop = true
+		}
+	}
+	if s.latch != 0 { // 组合键全部松开：允许下一次点按
+		still := false
+		for _, k := range cfg.combos[s.latch-1] {
+			if s.held[k] {
+				still = true
+				break
+			}
+		}
+		if !still {
+			s.latch = 0
+		}
 	}
 	return
 }
@@ -254,13 +420,9 @@ func vgKbdHookCallback() uintptr {
 				up := wParam == wmKeyup || wParam == wmSysKeyup
 				if down || up {
 					k := (*kbdllHookStruct)(lParam)
-					fd, fu, ch := vgAltStep(&vgAltSt, k.VkCode, down, k.Flags&llkhfInjected != 0)
-					if fd {
-						vgAltHandle(true)
-					} else if fu {
-						vgAltHandle(false)
-					} else if ch {
-						vgPost(vgEvent{kind: 2}) // 长按中混键：别拖着会话（Alt+Tab 场景）
+					tap, start, stop := vgKbdStep(&vgKbdSt, vgKbd.Load(), k.VkCode, down, k.Flags&llkhfInjected != 0)
+					if tap || start || stop {
+						vgKbdHandle(tap, start, stop)
 					}
 				}
 			}
@@ -272,28 +434,26 @@ func vgKbdHookCallback() uintptr {
 	return cb
 }
 
-// vgAltHandle 独按 Alt 的按下沿（down=true）/松开沿。前台是本进程时让页面内
-// 组件自己处理（WebView2 若把 Alt 传进了页面，那里是同一套语义；钩子再触发
-// 会双开）。维护 vgAltStarted（长按模式是否已由 Alt 开会）。
-func vgAltHandle(down bool) {
-	if !vgEnabled.Load() || !vgAltKey.Load() || vgForegroundIsSelf() {
+// vgKbdHandle 键盘触发的投递。开始/toggle 只在前台非本进程时发（本进程内
+// 由页面组件自己处理，钩子再发会双开）；收会话不挑前台——长按中切回本窗
+// 松键也得能收，否则会话悬到 12 秒兜底。
+func vgKbdHandle(fireTap, fireStart, fireStop bool) {
+	if !vgEnabled.Load() {
 		return
 	}
-	if vgHoldMode.Load() {
-		if down {
-			if !vgSession.Load() {
-				vgAltStarted = true
-				vgPost(vgEvent{kind: 1})
-			}
-		} else if vgAltStarted {
-			vgAltStarted = false
-			vgPost(vgEvent{kind: 2})
+	if fireStop {
+		vgPost(vgEvent{kind: 2})
+	}
+	if fireStart || fireTap {
+		if vgForegroundIsSelf() {
+			return
 		}
-		return
-	}
-	// 点按：独按在松开沿 toggle（按下沿不动，避免与 Alt 组合键抢跑）
-	if !down {
-		vgPost(vgEvent{kind: 0})
+		if fireStart {
+			vgPost(vgEvent{kind: 1})
+		}
+		if fireTap {
+			vgPost(vgEvent{kind: 0})
+		}
 	}
 }
 
@@ -328,7 +488,8 @@ func voiceGlobalInstall() {
 	// 进了 for-range 阻塞，w.Run() 永远执行不到，桌面壳整个冻死（浏览器面板
 	// 创建排不上队只是最先暴露的症状）。
 	go vgWorkerOnce.Do(vgWorker)
-	log.Printf("[语音输入法] 已启用：鼠标侧键 %s + 独按 Alt（任意位置听写，结束自动粘贴/复制）",
+	log.Printf("[语音输入法] 已启用：鼠标侧键＋%s，%s（任意位置听写，结束自动粘贴/复制）",
+		vgKbd.Load().label,
 		map[bool]string{true: "长按", false: "点按"}[vgHoldMode.Load()])
 }
 

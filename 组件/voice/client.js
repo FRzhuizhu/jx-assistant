@@ -123,23 +123,30 @@
   }
   function setShortcutSlot(which, v) {
     pref.set(which === 'main' ? 'scMain' : 'scSub', v);
-    syncGlobalAltKey(); // 副快捷键变了 → 同步 Go 侧独按 Alt 全局钩子的开关
+    syncGlobalKbd(); // 快捷键变了 → 同步 Go 侧全局键盘钩子的监测组合
   }
 
-  // 副快捷键（默认独按 Alt）在窗口外的全局触发靠 Go 侧的键盘钩子
-  //（voiceglobal_windows.go，WebView2 页面收不到别的程序里的按键）：页面把
-  // 自己的副快捷键配置同步过去——副键含 Alt 才启用钩子，改成别的/清空就关
-  // 掉，否则全局 Alt 会与页面配置脱节（用户清空快捷键后按 Alt 仍弹浮窗）。
-  let vgAltKeyLast = null;
-  function syncGlobalAltKey() {
+  // 快捷键在窗口外的全局触发靠 Go 侧的键盘钩子（voiceglobal_windows.go，
+  // WebView2 页面收不到别的程序里的按键）：把主/副两槽里的**键盘组合**同步
+  // 过去，Go 照配置监测——配置是什么就认什么：组合键（如 Alt+A）只在组合
+  // 完整按下时触发，单按其中一个键不响应；独按修饰键（默认副键 Alt）点按
+  // 在松开沿触发。鼠标键组合（mouse-*）钩子管不了，只同步键盘部分。
+  let vgKbdLast = null;
+  function globalKbdCombos() {
+    return shortcutAlternatives()
+      .map((a) => a.filter((k) => !String(k).startsWith('mouse-')))
+      .filter((a) => a.length > 0);
+  }
+  function syncGlobalKbd() {
     if (!desktopShell() || window.JX_REMOTE) return;
-    const want = shortcutSlot('sub').includes('alt');
-    if (want === vgAltKeyLast) return;
-    vgAltKeyLast = want;
+    const combos = globalKbdCombos();
+    const sig = JSON.stringify(combos);
+    if (sig === vgKbdLast) return;
+    vgKbdLast = sig;
     fetch('/api/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ voiceGlobal: { altKey: want } }),
-    }).catch(() => { vgAltKeyLast = null; }); // 失败：下次变更/重启再同步
+      body: JSON.stringify({ voiceGlobal: { kbd: combos } }),
+    }).catch(() => { vgKbdLast = null; }); // 失败：下次变更/重启再同步
   }
 
   // 触发备选＝两个槽里没被停用的那些
@@ -1706,9 +1713,9 @@
       note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
         + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键）。'
         + '「清空」＝停用全部快捷键（只点按钮听写）；「恢复默认」＝主侧键、副 Alt。'
-        + '桌面版里侧键和独按 Alt 在**全电脑任何程序**里都有效（全局浮窗听写），'
-        + '其余组合仅在本窗口聚焦时生效，失焦自动松手。纯字母/数字单键在输入框里'
-        + '打字时不会触发，加修饰键或换功能键即可。');
+        + '桌面版里录的键盘/侧键快捷键在**全电脑任何程序**里都有效（全局浮窗听写；'
+        + '组合键须完整按下才触发）。纯字母/数字单键在本窗口输入框里打字时不会'
+        + '触发，加修饰键或换功能键即可。');
 
     resetBtn.onclick = () => {
       if (captureCtl) captureCtl.cancel();
@@ -1798,7 +1805,7 @@
 
       // 快捷键引擎 + 输入框占位灰字的语音提示
       installShortcutEngine();
-      syncGlobalAltKey(); // 已存的副快捷键偏好 → 同步 Go 侧 Alt 全局钩子
+      syncGlobalKbd(); // 已存的快捷键偏好 → 同步 Go 侧全局键盘钩子
       refreshShortcutPlaceholders();
 
       // 发送前收尾听写（可等待钩子）：send() 在组装消息正文前 await 本钩子，

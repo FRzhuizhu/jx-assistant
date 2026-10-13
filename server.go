@@ -1059,7 +1059,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"voiceGlobal": map[string]any{
 			"enabled": a.Cfg.VoiceGlobal.Enabled == nil || *a.Cfg.VoiceGlobal.Enabled,
 			"mode":    map[bool]string{true: "hold", false: "tap"}[a.Cfg.VoiceGlobal.Mode == "hold"],
-			"altKey":  a.Cfg.VoiceGlobal.AltKey == nil || *a.Cfg.VoiceGlobal.AltKey,
+			"kbd":     a.Cfg.VoiceGlobal.Kbd,
 		},
 		"accentColor": a.Cfg.AccentColor,
 	})
@@ -1264,8 +1264,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			a.Cfg.VoiceGlobal.Mode = m
 		}
-		if body.VoiceGlobal.AltKey != nil {
-			a.Cfg.VoiceGlobal.AltKey = body.VoiceGlobal.AltKey
+		if body.VoiceGlobal.Kbd != nil {
+			if len(body.VoiceGlobal.Kbd) > 8 {
+				writeErr(w, 400, "全局语音键盘快捷键最多 8 组")
+				return
+			}
+			a.Cfg.VoiceGlobal.Kbd = body.VoiceGlobal.Kbd
 		}
 	}
 	if body.AccentColor != nil {

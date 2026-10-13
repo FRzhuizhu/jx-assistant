@@ -44,8 +44,10 @@
   #check path { fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
   #text {
     flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
-    font-size: 14.5px; line-height: 20px; display: flex; justify-content: flex-end;
+    font-size: 14.5px; line-height: 20px; display: flex; justify-content: flex-start;
   }
+  /* 文字超宽：切到右对齐（nowrap 截头），保住最新的识别内容可见 */
+  #text.tail { justify-content: flex-end; }
   #text .final { color: #fff; }
   #text .draft { color: rgba(255,255,255,.55); }
   #text .hint { color: rgba(255,255,255,.75); }
@@ -100,12 +102,14 @@
       var d = document.createElement('span'); d.className = 'draft';
       d.textContent = st.draftText; textEl.appendChild(d);
     }
-    // 长文字：右对齐自然显示最新内容（flex justify-end + nowrap 截头）
+    // 短文字紧挨麦克风（微信式）；超宽切右对齐，最新内容始终可见
+    textEl.classList.toggle('tail', textEl.scrollWidth > textEl.clientWidth);
   }
   function showHint(msg) {
     textEl.innerHTML = '';
     var h = document.createElement('span'); h.className = 'hint'; h.textContent = msg;
     textEl.appendChild(h);
+    textEl.classList.remove('tail');
   }
 
   /* ---------- 与组件同款的采集/识别（16k 单声道 → WAV base64 → worker） ---------- */
@@ -281,8 +285,9 @@
 
   window.__vgDone = function (pasted) {
     setStage('done');
-    var msg = pasted ? '文字已输入' : (st.lastEmpty ? '未识别到语音' : '文字已复制');
-    if (st.failMsg) { msg = st.failMsg; pill.classList.add('noicon'); }
+    var msg = pasted ? '文字已输入'
+      : (st.failMsg ? st.failMsg : (st.lastEmpty ? '未识别到语音' : '文字已复制'));
+    if (!pasted && (st.failMsg || st.lastEmpty)) pill.classList.add('noicon'); // 只有成功才打勾
     showHint(msg);
   };
 })();
