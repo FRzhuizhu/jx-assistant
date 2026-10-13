@@ -149,11 +149,14 @@ func vfCreateOnUI() (err error) {
 	if hwnd == 0 {
 		return fmt.Errorf("CreateWindowExW 失败: %v", err)
 	}
-	// 真胶囊：窗口区域裁成圆角半径=高/2 的圆角矩形。此前靠页面里自画的圆角
-	// 胶囊 + DWM 小圆角（约 8px），矩形窗口的四角在胶囊弧线外露出一条"圆角
-	// 矩形包裹"的底色边——窗口本身裁成胶囊后页面只需铺满主题色（2026-10-13）。
+	// 真胶囊：窗口区域裁成两端半圆的胶囊。CreateRoundRectRgn 后两参是**角落
+	// 椭圆的宽高**（半径=其一半）——传整窗高（56×56）时半径=高/2=28，上下两
+	// 个四分之一圆弧在侧边正中拼成一整个半圆，左右两条竖直边完全消失（2026-
+	// 10-14：此前误传 28×28，实际半径只有 14px，侧边还留着 28px 直线、看着
+	// 仍是圆角矩形）。此前靠页面自画胶囊 + DWM 小圆角会在矩形四角露出"圆角
+	// 矩形包裹"的底色边；窗口本体裁形后页面只需铺满主题色。
 	rgn, _, _ := procVfCreateRoundRectRgn.Call(0, 0, uintptr(wfW), uintptr(wfH),
-		uintptr(wfH/2), uintptr(wfH/2))
+		uintptr(wfH), uintptr(wfH))
 	if rgn != 0 {
 		procVfSetWindowRgn.Call(hwnd, rgn, 1)
 	}
