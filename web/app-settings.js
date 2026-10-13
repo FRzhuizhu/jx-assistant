@@ -170,7 +170,7 @@ async function openSettings(pane) {
   // 网络访问页：公司接入开关（服务端配置 companyLinkOff：关＝不弹向导、不连公司服务端）
   $('set-company-on').checked = !c.companyLinkOff;
   syncCompanyState(c);
-  // 网络访问页：软件更新分区（版本/最近检查/就绪状态）
+  // 关于页：软件更新分区（版本/最近检查/就绪状态；更新检查源仍在网络访问页）
   refreshUpdateBox();
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
