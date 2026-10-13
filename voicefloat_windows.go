@@ -10,11 +10,14 @@ package main
 //   - WS_POPUP 无边框 + WS_EX_TOPMOST 置顶 + WS_EX_NOACTIVATE 不抢键盘焦点
 //     （听写期间用户继续在目标程序里打字/光标不动）+ WS_EX_TOOLWINDOW 不进
 //     任务栏与 Alt+Tab；Win11 上用 DWM 圆角偏好包出胶囊感（Win10 退化为方角）。
-//   - 所有 COM / 窗口调用一律发生在浮窗自己的 UI 线程（与 browser_panel 同一
-//     纪律）：外部 goroutine 经 voiceFloatDispatch 投递，线程消息循环里被
-//     WM_APP+1 唤醒后批量执行；Eval（ExecuteScript）也一样，绝不跨线程直调。
+//   - 所有 COM / 窗口调用一律发生在桌面壳的**主 UI 线程**（与 browser_panel
+//     同一纪律，经 mainWndDispatch 投递）：WebView2 的第二个环境必须在主线程
+//     创建——2026-10-13 实测在自建线程上创建时 go-webview2 的环境回调会拿到
+//     nil env 直接 panic（EnvironmentCompleted 崩溃，整个桌面进程陪葬），
+//     首版浮窗自建线程的写法已回退。
 //   - 惰性创建：首次触发全局听写才建窗与 WebView2（大多会话用不到它）；
-//     建好后常驻隐藏，反复开关零成本。
+//     建好后常驻隐藏，反复开关零成本。创建全程带 recover 兜底：库里再出
+//     任何崩溃也只降级为「本进程无浮窗」，绝不带走进程。
 //
 // 麦克风：环境创建前把 --use-fake-ui-for-media-stream 并进
 // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS（newDesktopFrontend 同款套路），再叠加
@@ -25,7 +28,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,22 +39,19 @@ import (
 )
 
 const (
-	vfWSPOPUP        = 0x80000000
-	vfWSExTopmost    = 0x00000008
-	vfWSExToolWindow = 0x00000080
-	vfWSExNoActivate = 0x08000000
-	vfSWHide         = 0
+	vfWSPOPUP          = 0x80000000
+	vfWSExTopmost      = 0x00000008
+	vfWSExToolWindow   = 0x00000080
+	vfWSExNoActivate   = 0x08000000
+	vfSWHide           = 0
 	vfSWShowNoActivate = 4
-	vfWMAppDispatch  = 0x8000 + 1
-	vfSPIGetWorkArea = 48
-	vfDwmWACorner    = 33 // DWMWA_WINDOW_CORNER_PREFERENCE
-	vfDwmCornerRound = 2  // DWMWCP_ROUND
+	vfSPIGetWorkArea   = 48
+	vfDwmWACorner      = 33 // DWMWA_WINDOW_CORNER_PREFERENCE
+	vfDwmCornerRound   = 2  // DWMWCP_ROUND
 )
 
 var (
 	procVfSystemParametersInfo = windows.NewLazySystemDLL("user32.dll").NewProc("SystemParametersInfoW")
-	procVfDispatchMessage      = windows.NewLazySystemDLL("user32.dll").NewProc("DispatchMessageW")
-	procVfTranslateMessage     = windows.NewLazySystemDLL("user32.dll").NewProc("TranslateMessageW")
 	procVfIsWindow             = windows.NewLazySystemDLL("user32.dll").NewProc("IsWindow")
 	procVfDwmSetWindowAttr     = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 	// 剪贴板写（读在 clipboard_windows.go；这三个只在写路径用）
@@ -62,21 +61,17 @@ var (
 )
 
 type voiceFloat struct {
-	mu       sync.Mutex
-	created  bool
-	err      error
-	hwnd     uintptr
-	chrome   *edge.Chromium
-	ctl      *edge.ICoreWebView2Controller
-	uiCh     chan func()
-	tid      uint32
-	quitTID  uint32 // 消息循环线程（WM_QUIT 卸载用）
-	doneCh   chan struct{}
+	mu      sync.Mutex
+	created bool
+	err     error
+	hwnd    uintptr
+	chrome  *edge.Chromium
+	ctl     *edge.ICoreWebView2Controller
 }
 
 var (
-	vfOnce   sync.Once
-	vfFloat  = &voiceFloat{uiCh: make(chan func(), 64)}
+	vfOnce    sync.Once
+	vfFloat   = &voiceFloat{}
 	vfBaseURL string // runDesktop 注入（voiceGlobalApply 传入），浮窗页面导航用
 )
 
@@ -84,25 +79,29 @@ var (
 func voiceFloatBaseURL(u string) { vfBaseURL = u }
 
 // voiceFloatEnsure 惰性创建浮窗（幂等）。返回创建错误（仅第一次失败有意义，
-// 失败会记住，避免反复撞墙；重启程序才能重试）。
+// 失败会记住，避免反复撞墙；重启程序才能重试）。创建投递到桌面壳主 UI
+// 线程执行（mainWndDispatch，与浏览器面板同一通道），这里同步等结果。
 func voiceFloatEnsure() error {
 	vfOnce.Do(func() {
-		done := make(chan error, 1)
-		go func() {
-			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
-			done <- vfCreateOnUI()
-			// 创建完成后进入常驻消息循环（WM_QUIT 退出）
-			vfMessageLoop()
-			close(vfFloat.doneCh)
-		}()
-		err := <-done
+		var err error
+		if mainWndDispatch == nil {
+			err = fmt.Errorf("桌面主 UI 线程未就绪（非桌面形态）")
+		} else {
+			done := make(chan struct{})
+			mainWndDispatch(func() {
+				err = vfCreateOnUI()
+				close(done)
+			})
+			<-done
+		}
 		vfFloat.mu.Lock()
 		vfFloat.err = err
 		vfFloat.created = err == nil
 		vfFloat.mu.Unlock()
 		if err != nil {
 			log.Printf("[语音浮窗] 创建失败: %v", err)
+		} else {
+			log.Printf("[语音浮窗] 已创建（主 UI 线程，常驻隐藏）")
 		}
 	})
 	vfFloat.mu.Lock()
@@ -118,8 +117,15 @@ func vfWorkArea() (l, t, r, b int32) {
 	return wa.Left, wa.Top, wa.Right, wa.Bottom
 }
 
-// vfCreateOnUI 在浮窗 UI 线程建顶层窗口与 WebView2 控件（保持隐藏，等待首个会话）。
-func vfCreateOnUI() error {
+// vfCreateOnUI 在桌面壳主 UI 线程建顶层窗口与 WebView2 控件（保持隐藏，等待
+// 首个会话）。全程 recover：go-webview2 的环境回调历史上崩过（nil env 空指针），
+// 这里把它降级为创建错误，绝不让库崩溃带走进程。
+func vfCreateOnUI() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("WebView2 初始化崩溃（go-webview2 回调异常）: %v", r)
+		}
+	}()
 	// 尺寸与落位：宽 580、高 48（物理像素），工作区底部居中、任务栏上方 14px
 	const wfW, wfH = 580, 48
 	l, _, r, b := vfWorkArea()
@@ -181,10 +187,8 @@ func vfCreateOnUI() error {
 	_, _, _ = ctlVtblOf(ctl).putBounds.Call(uintptr(unsafe.Pointer(ctl)), uintptr(unsafe.Pointer(&rect)))
 	_ = ctl.PutIsVisible(true)
 
-	tid, _, _ := procGetCurrentThreadID.Call()
 	vfFloat.mu.Lock()
 	vfFloat.hwnd, vfFloat.chrome, vfFloat.ctl = hwnd, ch, ctl
-	vfFloat.quitTID = uint32(tid)
 	vfFloat.mu.Unlock()
 
 	base := vfBaseURL
@@ -195,55 +199,21 @@ func vfCreateOnUI() error {
 	return nil
 }
 
-// vfMessageLoop 浮窗 UI 线程的常驻消息循环：WM_APP+1 唤醒后批量执行投递来的
-// 函数（COM/窗口操作全部在这条线程上跑），WM_QUIT 退出。其余消息照常派发
-// （WebView2 内部子窗口依赖正常泵送）。
-func vfMessageLoop() {
-	drain := func() {
-		for {
-			select {
-			case f := <-vfFloat.uiCh:
-				safeRun(f)
-			default:
-				return
-			}
-		}
-	}
-	var msg recMsg
-	for {
-		r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
-		if r == 0 || r == ^uintptr(0) {
-			break
-		}
-		if msg.Message == vfWMAppDispatch {
-			drain()
-			continue
-		}
-		_, _, _ = procVfTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
-		_, _, _ = procVfDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
-	}
-}
-
 func safeRun(f func()) {
 	defer func() { _ = recover() }()
 	f()
 }
 
-// voiceFloatDispatch 把函数投递到浮窗 UI 线程执行（未创建/已退出时静默丢弃）。
+// voiceFloatDispatch 把函数投递到桌面壳主 UI 线程执行（未创建/已退出时静默丢弃）。
+// 窗口与 WebView2 都活在主线程的消息循环里，与浏览器面板共用 mainWndDispatch。
 func voiceFloatDispatch(f func()) {
 	vfFloat.mu.Lock()
 	created := vfFloat.created && vfFloat.hwnd != 0
-	tid := vfFloat.quitTID
 	vfFloat.mu.Unlock()
-	if !created || tid == 0 {
+	if !created || mainWndDispatch == nil {
 		return
 	}
-	select {
-	case vfFloat.uiCh <- f:
-	default:
-		return // 队列满：丢弃（显示类操作，丢一帧无碍）
-	}
-	procPostThreadMessageW.Call(uintptr(tid), vfWMAppDispatch, 0, 0)
+	mainWndDispatch(func() { safeRun(f) })
 }
 
 // voiceFloatEval 在浮窗页面执行 JS（COM 调用经 Dispatch 落到 UI 线程）。
