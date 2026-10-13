@@ -690,8 +690,15 @@ func (a *App) handleBrowserState(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBrowserPanelRect 桌面右栏原生面板的矩形同步端点：前端把网页占位区
-// 的矩形（CSS px 原值）上报，宿主直接以同尺度的子窗口坐标移动 WebView2
-// 子窗口。网页模式没有原生面板，忽略。
+// 的矩形上报，宿主移动 WebView2 子窗口。网页模式没有原生面板，忽略。
+//
+// 写者纪律：面板可见性的状态机只允许桌面壳前端一个写者——历史上出过两类
+// 事故：网页形态的页面（手机/浏览器里开的同一 UI）加载时发一次隐藏上报，
+// 把桌面端好好显示的面板顶掉（desktop.log 2026-10-12 17:52:52：正确落位
+// 一秒后被另一连接的全零上报隐藏）；以及非浏览器来源（Go http 客户端）的
+// 全零上报。因此：带矩形却未标 desktop 的上报忽略；UA 不含 Mozilla 的
+// （非浏览器页）上报忽略。前端侧配合（app-right.js bpwReport）：网页形态
+// 一个字节都不发。
 func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		X       float64 `json:"x"`
@@ -703,13 +710,27 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 		IW      float64 `json:"iw"` // 临时诊断字段（前端视口宽）
 		IH      float64 `json:"ih"` // 临时诊断字段（前端视口高）
 		OZ      float64 `json:"oz"` // 临时诊断字段（visualViewport.scale）
+		Desktop bool    `json:"desktop"` // 上报者是否桌面壳（唯一合法写者）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
 		return
 	}
-	log.Printf("[panel-rect-diag] 收到 x=%.1f y=%.1f w=%.1f h=%.1f dpr=%.2f visible=%v iw=%.0f ih=%.0f oz=%.0f",
-		p.X, p.Y, p.W, p.H, p.Dpr, p.Visible, p.IW, p.IH, p.OZ) // 临时诊断日志
+	// 写者校验一：非浏览器来源（Go http 客户端等）一律忽略
+	if ua := r.UserAgent(); !strings.Contains(ua, "Mozilla") {
+		log.Printf("[panel-rect] 忽略非浏览器来源上报（ua=%q visible=%v）", ua, p.Visible)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	// 写者校验二：带矩形的可见上报必须来自桌面壳（旧前端/异常来源忽略；
+	// 隐藏上报不带 desktop 字段是合法的——桌面壳的隐藏分支本就只发 visible）
+	if p.Visible && !p.Desktop {
+		log.Printf("[panel-rect] 忽略非桌面壳的可见上报（x=%.0f y=%.0f w=%.0f h=%.0f）", p.X, p.Y, p.W, p.H)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	log.Printf("[panel-rect-diag] 收到 x=%.1f y=%.1f w=%.1f h=%.1f dpr=%.2f visible=%v iw=%.0f ih=%.0f oz=%.0f desktop=%v",
+		p.X, p.Y, p.W, p.H, p.Dpr, p.Visible, p.IW, p.IH, p.OZ, p.Desktop) // 临时诊断日志
 	ps, ok := a.nativePanel.(interface {
 		SetRect(x, y, w, h int, dpr float64, visible bool) error
 	})
@@ -721,21 +742,35 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 	if dpr <= 0 {
 		dpr = 1
 	}
-	// 坐标换算：前端给的 x/y/w/h 是 CSS px，而本进程对 Win32 是系统 DPI 感知
-	// （manifest dpiAware，窗口单位=系统单位），实测主 WebView2 的 CSS 视口宽
-	// 与客户区窗口单位宽一致（CSS px 与子窗口坐标 1:1 同尺度）。此前这里乘
-	// dpr 是把 CSS px 当逻辑单位换算“物理像素”——但 SetWindowPos 的子窗口
-	// 坐标并非物理像素，乘完在 125%/150%/160% 缩放的面板会整体飞出客户区
-	// 右缘（实测 160%：x=1079×1.6=1727 > 客户宽 1264），WebView2 在窗外照常
-	// 导航——用户看到的就是「地址栏/标题正常、网页区永远白屏」。100% 缩放
-	// 乘 1 无感，故只在非 100% 缩放的机器上必现。直接用 CSS 原值即可。
+	// 坐标换算：前端 x/y/w/h 是相对主 WebView2 视口的 CSS px。主 WebView2
+	// 精确铺满主窗口客户区（绑定库 WM_SIZE → GetClientRect → PutBounds），
+	// 于是「客户区窗口单位 ÷ 上报视口宽高」= CSS px → 子窗口坐标的实测
+	// 比例：100% 缩放下为 1，非 100% 缩放/多屏异 DPI 自我校准。此前两代
+	// 实现（先乘 dpr、后假设 1:1）都在部分机器上翻过车——比例是量出来的，
+	// 不再是假设。隐藏上报（iw=0）跳过校准，反正矩形不生效。
+	sx, sy := 1.0, 1.0
+	if cw, ch := mainClientSize(); cw > 0 && ch > 0 && p.IW > 0 && p.IH > 0 {
+		sx = clampFloat(float64(cw)/p.IW, 0.5, 3)
+		sy = clampFloat(float64(ch)/p.IH, 0.5, 3)
+	}
 	if err := ps.SetRect(
-		int(p.X+0.5), int(p.Y+0.5), int(p.W+0.5), int(p.H+0.5),
+		int(p.X*sx+0.5), int(p.Y*sy+0.5), int(p.W*sx+0.5), int(p.H*sy+0.5),
 		dpr, p.Visible); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// clampFloat 限幅（比例校准用：异常上报不至于把面板缩出天际）。
+func clampFloat(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // fileURLFromAbs 把本地绝对路径拼成合法 file:// URL（逐段转义，保留 / 分隔）。

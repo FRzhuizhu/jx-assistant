@@ -12,9 +12,9 @@
   --active: #eef1f5;
   --accent: #4d6bfe;
   --accent-hover: #3d5bef;
-  /* 用户气泡底色 = 「点缀色」加白的同色系浅色：设置页换点缀色（写 --accent）时
-     这里跟着变，用户始终得到「和点缀色同一个颜色、但变淡」的气泡。
-     下面 20% 是点缀色占比，也就是「加白程度」：嫌深就调小、想更接近点缀色就调大。 */
+  /* 用户气泡底色 = 「主题色」加白的同色系浅色：设置页换主题色（写 --accent）时
+     这里跟着变，用户始终得到「和主题色同一个颜色、但变淡」的气泡。
+     下面 20% 是主题色占比，也就是「加白程度」：嫌深就调小、想更接近主题色就调大。 */
   --mine-tint: 20%;
   --bubble-mine: color-mix(in srgb, var(--accent) var(--mine-tint), #ffffff);
   --chip: #f2f3f5;
@@ -363,7 +363,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .msg.user .bubble {
   max-width: 72%; color: var(--text);
   background: #e1e7ff;                 /* 旧内核兜底：支持 color-mix 时下面一行生效 */
-  background: var(--bubble-mine);       /* = 点缀色加白（见 :root 里的 --mine-tint/--bubble-mine） */
+  background: var(--bubble-mine);       /* = 主题色加白（见 :root 里的 --mine-tint/--bubble-mine） */
   --fold-bg: var(--bubble-mine);        /* 折叠渐隐终点 = 气泡自身底色 */
   padding: 10px 15px; border-radius: 14px 14px 4px 14px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
@@ -1777,7 +1777,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .session-item .dot.done { display: inline-block; background: #2ea043; }
 .session-item .dot.unread { display: inline-block; background: #d33; }
 
-/* ---------- 设置页：点缀色（内置色板） ---------- */
+/* ---------- 设置页：主题色（内置色板） ---------- */
 #accent-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 2px 0 4px; }
 .acc-swatch {
   width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
@@ -1846,7 +1846,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .sf-desc { font-size: 12px; color: var(--text-3); margin: 6px 0 0; line-height: 1.5; }
 .gen-section { margin-top: 18px; }
 .gen-section > h4 { font-size: 13px; margin: 0 0 8px; color: var(--text-2); }
-/* 主题色预览卡片：三张迷你窗口图，一眼看出页面配色 */
+/* 背景色预览卡片：三张迷你窗口图，一眼看出页面配色 */
 .theme-cards { display: flex; gap: 10px; max-width: 420px; }
 .theme-card {
   flex: 1; display: flex; flex-direction: column; gap: 6px;
@@ -2155,7 +2155,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .jx-sel-opt.cur { color: var(--accent); font-weight: 600; }
 .jx-sel-opt.cur svg { visibility: visible; }
 
-/* ---------- 主题色：黑色（白为默认 :root，跟随系统由 JS 解析） ---------- */
+/* ---------- 背景色：黑色（白为默认 :root，跟随系统由 JS 解析） ---------- */
 :root[data-theme='dark'] {
   --bg: #15171c;
   --side-bg: #191c21;
@@ -2172,7 +2172,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   --amber-bg: #2d2410;
   --gray-bg: #22252c;
   --danger: #ff9d8f;
-  /* 暗色主题：用户气泡不能加白（否则亮底配亮字），改成「点缀色调暗」的同色系深色 */
+  /* 暗色主题：用户气泡不能加白（否则亮底配亮字），改成「主题色调暗」的同色系深色 */
   --bubble-mine: color-mix(in srgb, var(--accent) 34%, var(--bg));
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }

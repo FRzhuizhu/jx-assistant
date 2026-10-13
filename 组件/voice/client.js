@@ -255,6 +255,22 @@
 
   function shortcutFire(action, key) { // action: 'press' | 'release'；key＝本次按下的那个键
     if (!active || captureMode || !document.hasFocus()) return;
+    // 全局转发（2026-10-13 全局语音输入法）：桌面壳里焦点不在主/子输入框
+    //（git 面板、设置页、右栏浏览器等任何地方）时，快捷键不再把听写落到主
+    // 输入框，而是转发给后端弹全局胶囊浮窗（voiceglobal_windows.go，结束后
+    // 粘贴回这里的输入框/复制到剪贴板）。与微信输入法同款两分法：对话框内
+    // 走原有灰字听写，对话框外走浮窗。请求失败（浏览器形态/远程端/旧版后端）
+    // 静默忽略，本次按键不触发本地听写——避免浮窗与本地双开抢麦克风。
+    if (desktopShell() && !window.JX_REMOTE && action === 'press') {
+      const ae0 = document.activeElement;
+      if (!ae0 || (ae0.id !== 'input' && ae0.id !== 'sub-input')) {
+        fetch('/api/voice/global/start', { method: 'POST' }).catch(() => {});
+        return;
+      }
+      // 对称防双录：焦点在输入框、即将开本地听写——先静默收掉可能开着的
+      // 全局浮窗会话（用户浮窗没关就切回来按快捷键的场景）；stop 只收不 toggle。
+      fetch('/api/voice/global/stop', { method: 'POST' }).catch(() => {});
+    }
     const ctl = activeVoiceCtl();
     if (!ctl) return;
     lastInputAt = Date.now(); // 刷新"最近一次真实输入"时刻（残留清理心跳用）
@@ -1622,6 +1638,45 @@
       refreshShortcutPlaceholders();
       refreshAllScBoxes();
     };
+
+    /* ----- 全局语音输入法（桌面壳专属：系统级快捷键 + 胶囊浮窗 + 粘贴/复制） ----- */
+    // 配置存主程序 config.json（voiceGlobal 段）而不是组件 localStorage：钩子
+    // 装卸在 Go 侧（voiceglobal_windows.go），设置页只是它的 UI 入口；开关/模式
+    // 改动经 /api/config 热生效。浏览器/远程端不渲染这一组。
+    if (desktopShell() && !window.JX_REMOTE) {
+      group('全局语音输入法（桌面版）');
+      note('对话框之外的任意位置（本软件其他面板、以及全电脑任何程序的光标处）按'
+        + '鼠标侧键：屏幕底部弹出胶囊浮窗听写，再按一次结束，文字自动粘贴进光标处；'
+        + '那里不可输入时留在剪贴板（浮窗提示「已复制」）。识别节奏与对话框内一致'
+        + '（停顿约 0.6 秒出草稿、3 秒定稿）。对话框内（主/子输入框）仍走上面的'
+        + '灰字听写，互不打扰。');
+      const vgToggle = document.createElement('input');
+      vgToggle.type = 'checkbox';
+      vgToggle.checked = true;
+      const vgToggleLbl = document.createElement('span');
+      vgToggleLbl.className = 'sp-value';
+      const vgModeSel = document.createElement('select');
+      vgModeSel.className = 'sp-select';
+      for (const [v, t] of [['tap', '点按：按一下开始，再按一下结束'], ['hold', '长按：按住说话，松开结束']]) {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = t;
+        vgModeSel.appendChild(o);
+      }
+      const vgApply = (patch) => fetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voiceGlobal: patch }),
+      }).catch(() => {});
+      vgToggle.onchange = () => vgApply({ enabled: vgToggle.checked });
+      vgModeSel.onchange = () => vgApply({ mode: vgModeSel.value });
+      fetch('/api/config').then((r) => r.json()).then((c) => {
+        const vg = c.voiceGlobal || {};
+        vgToggle.checked = vg.enabled !== false;
+        vgModeSel.value = vg.mode === 'hold' ? 'hold' : 'tap';
+        vgToggleLbl.textContent = '';
+      }).catch(() => {});
+      row('任意位置听写', vgToggle).appendChild(vgToggleLbl);
+      row('触发方式', vgModeSel);
+    }
   }
 
   /* ================= 注册 ================= */
@@ -1668,6 +1723,15 @@
       };
       if (JX.hook) JX.hook('send', sendHook);
 
+      // 全局语音输入法的互斥钩子（voiceglobal_windows.go 在开启全局浮窗前
+      // ExecuteScript 调它）：把页面内进行中的听写停掉，防两套会话抢麦克风
+      window.JXVoiceStopAll = () => {
+        for (const k of ['main', 'sub']) {
+          const c = voiceCtl[k];
+          if (c && c.active()) c.stop();
+        }
+      };
+
       // 设置区以独立分区页呈现（设置 → 语音，位于「内置组件」之后）：
       // pane 字段交给 app-settings.js 动态挂导航项与页面容器，组件关掉即撤
       CX.registerSettings({
@@ -1688,6 +1752,7 @@
       removeShortcutEngine();
       if (sendHook && JX.unhook) JX.unhook('send', sendHook);
       sendHook = null;
+      window.JXVoiceStopAll = null;
       window.JXVoiceHint = '';
       if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
       restoreSubPlaceholder();

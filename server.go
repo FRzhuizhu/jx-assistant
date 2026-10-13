@@ -325,6 +325,11 @@ func (a *App) Routes() http.Handler {
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
+	// 全局语音输入法（桌面壳）：页面内非对话框区按快捷键时组件转发 start；
+	// finish 由胶囊浮窗页（voice-float.html）收尾时回传文本，Go 侧粘贴/复制
+	mux.HandleFunc("POST /api/voice/global/start", a.handleVoiceGlobalStart)
+	mux.HandleFunc("POST /api/voice/global/stop", a.handleVoiceGlobalStop)
+	mux.HandleFunc("POST /api/voice/global/finish", a.handleVoiceGlobalFinish)
 	// 声明式组件桥（componentbridge.go）：组件自包含后端的统一端点前缀——
 	// /api/c/<组件id>/<path> 按 manifest 的 workers 声明分发（call=HTTP 一行一答、
 	// ws=WebSocket 哑转发）；组件未声明/未启用 404。挂 /api/ 下远程中继天然覆盖
@@ -1053,6 +1058,11 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"snapshotDays":     a.Cfg.SnapshotDays,
 		"ruleInterval":     a.Cfg.RuleInterval,
 		"compactThreshold": a.Cfg.CompactThreshold,
+		"voiceGlobal": map[string]any{
+			"enabled": a.Cfg.VoiceGlobal.Enabled == nil || *a.Cfg.VoiceGlobal.Enabled,
+			"mode":    map[bool]string{true: "hold", false: "tap"}[a.Cfg.VoiceGlobal.Mode == "hold"],
+		},
+		"accentColor": a.Cfg.AccentColor,
 	})
 }
 
@@ -1084,6 +1094,11 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			RuleInterval *int    `json:"ruleInterval"`
 			Threshold    float64 `json:"threshold"`
 		} `json:"compact"`
+		VoiceGlobal *struct {
+			Enabled *bool  `json:"enabled"` // 全局语音输入法开关（装卸系统钩子，热生效）
+			Mode    string `json:"mode"`    // tap=点按切换（默认）| hold=按住说话
+		} `json:"voiceGlobal"`
+		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：全局语音浮窗等独立环境取色
 		Providers *[]struct {
 			ID      string     `json:"id"`
 			Name    string     `json:"name"`
@@ -1234,6 +1249,26 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if body.SnapshotEnabled != nil {
 		a.Cfg.SnapshotEnabled = body.SnapshotEnabled
 	}
+	if body.VoiceGlobal != nil {
+		if body.VoiceGlobal.Enabled != nil {
+			a.Cfg.VoiceGlobal.Enabled = body.VoiceGlobal.Enabled
+		}
+		if m := strings.TrimSpace(body.VoiceGlobal.Mode); m != "" {
+			if m != "tap" && m != "hold" {
+				writeErr(w, 400, "全局语音快捷键模式只支持 tap（点按）或 hold（长按）")
+				return
+			}
+			a.Cfg.VoiceGlobal.Mode = m
+		}
+	}
+	if body.AccentColor != nil {
+		c := strings.TrimSpace(*body.AccentColor)
+		if c != "" && !strings.HasPrefix(c, "#") && len(c) == 7 {
+			c = "#" + c // 容错：色板值一般带 #，裸值补上
+		}
+		a.Cfg.AccentColor = c
+	}
+	voiceGlobalReapply(a) // 全局语音输入法：开关/模式热生效（装卸钩子；非桌面壳为空操作）
 	if body.SnapshotDays != nil && (*body.SnapshotDays > 0 || *body.SnapshotDays == -1) {
 		a.Cfg.SnapshotDays = *body.SnapshotDays
 	}
@@ -1261,6 +1296,47 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.syncRemoteAccess()
 	}
 	a.handleGetConfig(w, r)
+}
+
+// handleVoiceGlobalStart 页面内转发入口：焦点不在主/子输入框时，语音组件的
+// 快捷键引擎 POST 到这里（与系统钩子同一 toggle 语义）。仅桌面壳可用。
+func (a *App) handleVoiceGlobalStart(w http.ResponseWriter, r *http.Request) {
+	if !voiceGlobalSupported() {
+		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
+		return
+	}
+	voiceGlobalToggle()
+	writeJSON(w, 200, map[string]any{"ok": 1})
+}
+
+// handleVoiceGlobalStop 只停不 toggle：页面内听写开启前静默收掉全局会话
+//（防双录：全局浮窗开着时用户切回输入框按快捷键的场景）。
+func (a *App) handleVoiceGlobalStop(w http.ResponseWriter, r *http.Request) {
+	if !voiceGlobalSupported() {
+		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
+		return
+	}
+	voiceGlobalStopSession()
+	writeJSON(w, 200, map[string]any{"ok": 1})
+}
+
+// handleVoiceGlobalFinish 胶囊浮窗页收尾回传：校验会话代数后写剪贴板并模拟
+// Ctrl+V 粘贴到触发时记录的目标窗口（拉不回前台/目标已亡则仅复制）。
+func (a *App) handleVoiceGlobalFinish(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Text  string `json:"text"`
+		Epoch int64  `json:"epoch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "请求体不是合法 JSON")
+		return
+	}
+	if !voiceGlobalSupported() {
+		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
+		return
+	}
+	voiceGlobalFinish(body.Text, body.Epoch)
+	writeJSON(w, 200, map[string]any{"ok": 1})
 }
 
 func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {

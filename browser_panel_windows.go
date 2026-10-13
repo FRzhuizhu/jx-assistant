@@ -33,9 +33,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -316,6 +318,39 @@ func (p *browserPanel) ensureStarted() error {
 	}
 }
 
+// withPanelBrowserArgs 给面板控件的 WebView2 环境合并浏览器参数（仅创建
+// 期间生效，用毕还原）：与主界面同款防遮挡开关 CalculateNativeWinOcclusion。
+// 主窗口靠它在被遮挡/挪屏后仍持续出帧；面板此前一直没带——控件被挪到屏外
+// （隐藏态）再回来后，Chromium 的原生遮挡判定会让合成器停帧：能导航、地址
+// 栏与标题正常、画面纯白（desktop.log 2026-10-13 14:45:50：落位正确仍白屏）。
+// 走官方 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 通道（只在环境创建时读取），
+// newDesktopFrontend 同款 set/restore 模式；面板创建在 UI 线程经 Dispatch
+// 串行，与主窗口的创建不会并发。
+func withPanelBrowserArgs(f func()) {
+	const feat = "CalculateNativeWinOcclusion"
+	prev, had := os.LookupEnv(webView2ArgsEnv)
+	merged := prev
+	if !strings.Contains(prev, feat) {
+		const df = "--disable-features="
+		if i := strings.Index(prev, df); i >= 0 {
+			merged = prev[:i+len(df)] + feat + "," + prev[i+len(df):]
+		} else {
+			merged = strings.TrimSpace(strings.TrimSpace(prev) + " " + df + feat)
+		}
+	}
+	if merged != prev {
+		_ = os.Setenv(webView2ArgsEnv, merged)
+	}
+	defer func() {
+		if had {
+			_ = os.Setenv(webView2ArgsEnv, prev)
+		} else {
+			_ = os.Unsetenv(webView2ArgsEnv)
+		}
+	}()
+	f()
+}
+
 // createOnUI 在 UI 线程创建子窗口与第二个 WebView2 控件（独立环境与
 // profile：data/webview-browser，与主界面 data/webview 隔离，同浏览器模型
 // 于旧方案的 data/browser-profile）。
@@ -344,7 +379,9 @@ func (p *browserPanel) createOnUI() error {
 	ch.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		p.onNavCompleted()
 	}
-	if !ch.Embed(hwnd) { // 内部消息泵等环境/控制器就绪
+	var embedded bool
+	withPanelBrowserArgs(func() { embedded = ch.Embed(hwnd) }) // 内部消息泵等环境/控制器就绪
+	if !embedded {
 		_, _, _ = procPanelDestroyWindow.Call(hwnd)
 		return fmt.Errorf("WebView2 控件初始化失败")
 	}
@@ -377,6 +414,13 @@ func (p *browserPanel) createOnUI() error {
 // 隐藏统一走「屏外 + 保持 IsVisible=true」：实测 IsVisible=false 会让合成器
 // 停帧，且恢复 true 后不保证续帧——「地址栏与标题都正常、画面纯白空白」的
 // 根源正是旧的 w<8 分支（零矩形上报触发的 PutIsVisible(false)）。
+//
+// Z 序（真正的白屏根因，2026-10-13 定位）：面板子窗口必须浮在主 WebView2
+// 之上才能被看见，而主 WebView2 铺满整个客户区、且 Chromium 会在激活/聚焦
+// 时把自己重新提到兄弟窗口顶——CreateWindowExW 出生时在顶上不够，每次落位
+// 都要显式 HWND_TOP 重申；主窗口激活/Z 序变化时另有 reassertPanelTop 去抖
+// 兜底（见 desktop_windows.go 的 mainWndSubclassProc）。实测：面板被压到主
+// WebView2 之下时导航/标题/CDP 全部正常，画面永远看不见。
 func (p *browserPanel) applyRectOnUI() {
 	p.stateMu.Lock()
 	x, y, w, h, visible := p.rectX, p.rectY, p.rectW, p.rectH, p.visible
@@ -401,11 +445,12 @@ func (p *browserPanel) applyRectOnUI() {
 	// 强制一次真实位移（x+1 → x）：SetWindowPos 对相同坐标会被系统优化掉，
 	// 合成器偶发停帧（画面纯白、标题正常）后，没有真实的窗口位置事件就唤
 	// 不回来——实测同矩形重发不重绘，挪 1px 立即恢复。两步都在同一条 UI
-	// 消息里完成，中间不会发生绘制，肉眼不可见。
+	// 消息里完成，中间不会发生绘制，肉眼不可见。insertAfter=0（HWND_TOP）：
+	// 每次落位都把面板提回兄弟窗口顶（见上方 Z 序注释）。
 	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(x+1), uintptr(y), uintptr(w), uintptr(h),
-		swpNoZOrder|swpNoActivate)
+		swpNoActivate)
 	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
-		swpNoZOrder|swpNoActivate)
+		swpNoActivate)
 	if procPanelGetWindowRect.Find() == nil { // 临时诊断回读：SetWindowPos 之后窗口真实落在哪
 		var rr panelRect
 		if rb, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rr))); rb != 0 {
@@ -418,6 +463,29 @@ func (p *browserPanel) applyRectOnUI() {
 	_, _, _ = ctlVtblOf(ctl).putBounds.Call(uintptr(unsafe.Pointer(ctl)), uintptr(unsafe.Pointer(&r)))
 	_ = ctl.PutIsVisible(true)
 	_ = ctl.NotifyParentWindowPositionChanged()
+}
+
+// reassertTopOnUI 把面板子窗口提回兄弟窗口顶（去抖 150ms）。Chromium 的主
+// WebView2 在窗口激活/聚焦时会把自己重新提到顶上，面板随即被压到它下面——
+// 用户视角是「右栏一眨眼变成空白，地址栏还正常」。主窗口的 WM_ACTIVATE /
+// Z 序变化消息会触发这里（desktop_windows.go 的 mainWndSubclassProc）；
+// 仅 UI 线程调用。HWND_TOP 对已在顶部的窗口是无害空操作。
+var lastPanelReassertMs int64
+
+func (p *browserPanel) reassertTopOnUI() {
+	now := time.Now().UnixMilli()
+	if now-atomic.LoadInt64(&lastPanelReassertMs) < 150 {
+		return
+	}
+	atomic.StoreInt64(&lastPanelReassertMs, now)
+	p.stateMu.Lock()
+	hwnd, visible := p.hwnd, p.visible
+	p.stateMu.Unlock()
+	if hwnd == 0 || !visible {
+		return
+	}
+	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
+		swpNoSizeFlag|swpNoMoveFlag|swpNoActivate)
 }
 
 // SetRect 前端矩形同步入口（CSS px 原值，见 handleBrowserPanelRect 的换算
@@ -435,11 +503,6 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 	if visible && (w < 8 || h < 8) {
 		visible = false // 布局未就绪/极小：按隐藏处理，别用脏矩形
 	}
-	if visible {
-		if err := p.ensureStarted(); err != nil {
-			return err
-		}
-	}
 	p.stateMu.Lock()
 	// 只采纳合法矩形：隐藏上报只带 visible 字段（x/y/w/h 全零），清掉旧尺寸
 	// 会让屏外分支退化成 64x64 占位，回来时还得等一次完整矩形
@@ -454,6 +517,17 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 		p.cssH = clampInt(h, 1, 65535)
 	}
 	created := p.ctl != nil
+	p.stateMu.Unlock()
+	// 先存矩形、后创建：首个可见矩形到达时 createOnUI 读到的就是真实矩形，
+	// 控件直接在目标位置出生。旧顺序创建先于存值，控件以 64x64 生在屏外、
+	// 再靠位移挪回——「屏外出生」的控件合成器偶发不再出帧（能导航、纯白）。
+	if visible && !created {
+		if err := p.ensureStarted(); err != nil {
+			return err
+		}
+	}
+	p.stateMu.Lock()
+	created = p.ctl != nil
 	p.stateMu.Unlock()
 	if !created {
 		return nil

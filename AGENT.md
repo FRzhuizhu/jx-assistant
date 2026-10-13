@@ -267,6 +267,17 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   卸载时 `/unregister` 还原（缺 exe 拒绝出包）。给打包脚本加新的暂存项时，
   同步更新本清单。
 
+  **发布到 Gitea**（远程 `origin`＝your-org/your-repo，工作分支 `go`）：tag/标题
+  沿用「Vx.y.z（日期）桌面版」（v1.0.x 序号递增），说明按上一版格式写改动
+  清单，安装包 exe 挂附件；API 用个人访问令牌，存
+  `C:\Users\54358\.gitea\jx-assistant.token`（网页 设置→应用 生成，权限
+  write:repository），`curl -H "Authorization: token $(cat
+  ~/.gitea/jx-assistant.token)"` 调 `/api/v1/repos/your-org/your-repo/releases`
+  （建发布 → `releases/{id}/assets?name=…` 传附件，文件名需 URL 编码）。
+  `releases/latest` 是程序内更新检查的源，发布后线上客户端自动收到横幅。
+  注意 git 推送凭据（凭据管理器的 OAuth）**不能**调 API——两套体系，别再
+  临时登服务器开令牌。
+
 ## Electron 壳（jx-desktop，迁移期新形态）
 
 仓库 `electron-migration` 分支上的第三种桌面形态：壳是独立目录
@@ -1057,8 +1068,8 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
 - 组件随源码入库（`组件/` 目录全部跟踪），**打包时必须随安装包分发**（见
   「桌面版与安装包」一节的打包清单）。曾作为最小组件模板的 `input-counter`
   （字数统计）已删除，新建组件照「manifest.json + client.js（client.css 可选）」
-  的最小结构手写即可。界面强调色（点缀色）原为示例组件，现已并入主程序
-  `web/app-settings.js`（常规 → 外观 → 点缀色）。
+  的最小结构手写即可。界面强调色（主题色）原为示例组件，现已并入主程序
+  `web/app-settings.js`（常规 → 外观 → 主题色）。
 - 现成组件：`todo-scheduler`（待办与定时任务——侧栏入口 + 持久清单 + 定时调度，
   宿主半边在 `todo.go`，关掉后入口、`/api/todos` 接口与调度一起停）、
   `git-panel`（Git 面板——右栏「Git」页签：同屏双区（默认上下堆叠、可切左右分栏、

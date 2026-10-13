@@ -11,7 +11,7 @@ updateSendKeyHint();  // 输入框占位文案跟随发送快捷键设置（设�
 setupJumpLatest();    // 回到底部按钮（挂进上面刚建好的 #msg-zone，需在其后）
 setupFolds();         // 长消息折叠（主对话，超 6 行折叠 + 展开/收起）
 setupScrollTuck();    // 滚动显隐：回到底部按钮 + 手机端输入区收起/展开
-applyTheme();         // 恢复常规页选的主题色（白/黑/跟随系统）
+applyTheme();         // 恢复常规页选的背景色（白/黑/跟随系统）
 restoreSidebarWidth(); // 恢复上次拖定的左侧栏宽度（--sb-w，须在 applySidebarState 之前）
 applySidebarState();
 resetEmpty();

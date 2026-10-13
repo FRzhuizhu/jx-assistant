@@ -302,6 +302,9 @@ func runDesktop(app *App, url string) error {
 		mainWndDispatch = w.Dispatch
 		// 右栏原生浏览器面板：COM 调用一律经 Dispatch 投递到本窗口的 UI 线程
 		app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
+		if bp, ok := app.nativePanel.(*browserPanel); ok {
+			panelReassertHook.Store(func() { bp.reassertTopOnUI() })
+		}
 		// 右侧栏截图（panel_screenshot 工具）的通道：shellEval 注入主界面 JS，
 		// 探针把右栏矩形 POST /api/shell/panel-view 回到 panelViewCh。
 		// ExecuteScript 是 COM 调用，必须发生在 UI 线程——工具侧从任意 goroutine
@@ -314,6 +317,10 @@ func runDesktop(app *App, url string) error {
 			sep = "&"
 		}
 		w.Navigate(url + sep + "shell=desktop")
+		// 全局语音输入法（voiceglobal_windows.go）：桌面壳专属，按配置装常驻
+		// 钩子（默认鼠标侧键，任意位置听写→胶囊浮窗→粘贴/复制）；窗口关闭
+		// 随进程卸载。每轮前端重建都会重调（幂等：已装则只刷新模式）。
+		voiceGlobalApply(app, url)
 		if secs, err := strconv.Atoi(os.Getenv("JX_DESKTOP_AUTOCLOSE")); err == nil && secs > 0 {
 			// 每一轮前端都各自布防（热重启换了窗口句柄，只布防首轮会让
 			// 新窗口永远等不到关窗指令）。
@@ -325,6 +332,7 @@ func runDesktop(app *App, url string) error {
 			}()
 		}
 		w.Run()
+		voiceGlobalShutdown() // 桌面窗口关闭：卸全局钩子（浏览器/远程端不受影响）
 		// 收尾在 UI 线程（Run 返回处即主线程）：关面板与主控的 COM Close，
 		// 让两棵浏览器进程树真正退场（GPU/句柄全释放），再拆窗口句柄。
 		releaseFrontend(app, w)
@@ -484,6 +492,9 @@ type windowPosMirror struct {
 }
 
 var (
+	// panelReassertHook 主窗口激活/Z 序变化时重申面板 Z 序（runDesktop 注入，
+	// 见 browserPanel.reassertTopOnUI）。原子指针：subclass 回调与窗口循环并发的护栏。
+	panelReassertHook    atomic.Value // 存 func()：主窗口激活时重申面板 Z 序
 	procSetWindowLongPtrW = desktopUser32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW   = desktopUser32.NewProc("CallWindowProcW")
 	procDefWindowProcW    = desktopUser32.NewProc("DefWindowProcW")
@@ -518,11 +529,13 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 	case wmActivate:
 		if wp&0xffff != waInactive {
 			nudgeMainWindow(hwnd)
+			panelReassertZ()
 		}
 	case wmWindowPosChanged:
 		if p := (*windowPosMirror)(lp); p != nil &&
 			p.flags&swpNoSizeFlag != 0 && p.flags&swpNoMoveFlag != 0 {
 			nudgeMainWindow(hwnd)
+			panelReassertZ()
 		}
 	}
 	if mainWndOrigProc == 0 {
@@ -538,6 +551,14 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 // 每次落一行日志：用户侧若仍黑屏，desktop.log 里有「唤醒已发出」的记录，
 // 即可排除本机制、指向渲染进程/GPU 死亡的另一族黑屏（那族要靠截图瘦身或
 // ProcessFailed 自动重载来修）。
+// panelReassertZ 主窗口激活/Z 序变化：把右栏面板提回兄弟窗口顶（Chromium
+// 聚焦时会把主 WebView2 重新提到顶、压住面板——右栏白屏的根因之一）。
+func panelReassertZ() {
+	if f, ok := panelReassertHook.Load().(func()); ok && f != nil {
+		f()
+	}
+}
+
 func nudgeMainWindow(hwnd uintptr) {
 	now := time.Now().UnixMilli()
 	if now-atomic.LoadInt64(&lastMainWndNudgeMs) < 150 {

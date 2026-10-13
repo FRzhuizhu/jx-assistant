@@ -462,6 +462,9 @@ let bpwRectTimer = null, bpwLastKey = '';
 // 必须重发一次让它显示（自愈路径不吃去重）。
 function bpwReport(immediate, force) {
   if (bpwElectron()) return; // Electron 壳：webview 是 DOM 元素，无矩形同步
+  if (!bpwDesktop()) return; // 网页形态没有原生面板，一个字节都不发：
+  // 手机/浏览器里开的同一 UI 曾用一次隐藏上报把桌面端的面板顶掉
+  // （多写者之祸，后端 handleBrowserPanelRect 现只认 desktop 标记）
   clearTimeout(bpwRectTimer);
   // attempt：开合动画期间舞台宽 <8 是常态（onOpen 的立即上报跑在动画中段），
   // 旧版只早退一次、之后全靠 ResizeObserver——RO 偶发不触发时原生面板就被
@@ -469,10 +472,10 @@ function bpwReport(immediate, force) {
   const run = (attempt) => {
     const stage = $('bpw-stage');
     if (!stage) return;
-    if (!bpwDesktop() || !bpwActive()) {
+    if (!bpwActive()) {
       if (bpwLastKey !== 'hidden') { // 只在从可见转隐藏时通知一次
         bpwLastKey = 'hidden';
-        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false }) }).catch(() => {});
+        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true }) }).catch(() => {});
       }
       return;
     }
@@ -481,7 +484,7 @@ function bpwReport(immediate, force) {
       if (attempt < 10) bpwRectTimer = setTimeout(() => run(attempt + 1), 120);
       return;
     }
-    const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true,
+    const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true, desktop: true,
       iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 }; // 临时诊断字段
     const key = JSON.stringify(payload);
     if (key === bpwLastKey && !force) return; // 尺寸没变不上报（强制补报除外）

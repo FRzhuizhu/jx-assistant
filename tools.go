@@ -1292,31 +1292,56 @@ func progressWriteTool() Tool {
 	return Tool{
 		Spec: toolSpec("progress_write", "维护当前任务的会话进度清单（整体替换：每次提交完整列表）。用于多步骤任务：开始前把工作拆成进度项；开工一项置 in_progress（同时只能有一项）；做完置 completed 再开下一项。简单到一两步的事不必用。",
 			objSchema(map[string]any{
-				"progress": objSchema(map[string]any{
-					"content": strProp("进度项内容，一句话"),
-					"status":  strProp("pending | in_progress | completed"),
+				"progress": arrayProp("进度项数组（全量清单，整体替换提交）", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"content": strProp("进度项内容，一句话"),
+						"status":  strProp("pending | in_progress | completed"),
+					},
 				}),
 			}, "progress")),
 		Run: runProgressWrite,
 	}
 }
 
-func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
+// progressItemsFromArgs 解析 progress_write 的参数。progress 在 schema 里声明为
+// 数组，但单对象仍兼容：旧 schema 曾把它写成单个 {content,status} 对象，照旧
+// 说明书的形态发来的单进度项包成单项列表即可，不必让模型重来一轮。
+func progressItemsFromArgs(args json.RawMessage) ([]ProgressItem, error) {
 	var p struct {
-		Progress []ProgressItem `json:"progress"`
+		Progress json.RawMessage `json:"progress"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	raw := strings.TrimSpace(string(p.Progress))
+	if raw == "" {
+		return nil, nil
+	}
+	if raw[0] == '{' {
+		raw = "[" + raw + "]"
+	}
+	var items []ProgressItem
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, fmt.Errorf("progress 需为进度项数组 [{\"content\":\"…\",\"status\":\"…\"},…]：%v", err)
+	}
+	return items, nil
+}
+
+func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
+	items, err := progressItemsFromArgs(args)
+	if err != nil {
 		return "", err
 	}
-	if len(p.Progress) == 0 {
+	if len(items) == 0 {
 		// 空清单 = 清空（任务取消/不再需要时可用）
 		_ = t.app.Store.SetSessionData(t.sess.ID, "progress", "")
 		t.app.broadcast(Event{Type: "progress", SessionID: t.sess.ID})
 		return "进度清单已清空。", nil
 	}
 	inProgress := 0
-	for i := range p.Progress {
-		td := &p.Progress[i]
+	for i := range items {
+		td := &items[i]
 		td.Content = strings.TrimSpace(td.Content)
 		if td.Content == "" {
 			return "", fmt.Errorf("第 %d 项 content 为空", i+1)
@@ -1337,7 +1362,7 @@ func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
 	if inProgress > 1 {
 		return "", fmt.Errorf("同时只能有一项 in_progress（当前 %d 项），请把其余改为 pending", inProgress)
 	}
-	data, err := json.Marshal(p.Progress)
+	data, err := json.Marshal(items)
 	if err != nil {
 		return "", err
 	}
@@ -1346,12 +1371,12 @@ func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	t.app.broadcast(Event{Type: "progress", SessionID: t.sess.ID})
 	done := 0
-	for _, td := range p.Progress {
+	for _, td := range items {
 		if td.Status == "completed" {
 			done++
 		}
 	}
-	return fmt.Sprintf("进度清单已更新（%d 项，完成 %d）。", len(p.Progress), done), nil
+	return fmt.Sprintf("进度清单已更新（%d 项，完成 %d）。", len(items), done), nil
 }
 
 // progressListOf 读取会话的进度清单（前端 API 用）；空返回 nil。

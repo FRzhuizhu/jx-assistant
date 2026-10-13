@@ -114,6 +114,20 @@ type Config struct {
 	// SpeechRecognition，都不读这份配置）；接入后 recorder.go 的
 	// activeSpeechTranscriber 读这里。
 	SpeechAPI map[string]string `json:"speechApi,omitempty"`
+	// 全局语音输入法（voiceglobal_windows.go）：桌面壳常驻低级钩子（默认鼠标
+	// 侧键），在软件对话框之外的任意位置（含其他程序）触发胶囊浮窗听写，
+	// 结束自动粘贴/复制。Enabled=nil 表示配置未写过该键＝默认开启（显式
+	// false 才是关闭）；Mode：tap=点按切换（默认）｜hold=按住说话。
+	VoiceGlobal VoiceGlobalCfg `json:"voiceGlobal,omitempty"`
+	// 主题色（#rrggbb）：设置页换点缀色时同步写进来，全局语音浮窗等独立
+	// WebView 环境（读不到主界面 localStorage）从 /api/config 取它上色。
+	AccentColor string `json:"accentColor,omitempty"`
+}
+
+// VoiceGlobalCfg 全局语音输入法配置段（Enabled=nil＝默认开启；Mode tap/hold）。
+type VoiceGlobalCfg struct {
+	Enabled *bool  `json:"enabled,omitempty"`
+	Mode    string `json:"mode,omitempty"` // tap（默认）| hold
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的

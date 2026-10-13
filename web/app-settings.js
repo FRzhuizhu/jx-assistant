@@ -1,5 +1,5 @@
 /* app-settings.js —— 设置弹窗：常规页/模型页/上下文页/组件/插件/技能、
-   主题色与自定义下拉。第五个加载。 */
+   背景色与自定义下拉。第五个加载。 */
 
 let provDraft = [];      // 模型页编辑中的提供方列表（不直接改全局配置）
 let presetsCache = [];   // 后端预置提供方模板 [{id,name,baseURL}]
@@ -1370,7 +1370,7 @@ function makeSelect(hostId, key, options, onChange) {
   return ref;
 }
 
-/* ---------- 主题色：白 / 黑 / 跟随系统（CSS 变量整体换装） ---------- */
+/* ---------- 背景色：白 / 黑 / 跟随系统（CSS 变量整体换装） ---------- */
 
 const themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
@@ -1399,7 +1399,7 @@ makeSelect('sel-fontsize', 'fontsize', [
   { v: '18', label: '18 px' },
   { v: '20', label: '20 px' },
 ], (v) => applyChatFont(parseFloat(v) || 14));
-// 主题色：白/黑/跟随系统的预览卡片，点选即时生效
+// 背景色：白/黑/跟随系统的预览卡片，点选即时生效
 function syncThemeCards() {
   const cur = lsGet('jx.theme', 'light');
   document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
@@ -1448,7 +1448,7 @@ document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
   });
 })();
 
-// 点缀色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
+// 主题色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
 const ACCENTS = [
   ['默认蓝', '#4d6bfe', '#3d5bef'],
   ['紫', '#8250df', '#6f42c1'],
@@ -1469,7 +1469,15 @@ function applyAccent(color, hover, save) {
     document.head.appendChild(accentStyleEl);
   }
   accentStyleEl.textContent = ':root{--accent:' + color + ';--accent-hover:' + hover + ';}';
-  if (save) lsSet('jx.accent', color + '|' + hover);
+  if (save) {
+    lsSet('jx.accent', color + '|' + hover);
+    // 同步写主程序配置：全局语音浮窗等独立 WebView 环境读不到本页
+    // localStorage，从 /api/config 的 accentColor 取色（fire-and-forget）
+    fetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accentColor: color }),
+    }).catch(() => {});
+  }
 }
 
 function buildAccentRow() {
