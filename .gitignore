@@ -8,6 +8,8 @@ config.json
 !技能/_runtime/**
 技能/_runtime/**/__pycache__/
 技能/_runtime/**/*.pyc
+# pip 卸载半途的残渣目录（~ 包名-版本.dist-info），入库只会带来警告
+技能/_runtime/**/~*/
 *.exe~
 .zcode/
 node_modules/
