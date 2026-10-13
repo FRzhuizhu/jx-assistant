@@ -1144,9 +1144,22 @@ function bindRemoteInput(id, patchKey, parse) {
   };
 }
 bindRemoteInput('set-remote-id', 'remoteMyId');
-bindRemoteInput('set-remote-pk', 'remotePairKey');
 bindRemoteInput('set-remote-host', 'remoteHost');
 bindRemoteInput('set-remote-port', 'remotePort', (v) => parseInt(v, 10) || 0);
+// 配对密钥：只读展示 + 「自动生成」换新（不可手填）。换新会作废旧入口/二维码——
+// 已配对的手机要用新入口重连，先确认再生成；32 位十六进制与服务端 genSecret(32) 同规格。
+$('btn-remote-pk-new').onclick = async () => {
+  if (!await confirmCenter('换新配对密钥后，旧入口链接立即失效，已配对的手机要用新入口重新连接。确定换新吗？')) return;
+  const bytes = new Uint8Array(16); // 16 字节 → 32 位十六进制
+  crypto.getRandomValues(bytes);
+  const key = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ remotePairKey: key }) });
+    syncRemoteState(c); // 回显新密钥；入口链接与二维码随之更新
+  } catch (e) {
+    alert('换新失败：' + e.message);
+  }
+};
 // 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
 bindRemoteInput('set-market-url', 'marketURL');
 bindRemoteInput('set-publisher-name', 'publisherName');

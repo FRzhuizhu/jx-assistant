@@ -622,8 +622,11 @@
             </div>
             <div class="set-field">
               <div class="sf-label">配对密钥</div>
-              <input id="set-remote-pk" class="pf-input" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">端到端加密密钥的种子，同时是接入凭证；每台安装默认自动生成独立的随机密钥（8~64 位）。换新密钥后，旧入口链接立即失效。</p>
+              <div class="sf-inline">
+                <input id="set-remote-pk" class="pf-input" style="flex:1" autocomplete="off" spellcheck="false" readonly title="自动生成的随机密钥（可选中复制）；点右侧「自动生成」换新">
+                <button id="btn-remote-pk-new" class="pf-add" type="button">自动生成</button>
+              </div>
+              <p class="sf-desc">端到端加密密钥的种子，同时是接入凭证：32 位随机字符，只能点「自动生成」换新、不可手填；换新后旧入口链接立即失效，已配对的手机要扫新二维码或收藏新入口。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">网关地址 / 端口</div>
