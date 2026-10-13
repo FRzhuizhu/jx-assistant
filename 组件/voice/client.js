@@ -1017,6 +1017,8 @@
       let padMs = 0;                // 定稿段内已收录的静音垫（间隙+尾部，上限 1.5 秒）
       let ended = false, segCount = 0, failCount = 0;
       let draftEpoch = 0;          // 草稿代际：定稿时 +1，在途草稿的迟到应答按过期丢弃
+      let level = 0;               // 实时音量 0..1（驱动按钮内波形条）
+      let bars = null, barRaf = 0, barVol = 0; // B 款动效：按钮内波形（demo 选型）
                                    // （防「定稿已在路上、旧草稿又把重复文字塞回灰字层」的竞态）
       let pendingPost = 0;          // 在途识别（草稿+定稿）：按停收尾要等它清零
       const draftSlots = [];        // 灰字层里草稿占用的槽位号（定稿时撤下）
@@ -1025,7 +1027,34 @@
         ended = true;
         try { node.disconnect(); } catch (e) { /* 已断 */ }
         try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
+        removeBars();
         return false;
+      };
+      // B 款动效：录音态把图标位换成 5 根白色音量条（真音量驱动，demo 选型；
+      // 蓝底白条为显式配色，不依赖 svg 的 currentColor——老内核浏览器的
+      // 「纯蓝无白线」渲染怪癖对录音态天然免疫）
+      const mountBars = () => {
+        if (bars) return;
+        bars = document.createElement('span');
+        bars.className = 'voice-bars';
+        for (let i = 0; i < 5; i++) bars.appendChild(document.createElement('i'));
+        btn.appendChild(bars);
+        btn.classList.add('bars-on');
+        const tick = () => {
+          if (!bars) return;
+          barVol += (level - barVol) * 0.25; // 平滑，同 demo
+          for (let i = 0; i < 5; i++) {
+            const w = Math.sin(Date.now() * 0.012 + i * 1.7) * 0.5 + 0.5;
+            bars.children[i].style.height = (3 + barVol * 11 * (0.35 + w * 0.65)) + 'px';
+          }
+          barRaf = requestAnimationFrame(tick);
+        };
+        barRaf = requestAnimationFrame(tick);
+      };
+      const removeBars = () => {
+        if (barRaf) { cancelAnimationFrame(barRaf); barRaf = 0; }
+        if (bars) { bars.remove(); bars = null; }
+        btn.classList.remove('bars-on');
       };
       const joinFrames = (frames) => {
         const total = frames.reduce((n, c) => n + c.length, 0);
@@ -1096,6 +1125,7 @@
         let sum = 0;
         for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
         const rms = Math.sqrt(sum / f.length);
+        level = Math.min(1, rms * 7); // 波形条驱动（demo 同标定）
         const frameMs = (f.length / ctx.sampleRate) * 1000;
         const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
         if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
@@ -1139,6 +1169,7 @@
       };
       const api = {
         isLocal: true,
+        mountBars,
         // 正常按停：尾段定稿（等在途识别回来）再收尾
         stop() {
           if (stopAll() === 'ended') return;
@@ -1172,6 +1203,7 @@
         clearT('connectTimer');
         setSpin(false);
         btn.classList.add('on');
+        sess.rec.mountBars();
         setHint(wsHint(), 0);
       }).catch((e) => {
         const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
