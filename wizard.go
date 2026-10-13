@@ -88,6 +88,10 @@ var wizardHTTP = &http.Client{Timeout: 15 * time.Second}
 /* ---------- 发现 ---------- */
 
 func (a *App) handleWizardDiscover(w http.ResponseWriter, r *http.Request) {
+	if a.Cfg.CompanyLinkOff {
+		writeErr(w, 400, "公司接入已停用：到 设置 · 网络访问 打开「公司接入」开关后再运行向导")
+		return
+	}
 	var body struct {
 		Company string `json:"company"`
 	}
@@ -240,6 +244,10 @@ func wizardRegistryLookup(registryURL, company string) ([]wizardServer, error) {
 /* ---------- 连接与配置应用 ---------- */
 
 func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
+	if a.Cfg.CompanyLinkOff {
+		writeErr(w, 400, "公司接入已停用：到 设置 · 网络访问 打开「公司接入」开关后再运行向导")
+		return
+	}
 	var body struct {
 		Server string `json:"server"`
 		User   string `json:"user"`

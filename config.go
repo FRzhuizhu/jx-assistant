@@ -97,11 +97,15 @@ type Config struct {
 	// wizardCompany/wizardServer 留给自动同步器（sync.go）：定期拉服务端 /announce
 	// 跟随变化（模型清单/元数据、公司名、市场/更新/服务端地址），失联时按公司名
 	// 重新局域网发现自动迁移（服务端换端口/换机器）。
+	// companyLinkOff=公司接入整体停用（设置·网络访问的开关）：永不在公司使用的
+	// 机器关掉后不再连服务端，首启向导也不弹；开启的一切（含已配好的内部模型
+	// 通道）原样保留，重新打开即恢复同步与向导。
 	WizardDone    bool   `json:"wizardDone"`
 	RegistryURL   string `json:"registryURL"`
 	WizardCompany string `json:"wizardCompany,omitempty"`
 	WizardServer  string `json:"wizardServer,omitempty"`
-	WizardRev     string `json:"wizardRev,omitempty"` // 最近应用的服务端公告哈希（仅记录）
+	WizardRev     string `json:"wizardRev,omitempty"`    // 最近应用的服务端公告哈希（仅记录）
+	CompanyLinkOff bool  `json:"companyLinkOff,omitempty"` // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`

@@ -777,7 +777,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"android":    isAndroidRuntime, // 前端按平台隐藏「操作手机」权限芯片
 		"model":      t.Model,
 		"hasKey":     t.APIKey != "",
-		"wizardDone": a.Cfg.WizardDone, // 首启向导（app-wizard.js 据此自动弹出）
+		"wizardDone": a.Cfg.WizardDone || a.Cfg.CompanyLinkOff, // 首启向导（app-wizard.js 据此自动弹出）；公司接入停用也视为"不用弹"
 		"mock":       t.BaseURL == "mock",
 		"workspace":  a.Cfg.Workspace,
 		"allowShell": a.Cfg.AllowShell,
@@ -1049,6 +1049,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"marketURL":        a.Cfg.MarketURL,
 		"publisherName":    a.Cfg.PublisherName,
 		"wizardDone":       a.Cfg.WizardDone,
+		"companyLinkOff":   a.Cfg.CompanyLinkOff, // 公司接入停用（设置·网络访问开关）：true=不弹向导、不连公司服务端
 		"registryURL":      a.Cfg.RegistryURL,
 		"updateURL":        a.Cfg.UpdateURL,
 		"maxSteps":         a.Cfg.MaxSteps,
@@ -1081,6 +1082,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		MarketURL       *string `json:"marketURL"`     // 市场（技能/组件/插件）服务器清单地址
 		PublisherName   *string `json:"publisherName"` // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
 		WizardDone      *bool   `json:"wizardDone"`    // 首启向导：完成/跳过（不再自动弹）
+		CompanyLinkOff  *bool   `json:"companyLinkOff"` // 公司接入停用（设置·网络访问开关）：不弹向导、向导接口拒绝、同步器停转
 		RegistryURL     *string `json:"registryURL"`   // 总服务器地址（向导发现不到公司时的查询兜底）
 		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
 		UpdateMode      *string `json:"updateMode"`    // 更新方式：auto=分块静默（默认）/manual=仅提醒
@@ -1212,6 +1214,9 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := body.WizardDone; v != nil {
 		a.Cfg.WizardDone = *v
+	}
+	if v := body.CompanyLinkOff; v != nil {
+		a.Cfg.CompanyLinkOff = *v
 	}
 	if v := body.RegistryURL; v != nil {
 		u := strings.TrimSpace(*v)

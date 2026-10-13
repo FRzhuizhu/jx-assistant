@@ -167,6 +167,9 @@ async function openSettings(pane) {
   // 常规页：远程接入（服务端配置，写 remoteAccess.enabled，即时生效）
   $('set-remote-on').checked = !!(c.remoteAccess && c.remoteAccess.enabled);
   syncRemoteState(c);
+  // 网络访问页：公司接入开关（服务端配置 companyLinkOff：关＝不弹向导、不连公司服务端）
+  $('set-company-on').checked = !c.companyLinkOff;
+  syncCompanyState(c);
   // 网络访问页：软件更新分区（版本/最近检查/就绪状态）
   refreshUpdateBox();
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
@@ -1020,6 +1023,27 @@ $('set-lan-on').onchange = async () => {
   }
 };
 
+/* ---------- 网络访问页：公司接入开关（关闭＝不弹向导、后端不连公司服务端） ---------- */
+
+function syncCompanyState(c) {
+  const on = !c.companyLinkOff;
+  $('set-company-state').textContent = on
+    ? '已开启（首启自动弹接入向导；接入后自动跟随服务端变化）'
+    : '已停用（不连接公司服务端，启动不再弹出向导）';
+  $('wizard-rerun-field').classList.toggle('hidden', !on); // 停用时藏起「重新运行接入向导」
+}
+
+$('set-company-on').onchange = async () => {
+  const on = $('set-company-on').checked;
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ companyLinkOff: !on }) });
+    syncCompanyState(c);
+  } catch (e) {
+    alert('保存失败：' + e.message);
+    $('set-company-on').checked = !on;
+  }
+};
+
 /* ---------- 网络访问页：远程接入（开关 + 设备号/密钥/网关编辑，即时生效） ---------- */
 
 let lastRemoteEntry = ''; // 入口链接快照：复制用 + 二维码按它增量重绘
@@ -1195,8 +1219,13 @@ $('btn-update-dl').onclick = async () => {
 // 设置页打开/配置刷新时同步一次更新状态（全局函数，app-chat.js 的事件处理也会调）
 window.refreshUpdateBox = refreshUpdateBox;
 
-// 重新运行接入向导（app-wizard.js 的 openWizard）
-$('btn-wizard-rerun').onclick = () => { if (typeof openWizard === 'function') openWizard(); };
+// 重新运行接入向导（app-wizard.js 的 openWizard）。向导弹层在 DOM 序上先于设置窗
+// （层级在其下），从设置里打开会被盖住——先收起设置页再弹，向导直接可见。
+$('btn-wizard-rerun').onclick = () => {
+  if (typeof openWizard !== 'function') return;
+  closeSettingsUI();
+  openWizard();
+};
 
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;

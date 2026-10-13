@@ -650,6 +650,14 @@
           <div class="gen-section">
             <h4>公司接入与更新</h4>
             <div class="set-field">
+              <div class="sf-label">公司接入</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-company-on"><span></span></label>
+                <span class="sf-desc" id="set-company-state"></span>
+              </div>
+              <p class="sf-desc">永不在公司使用、连不上公司服务端时可关闭：启动不再弹出接入向导，也不在后台连接公司服务端；已配好的模型通道不受影响，重新打开即恢复。</p>
+            </div>
+            <div class="set-field" id="wizard-rerun-field">
               <div class="sf-label">接入向导</div>
               <div class="sf-inline">
                 <button id="btn-wizard-rerun" class="pf-add" type="button">重新运行接入向导</button>

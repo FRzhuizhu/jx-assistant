@@ -53,12 +53,13 @@ type announcePayload struct {
 }
 
 // startCompanySyncer 后台同步循环 + UDP 广播监听（NewApp 起一次）。
-// 向导完成前（WizardServer 空）各轮空转，接入完成后无需重启即开始同步。
+// 向导完成前（WizardServer 空）各轮空转，接入完成后无需重启即开始同步；
+// 公司接入被停用（设置·网络访问的开关，CompanyLinkOff）时整体不连服务端。
 func startCompanySyncer(a *App) {
 	go func() {
 		time.Sleep(syncFirstDelay)
 		for {
-			if a.Cfg.WizardServer != "" {
+			if a.Cfg.WizardServer != "" && !a.Cfg.CompanyLinkOff {
 				companySyncOnce(a, "")
 			}
 			time.Sleep(syncInterval)
@@ -70,6 +71,9 @@ func startCompanySyncer(a *App) {
 // companySyncOnce 一轮同步：hint 非空时优先试广播带来的地址（服务端搬家、旧地址
 // 已死）；全部失联再按公司名重新局域网发现。拿到公告后差异驱动应用。
 func companySyncOnce(a *App, hintServer string) {
+	if a.Cfg.CompanyLinkOff { // 接入停用：同步器与广播触发的入口都收在这
+		return
+	}
 	server := strings.TrimRight(a.Cfg.WizardServer, "/")
 	if server == "" {
 		return
