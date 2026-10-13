@@ -44,6 +44,7 @@
 
   let active = false;    // 组件是否激活：dispose 后立刻失效，兜住还在飞的异步回调
   let msgAction = null;  // 已注册的消息操作行钩子（注销用）
+  let ctxMenuFn = null;  // 已注册的右键菜单贡献项（注销用）
   const busHooks = [];   // 已挂的事件总线回调 [{ev, fn}]（注销用）
   let sendHook = null;   // 已注册的发送前钩子（可等待；注销用）
 
@@ -633,6 +634,17 @@
     if (playingBtn === btn) { stopSpeak(); return; } // 再点一次 = 停止
     stopSpeak(); // 单飞：新的朗读立即停掉上一条
     speakTextBackend(text, btn);
+  }
+
+  /** 朗读任意文本（无按钮态；右键菜单等外部入口）：与消息按钮同一条链路
+   *（同分块播放器、同音色语速），失败走组件 toast。 */
+  async function speakPlain(text) {
+    playingBtn = null;
+    try {
+      await ttsPlay(text);
+    } catch (e) {
+      voiceToast('朗读失败：' + (e && e.message ? e.message : e));
+    }
   }
 
   // 消息操作行钩子：给每条助手消息挂「朗读」（钩子可注销，热关闭后新渲染的行不会再有）
@@ -1723,6 +1735,26 @@
       };
       if (JX.hook) JX.hook('send', sendHook);
 
+      // 右键菜单「朗读」条目（JX.registerCtxMenu 组件桥，app-ctxmenu 汇总）：
+      // 消息气泡与文字选区菜单各贡献一项，与消息按钮、设置页试听同一条链路
+      //（同分块播放、同音色语速、同单飞停播）。应用本体不带朗读实现——组件
+      // 关掉即注销，菜单项随组件消失。
+      ctxMenuFn = (ctx) => {
+        if (!active || !ctx || !ctx.text) return [];
+        return [(!!playingBtn || !!ttsStopChain)
+          ? { label: '停止朗读', fn: () => stopSpeak() }
+          : {
+              label: '朗读',
+              fn: () => {
+                const t = cleanForSpeech(ctx.text);
+                if (!t) return;
+                stopSpeak(); // 单飞：顶掉进行中的朗读（含消息按钮发起的）
+                speakPlain(t);
+              },
+            }];
+      };
+      JX.registerCtxMenu(ctxMenuFn);
+
       // 全局语音输入法的互斥钩子（voiceglobal_windows.go 在开启全局浮窗前
       // ExecuteScript 调它）：把页面内进行中的听写停掉，防两套会话抢麦克风
       window.JXVoiceStopAll = () => {
@@ -1752,6 +1784,8 @@
       removeShortcutEngine();
       if (sendHook && JX.unhook) JX.unhook('send', sendHook);
       sendHook = null;
+      if (ctxMenuFn && JX.unregisterCtxMenu) JX.unregisterCtxMenu(ctxMenuFn);
+      ctxMenuFn = null;
       window.JXVoiceStopAll = null;
       window.JXVoiceHint = '';
       if (typeof updateSendKeyHint === 'function') updateSendKeyHint();

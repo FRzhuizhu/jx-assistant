@@ -10,50 +10,10 @@
  * （先例：app-core.js 的换行插入特意走 execCommand 就是这个原因）；剪贴板读
  * 权限桌面壳创建时已放行（库 SetPermission(ClipboardRead, Allow)）。 */
 
-/* ---------- 朗读（Web Speech API：WebView2 内核支持，系统离线声库） ---------- */
-
-let ttsVoice = null;
-function ttsPickVoice() {
-  const vs = speechSynthesis.getVoices();
-  if (!vs.length) return null;
-  return vs.find((v) => /^zh[-_]/i.test(v.lang)) || vs.find((v) => v.default) || vs[0];
-}
-if ('speechSynthesis' in window) {
-  ttsVoice = ttsPickVoice();
-  speechSynthesis.onvoiceschanged = () => { ttsVoice = ttsPickVoice(); };
-}
-function ttsSupported() { return 'speechSynthesis' in window; }
-function ttsSpeaking() {
-  return ttsSupported() && (speechSynthesis.speaking || speechSynthesis.pending);
-}
-function ttsStop() { if (ttsSupported()) speechSynthesis.cancel(); }
-function ttsSpeak(text) {
-  if (!ttsSupported()) { alert('当前环境不支持语音朗读'); return; }
-  const clean = ttsClean(text);
-  if (!clean) return;
-  speechSynthesis.cancel(); // 单飞：新朗读顶掉旧的
-  const u = new SpeechSynthesisUtterance(clean);
-  if (!ttsVoice) ttsVoice = ttsPickVoice();
-  if (ttsVoice) u.voice = ttsVoice;
-  u.lang = (ttsVoice && ttsVoice.lang) || 'zh-CN';
-  speechSynthesis.speak(u);
-}
-// 朗读前的清洗：代码块整段丢弃、markdown 标记剥壳，只留适合读出来的自然语言
-function ttsClean(text) {
-  return String(text || '')
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s{0,3}>\s?/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+[.)]\s+/gm, '')
-    .replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, '$1')
-    .replace(/https?:\/\/\S+/g, ' 链接 ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+/* ---------- 朗读条目 ----------
+ * 应用本体不带任何朗读实现：菜单里的「朗读」由语音组件经 JX.registerCtxMenu
+ * 贡献（组件/voice/client.js），与本组件的消息按钮、设置页试听同一条链路；
+ * 组件关掉即注销，菜单项随组件消失。 */
 
 /* ---------- 文本编辑动作（execCommand 在焦点元素上执行，保留撤销栈） ---------- */
 
@@ -190,22 +150,21 @@ function editMenuItems(ed) {
   ];
 }
 function selectionMenuItems(text) {
-  return [
+  const items = [
     { label: '复制', fn: () => navigator.clipboard.writeText(text).catch(() => {}) },
     { label: '引用到输入框', fn: () => setQuote(mainView, text) },
     { label: '问AI', fn: () => askInAux(text) },
-    { sep: true },
-    ttsSpeaking() ? { label: '停止朗读', fn: ttsStop } : { label: '朗读', fn: () => ttsSpeak(text) },
   ];
+  const extra = JX.ctxMenuItems({ kind: 'selection', text }); // 组件贡献（如朗读）
+  if (extra.length) items.push({ sep: true }, ...extra);
+  return items;
 }
 function bubbleMenuItems(msgEl) {
   const body = msgEl.querySelector('.md') || msgEl.querySelector('.bubble');
   const text = body ? body.innerText : '';
   const items = [];
   if (text) items.push({ label: '复制全文', fn: () => navigator.clipboard.writeText(text).catch(() => {}) });
-  items.push(ttsSpeaking()
-    ? { label: '停止朗读', fn: ttsStop }
-    : { label: '朗读', fn: () => ttsSpeak(text) });
+  items.push(...JX.ctxMenuItems({ kind: 'bubble', text, msgEl }));
   return items;
 }
 function linkMenuItems(a) {

@@ -80,6 +80,26 @@ const JX = {
     if (i >= 0) this._msgActions.splice(i, 1);
   },
   registerSettingsSection(sec) { this._settingsSections.push(sec); },
+  // 组件右键菜单贡献（app-ctxmenu 组装菜单时调用）：fn(ctx) 返回 [{label, fn,
+  // disabled?}]，ctx = {kind:'selection'|'bubble', text, msgEl}。贡献项排在
+  // 内置项之后，链路实现完全归组件——组件关掉必须 unregister，条目随组件消失。
+  _ctxMenu: [],
+  registerCtxMenu(fn) { this._ctxMenu.push(fn); },
+  unregisterCtxMenu(fn) {
+    const i = this._ctxMenu.indexOf(fn);
+    if (i >= 0) this._ctxMenu.splice(i, 1);
+  },
+  // 汇总全部组件贡献的右键菜单项（单个组件出错只告警，不拦菜单）
+  ctxMenuItems(ctx) {
+    const out = [];
+    for (const f of this._ctxMenu.slice()) {
+      try {
+        const items = f(ctx);
+        if (Array.isArray(items)) out.push(...items.filter(Boolean));
+      } catch (e) { console.warn('[JX] ctxmenu', e); }
+    }
+    return out;
+  },
   // 插件向输入区左侧挂控件（按钮等），注册即生效；右栏子对话输入区镜像一份
   // （点击转发给原件执行，原件的 class 变化同步过来，两边外观/行为一致）
   addComposerControl(el) {
