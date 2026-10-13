@@ -231,9 +231,11 @@
              与下方输入区连为一体（同底色同圆角，一条细分隔线），不是浮在卡外的第二层；
              没有附件时带 hidden，整块不参与布局（零占位、不留白边）；渲染见 app-chat.js 的 renderAttachments -->
         <div id="attachments" class="attach-rail hidden"></div>
-        <!-- 引用胶囊：对话区选文「引用到输入框」挂在这里（灰底胶囊、双引号包裹、
-             截断显示、✕ 移除）；发送时组装为「用户引用：”…“」+ 正文完整发给模型。
-             没有引用时带 hidden 零占位；状态与渲染见 app-chat.js 的「引用胶囊」节 -->
+        <!-- 引用胶囊：对话区选文「引用到输入框」挂在这里（多条累计；灰底胶囊、
+             1 条显示“某某某…”截断、多条收成「引用了N条」、✕ 清空），每次引用还会
+             在输入框光标处插入“引用N”标记占位；发送时组装为「用户引用：」块
+             （逐条带编号全文）+ 正文完整发给模型。没有引用时带 hidden 零占位；
+             状态与渲染见 app-chat.js 的「引用胶囊」节 -->
         <div id="quote-bar" class="quote-bar hidden">
           <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
           <span class="q-text"></span>
@@ -316,7 +318,7 @@
             <div id="sub-composer" class="sub-composer-card composer-card">
               <!-- 附件区：与主对话区同款——输入卡内部第一层（id 加 sub- 前缀，由同一批函数按视图渲染） -->
               <div id="sub-attachments" class="attach-rail hidden"></div>
-              <!-- 引用胶囊：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
+              <!-- 引用胶囊：与主对话区同款（多条累计 + 光标处“引用N”标记；id 加 sub- 前缀） -->
               <div id="sub-quote-bar" class="quote-bar hidden">
                 <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
                 <span class="q-text"></span>
@@ -549,14 +551,6 @@
               <div class="sf-label">对话中途发送行为</div>
               <div id="sel-midrun"></div>
               <p class="sf-desc">插话不打断执行：下一步调用模型时插话进去；等待则排入队列，本轮彻底结束后逐条发送。</p>
-            </div>
-          </div>
-          <div class="gen-section">
-            <h4>文件</h4>
-            <div class="set-field">
-              <div class="sf-label">交付文件打开方式</div>
-              <div id="sel-fileopen"></div>
-              <p class="sf-desc">点交付成果里的「打开」时：右侧浏览器优先＝代码、文本、图片、PDF 开在右侧「文件」查看页（带行号的代码样式，桌面/网页/手机端一致），网页文件开在右侧「浏览器」面板，Word、Excel 等其余文件自动用系统默认应用打开；系统默认应用＝一律用双击它时的程序打开。远程工作区（SSH）的文件始终在右侧查看。</p>
             </div>
           </div>
           <div class="gen-section">

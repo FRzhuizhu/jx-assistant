@@ -16,7 +16,9 @@ package main
 // 把占位矩形（CSS px 原值——本进程对 Win32 系统级 DPI 感知，子窗口坐标与
 // CSS px 同尺度，不得再乘 dpr，见 handleBrowserPanelRect）POST /api/browser/panel-rect，
 // 宿主在 UI 线程移动子窗口并 PutBounds。HTML 元素无法浮于原生子窗口之上，
-// 弹层需自行避让该矩形。
+// 弹层需自行避让该矩形。前端上报的矩形左缘带 6px 内缩（app-right.js 的
+// BPW_EDGE）：给右栏左缘的拖拽把手 .rp-resize 留命中区，网页与栏缘之间的
+// 背景条是刻意设计，别当对齐 bug 修掉。
 //
 // 线程模型：所有 COM 调用必须发生在创建控件的 UI 线程（STA）——HTTP 侧一律
 // 经桌面壳 WebView.Dispatch 投递，结果经 channel 回到调用方 goroutine。

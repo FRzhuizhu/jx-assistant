@@ -897,7 +897,7 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 	}
 	// 不再注入【网页查看】回报：对话里不显示、模型也不看（用户口径：打开
 	// 什么是个人的事，需要时用户会自己说）。模型要看画面走 panel_screenshot
-	// 工具（对右侧栏截图，浏览器页/文件查看页通用），见 panelshot_windows.go。
+	// 工具（对右侧栏截图，任何视图通用），见 panelshot_windows.go。
 	writeJSON(w, http.StatusOK, map[string]string{"url": target})
 }
 

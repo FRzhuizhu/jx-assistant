@@ -60,7 +60,7 @@ function resetEmpty() {
   $('sess-title').textContent = '数字助理';
   $('mode-badge').classList.add('hidden');
   rpClose();
-  rpRestoreSession(''); // 回首页：右栏各视图的会话态统一清空（Git 仓库跟随、子对话、计划、文件页）
+  rpRestoreSession(''); // 回首页：右栏各视图的会话态统一清空（Git 仓库跟随、子对话、计划）
   placeComposer();
   // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
   $('input').value = homeDraft.text || '';
@@ -1473,21 +1473,13 @@ function fmtBytes(n) {
 }
 
 // 交付卡片的两个动作（用户主动操作，不经模型权限门控）。「打开」按文件类型
-// 分三路（设置·常规「交付文件打开方式」可整体改回系统应用）：
-//   * 代码/文本/图片/PDF → 右栏「文件」查看页（openInFileViewer，/api/fileview
-//     自包含页：等宽+行号，桌面/网页/远程三端一致——不依赖原生面板 overlay）；
+// 分两路（右栏「文件」查看页已整体移除——那是原生浏览器面板修不好时期的
+// 替代品，只支持文本且观感差，不再维护）：
 //   * 网页（html/htm）→ 右栏「浏览器」（桌面=原生 WebView2 面板，网页=新标签）；
-//   * 其余（Word/Excel/压缩包/exe 等）→ 系统默认程序（远程会话没有本机路径，
-//     尽力进「文件」查看页，二进制会给引导提示）。
+//   * 其余（代码/图片/PDF/Word/Excel/压缩包/exe 等）→ 系统默认程序，双击文件
+//     是什么程序这里就是什么程序（远程会话没有本机路径，后端给直白报错）。
 // 「在文件夹中查看」= 资源管理器里定位并选中该文件（远程不可用，给直白提示）。
 
-// 走「文件」查看页的后缀：文本/代码 + 图片 + PDF（查看页能渲染的全部）
-const FILE_VIEWER_EXT = new Set(['txt', 'md', 'markdown', 'log', 'csv', 'tsv',
-  'json', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'properties', 'env',
-  'js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'css', 'scss', 'less', 'go', 'py', 'rb',
-  'rs', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'php', 'swift', 'kt', 'sh', 'bat',
-  'cmd', 'ps1', 'sql', 'lua', 'r', 'vue', 'http', 'diff', 'patch',
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'pdf']);
 // 走右栏「浏览器」的后缀：真网页（原生面板/新标签里的完整浏览体验）
 const BROWSER_PANEL_EXT = new Set(['html', 'htm']);
 
@@ -1496,23 +1488,13 @@ function fileExtOf(p) {
   return m ? m[1] : '';
 }
 
-// 三路路由：'file'（查看页）/ 'panel'（浏览器）/ 'shell'（系统应用）。
-// 用户在设置里选了「系统默认应用」时本地一律 shell；远程会话没有系统应用，
-// 始终尽力进查看页（html 除外——走浏览器流式渲染）。
+// 两路路由：'panel'（html 进右栏浏览器）/ 'shell'（系统默认应用）。
 function deliveryOpenRoute(view, path) {
-  const cur = view === subView ? subState.cur : state.cur;
-  const remote = !!(cur && cur.remote);
-  if (!remote && lsGet('jx.fileopen', 'panel') === 'shell') return 'shell';
-  const ext = fileExtOf(path);
-  if (BROWSER_PANEL_EXT.has(ext)) return 'panel';
-  if (FILE_VIEWER_EXT.has(ext)) return 'file';
-  return remote ? 'file' : 'shell';
+  return BROWSER_PANEL_EXT.has(fileExtOf(path)) ? 'panel' : 'shell';
 }
 
 function deliveryOpenFile(view, sid, d) {
-  const route = deliveryOpenRoute(view, d.path);
-  if (route === 'file') { openInFileViewer(sid, d.path); return Promise.resolve(); }
-  if (route === 'panel') { openInPanelBrowser({ session: sid, path: d.path }); return Promise.resolve(); }
+  if (deliveryOpenRoute(view, d.path) === 'panel') { openInPanelBrowser({ session: sid, path: d.path }); return Promise.resolve(); }
   return api('/api/sessions/' + encodeURIComponent(sid) + '/delivery/open', {
     method: 'POST', body: JSON.stringify({ path: d.path }),
   }).catch((e) => alert('打开失败：' + e.message));
@@ -1561,9 +1543,8 @@ function deliveryCard(dvs, sid, view) {
     ov.type = 'button';
     ov.className = 'dc-btn';
     ov.textContent = '打开';
-    ov.title = route === 'file' ? '在右侧「文件」查看页打开（代码样式；设置·常规可改）'
-      : route === 'panel' ? '在右侧「浏览器」面板中打开（设置·常规可改为系统应用）'
-        : '用系统默认程序打开这个文件';
+    ov.title = route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
+      : '用系统默认程序打开这个文件';
     const rv = document.createElement('button');
     rv.type = 'button';
     rv.className = 'dc-btn';
@@ -1618,9 +1599,9 @@ document.addEventListener('click', (e) => {
 });
 
 // 文件路径链接（file-link，正文/反引号里的路径渲染而来）：按消息所在视图
-// 解析出会话，右栏预览该文件——代码/文本/图片/PDF 进「文件」查看页（三端
-// 一致），网页进「浏览器」，其余也交给查看页（二进制给引导提示）。
-// 后端边界=会话工作区内已存在的文件，越界/不存在给明确报错。
+// 解析出会话——网页文件进右栏「浏览器」，其余一律系统默认程序打开
+// （/api/sessions/{id}/open-path：边界=会话工作区内已存在的文件，越界/
+// 不存在/远程工作区都有明确报错）。
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a.file-link');
   if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -1629,8 +1610,10 @@ document.addEventListener('click', (e) => {
   const view = a.closest('#sub-msg-col') ? subView : mainView;
   const sid = view.state.cur && view.state.cur.id;
   if (!sid || !path) return;
-  if (deliveryOpenRoute(view, path) === 'panel') openInPanelBrowser({ session: sid, path });
-  else openInFileViewer(sid, path);
+  if (deliveryOpenRoute(view, path) === 'panel') { openInPanelBrowser({ session: sid, path }); return; }
+  api('/api/sessions/' + encodeURIComponent(sid) + '/open-path', {
+    method: 'POST', body: JSON.stringify({ path }),
+  }).catch((er) => alert('打开失败：' + er.message));
 });
 
 /* 渲染契约（性能与滚动）：
@@ -4021,7 +4004,7 @@ async function prepareSend(forceContent, view) {
   await JX.awaitHooks('send', { view });
   const input = view.input;
   const fromInput = typeof forceContent !== 'string';
-  // 从输入框发出的消息组装引用段（引用胶囊 →「用户引用：”…“」前缀）；forceContent
+  // 从输入框发出的消息组装引用段（引用胶囊 →「用户引用：\n“引用1” 全文…」块）；forceContent
   // 路径（编辑重发/降级补发）内容已完整，不再叠加当前胶囊
   const content = (fromInput ? composeQuoted(view, input.value) : forceContent).trim();
   const staged = attachmentsOf(view);
@@ -4563,13 +4546,18 @@ function renderCtxTip(view) {
 
 let selKeepText = '';
 
-/* ---------- 引用胶囊：对话区选文引用进输入框（显示截断、发送完整） ----------
-   「引用到输入框 / 在右侧辅助问答」不再把全文塞进输入框——与用户自己打的字混在
-   一起，模型分不清哪段是引用。引用挂到输入卡内的胶囊条上：灰底胶囊、双引号
-   包裹、最多显示前 10 个字符加省略号（悬停 title 看全文）、✕ 可移除。发送时组装
-   为「用户引用：“完整文本”\n\n正文」——前端看到的是胶囊，模型收到的是带标记的
-   完整引用。引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
-   jx.subq.<id>），切走再回来、刷新页面都不丢。 */
+/* ---------- 引用胶囊：对话区选文引用进输入框（多条累计、正文标记、发送完整） ----------
+   「引用到输入框 / 在右侧辅助问答」不把全文塞进输入框——与用户自己打的字混在
+   一起，模型分不清哪段是引用。引用挂到输入卡内的胶囊条上，并支持多条累计：
+   · 每次引用在输入框光标处插入一个「“引用N”」纯文本标记，占位记下"在哪个位置
+     引用了第几条"；胶囊条上 1 条显示“某某某…”截断，多条收成「引用了N条」（悬停
+     title 看逐条清单），✕ 一键清空。
+   · 发送时组装为「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——前端看到的
+     是胶囊与标记，模型收到的是带编号的完整引用，正文里的“引用N”即引用位置。
+   · 对话区用户气泡：引用块逐条渲染成灰色引用行（截断 + title 全文），正文里的
+     “引用N”标记渲染成灰色胶囊（title=对应全文）。
+   · 引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
+     jx.subq.<id>，存 JSON 数组），切走再回来、刷新页面都不丢。 */
 
 const QUOTE_HEAD = '用户引用：';
 const QUOTE_SNIP = 10; // 胶囊与气泡里最多显示的字符数（按 Unicode 码点截，不劈中文）
@@ -4581,76 +4569,140 @@ function quoteClip(t) {
   return cps.slice(0, QUOTE_SNIP).join('').replace(/\s+$/, '') + '…';
 }
 
-// 发送时组装：引用段在前、正文在后，空行隔开（正文为空就只有引用段）
+// 引用标记：正文里占位“第 N 条引用”的短文本（输入框里是纯文本，气泡里渲染成灰胶囊）
+function quoteMark(n) { return '\u201c引用' + n + '\u201d'; }
+
+// 视图的引用列表（state.quotes：字符串数组）。老状态 state.quote 是单条字符串，
+// 首次访问时就地迁移成数组
+function quotesOf(view) {
+  view = view || mainView;
+  if (!Array.isArray(view.state.quotes)) {
+    const old = String(view.state.quote || '').trim();
+    view.state.quotes = old ? [old] : [];
+    view.state.quote = '';
+  }
+  return view.state.quotes;
+}
+
+// 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）
 function composeQuoted(view, text) {
-  const q = String(((view || mainView).state.quote) || '').trim();
+  const qs = quotesOf(view || mainView).map((q) => String(q).trim()).filter(Boolean);
   const body = String(text || '').trim();
-  if (!q) return body;
-  const head = QUOTE_HEAD + '“' + q + '”';
+  if (!qs.length) return body;
+  const head = QUOTE_HEAD + '\n' + qs.map((q, i) => quoteMark(i + 1) + ' ' + q).join('\n');
   return body ? head + '\n\n' + body : head;
 }
 
-// 反向拆解（渲染用户气泡用）：识别「用户引用：“…”」前缀，拆出引用与正文
+// 反向拆解（渲染用户气泡用）：
+// · 新版多条：「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——引用全文可含
+//   换行，不带编号前缀的行是上一条的续行；
+// · 旧版单条：「用户引用：“…”\n\n正文」——历史消息兼容
 function splitQuoted(raw) {
-  const pre = QUOTE_HEAD + '“';
-  if (typeof raw !== 'string' || raw.indexOf(pre) !== 0) return null;
-  const body = raw.slice(pre.length);
-  const cut = body.indexOf('”\n\n');
-  if (cut >= 0) return { quote: body.slice(0, cut), rest: body.slice(cut + 3) };
-  if (body.slice(-1) === '”') return { quote: body.slice(0, -1), rest: '' };
+  if (typeof raw !== 'string' || raw.indexOf(QUOTE_HEAD) !== 0) return null;
+  const after = raw.slice(QUOTE_HEAD.length);
+  if (after.charAt(0) === '\n') {
+    const cut = after.indexOf('\n\n');
+    const block = cut >= 0 ? after.slice(0, cut) : after; // 没有正文：整块都是引用
+    const rest = cut >= 0 ? after.slice(cut + 2) : '';
+    const quotes = [];
+    block.split('\n').forEach((line) => {
+      const m = line.match(/^“引用\d+” /);
+      if (m) quotes.push(line.slice(m[0].length));
+      else if (quotes.length) quotes[quotes.length - 1] += '\n' + line; // 全文里的换行
+    });
+    return quotes.length ? { quotes, rest } : null;
+  }
+  const cut = after.indexOf('”\n\n');
+  if (cut >= 0) return { quotes: [after.slice(1, cut)], rest: after.slice(cut + 3) };
+  if (after.slice(-1) === '”') return { quotes: [after.slice(1, -1)], rest: '' };
   return null;
 }
 
-// 气泡正文渲染：带引用前缀的消息拆成「灰色引用行（截断 + title 全文） + 正文」
+// 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”标记
+// 渲染成灰色胶囊（title=对应全文）
 function appendQuotedBody(b, raw) {
   const qm = splitQuoted(raw);
   if (!qm) { b.appendChild(document.createTextNode(raw)); return; }
-  if (qm.quote) {
-    const q = document.createElement('span');
-    q.className = 'msg-quote';
-    q.textContent = '\u201c' + quoteClip(qm.quote) + '\u201d';
-    q.title = qm.quote;
-    b.appendChild(q);
-  }
-  if (qm.rest) b.appendChild(document.createTextNode(qm.rest));
+  qm.quotes.forEach((q, i) => {
+    const line = document.createElement('span');
+    line.className = 'msg-quote';
+    line.textContent = quoteMark(i + 1) + ' ' + quoteClip(q);
+    line.title = q;
+    b.appendChild(line);
+  });
+  appendQuoteBodyText(b, qm.rest, qm.quotes);
 }
 
-// 胶囊条渲染：有引用才出现（hidden 零占位）；文本截断、title 放全文
+// 正文按“引用N”标记切段：命中的渲染灰胶囊，其余原样文本节点（对不上号的标记——
+// 比如引用已清掉、正文里残留——按普通文字展示，不硬猜）
+function appendQuoteBodyText(b, text, quotes) {
+  const src = String(text == null ? '' : text);
+  if (!src) return;
+  const rx = /“引用(\d+)”/g;
+  let last = 0, m;
+  while ((m = rx.exec(src))) {
+    if (m.index > last) b.appendChild(document.createTextNode(src.slice(last, m.index)));
+    const full = quotes[Number(m[1]) - 1];
+    if (full == null) b.appendChild(document.createTextNode(m[0]));
+    else {
+      const chip = document.createElement('span');
+      chip.className = 'quote-chip';
+      chip.textContent = m[0];
+      chip.title = full;
+      b.appendChild(chip);
+    }
+    last = rx.lastIndex;
+  }
+  if (last < src.length) b.appendChild(document.createTextNode(src.slice(last)));
+}
+
+// 胶囊条渲染：有引用才出现（hidden 零占位）；1 条显示截断文，多条收成「引用了N条」
 function renderQuote(view) {
   view = view || mainView;
   const bar = viewEl(view, 'quote-bar');
   if (!bar) return;
-  const q = String(view.state.quote || '').trim();
-  bar.classList.toggle('hidden', !q);
-  if (q) {
-    const tx = bar.querySelector('.q-text');
-    if (tx) tx.textContent = '\u201c' + quoteClip(q) + '\u201d';
-    bar.title = '引用的内容（随下一条消息发出）：\n' + q;
+  const qs = quotesOf(view);
+  bar.classList.toggle('hidden', !qs.length);
+  if (!qs.length) { bar.title = ''; return; }
+  const tx = bar.querySelector('.q-text');
+  if (qs.length === 1) {
+    if (tx) tx.textContent = '\u201c' + quoteClip(qs[0]) + '\u201d';
+    bar.title = '引用的内容（随下一条消息发出）：\n' + qs[0];
   } else {
-    bar.title = '';
+    if (tx) tx.textContent = '引用了 ' + qs.length + ' 条';
+    bar.title = qs.map((q, i) => quoteMark(i + 1) + ' ' + quoteClip(q)).join('\n');
   }
 }
 
-// 挂上引用（各引用入口统一走这里）：设置、落盘、聚焦输入框并把光标放到最末尾
+// 挂上引用（各引用入口统一走这里）：累计进引用列表（同文再次引用不新增条目、
+// 复用原序号），在输入框光标处插入“引用N”标记，落盘并聚焦
 function setQuote(view, text) {
   view = view || mainView;
   const t = String(text || '').trim();
   if (!t) return;
-  view.state.quote = t;
+  const qs = quotesOf(view);
+  let idx = qs.indexOf(t); // 同一段文字又引了一次：只在光标处再插一个标记，指向原条
+  if (idx < 0) { qs.push(t); idx = qs.length - 1; }
   renderQuote(view);
   persistQuoteLS(view);
   const inp = view.input;
+  const mark = quoteMark(idx + 1);
+  // 标记落在"用户正在输入的位置"：输入框有焦点就插在光标处，否则追加到末尾
+  const p = (document.activeElement === inp && typeof inp.selectionStart === 'number')
+    ? inp.selectionStart : inp.value.length;
+  inp.value = inp.value.slice(0, p) + mark + inp.value.slice(p);
   inp.focus();
-  const p = inp.value.length; // 引用加在输入的最末尾位置：接着打字即追加在后面
-  inp.setSelectionRange(p, p);
+  inp.setSelectionRange(p + mark.length, p + mark.length); // 光标跟在标记后：接着打字即续写
+  autoGrow(inp);
+  if (view === mainView) persistMainDraftLS(); else persistSubDraftLS(); // 程序化改值也要落盘
   syncComposerPad(view); // 胶囊出现改变输入区高度：重算悬浮垫高
 }
 
 // 移除引用（胶囊 ✕ / 发送清理）
 function clearQuote(view) {
   view = view || mainView;
-  if (!view.state.quote) return;
-  view.state.quote = '';
+  if (!quotesOf(view).length) return;
+  view.state.quotes = [];
   renderQuote(view);
   persistQuoteLS(view);
   syncComposerPad(view);
@@ -4659,37 +4711,53 @@ function clearQuote(view) {
 // 引用随草稿落盘：首页并入 jx.homeDraft，主对话 jx.q.<id>，子对话 jx.subq.<id>
 function persistQuoteLS(view) {
   view = view || mainView;
+  const qs = quotesOf(view);
   try {
-    if (view === mainView && !view.state.cur) { homeDraft.quote = view.state.quote || ''; persistHomeDraftLS(); return; }
+    if (view === mainView && !view.state.cur) { homeDraft.quote = qs.slice(); persistHomeDraftLS(); return; }
     if (!view.state.cur) return;
     const key = view === mainView ? 'jx.q.' + view.state.cur.id : 'jx.subq.' + view.state.cur.id;
-    if (view.state.quote) localStorage.setItem(key, view.state.quote);
+    if (qs.length) localStorage.setItem(key, JSON.stringify(qs));
     else localStorage.removeItem(key);
   } catch (e) { /* 隐私模式下忽略 */ }
+}
+
+// 落盘值归一：新版 JSON 数组 / 旧版单条字符串 → 字符串数组
+function parseQuotesLS(v) {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x.trim());
+  if (typeof v === 'string' && v.trim()) return [v];
+  return [];
 }
 
 // 从草稿恢复引用（切换会话 / 回首页 / 刷新启动；子对话落地处也手动调）
 function restoreQuoteLS(view) {
   view = view || mainView;
-  let q = '';
+  let raw = null;
   try {
     if (view === mainView) {
-      q = view.state.cur ? (localStorage.getItem('jx.q.' + view.state.cur.id) || '')
-        : String(homeDraft.quote || '');
+      raw = view.state.cur ? localStorage.getItem('jx.q.' + view.state.cur.id) : (homeDraft.quote || null);
     } else if (view.state.cur) {
-      q = localStorage.getItem('jx.subq.' + view.state.cur.id) || '';
+      raw = localStorage.getItem('jx.subq.' + view.state.cur.id);
     }
   } catch (e) {}
-  view.state.quote = q;
+  if (typeof raw === 'string' && raw.charAt(0) === '[') { try { raw = JSON.parse(raw); } catch (e) {} }
+  view.state.quotes = parseQuotesLS(raw);
+  view.state.quote = '';
   renderQuote(view);
 }
 
-// 引用胶囊的移除按钮（主对话与子对话各一条）
+// 引用胶囊的移除按钮（主对话与子对话各一条）：清引用时把输入框里的“引用N”标记
+// 一并摘掉；但退回消息回填的内容自带「用户引用：」段（标记指着消息里的引用块），
+// 不动它的正文
 [mainView, subView].forEach((v) => {
   const bar = viewEl(v, 'quote-bar');
   if (!bar) return;
   bar.addEventListener('click', (e) => {
     if (!e.target.closest('.q-x')) return;
+    if (v.input.value.indexOf(QUOTE_HEAD) < 0) {
+      v.input.value = v.input.value.replace(/“引用\d+”/g, '');
+      autoGrow(v.input);
+      if (v === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    }
     clearQuote(v);
     v.input.focus();
   });

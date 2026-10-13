@@ -1228,9 +1228,10 @@ body.rp-open .w-handle { display: none; }
   background: transparent;
 }
 .composer-input::placeholder { color: var(--text-3); }
-/* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——灰底胶囊、双引号
-   包裹、截断显示（悬停 title 看全文）、✕ 移除；有引用才出现（hidden 零占位）。
-   发送时组装为「用户引用：”…“」+ 正文完整发给模型（app-chat.js「引用胶囊」节） */
+/* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——多条累计，
+   灰底胶囊；1 条显示“某某某…”截断（悬停 title 看全文）、多条收成「引用了N条」、
+   ✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（纯文本）。发送时组装为
+   「用户引用：」块（逐条带编号全文）+ 正文完整发给模型（app-chat.js「引用胶囊」节） */
 .quote-bar {
   display: flex; align-items: center; gap: 6px;
   margin: 0 0 6px; padding: 3px 6px 3px 8px;
@@ -1253,6 +1254,15 @@ body.rp-open .w-handle { display: none; }
   border-left: 2px solid var(--border);
   color: var(--text-2); font-size: 12px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 用户气泡正文里的引用标记胶囊：输入框里“引用N”占位（纯文本）发出后的展示
+   形态——灰底胶囊标出"在哪个位置引用了第几条"，title 放对应引用全文 */
+.msg.user .bubble .quote-chip {
+  display: inline-block; vertical-align: baseline;
+  margin: 0 2px; padding: 0 8px;
+  background: var(--chip); border-radius: 9px;
+  color: var(--text-2); font-size: 12px; line-height: 1.7;
+  white-space: nowrap; cursor: default;
 }
 /* 工具栏排布：右侧按钮组用 display:contents 展平——麦克风/圆环/模型/发送以
    个体身份参与整栏换行，能与左侧控件共享第一行（不再被组盒子挤成独立中行）。
@@ -2549,8 +2559,6 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
    同一机制）。基础 .rp-view 规则在上方（display:flex），此处靠后覆盖。 */
 #rp-body > .rp-view { display: none; }
 #rp-body > .rp-view.active { display: flex; }
-.rp-view-iframe { padding: 0; }
-.rp-view-iframe iframe { flex: 1; width: 100%; border: none; background: var(--bg); }
 
 /* ---------- 聊天链接（ext-link=网址 / file-link=工作区文件）：点击在内嵌浏览器（右栏面板）打开 ---------- */
 .md a.ext-link, .msg .bubble a.ext-link, .md a.file-link, .msg .bubble a.file-link { color: var(--accent); text-decoration: none; border-bottom: 1px dashed rgba(77, 107, 254, .45); word-break: break-all; }

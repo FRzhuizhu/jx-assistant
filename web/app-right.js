@@ -14,14 +14,11 @@
 
 const RP_MIN = 300;          // 右栏最小宽
 const RP_CONTENT_MIN = 640;  // 对话区最小宽（与拖把手一致）
-/* 视图注册表：id → { title, type, src, onOpen, saveSession, restoreSession }
-   （计划/文件…以后往这加）。
-   type 缺省 native：容器是 index.html 里的静态 DOM（id=rp-view-<id>），行为
-   代码挂在本仓 js；type=iframe：视图是一个独立面板页（web/panel/<name>，
-   经 rpContainerFor 惰性创建 iframe，首开加载、此后常驻不重载）——面板页
-   自成一体（自己的 HTML/JS/CSS + 直连同源 API），与主界面仅共享源。
+/* 视图注册表：id → { title, onOpen, saveSession, restoreSession }（计划/
+   浏览器…以后往这加）。容器一律是 index.html 里的静态 DOM（id=rp-view-<id>），
+   行为代码挂在本仓 js（旧「文件」查看页用过的 iframe 型视图已随该功能移除）。
    saveSession()/restoreSession(saved)：右栏跟会话走的统一挂点——每个视图把
-   「属于哪个会话的选择」（子对话选中、计划选中、文件页地址、Git 仓库…）
+   「属于哪个会话的选择」（子对话选中、计划选中、Git 仓库…）
    交给这里，切换对话时由 rpSnapshot / rpRestoreSession 统一快照与恢复，
    视图自己不再各自监听会话切换（browser 这类全局态视图不挂，行为不变）。 */
 const rpViews = {};
@@ -32,7 +29,7 @@ let rpActive = null;
    整体切到目标对话自己的状态；跨会话共通的只有对话区宽度（jx.contentWidth，
    见上方宽度契约）。会话被删除时随 removeSessionLocalData 一并清掉。
    状态只存内存：刷新页面回到默认（收起）——右栏是「对话进行中的工作台摆设」，
-   保存的子对话/文件可能早已被删，跨重启恢复只会带一批过期状态回来。 */
+   保存的子对话/计划可能早已被删，跨重启恢复只会带一批过期状态回来。 */
 const rpSess = {}; // 会话id -> { open: bool, view: '', views: { <视图id>: saveSession() 的返回值 } }
 
 function rpSessionOf(sid) {
@@ -82,22 +79,6 @@ function rpRegister(id, def) {
   }
 }
 
-// 取（必要时创建）视图容器：native 用静态 DOM，iframe 视图惰性建 iframe 挂进 #rp-body
-function rpContainerFor(view) {
-  const def = rpViews[view] || {};
-  let el = $('rp-view-' + view);
-  if (el || def.type !== 'iframe') return el;
-  el = document.createElement('div');
-  el.id = 'rp-view-' + view;
-  el.className = 'rp-view rp-view-iframe';
-  const f = document.createElement('iframe');
-  f.src = def.src || 'about:blank'; // 没声明 src 的视图（如文件页）：空白起步，由打开/恢复逻辑填地址
-  f.title = def.title || view;
-  el.appendChild(f);
-  $('rp-body').appendChild(el);
-  return el;
-}
-
 function rpAvail() { // 右栏可瓜分的总宽 = #app 宽 − 左侧栏（折叠时 offsetWidth 为 0）
   const app = $('app'), sb = $('sidebar');
   return Math.max(0, (app ? app.clientWidth : window.innerWidth) - (sb ? sb.offsetWidth : 0));
@@ -138,8 +119,8 @@ function rpOpen(view) {
   const wasOpen = !panel.classList.contains('hidden');
   rpActive = view;
   rpRenderTabs();
-  // 多视图显隐切换：目标容器激活，其余全部让位（native/iframe 同一机制）
-  const cont = rpContainerFor(view);
+  // 多视图显隐切换：目标容器激活，其余全部让位
+  const cont = $('rp-view-' + view);
   if (cont) {
     for (const el of document.querySelectorAll('#rp-body > .rp-view')) el.classList.remove('active');
     cont.classList.add('active');
@@ -233,6 +214,9 @@ function setupRpanelResize() {
   h.addEventListener('pointerdown', (e) => {
     if (isNarrow()) return; // 窄屏浮层恒为整屏宽，拖拽调宽无意义（CSS 已禁指针，双保险）
     e.preventDefault();
+    // 浏览器视图：拖动期间暂收原生面板（鼠标滑进舞台区域后指针事件会归它，
+    // 拖拽会断；拖完 bpwDragPause(false) 按新宽度补报回来）
+    bpwDragPause(true);
     // 拖拽即时生效：作废进行中的开合动画，宽度交还给 --rp-w
     h.closest('#rpanel')._slideTok = ++slideSeq;
     h.closest('#rpanel').classList.remove('anim');
@@ -256,6 +240,7 @@ function setupRpanelResize() {
   const up = () => {
     if (!h.classList.contains('dragging')) return;
     h.classList.remove('dragging');
+    bpwDragPause(false); // 拖完先让原生面板按新宽度回来，再做下面的落盘
     if (!moved) return; // 窄窗口宽度被钉死时不算一次调整，别覆盖记忆
     // 对话区新宽 = 可用宽 − 右栏拖定宽。直接写 var + 落盘：
     // 不走 setContentWidth——它按当前可视宽夹取，右栏打开时会把值越夹越小
@@ -451,6 +436,27 @@ rpRegister('subs', { // 右侧边栏：注册首个视图
 function bpwDesktop() { return document.documentElement.classList.contains('desktop-shell'); }
 function bpwElectron() { return document.documentElement.classList.contains('electron-shell'); }
 
+// 原生控件左缘让位：舞台矩形上报时左边内缩 6px，把 .rp-resize（跨右栏左缘
+// -5~+5px 的拖拽把手）完整留给 HTML——否则把手右半与悬停竖线被原生子窗口盖住，
+// 指针落不进页面，浏览器视图里宽度就拖不动（其他视图没有原生窗口不受影响）。
+// 视觉上是网页与右栏左缘之间 6px 的背景条，当作面板内边框看。
+const BPW_EDGE = 6;
+// 拖分割条期间：原生面板暂收屏外（同右栏开合动画语义），松手后按新宽度回来。
+// 鼠标拖动中一旦滑进舞台区域，后续指针事件就归原生子窗口，拖拽会断——干脆
+// 拖动全程收起，bpwReport 也暂停（拖完 force 补报一次）。
+let bpwDragHide = false;
+function bpwDragPause(on) {
+  if (on) {
+    if (bpwElectron() || !bpwDesktop() || !bpwActive() || bpwDragHide) return;
+    bpwDragHide = true;
+    api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true }) }).catch(() => {});
+  } else {
+    if (!bpwDragHide) return;
+    bpwDragHide = false;
+    bpwReport(true, true);
+  }
+}
+
 function bpwActive() {
   const panel = $('rpanel');
   return !!panel && !panel.classList.contains('hidden') && rpActive === 'browser';
@@ -465,6 +471,7 @@ function bpwReport(immediate, force) {
   if (!bpwDesktop()) return; // 网页形态没有原生面板，一个字节都不发：
   // 手机/浏览器里开的同一 UI 曾用一次隐藏上报把桌面端的面板顶掉
   // （多写者之祸，后端 handleBrowserPanelRect 现只认 desktop 标记）
+  if (bpwDragHide) return; // 拖分割条中：面板已暂收，拖完统一补报
   clearTimeout(bpwRectTimer);
   // attempt：开合动画期间舞台宽 <8 是常态（onOpen 的立即上报跑在动画中段），
   // 旧版只早退一次、之后全靠 ResizeObserver——RO 偶发不触发时原生面板就被
@@ -484,7 +491,9 @@ function bpwReport(immediate, force) {
       if (attempt < 10) bpwRectTimer = setTimeout(() => run(attempt + 1), 120);
       return;
     }
-    const payload = { x: r.x, y: r.y, w: r.width, h: r.height, dpr: window.devicePixelRatio || 1, visible: true, desktop: true,
+    // 左缘内缩 BPW_EDGE（见常量注释）：把手完整留给 HTML
+    const payload = { x: r.x + BPW_EDGE, y: r.y, w: r.width - BPW_EDGE, h: r.height,
+      dpr: window.devicePixelRatio || 1, visible: true, desktop: true,
       iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 }; // 临时诊断字段
     const key = JSON.stringify(payload);
     if (key === bpwLastKey && !force) return; // 尺寸没变不上报（强制补报除外）
@@ -555,35 +564,9 @@ rpRegister('browser', {
   },
 });
 
-/* ---------- 文件视图（代码/文本查看页，桌面/网页/远程三端一致） ---------- */
-/* iframe 挂 /api/fileview（fileview.go 渲染的自包含页：等宽 + 行号 + 截断保护），
- * 不依赖右栏原生 WebView2 面板与 file://——原生面板是 overlay 子窗口，矩形同步
- * 偶发失联时用户只看到空白；查看页是普通 HTML，网页端与远程手机端同样能看。
- * 会话态＝iframe 当前地址：文件页属于打开它的那个对话，切换对话时整体切换。 */
-rpRegister('file', {
-  title: '文件', type: 'iframe', order: 2,
-  saveSession: () => {
-    const cont = $('rp-view-file');
-    if (!cont) return ''; // 从没开过文件页：没有可记的
-    const f = cont.querySelector('iframe');
-    return (f && f.src && f.src !== 'about:blank') ? f.src : '';
-  },
-  restoreSession: (src) => {
-    const cont = $('rp-view-file');
-    if (!cont) return; // 没开过就没有可清的；有保存地址时容器必然已建（save 端保证）
-    const f = cont.querySelector('iframe');
-    const u = src || 'about:blank';
-    if (f && f.src !== u) f.src = u;
-  },
-});
-
-function openInFileViewer(sid, path) {
-  const u = '/api/fileview?sid=' + encodeURIComponent(sid) + '&path=' + encodeURIComponent(path);
-  rpOpen('file');
-  const cont = $('rp-view-file');
-  const f = cont && cont.querySelector('iframe');
-  if (f && f.src !== new URL(u, location.href).href) f.src = u; // 同文件不重载
-}
+/* 右栏「文件」查看页已整体移除（当年是原生浏览器面板修不好时的替代品，只
+ * 支持文本且观感差）：文件一律交系统默认应用打开（/api/sessions/{id}/open-path
+ * 的 ShellExecute），仅 html 网页文件与 http(s) 链接仍进右栏「浏览器」。 */
 // 矩形变化监听：舞台尺寸（开合动画、拖分割条、窗口缩放都会传导到这里）
 if (window.ResizeObserver) {
   new ResizeObserver(() => bpwReport()).observe($('bpw-stage'));

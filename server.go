@@ -342,8 +342,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/device/selftest", a.handleDeviceSelftest)
 	// 浏览器（browser_host.go / browser_panel_windows.go）：桌面右栏是原生
 	// WebView2 面板（前端经 panel-rect 上报占位区矩形），navigate/viewport/
-	// state 面向内嵌形态目标；open-view/view 是聊天链接点开的入口与远程
-	// 交付文件的流式渲染。旧 MJPEG 帧流与输入镜像端点已随镜像方案移除
+	// state 面向内嵌形态目标；open-view/view 是聊天链接与 html 交付文件点开
+	// 的入口（远程工作区的 html 经 view 流式渲染）。旧 MJPEG 帧流与输入镜像
+	// 端点已随镜像方案移除
 	mux.HandleFunc("POST /api/browser/panel-rect", a.handleBrowserPanelRect)
 	mux.HandleFunc("POST /api/browser/navigate", a.handleBrowserNavigate)
 	mux.HandleFunc("POST /api/browser/viewport", a.handleBrowserViewport)
@@ -353,10 +354,6 @@ func (a *App) Routes() http.Handler {
 	// Electron 壳面板桥的导航回报（panel-bridge.js 在 did-navigate 推送）：
 	// 更新内嵌目标状态并广播 browser_nav（旧壳由 onNavCompleted 触发同一事件）
 	mux.HandleFunc("POST /api/browser/electron-report", a.handleBrowserElectronReport)
-	// 文件查看页（fileview.go）：代码/文本类交付与文件链接的右栏「文件」视图，
-	// 自包含 HTML，桌面/网页/远程三端一致；fileraw 供图片/PDF 内嵌
-	mux.HandleFunc("GET /api/fileview", a.handleFileView)
-	mux.HandleFunc("GET /api/fileraw", a.handleFileRaw)
 	// 右侧栏截图（panelshot_windows.go）：panel_screenshot 工具注入主界面的
 	// 探针 JS 把右栏矩形回传到这里
 	mux.HandleFunc("POST /api/shell/panel-view", a.handleShellPanelView)
@@ -2610,7 +2607,7 @@ func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m.Remote != nil {
-		writeErr(w, 400, "这是 SSH 远程工作区里的文件，本机没有对应路径，无法用系统程序打开；请在右侧浏览器中查看内容")
+		writeErr(w, 400, "这是 SSH 远程工作区里的文件，本机没有对应路径，无法用系统程序打开（html 网页文件仍可在右侧浏览器中打开）")
 		return
 	}
 	if err := openPathWithDefaultApp(abs); err != nil {

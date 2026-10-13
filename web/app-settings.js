@@ -179,8 +179,6 @@ async function openSettings(pane) {
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
   // 默认「等待排队」：未设置过（新装）时下拉选框显示等待，用户选过就按用户存的显示
   selRefs.midrun.set(lsGet('jx.midrun', 'queue'));
-  // 交付文件打开方式（本机偏好，即时生效）
-  selRefs.fileopen.set(lsGet('jx.fileopen', 'panel'));
   renderPluginList();
   mountPluginSections();
   renderComponentList();
@@ -1571,12 +1569,6 @@ makeSelect('sel-midrun', 'midrun', [
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
   { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
 ], (v) => lsSet('jx.midrun', v));
-// 交付文件打开方式：默认「右侧浏览器优先」（可展示类型进右栏面板，其余系统
-// 应用）；makeSelect 以第一项为初始值，与 openSettings 里 lsGet 的兜底一致。
-makeSelect('sel-fileopen', 'fileopen', [
-  { v: 'panel', label: '右侧浏览器优先（默认）' },
-  { v: 'shell', label: '系统默认应用' },
-], (v) => lsSet('jx.fileopen', v));
 makeSelect('sel-compact-mode', 'compactMode', [
   { v: 'rule', label: '规则压缩（零成本，默认）' },
   { v: 'llm', label: '模型摘要（达阈值自动+手动）' },

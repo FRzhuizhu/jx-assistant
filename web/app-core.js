@@ -726,7 +726,7 @@ function restoreHomeDraftLS() {
     if (homeDraft.planMode && homeDraft.goalMode) homeDraft.goalMode = false;
     homeDraft.remote = (d.remote && d.remote.host) ? d.remote : null;
     homeDraft.text = typeof d.text === 'string' ? d.text : '';
-    homeDraft.quote = typeof d.quote === 'string' ? d.quote : ''; // 引用胶囊的暂存文本
+    homeDraft.quote = d.quote || ''; // 引用暂存：新版字符串数组（多条）/ 旧版单条字符串，用前经 parseQuotesLS 归一
   } catch (e) {}
 }
 

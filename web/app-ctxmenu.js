@@ -106,7 +106,11 @@ function openURLSystem(url) {
 }
 function openWorkspacePath(view, sid, path) {
   const cur = view.state.cur;
-  if (cur && cur.remote) { openInPanelBrowser({ session: sid, path }); return; } // 远程工作区：右栏看内容
+  if (cur && cur.remote) { // 远程工作区没有本机路径：html 仍可在右栏浏览器流式渲染，其余直白报错
+    if (deliveryOpenRoute(view, path) === 'panel') openInPanelBrowser({ session: sid, path });
+    else alert('这是 SSH 远程工作区里的文件，本机没有对应路径，无法用系统程序打开。');
+    return;
+  }
   api('/api/sessions/' + encodeURIComponent(sid) + '/open-path', {
     method: 'POST', body: JSON.stringify({ path }),
   }).catch((e) => alert('打开失败：' + e.message));

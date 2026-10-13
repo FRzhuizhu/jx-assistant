@@ -643,7 +643,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   `rpRegister`。「浏览器」视图是 native 型：工具栏/状态条为本界面 DOM，网页
   区域是占位 div，桌面模式下原生 WebView2 控件按上报矩形精确覆盖（见下）。
 - **右栏跟会话走（会话作用域状态，app-right.js 的 rpSess）**：右栏的开合、
-  正在看的视图、各视图内的选择（子对话选中、计划选中、文件页地址、Git 仓库）
+  正在看的视图、各视图内的选择（子对话选中、计划选中、Git 仓库）
   都是**按对话独立**的状态——切换对话时整体切到目标对话自己的右栏（`openSession`
   的 `rpSnapshot`/`rpRestoreSession`；回首页走 `resetEmpty` 的空态恢复），跨对话
   共通的只有对话区宽度。视图经 `rpRegister` 的 `saveSession()`/`restoreSession(saved)`
@@ -1004,14 +1004,13 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   会主动说，模型用 `panel_screenshot` 截右栏（见下）。本地 html 交付文件转
   `file://`（同目录相对资源可用），SSH 远程会话经 `/api/browser/view` 流式
   渲染（相对资源不加载）。
-- **右栏「文件」查看页**（`fileview.go`）：代码/文本/图片/PDF 类交付文件与
-  聊天文件链接的展示位（iframe 自包含页：等宽+行号+截断保护，图片/PDF 经
-  `/api/fileraw` 内嵌）——不依赖原生面板 overlay 与 file://，桌面/网页/远程
-  三端一致。交付卡「打开」三路路由：这类文件进「文件」页；html/htm 与网址
-  进右栏「浏览器」；Word/Excel/exe 等二进制走系统默认应用（设置·常规
-  「交付文件打开方式」可整体改回系统应用；远程会话尽力进查看页）。
+- **文件查看 = 系统默认应用**：右栏「文件」查看页（`fileview.go`，当年原生
+  浏览器面板修不好时期的替代品，只支持文本、观感差）已整体移除。交付卡与
+  聊天文件链接的「打开」两路路由：html/htm 与网址进右栏「浏览器」；其余
+  一律 `ShellExecute` 系统默认应用（`/api/sessions/{id}/open-path` 与
+  `/delivery/open`，工作区边界校验，SSH 远程工作区无本机路径给直白报错）。
 - **`panel_screenshot`**（无能力门控，仅桌面版）：对右侧栏截图（GDI 截屏
-  像素，浏览器页/文件查看页/任何视图通用）。实现：注入主界面探针 JS 读
+  像素，浏览器页/任何右栏视图通用）。实现：注入主界面探针 JS 读
   `#rpanel` 矩形 POST `/api/shell/panel-view` 回传，Go 侧客户区原点+CSS×dpr
   换算屏幕坐标后 BitBlt 截图入附件；ExecuteScript 必须 UI 线程执行
   （runDesktop 里经 `w.Dispatch` 包了一层）。右栏收起时报「没有打开内容」。
