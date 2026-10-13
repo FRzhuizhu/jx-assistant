@@ -22,7 +22,7 @@ stdout 纪律：协议应答走原 fd1 的独立句柄；启动时把 sys.stdout
 落位（组件自包含）：本脚本与模型都在 组件/voice/ 里——
   组件/voice/asr_worker.py   本文件
   组件/voice/models/xasr/    离线模型（草稿与定稿共用；流式模型已删省 163MB）
-运行时用共享便携 Python（技能/_runtime/python，sherpa-onnx 缺失自装）。
+运行时用共享便携 Python（技能/_runtime/python，随仓库分发；sherpa-onnx/numpy 缺失自装）。
 （评估期的 paraformer/sensevoice/qwen 分支已删——结论见 git 历史 054c19e881。）
 """
 import base64
@@ -64,35 +64,44 @@ def main():
         state["model"] = None
 
     # ---------- 运行时依赖自愈 ----------
-    def ensure_sherpa():
-        """新机自愈：共享便携运行时没带 sherpa-onnx（语音组件的依赖不进技能
-        装配清单）——首次使用时从清华镜像装一次（约 20MB，秒级）。失败把
-        可执行的补救命令带回给用户。"""
+    def ensure_deps():
+        """新机自愈：共享便携运行时没带语音组件的依赖（sherpa-onnx 与
+        numpy——语音组件的依赖不进技能装配清单）——首次使用时从清华镜像
+        装缺的（sherpa-onnx 约 20MB，秒级）。失败把可执行的补救命令带回给用户。"""
+        missing = []
         try:
             import sherpa_onnx  # noqa: F401
             # 校验到属性为止：半卸载/损坏的包 import 也能成功，骗过纯导入检查
             # （实测踩过：pyd 被存活 worker 锁住时 pip 只删一半）
-            if hasattr(sherpa_onnx, "OfflineRecognizer"):
-                return
+            if not hasattr(sherpa_onnx, "OfflineRecognizer"):
+                raise ImportError("sherpa_onnx 不完整（缺 OfflineRecognizer）")
         except Exception:
-            pass
+            missing.append("sherpa-onnx")
+        try:
+            import numpy  # noqa: F401 —— transcribe 的 pcm→float 转换用
+        except Exception:
+            missing.append("numpy")
+        if not missing:
+            return
         import subprocess
-        print("[voice] 首次使用/修复：安装 sherpa-onnx（清华镜像，约 20MB）…", file=sys.stderr)
+        print(f"[voice] 首次使用/修复：安装 {' '.join(missing)}（清华镜像）…", file=sys.stderr)
         r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall",
-                            "--no-deps", "sherpa-onnx",
+                            "--no-deps", *missing,
                             "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
         if r.returncode != 0:
-            raise RuntimeError("sherpa-onnx 自动安装失败：请手动执行 "
-                               + sys.executable + " -m pip install sherpa-onnx")
+            raise RuntimeError("依赖自动安装失败：请手动执行 "
+                               + sys.executable + " -m pip install " + " ".join(missing))
         # 装完清模块缓存：本进程可能已 import 过坏包（sys.modules 里是旧货），
         # 不清的话后续 import 拿到的仍是修复前的残骸（实测踩过）
-        for k in [k for k in list(sys.modules) if k == "sherpa_onnx" or k.startswith("sherpa_onnx.")]:
+        for k in [k for k in list(sys.modules)
+                  if k == "sherpa_onnx" or k.startswith("sherpa_onnx.")
+                  or k == "numpy" or k.startswith("numpy.")]:
             del sys.modules[k]
 
     # ---------- 加载 ----------
     def load_engine(model, device):
         """装好并返回离线引擎（不回话、不动 state——load 与流式精修共用）。"""
-        ensure_sherpa()
+        ensure_deps()
         if model == "xasr":
             # 小米 X-ASR：Zipformer2 transducer，中英双语、自带标点与大小写，
             # 离线/流式一体（这里用离线档），int8 约 170MB
