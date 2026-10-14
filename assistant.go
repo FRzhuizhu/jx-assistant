@@ -143,41 +143,28 @@ func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
 		"被派发的会话完成后系统会自动收到【派发回报】并触发你处理回报。现在可以先回用户一句「已经安排」。", sub.ID, sub.Title, note)
 }
 
-// dispatchExtras 应用派发工具的可选项：可选模型（providerId/modelId 或纯
-// modelId）与远程工作区继承（dispatch_task / dispatch_sub 共用）。
-// 没指定模型时继承派发方会话手选的服务商/模型——用户在主对话选了什么，派出去
-// 的子对话/工作任务就用什么；主会话跟着全局默认（未手选）时这里为空，子会话
-// 同样走全局默认。
-// model 先经 resolveDispatchModel 校验渠道（裸模型名走错渠道在这里被拒，见
-// 该函数注释），报错发生在建会话之前；校验通过后按「providerId/modelId」拆开
-// 落到会话上，没指定时保持继承语义。
-func (t *toolContext) dispatchExtras(sub *SessionMeta, model string) error {
+// dispatchModelChoice 解析派发工具的模型参数：先经 resolveDispatchModel 校验
+//（裸模型名走错渠道在建会话之前被拒，见该函数注释），再返回应落到新会话上的
+// (provider, model)。无参数时继承派发方会话手选的服务商/模型——用户在主对话
+// 选了什么，派出去的子对话/工作任务就用什么；主会话跟着全局默认（未手选）
+// 时返回空，子会话同样走全局默认。
+func (t *toolContext) dispatchModelChoice(model string) (provider, mdl string, err error) {
 	m, err := t.resolveDispatchModel(model)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	if m != "" {
-		provider, mdl := "", m
+		provider, mdl = "", m
 		if i := strings.Index(m, "/"); i > 0 {
 			provider, mdl = m[:i], m[i+1:]
 		}
 		if t.app.providerByID(provider) != nil {
-			sub.Provider = provider
+			return provider, mdl, nil
 		}
-		if mdl != "" {
-			sub.Model = mdl
-		}
-	} else if t.sess.Provider != "" || t.sess.Model != "" {
-		sub.Provider, sub.Model = t.sess.Provider, t.sess.Model
+		return "", mdl, nil // 完整格式但渠道未配置：模型名保留，渠道走会话默认
 	}
-	// 远程工作区继承：派发方挂了 SSH 远程工作区时，被派发的会话默认在同一远程环境执行
-	if t.sess.Remote != nil {
-		r := *t.sess.Remote
-		sub.Remote = &r
-	}
-	return nil
+	return t.sess.Provider, t.sess.Model, nil
 }
-
 // providerLabel 渠道的中文名（没配名字时回退 id）。
 func providerLabel(a *App, id string) string {
 	if a == nil || a.Cfg == nil {
@@ -427,10 +414,14 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 模型默认链：显式参数 > 专家预设 > 继承主会话手选 > 空（全局默认，见 dispatchExtras）
+	// 模型默认链：显式参数 > 专家预设 > 继承主会话手选 > 空（全局默认）
 	model := strings.TrimSpace(p.Model)
 	if model == "" {
 		model = strings.TrimSpace(ex.Model)
+	}
+	provider, mdl, err := t.dispatchModelChoice(model)
+	if err != nil {
+		return "", err
 	}
 	ws := t.workspace()
 	if strings.TrimSpace(p.Workspace) != "" {
@@ -440,35 +431,23 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	if title == "" {
 		title = truncateRunes(p.Task, 20)
 	}
-	sub := &SessionMeta{
-		ID:         newID(),
-		Title:      title,
-		Mode:       "task",
-		Workspace:  ws,
+	params := createSessionParams{
+		Mode: "task", Title: title, Workspace: ws,
 		ParentID:   t.sess.ID, // 子对话挂在当前会话下；回报链走 parent_id
+		Permission: perm,      // 只能同等或降权，绝不允许增权（dispatchPermission）
 		Expert:     strings.TrimSpace(ex.Name),
-		Permission: perm, // 只能同等或降权，绝不允许增权（dispatchPermission）
-		CreatedAt:  now(),
-		UpdatedAt:  now(),
+		Provider:   provider, Model: mdl,
+		CopyHistory: ex.InheritContext, // 预设要继承时复制本会话完整历史（task 排在继承块之后）
 	}
-	if err := t.dispatchExtras(sub, model); err != nil {
+	if t.sess.Remote != nil {
+		r := *t.sess.Remote
+		params.Remote = &r // 远程工作区继承：子对话默认同一远程环境
+	}
+	// 建会话收口在 createSession（sessioncreate.go）：能力默认、历史继承（失败
+	// 自动回滚，不留半截子对话——旧实现在这里不回滚）与人工建会话同一处
+	sub, err := t.app.createSession(params)
+	if err != nil {
 		return "", err
-	}
-	// 派发出来的子对话同样是「新建的会话」：按默认策略补默认能力
-	//（工作区内读写默认开启「操作浏览器」，与 HTTP 创建路径同一函数）
-	sub.Tools = mergeCapDefaults(sub.Tools, sub.Mode, permModeOf(sub))
-	if err := t.app.Store.Create(sub); err != nil {
-		return "", err
-	}
-	// 预设要继承上下文时：把本会话的完整历史复制进子对话，task 排在继承块
-	// 之后——子对话读到的最后一条用户消息是自己的任务，而不是本会话里某句旧话
-	inherited := 0
-	if ex.InheritContext {
-		n, err := t.app.copyInheritedContext(t.sess.ID, sub.ID)
-		if err != nil {
-			return "", fmt.Errorf("继承本会话上下文失败：%w", err)
-		}
-		inherited = n
 	}
 	// 需求正文（【派发子对话】+ task）由 deliverSub 走统一投递落库——与用户发消息同路
 	var hints []string
@@ -480,8 +459,8 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	} else {
 		hints = append(hints, fmt.Sprintf("已按「%s」模式派发", sub.Expert))
 	}
-	if inherited > 0 {
-		hints = append(hints, fmt.Sprintf("已继承本会话上下文 %d 条，子对话能看到此前的聊天记录", inherited))
+	if ex.InheritContext {
+		hints = append(hints, "已继承本会话上下文，子对话能看到此前的聊天记录")
 	}
 	note := ""
 	if len(hints) > 0 {
@@ -489,7 +468,6 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	return t.deliverSub(sub, "【派发子对话】\n\n"+p.Task, note), nil
 }
-
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
 		Task        string   `json:"task"`
@@ -512,7 +490,7 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if t.sess.ParentID != "" {
 		return "", fmt.Errorf("子对话不能再派发子对话（本会话已是子对话，只有一级）；请把需求直接做掉，或让用户在主对话里派发")
 	}
-	// 三个新参数先全部解析校验（快速失败）：模式 / 权限 / 附件都可能被拒，
+	// 可选参数先全部解析校验（快速失败）：模式 / 权限 / 模型 / 附件都可能被拒，
 	// 拒绝必须发生在建出半个会话之前
 	mode, err := resolveDispatchMode(p.Mode)
 	if err != nil {
@@ -522,7 +500,19 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	provider, mdl, err := t.dispatchModelChoice(p.Model)
+	if err != nil {
+		return "", err
+	}
 	attPaths := normalizeDispatchAttachments(p.Attachments)
+	if len(attPaths) > 0 && t.sess.Remote != nil {
+		return "", fmt.Errorf("附件不能带给远程工作区的新任务（本会话挂了 SSH 远程工作区，新任务默认同环境）：本机文件路径在远程无从复制。请把 workspace 指到本地目录，或改用 send_to_session 让远程会话自己取文件")
+	}
+	for _, src := range attPaths {
+		if _, _, _, err := resolveUploadSource(src); err != nil {
+			return "", fmt.Errorf("附件 %s 不可用：%w", src, err)
+		}
+	}
 	ws := t.workspace()
 	if strings.TrimSpace(p.Workspace) != "" {
 		ws = p.Workspace
@@ -531,36 +521,22 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if title == "" {
 		title = truncateRunes(p.Task, 20)
 	}
-	sub := &SessionMeta{
-		ID:           newID(),
-		Title:        title,
+	params := createSessionParams{
 		Mode:         mode, // 与人工新建会话同一份模式清单（resolveDispatchMode）
-		Workspace:    ws,
+		Title:        title, Workspace: ws,
 		Permission:   perm,       // 只能同等或降权，绝不允许增权（dispatchPermission）
 		PlanMode:     p.PlanMode, // 与人工建会话勾选「计划模式」一致
-		DispatchedBy: t.sess.ID,  // 派发的是顶层工作任务（左侧列表可见），不是子对话；
-		// 回报链（中断回报/「我派生的」标记）走 dispatched_by，不走 parent_id
-		CreatedAt: now(),
-		UpdatedAt: now(),
+		DispatchedBy: t.sess.ID,  // 派发的是顶层工作任务（左侧列表可见）；回报链走 dispatched_by，不走 parent_id
+		Provider:     provider, Model: mdl,
 	}
-	if err := t.dispatchExtras(sub, p.Model); err != nil {
-		return "", err
+	if t.sess.Remote != nil {
+		r := *t.sess.Remote
+		params.Remote = &r // 远程工作区继承：新任务默认同一远程环境
 	}
-	if len(attPaths) > 0 {
-		// 附件预检：坏路径（不存在/是目录）与远程工作区一律在建会话之前拒绝，
-		// 不留半个空任务
-		if sub.Remote != nil {
-			return "", fmt.Errorf("附件不能带给远程工作区的新任务（本会话挂了 SSH 远程工作区，新任务默认同环境）：本机文件路径在远程无从复制。请把 workspace 指到本地目录，或改用 send_to_session 让远程会话自己取文件")
-		}
-		for _, src := range attPaths {
-			if _, _, _, err := resolveUploadSource(src); err != nil {
-				return "", fmt.Errorf("附件 %s 不可用：%w", src, err)
-			}
-		}
-	}
-	// 派发出来的工作任务同样是「新建的会话」：按默认策略补默认能力
-	sub.Tools = mergeCapDefaults(sub.Tools, sub.Mode, permModeOf(sub))
-	if err := t.app.Store.Create(sub); err != nil {
+	// 建会话收口在 createSession（sessioncreate.go）：模式/权限/能力默认与落库
+	// 和人工建会话同一处
+	sub, err := t.app.createSession(params)
+	if err != nil {
 		return "", err
 	}
 	// 附件：与桌面端 /api/upload 的 JSON {path} 走同一套登记（registerUploadPath）
@@ -581,7 +557,6 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	// 需求正文（【数字助理派发】+ task）由 deliverSub 走统一投递落库
 	return t.deliverSub(sub, "【数字助理派发】\n\n"+p.Task, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached)), nil
 }
-
 func sendToSessionTool() Tool {
 	return Tool{
 		Spec: toolSpec("send_to_session", "把新需求追加给一个已有会话并后台执行（新需求与该会话明显相关且不复杂时优先用它，上下文连续效率最高）。本工具立即返回，该会话完成后你会自动收到【派发回报】。可选 permission 指定这条需求用哪个权限档跑，只能同等或降权（绝不高于本会话权限，也不能给已有会话提权）。",
@@ -633,7 +608,10 @@ func runSendToSession(t *toolContext, args json.RawMessage) (string, error) {
 				m.ID, permModeLabel(cur), cur, perm, permModeLabel(cur))
 		}
 		if perm != cur {
-			m.Permission = perm
+			// 权限档落装与能力联动收口在 applyPermissionChange（与人工 PATCH 权限
+			// 面板同一套）：降到完全访问以下时取消捆绑能力、补回默认——人工改档
+			// 是什么效果，AI 传 permission 就是什么效果。
+			applyPermissionChange(m, perm, false)
 			if err := t.app.Store.SaveMeta(m); err != nil {
 				return "", fmt.Errorf("保存会话 %s 的权限档失败：%w", m.ID, err)
 			}

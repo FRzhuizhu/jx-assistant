@@ -1628,124 +1628,24 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		InheritContext bool             `json:"inheritContext"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体
-	if !modeKnown(body.Mode) {
-		body.Mode = "task"
-	}
-	if body.Permission == "" {
-		body.Permission = "workspace-write"
-		// 创建技能模式默认完全访问：要看懂用户演示（截屏/键鼠记录）并亲自
-		// 验证技能关键步骤，操作电脑/浏览器是刚需；用户显式传权限则尊重。
-		if body.Mode == "skill-create" {
-			body.Permission = permFull
-		}
-	}
-	if body.Remote != nil {
-		spec, err := body.Remote.normalize()
-		if err != nil {
-			writeErr(w, 400, "远程工作区配置无效: "+err.Error())
-			return
-		}
-		body.Remote = spec
-	}
-	// 父会话校验：只能挂在一级会话下。子对话不能再建子对话（与 dispatch_task 的
-	// 运行时守卫一起，保证只有一级）。
-	var parent *SessionMeta
-	if pid := strings.TrimSpace(body.ParentID); pid != "" {
-		p, err := a.Store.Get(pid)
-		if err != nil {
-			writeErr(w, 400, "父会话不存在："+pid)
-			return
-		}
-		if p.ParentID != "" {
-			writeErr(w, 400, "子对话不能再建子对话："+pid+" 已经是子对话（只允许一级）")
-			return
-		}
-		parent = p
-	}
-	m := &SessionMeta{
-		ID:         newID(),
-		Title:      strings.TrimSpace(body.Title),
-		Mode:       body.Mode,
-		Workspace:  strings.TrimSpace(body.Workspace),
-		Remote:     body.Remote,
-		ParentID:   strings.TrimSpace(body.ParentID),
-		Provider:   strings.TrimSpace(body.Provider),
-		Model:      strings.TrimSpace(body.Model),
-		Permission: body.Permission,
-		Thinking:   strings.TrimSpace(body.Thinking),
-		PlanMode:   body.PlanMode,
-		GoalMode:   body.GoalMode,
-		GoalText:   truncateRunes(body.GoalText, 2000),
-		Tools:      body.Tools,
-		CreatedAt:  now(),
-		UpdatedAt:  now(),
-	}
-	// 人工建的子对话＝父对话的分支：模式/工作区/远程/模型/权限/能力全部照抄父会话。
-	// 这样系统提示词与工具目录与父完全一致——继承来的历史才能接在同一个前缀上，
-	// 命中模型的 KV 前缀缓存（工具目录或系统提示词一旦不同，后面整段都要重算）。
-	// 计划/目标模式刻意重置：子对话不该替父会话自动续跑。
-	if body.InheritContext {
-		if parent == nil {
-			writeErr(w, 400, "inheritContext 需要同时指定 parent")
-			return
-		}
-		m.Mode = parent.Mode
-		m.Workspace = parent.Workspace
-		m.Provider = parent.Provider
-		m.Model = parent.Model
-		m.Permission = parent.Permission
-		m.Thinking = parent.Thinking
-		m.Tools = parent.Tools
-		if parent.Remote != nil {
-			r := *parent.Remote
-			m.Remote = &r
-		}
-		m.Origin = "human"
-		if m.Title == "" {
-			m.Title = "子对话"
-		}
-	}
-	if permModeOf(m) == permFull {
-		m.Tools = bundleFullAccessCaps(m.Tools) // 完全访问：预设捆绑能力一并点亮
-	} else if body.Tools == nil {
-		// 请求没带能力开关（tools 字段缺席）：按「工作区内读写默认开启「操作浏览器」」
-		// 补默认（capDefaultsForMode）。显式传空数组 = 用户主动取消勾选，尊重用户。
-		m.Tools = mergeCapDefaults(m.Tools, m.Mode, permModeOf(m))
-	}
-	if m.GoalMode {
-		m.GoalStatus = "active" // 创建即带目标模式：状态从 active 起步
-	}
-	if err := a.Store.Create(m); err != nil {
-		writeErr(w, 500, err.Error())
+	// 建会话全部收口在 createSession（sessioncreate.go）：字段构造、权限默认、
+	// 能力默认、分支克隆、历史继承、演示材料兜底——HTTP 人工建会话与
+	// dispatch_task / dispatch_sub 派发建会话走同一处，「人工是什么效果，
+	// 派发就是什么效果」。
+	m, err := a.createSession(createSessionParams{
+		Mode: body.Mode, Workspace: body.Workspace, Title: body.Title,
+		ParentID: body.ParentID, Provider: body.Provider, Model: body.Model,
+		Permission: body.Permission, Thinking: body.Thinking,
+		PlanMode: body.PlanMode, GoalMode: body.GoalMode, GoalText: body.GoalText,
+		Tools: body.Tools, Remote: body.Remote,
+		CloneFromParent: body.InheritContext, CopyHistory: body.InheritContext,
+	})
+	if err != nil {
+		writeErr(w, createSessionErrCode(err), err.Error())
 		return
-	}
-	// 选定工作目录后即建 .jxai/tmp：模型临时文件的约定去处（见系统提示词）
-	if m.Remote == nil {
-		(&toolContext{app: a, sess: m}).ensureJxAI()
-	}
-	if body.InheritContext {
-		if _, err := a.copyInheritedContext(parent.ID, m.ID); err != nil {
-			// 上下文没复制成功就退回：留着半截继承的子对话比没有更糟
-			_ = a.Store.Delete(m.ID)
-			writeErr(w, 500, "继承父对话上下文失败: "+err.Error())
-			return
-		}
-	}
-	// 首页「先录后聊」的兜底入口：建创建技能会话时工作区若已有演示材料，
-	// 注入一条【演示记录】清单通知（同文件上传通知机制），模型开轮即知道
-	// 有哪些现成记录可分析——不管录制是多久以前、页面刷没刷新都成立。
-	if m.Mode == "skill-create" && m.Remote == nil {
-		ws := m.Workspace
-		if ws == "" {
-			ws = a.Cfg.Workspace
-		}
-		if dirs := recorderRecentDirs(ws, 3); len(dirs) > 0 {
-			_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", demoRecordListNote(dirs)), Kind: kindReport, Origin: "demo", CreatedAt: now()})
-		}
 	}
 	writeJSON(w, 200, m)
 }
-
 func (a *App) sessionFromPath(w http.ResponseWriter, r *http.Request) *SessionMeta {
 	m, err := a.Store.Get(r.PathValue("id"))
 	if err != nil {
@@ -1881,18 +1781,13 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	if body.Permission != nil {
 		was := permModeOf(m)
 		wasTools := m.Tools
-		m.Permission = strings.TrimSpace(*body.Permission)
-		switch {
-		case permModeOf(m) == permFull:
-			m.Tools = bundleFullAccessCaps(m.Tools) // 切到完全访问：捆绑能力联动点亮
-		case was == permFull && body.Tools == nil:
-			// 从完全访问切回：捆绑能力随之取消，但默认能力要补回来
-			//（工作区内读写默认开启「操作浏览器」——切回时同时打开它）
-			m.Tools = mergeCapDefaults(stripFullAccessCaps(m.Tools), m.Mode, permModeOf(m))
-		}
+		// 权限档落装与能力联动收口在 applyPermissionChange（sessioncreate.go），
+		// 与 send_to_session 的 permission 参数同一套；这里只补 HTTP 侧的
+		// 上下文事件记录。
+		capsChanged := applyPermissionChange(m, *body.Permission, body.Tools != nil)
 		if was != permModeOf(m) {
 			notes = append(notes, ctxNote{ctxPerm, "权限模式：" + was + " → " + permModeOf(m)})
-		} else if fmt.Sprint(wasTools) != fmt.Sprint(m.Tools) && body.Tools == nil {
+		} else if capsChanged && body.Tools == nil {
 			notes = append(notes, ctxNote{ctxPerm, "能力开关随权限联动：" + toolIDsOf(wasTools) + " → " + toolIDsOf(m.Tools)})
 		}
 	}
