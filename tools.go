@@ -129,7 +129,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		// 与 list_experts（子对话专家名单）不在这里——子对话归任务会话（见 toolsFor
 		// 的另一个分支），总控的编排手段是 dispatch_task / send_to_session。
 		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool(),
-			stopSessionTool(),
+			stopSessionTool(), callAPITool(),
 			deliverResultTool(),
 			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	} else if mode == "aux" {
@@ -151,6 +151,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
+			callAPITool(),
 			askUserQuestionTool(), requestPermissionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
 		}, skillCreate...), append(append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)

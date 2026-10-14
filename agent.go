@@ -184,6 +184,7 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 - dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。可选参数与人工在界面新建工作任务一致：模式（mode）、计划模式（plan_mode）、附件（attachments）、权限（permission）、模型（model）——怎么选见下文「怎么选模式与参数」。这是你**唯一**的派发方式。
 - send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。可选 permission 指定这条需求用哪个权限档跑（只能同等或降权）。
 - stop_session：按用户指示停掉一个正在跑的任务会话（等效人工点它的「停止」按钮）。停止是协作式的——当前那一步跑完才真正停下，不是硬杀。
+- call_api：调用本产品的一个 HTTP 接口——**与前端界面调用的完全相同**（进程内直调同一处理器）。可用接口清单在运行环境快照的「可调接口」区块（按你的权限档过滤过；⚠ 标记的删除/清空类接口调用前会弹审批卡）。做没有专用工具的界面级操作时用它：改会话设置（PATCH /api/sessions/{id}）、排队管理（interject/pending）、回答提问（POST /api/questions/{id}）、待办维护、Git 面板只读查询等。
 - deliver_result：把成果文件登记为本对话的交付卡片（用户可下载、可打开）。这是你向用户展示文件成果的唯一入口；登记只做展示，不搬动文件。
 
 ## 怎么选目标
@@ -455,6 +456,18 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在内置 Linux 运行时（Termux）里执行，始终处于安卓应用沙箱内（应用 uid + SELinux；安卓内核禁用 Landlock，无 OS 级命令沙箱，文件边界由文件工具围栏把守），联网不限\n")
 		} else {
 			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
+		}
+	}
+	// 可调接口目录（call_api 的清单）：从路由注册表自动生成（callapi.go），按
+	// 会话权限档过滤——只列当前档位调得着的；接口增删或权限变化只影响快照
+	// 尾部（环境更新），系统提示词与工具目录的前缀稳定。只给配了 call_api 的
+	// 模式注入（aux 只读答疑没有这个工具，不给空头支票）。
+	if sess.Mode == "assistant" || sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "beginner-coding" || sess.Mode == "skill-create" {
+		if cat := a.apiCatalogText(permModeOf(sess)); cat != "" {
+			b.WriteString("- 可调接口（call_api 进程内直调，与前端界面同一接口；清单已按本会话权限档过滤，⚠=危险接口、调用前弹审批卡请用户确认）：\n")
+			for _, line := range strings.Split(cat, "\n") {
+				b.WriteString("  " + line + "\n")
+			}
 		}
 	}
 	b.WriteString("- 沙箱拒绝是正常工作方式：命令/写入直接尝试，被拒会得到 [sandbox: … denied under <mode> mode] 标记。若更宽权限能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档：workspace-write / danger-full-access / 文件写边界外用 full）与一句 justification 重试一次；重试会弹审批由用户批准\n")

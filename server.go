@@ -41,7 +41,11 @@ type App struct {
 	MCPServers *MCPServersRegistry // 独立 MCP 服务器注册表（mcpservers*.go）：用户直连 MCP 服务
 	Todos      *todoScheduler      // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
 	Bridge     *bridgeManager      // 声明式组件桥（componentbridge.go）：manifest workers 的通用宿主
-	static     fs.FS               // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	static     fs.FS                // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	apiMux           *http.ServeMux      // call_api 进程内直调用的完整路由缓存（callapi.go，懒建）
+	apiMetas         []apiMeta           // 对 AI 开放的接口目录（注册顺序，callapi.go）
+	apiMetaByPattern map[string]apiMeta  // pattern→ 元数据（callapi.go，与 apiMetas 同源）
+	apiMetaMu        sync.Mutex          // 上述字段的锁（registerRoutes 期间不与 a.mu 互斥）
 
 	mu              sync.Mutex
 	sessLocks       map[string]*sync.Mutex
@@ -217,41 +221,50 @@ func (a *App) sessLock(id string) *sync.Mutex {
 }
 
 func (a *App) Routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux := http.NewServeMux() // 前端每次新建；call_api 直调走 apiMuxOf 的缓存
+	a.registerRoutes(mux)
+	return mux
+}
+
+// registerRoutes 注册全部 HTTP 路由。前端（Routes，每次新建）与 call_api 的
+// 进程内直调（apiMuxOf，缓存复用）共用同一份注册，行为完全一致；对 AI 开放
+// 的接口用 a.apiRoute 带元数据注册（目录即注册的副产品，见 callapi.go）。
+func (a *App) registerRoutes(mux *http.ServeMux) {
+	// mux 由调用方传入：前端 Routes() 与 call_api 的 apiMuxOf() 共用本注册
+	a.apiRoute(mux, "GET /api/status", a.handleStatus, apiMeta{Summary: "服务状态（版本、运行形态、远程接入、更新等）", Perm: permReadOnly})
 	mux.HandleFunc("GET /api/display-mode", a.handleGetDisplayMode)
 	mux.HandleFunc("POST /api/display-mode", a.handleSetDisplayMode)
-	mux.HandleFunc("GET /api/search/title", a.handleSearchTitle)
-	mux.HandleFunc("GET /api/search/content", a.handleSearchContent)
-	mux.HandleFunc("GET /api/config", a.handleGetConfig)
-	mux.HandleFunc("POST /api/config", a.handleSetConfig)
-	mux.HandleFunc("GET /api/models", a.handleModels)
-	mux.HandleFunc("GET /api/modes", a.handleChatModes) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
+	a.apiRoute(mux, "GET /api/search/title", a.handleSearchTitle, apiMeta{Summary: "按标题搜会话", Params: "q=关键词；scope 可选范围", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/search/content", a.handleSearchContent, apiMeta{Summary: "按内容搜会话", Params: "q=关键词", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/config", a.handleGetConfig, apiMeta{Summary: "读全局配置（Key 已掩码）", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/config", a.handleSetConfig, apiMeta{Summary: "改全局配置", Params: "要改的字段（providers 之外的一般项）", Perm: permFull, Danger: "修改全局配置，影响所有会话"})
+	a.apiRoute(mux, "GET /api/models", a.handleModels, apiMeta{Summary: "模型清单（全部渠道）", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/modes", a.handleChatModes, apiMeta{Summary: "工作模式清单（新建会话可选的模式）", Perm: permReadOnly}) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
 	mux.HandleFunc("POST /api/providers", a.handleUpsertProvider)
 	mux.HandleFunc("POST /api/providers/toggle", a.handleToggleProvider)
 	mux.HandleFunc("POST /api/providers/delete", a.handleDeleteProvider)
 	mux.HandleFunc("POST /api/providers/test", a.handleTestProvider)
 	mux.HandleFunc("POST /api/providers/fetch", a.handleFetchModels)
-	mux.HandleFunc("GET /api/sessions", a.handleListSessions)
-	mux.HandleFunc("POST /api/sessions", a.handleCreateSession)
-	mux.HandleFunc("GET /api/sessions/{id}", a.handleGetSession)
-	mux.HandleFunc("PATCH /api/sessions/{id}", a.handlePatchSession)
-	mux.HandleFunc("DELETE /api/sessions/{id}", a.handleDeleteSession)
-	mux.HandleFunc("POST /api/sessions/{id}/chat", a.handleChat)
+	a.apiRoute(mux, "GET /api/sessions", a.handleListSessions, apiMeta{Summary: "会话列表", Params: "parent=按父会话查子对话", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/sessions", a.handleCreateSession, apiMeta{Summary: "新建会话", Params: "mode/workspace/title/provider/model/permission/planMode/parent/inheritContext 等", Perm: permWorkspace})
+	a.apiRoute(mux, "GET /api/sessions/{id}", a.handleGetSession, apiMeta{Summary: "会话详情（含运行态/排队/最近错误）", Perm: permReadOnly})
+	a.apiRoute(mux, "PATCH /api/sessions/{id}", a.handlePatchSession, apiMeta{Summary: "改会话设置", Params: "title/model/provider/permission/thinking/archived/unread 等", Perm: permWorkspace})
+	a.apiRoute(mux, "DELETE /api/sessions/{id}", a.handleDeleteSession, apiMeta{Summary: "删除会话（历史不可恢复）", Perm: permWorkspace, Danger: "删除会话及其全部历史，不可恢复"})
+	a.apiRoute(mux, "POST /api/sessions/{id}/chat", a.handleChat, apiMeta{Summary: "向会话发一条消息（异步执行）", Params: "content=正文", Perm: permWorkspace})
 	mux.HandleFunc("GET /api/sessions/{id}/stream", a.handleSessionStream)
-	mux.HandleFunc("POST /api/sessions/{id}/stop", a.handleStop)
-	mux.HandleFunc("POST /api/sessions/{id}/retry", a.handleRetry)
-	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
-	mux.HandleFunc("POST /api/sessions/{id}/pending", a.handlePending)
-	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
+	a.apiRoute(mux, "POST /api/sessions/{id}/stop", a.handleStop, apiMeta{Summary: "停止会话当前执行（协作式）", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/retry", a.handleRetry, apiMeta{Summary: "失败后带着上下文重试一轮", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/interject", a.handleInterject, apiMeta{Summary: "执行中发消息（插话/排队）", Params: "content、mode=steer|queue", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/pending", a.handlePending, apiMeta{Summary: "排队坞操作", Params: "action=remove|steer|move|pause|resume", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/compact", a.handleCompact, apiMeta{Summary: "手动压缩会话历史为摘要", Params: "upTo=压缩到哪条", Perm: permWorkspace})
 	// 设置 · 对话历史与压缩：对数字助理主对话的两个动作（会话由服务端按
 	// mode=assistant 解析，前端不必知道是哪个会话）。压缩固定走模型摘要。
-	mux.HandleFunc("POST /api/assistant/compact", a.handleAssistantCompact)
-	mux.HandleFunc("POST /api/assistant/clear", a.handleAssistantClear)
-	mux.HandleFunc("GET /api/sessions/{id}/progress", a.handleGetProgress)
-	mux.HandleFunc("GET /api/sessions/{id}/plans", a.handleListPlans)
-	mux.HandleFunc("POST /api/sessions/{id}/plans/export", a.handleExportPlan)
-	mux.HandleFunc("GET /api/sessions/{id}/context", a.handleContextStats)
+	a.apiRoute(mux, "POST /api/assistant/compact", a.handleAssistantCompact, apiMeta{Summary: "压缩数字助理主对话历史", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/assistant/clear", a.handleAssistantClear, apiMeta{Summary: "清空数字助理主对话历史", Perm: permFull, Danger: "清空总控主对话的全部历史，不可恢复"})
+	a.apiRoute(mux, "GET /api/sessions/{id}/progress", a.handleGetProgress, apiMeta{Summary: "会话进度清单", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/sessions/{id}/plans", a.handleListPlans, apiMeta{Summary: "会话提交过的计划清单", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/sessions/{id}/plans/export", a.handleExportPlan, apiMeta{Summary: "把计划导出为工作区 md 文件", Params: "seq 可选", Perm: permWorkspace})
+	a.apiRoute(mux, "GET /api/sessions/{id}/context", a.handleContextStats, apiMeta{Summary: "上下文用量统计", Perm: permReadOnly})
 	mux.HandleFunc("GET /api/sessions/{id}/export", a.handleExport)
 	mux.HandleFunc("POST /api/sessions/{id}/upload", a.handleUpload)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
@@ -263,11 +276,11 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)
-	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleFork)
-	mux.HandleFunc("POST /api/sessions/{id}/edit", a.handleEdit)
-	mux.HandleFunc("POST /api/sessions/{id}/file-rewind", a.handleFileRewind)
-	mux.HandleFunc("GET /api/sessions/{id}/file-versions", a.handleFileVersions)
-	mux.HandleFunc("GET /api/sessions/{id}/file-version", a.handleFileVersion)
+	a.apiRoute(mux, "POST /api/sessions/{id}/fork", a.handleFork, apiMeta{Summary: "从某条消息分支新会话", Params: "seq=分支点", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/edit", a.handleEdit, apiMeta{Summary: "改写某条用户消息并重跑", Params: "seq、content", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/file-rewind", a.handleFileRewind, apiMeta{Summary: "把文件回退到某个历史版本", Params: "path、seq", Perm: permWorkspace})
+	a.apiRoute(mux, "GET /api/sessions/{id}/file-versions", a.handleFileVersions, apiMeta{Summary: "某文件的历史版本清单", Params: "path", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/sessions/{id}/file-version", a.handleFileVersion, apiMeta{Summary: "取某文件某个历史版本正文", Params: "path、seq", Perm: permReadOnly})
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/open", a.handleDeliveryOpenFile)
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/reveal", a.handleDeliveryReveal)
 	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
@@ -282,12 +295,12 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/clipboard", a.handleClipboardRead)
 	// 前端诊断打点（见 handleDiag）：只写日志不回数据
 	mux.HandleFunc("GET /api/diag", a.handleDiag)
-	mux.HandleFunc("GET /api/approvals", a.handleListApprovals)
-	mux.HandleFunc("POST /api/approvals/{id}", a.handleResolveApproval)
-	mux.HandleFunc("GET /api/questions", a.handleListQuestions)
-	mux.HandleFunc("POST /api/questions/{id}", a.handleResolveQuestion)
-	mux.HandleFunc("POST /api/workspace/test", a.handleTestWorkspace)
-	mux.HandleFunc("POST /api/workspace/ls", a.handleWorkspaceLs)
+	a.apiRoute(mux, "GET /api/approvals", a.handleListApprovals, apiMeta{Summary: "待决定的越权审批清单", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/approvals/{id}", a.handleResolveApproval, apiMeta{Summary: "审批决定", Params: "approved、always", Perm: permWorkspace})
+	a.apiRoute(mux, "GET /api/questions", a.handleListQuestions, apiMeta{Summary: "待回答的提问/计划审批清单", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/questions/{id}", a.handleResolveQuestion, apiMeta{Summary: "回答提问/计划审批", Params: "answer（计划批准=__approve__、忽略=__ignore__）", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/workspace/test", a.handleTestWorkspace, apiMeta{Summary: "测试 SSH 远程工作区连通性", Params: "remote 配置", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/workspace/ls", a.handleWorkspaceLs, apiMeta{Summary: "浏览远程工作区目录", Params: "remote、path", Perm: permReadOnly})
 	mux.HandleFunc("GET /attachments/", a.handleAttachment)
 	mux.HandleFunc("GET /api/skills", a.handleListSkills)
 	mux.HandleFunc("POST /api/skills/add", a.handleAddSkill)
@@ -295,10 +308,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/skills/install-files", a.handleInstallSkillFiles) // 文件夹拖拽安装（multipart files+paths）
 	mux.HandleFunc("POST /api/skills/toggle", a.handleToggleSkill)
 	mux.HandleFunc("POST /api/skills/delete", a.handleDeleteSkill)
-	mux.HandleFunc("GET /api/experts", a.handleListExperts)
+	a.apiRoute(mux, "GET /api/experts", a.handleListExperts, apiMeta{Summary: "子对话专家清单", Perm: permReadOnly})
 	mux.HandleFunc("POST /api/experts", a.handleUpsertExpert)
 	mux.HandleFunc("POST /api/experts/delete", a.handleDeleteExpert)
-	mux.HandleFunc("POST /api/sessions/{id}/remote", a.handleSetSessionRemote)
+	a.apiRoute(mux, "POST /api/sessions/{id}/remote", a.handleSetSessionRemote, apiMeta{Summary: "设置/解除 SSH 远程工作区", Params: "remote 配置或 clear=true", Perm: permWorkspace})
 	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
 	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)
 	mux.Handle("GET /_plugins/", http.HandlerFunc(a.handlePluginAsset))
@@ -381,24 +394,24 @@ func (a *App) Routes() http.Handler {
 	// 探针 JS 把右栏矩形回传到这里
 	mux.HandleFunc("POST /api/shell/panel-view", a.handleShellPanelView)
 	// 待办与定时任务（组件 todo-scheduler 的宿主半边）：组件未启用时这些接口一律 404
-	mux.HandleFunc("GET /api/todos", a.handleTodoList)
-	mux.HandleFunc("POST /api/todos", a.handleTodoCreate)
-	mux.HandleFunc("POST /api/todos/update", a.handleTodoUpdate)
-	mux.HandleFunc("POST /api/todos/delete", a.handleTodoDelete)
-	mux.HandleFunc("POST /api/todos/run", a.handleTodoRun)
-	mux.HandleFunc("POST /api/todos/missed", a.handleTodoMissed)
-	mux.HandleFunc("GET /api/todos/workspaces", a.handleTodoWorkspaces)
+	a.apiRoute(mux, "GET /api/todos", a.handleTodoList, apiMeta{Summary: "待办/定时任务清单", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/todos", a.handleTodoCreate, apiMeta{Summary: "新建待办/定时任务", Params: "title/description/schedule/executor 等", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/todos/update", a.handleTodoUpdate, apiMeta{Summary: "修改待办任务", Params: "id 与要改的字段", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/todos/delete", a.handleTodoDelete, apiMeta{Summary: "删除待办任务", Params: "id", Perm: permWorkspace, Danger: "删除待办任务，不可恢复"})
+	a.apiRoute(mux, "POST /api/todos/run", a.handleTodoRun, apiMeta{Summary: "立即执行一条待办任务", Params: "id", Perm: permWorkspace, Danger: "立即触发任务执行（会真实运行命令或派发 AI）"})
+	a.apiRoute(mux, "POST /api/todos/missed", a.handleTodoMissed, apiMeta{Summary: "处理错过的定时槽点", Params: "id、action=run|dismiss", Perm: permWorkspace})
+	a.apiRoute(mux, "GET /api/todos/workspaces", a.handleTodoWorkspaces, apiMeta{Summary: "程序任务可选的工作目录", Perm: permReadOnly})
 	// Git 面板（组件 git-panel 的宿主半边）：组件未启用时这些接口一律 404。
 	// 读 status/diff/graph/commit/branches，写有 stage/unstage/untrack（移出
 	// 跟踪变未跟踪）/commit/summarize（只生成提交信息不提交）/checkout（切
 	// 本地分支）/sync（op=pull 拉取：fetch+快进或自动合并；op=push 推送：仅本地
 	// 领先且远程无新提交；空=整套先拉后推；任何
 	// 需要决策的情形原样退回）。不做 reset/revert/discard/stash/rebase。
-	mux.HandleFunc("GET /api/git/status", a.handleGitStatus)
-	mux.HandleFunc("GET /api/git/diff", a.handleGitDiff)
-	mux.HandleFunc("GET /api/git/graph", a.handleGitGraph)
-	mux.HandleFunc("GET /api/git/commit", a.handleGitCommitDetail)
-	mux.HandleFunc("GET /api/git/branches", a.handleGitBranches)
+	a.apiRoute(mux, "GET /api/git/status", a.handleGitStatus, apiMeta{Summary: "Git 工作区状态（porcelain）", Params: "repo 可选", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/git/diff", a.handleGitDiff, apiMeta{Summary: "文件 diff", Params: "repo、path 等", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/git/graph", a.handleGitGraph, apiMeta{Summary: "提交图谱数据", Params: "repo 可选", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/git/commit", a.handleGitCommitDetail, apiMeta{Summary: "提交详情", Params: "repo、hash", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/git/branches", a.handleGitBranches, apiMeta{Summary: "分支清单", Params: "repo 可选", Perm: permReadOnly})
 	mux.HandleFunc("POST /api/git/stage", a.handleGitStage)
 	mux.HandleFunc("POST /api/git/unstage", a.handleGitUnstage)
 	mux.HandleFunc("POST /api/git/untrack", a.handleGitUntrack)
@@ -408,7 +421,6 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/git/sync", a.handleGitSync)
 	a.Plugins.MountRoutes(a, mux)
 	mux.HandleFunc("GET /", a.handleStatic)
-	return mux
 }
 
 // handleStatic 提供前端静态资源；入口页在返回前把已启用插件的
