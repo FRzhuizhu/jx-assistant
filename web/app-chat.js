@@ -1946,11 +1946,15 @@ function renderStreamingTurn(box, turn, key) {
     return;
   }
   const foldFrom = flow.length - TAIL_ROWS;
-  // 钉住常显、绝不折进过程段的两类：系统通知（note，report 通道的虚线通知块——
+  // 钉住常显、绝不折进过程段的三类：系统通知（note，report 通道的虚线通知块——
   // 执行期间的中断/上传提示不能被折没；完成态里与材料/过程相邻的进顶层大折叠，
-  // 孤立与尾部的常显，见 renderFinishedTurn）与运行中的子任务卡（实时进度）。
+  // 孤立与尾部的常显，见 renderFinishedTurn）、运行中的子任务卡（实时进度）、
+  // 以及中间长正文——与完成态（renderFinishedTurn 的 anchor）同一豁免
+  //（isLongText：≥3 非空行或显示宽度 ≥100 字）：「先解释一大段、再连续十几次
+  // 工具调用」的回合，讲解段不能在执行中途被折没。
   // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
-  const pinned = (it) => it.k === 'note' || it.k === 'plancard' || it.k === 'fold' || (it.k === 'subtask' && !it.result);
+  const pinned = (it) => it.k === 'note' || it.k === 'plancard' || it.k === 'fold' || (it.k === 'subtask' && !it.result)
+    || (it.k === 'text' && isLongText(it.text));
   let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段
   const flush = () => {
     if (!seg.length) return;

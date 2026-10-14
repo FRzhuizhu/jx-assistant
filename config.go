@@ -246,7 +246,7 @@ func DefaultConfig() *Config {
 			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
 			RegKey:  "chat_p2p_v1",
 		},
-		UpdateURL:  "http://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
+		UpdateURL:  "https://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
 		UpdateMode: "auto",
 		AskAlert:   AskAlertCfg{AfterSec: askAlertDefaultSec, Text: askAlertDefaultText},
 	}
