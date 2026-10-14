@@ -81,10 +81,10 @@ type App struct {
 	osOnce          sync.Once
 	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
 	browserMu       sync.Mutex
-	browserEmbedded *BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
-	browserHeaded   *BrowserHost  // 有头独立窗口宿主（旧版行为，惰性创建）
-	nativePanel     browserTarget // 桌面右栏原生 WebView2 面板（browser_panel_windows.go；网页模式为 nil）
-	browserActive   browserTarget // 工具作用目标：最近一次 browser_open 选定的实例
+	browserEmbedded *BrowserHost             // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
+	browsersHeaded  map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
+	nativePanel     browserTarget            // 桌面右栏原生 WebView2 面板（browser_panel_windows.go；网页模式为 nil）
+	browserActive   map[string]browserTarget // 工具作用目标：每会话最近一次 browser_open 选定的实例（键=browserProfileKey）
 
 	// 桌面壳（runDesktop）注入的右侧栏截图通道（panelshot_windows.go）：
 	// shellEval 往主界面注入 JS、panelViewCh 收回右栏矩形回传，shellWnd 是

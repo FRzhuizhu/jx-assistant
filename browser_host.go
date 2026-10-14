@@ -8,13 +8,20 @@ package main
 //     已整体移除——图片镜像的交互体验与原生控件不可弥合）。
 // 两形态可并存、各自独立进程与配置目录；browserTarget 操作面（browser_ops.go）
 // 由本宿主与原生面板共同实现，工具层（tool_browser.go）形态无关。
+// 生命周期：实例死亡（用户关窗/进程退出把 ctx 打成取消）必须被识别——
+// startIfNeeded 发现僵尸态先彻底清场再重开；do/activeBrowser 对死实例统一报
+// 「已被用户关闭」而非裸 context canceled。2026-10-13 QQ邮箱会话事故：旧版
+// 全会话共用一个有头实例，窗口被用户手关后死 ctx 仍被当作「在运行」，
+// 之后三次 browser_open 全秒报 context canceled，重启引擎才恢复。
 // 安全：服务仅本机监听（既定边界）；AI 侧工具照旧经 capBrowser 能力门控；
-// 页面登录态落在 data/browser-profile*，与用户日常浏览器隔离；助手进程退出
+// 页面登录态落在 data/browser-profile*（有头按会话隔离在
+// data/browser-profiles-headed/<会话>/），与用户日常浏览器隔离；助手进程退出
 // 由顶层 kill-on-close Job Object 清场（processguard_windows.go）。
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,10 +42,14 @@ const (
 	browserTimeout = 60 * time.Second // 单次 CDP 操作上限（与原 tool_browser 一致）
 	browserDefW    = 1280
 	browserDefH    = 900
-	browserMinSide = 320  // 视口边长下限（对齐 ZCode 的 320–3840 × 320–2160）
+	browserMinSide = 320 // 视口边长下限（对齐 ZCode 的 320–3840 × 320–2160）
 	browserMaxW    = 3840
 	browserMaxH    = 2160
 )
+
+// errBrowserClosed 实例已死（用户关闭窗口或进程退出）时的统一报错：把死因
+// 说成人话，别让模型对着裸的 context canceled 猜谜。
+var errBrowserClosed = errors.New("浏览器已被关闭（用户关闭了窗口或浏览器进程退出）：请调用 browser_open 重新打开")
 
 // BrowserHost 是一个 chromedp 浏览器宿主实例，两种形态（可并存、各自独立进程与配置目录）：
 //   * headless=true  后台无头：网页形态的内嵌目标，AI 工具专用（无画面镜像）；
@@ -48,21 +59,23 @@ const (
 type BrowserHost struct {
 	app      *App
 	headless bool
+	profile  string // 显式配置目录（空=按形态取默认；有头按会话指定，见 App.headedBrowser）
 
 	mu          sync.Mutex // 串行化生命周期与元数据读写
 	allocCancel context.CancelFunc
 	tabCtx      context.Context
 	tabCancel   context.CancelFunc
 
-	vw, vh int    // 当前生效视口（CSS px）
-	url    string // 最近一次导航落定的地址/标题（state 端点与工具回显用）
-	title  string
+	vw, vh   int    // 当前生效视口（CSS px）
+	url      string // 最近一次导航落定的地址/标题（state 端点与工具回显用）
+	title    string
+	reopened bool // 最近一次 Navigate 是否检测到实例已死并自动重开（ReopenNote 回显用）
 
 	lastX, lastY float64 // 最近鼠标位置（滚轮等不带坐标的输入挂在这里）
 }
 
-func newBrowserHost(app *App, headless bool) *BrowserHost {
-	return &BrowserHost{app: app, headless: headless}
+func newBrowserHost(app *App, headless bool, profile string) *BrowserHost {
+	return &BrowserHost{app: app, headless: headless, profile: profile}
 }
 
 // findBrowserExe 优先找系统自带的 Edge（Win10/11 必装，符合自包含
@@ -93,19 +106,51 @@ func (a *App) Browser() *BrowserHost {
 	a.browserMu.Lock()
 	defer a.browserMu.Unlock()
 	if a.browserEmbedded == nil {
-		a.browserEmbedded = newBrowserHost(a, true)
+		a.browserEmbedded = newBrowserHost(a, true, "")
 	}
 	return a.browserEmbedded
 }
 
-// headedBrowser 返回（惰性创建）有头独立窗口宿主（旧版行为）。
-func (a *App) headedBrowser() *BrowserHost {
+// browserProfileKey 会话 id → 有头实例/active 记账键（兼配置目录名）：仅放行
+// 字母数字与 _-（会话 id 本是十六进制），防路径拼接被注入；异常输入归并到
+// 空串=共享实例。返回值直接作 map 键与子目录名。
+func browserProfileKey(sid string) string {
+	sid = strings.TrimSpace(sid)
+	if sid == "" || len(sid) > 64 {
+		return ""
+	}
+	for _, r := range sid {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return ""
+		}
+	}
+	return sid
+}
+
+// headedBrowser 返回（惰性创建）该会话的有头独立窗口宿主：每会话一个实例、
+// 独立进程与独立配置目录（data/browser-profiles-headed/<会话>/）——登录态
+// 互不串台，也天然避开 Chromium「同一 profile 单例锁」的互斥；无会话上下文
+// 的调用（空键）退回旧版共享目录 browser-profile-headed。旧版全会话共用一个
+// 实例：A 会话开着的窗口被用户一关，B 会话接着 open 就地复用已死 ctx 秒报
+// context canceled 且永不自愈（2026-10-13 QQ邮箱会话事故），按会话隔离后各
+// 会话的窗口生死互不拖累。
+func (a *App) headedBrowser(sid string) *BrowserHost {
+	key := browserProfileKey(sid)
 	a.browserMu.Lock()
 	defer a.browserMu.Unlock()
-	if a.browserHeaded == nil {
-		a.browserHeaded = newBrowserHost(a, false)
+	if a.browsersHeaded == nil {
+		a.browsersHeaded = map[string]*BrowserHost{}
 	}
-	return a.browserHeaded
+	if h, ok := a.browsersHeaded[key]; ok {
+		return h
+	}
+	profile := filepath.Join(a.Cfg.DataDir, "browser-profile-headed") // 共享（旧版目录）
+	if key != "" {
+		profile = filepath.Join(a.Cfg.DataDir, "browser-profiles-headed", key)
+	}
+	h := newBrowserHost(a, false, profile)
+	a.browsersHeaded[key] = h
+	return h
 }
 
 // embeddedTarget 内嵌形态目标：桌面=右栏原生 WebView2 面板；网页=无头 chromedp。
@@ -117,34 +162,49 @@ func (a *App) embeddedTarget() browserTarget {
 }
 
 // browserFor 按 browser_open 的 mode 取目标（headless 缺省=内嵌形态），并记为
-// 工具作用的当前实例（active）——其余工具（click/type/…）都作用于 active。
-func (a *App) browserFor(mode string) browserTarget {
+// 该会话工具作用的当前实例（active）——其余工具（click/type/…）都作用于
+// 本会话的 active，会话之间互不串目标。sid 为会话 id（空=非会话入口共用）。
+func (a *App) browserFor(sid, mode string) browserTarget {
 	var t browserTarget
 	if mode == "headed" {
-		t = a.headedBrowser()
+		t = a.headedBrowser(sid)
 	} else {
 		t = a.embeddedTarget()
 	}
+	key := browserProfileKey(sid)
 	a.browserMu.Lock()
-	a.browserActive = t
+	if a.browserActive == nil {
+		a.browserActive = map[string]browserTarget{}
+	}
+	a.browserActive[key] = t
 	a.browserMu.Unlock()
 	return t
 }
 
-// activeBrowser 工具作用目标：最近一次 browser_open 选定的实例；没有 active
-// 时兜底到正在运行的那个；都没运行返回 nil（调用方报「先 browser_open」）。
-func (a *App) activeBrowser() browserTarget {
+// activeBrowser 工具作用目标：本会话最近一次 browser_open 选定的实例；没有
+// active 时兜底到仍在运行的那个；都没运行返回 nil（调用方报「先 browser_open」）。
+// active「不在运行」分两种：显式 browser_close 的回退另一形态存活实例（旧行为）；
+// 意外死亡（用户关掉窗口/进程退出）则不静默回退——回退到面板会把别的页面当
+// 当前页读、误导模型，这里清掉死记账并返回 nil，让调用方明确报「已被用户关闭」。
+func (a *App) activeBrowser(sid string) browserTarget {
+	key := browserProfileKey(sid)
 	a.browserMu.Lock()
-	t := a.browserActive
+	t := a.browserActive[key]
 	a.browserMu.Unlock()
 	if t != nil && t.Started() {
 		return t
 	}
-	// active 已关：回退到仍在运行的实例，并更新 active
-	for _, cand := range []browserTarget{a.embeddedTarget(), a.headedBrowser()} {
+	if bh, ok := t.(*BrowserHost); ok && bh.dead() {
+		a.browserMu.Lock()
+		delete(a.browserActive, key)
+		a.browserMu.Unlock()
+		return nil
+	}
+	// active 已关（显式 Close）：回退到仍在运行的实例，并更新 active
+	for _, cand := range []browserTarget{a.embeddedTarget(), a.headedBrowser(sid)} {
 		if cand != nil && cand.Started() {
 			a.browserMu.Lock()
-			a.browserActive = cand
+			a.browserActive[key] = cand
 			a.browserMu.Unlock()
 			return cand
 		}
@@ -155,34 +215,54 @@ func (a *App) activeBrowser() browserTarget {
 // ---------- 生命周期 ----------
 
 func (h *BrowserHost) Start() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.ensureStarted()
+	_, err := h.startIfNeeded()
+	return err
 }
 
+// Started 实例是否在运行：ctx 存在且未被取消。浏览器进程一死（用户关掉
+// 窗口/进程退出）chromedp 就会取消 ctx——只看 tabCtx!=nil 的旧判法会把
+// 死实例当「在运行」（僵尸态），后续操作全报 context canceled。
 func (h *BrowserHost) Started() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.tabCtx != nil
+	return h.tabCtx != nil && h.tabCtx.Err() == nil
 }
 
-// ensureStarted 拉起浏览器（调用方需持有 h.mu）。按形态取启动参数：
-// 内嵌无头走镜像帧流那套；有头按旧版行为弹独立可见窗口（不静音、不设窗口尺寸）。
-// profile 必须转绝对路径：Chromium 对相对 user-data-dir 会静默秒退（stderr
-// 无输出），chromedp 只能报出空的 "chrome failed to start"——实测踩坑。
-func (h *BrowserHost) ensureStarted() error {
+// dead 实例是否「带病存活」：已死但字段还挂着（区别于显式 Close 后的 nil）。
+func (h *BrowserHost) dead() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.tabCtx != nil && h.tabCtx.Err() != nil
+}
+
+// startIfNeeded 拉起浏览器，返回是否「检测到上一实例已死并重开」。发现
+// 僵尸态先彻底清场再重启：用户手动关掉窗口后，下一次 browser_open 应当
+// 重开一个新窗口，而不是抱着死 ctx 报错（调用方需持有 h.mu）。
+// 按形态取启动参数：内嵌无头走镜像帧流那套；有头弹独立可见窗口（不静音、
+// 不设窗口尺寸）。profile 必须转绝对路径：Chromium 对相对 user-data-dir 会
+// 静默秒退（stderr 无输出），chromedp 只能报出空的 "chrome failed to start"
+// ——实测踩坑。
+func (h *BrowserHost) startIfNeeded() (bool, error) {
+	reopened := false
 	if h.tabCtx != nil {
-		return nil
+		if h.tabCtx.Err() == nil {
+			return false, nil
+		}
+		h.closeLocked() // 上一实例已死：彻底清场后重开
+		reopened = true
 	}
-	profile := filepath.Join(h.app.Cfg.DataDir, "browser-profile")
-	if !h.headless {
-		profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile-headed")
+	profile := h.profile
+	if profile == "" {
+		profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile")
+		if !h.headless {
+			profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile-headed")
+		}
 	}
 	if abs, err := filepath.Abs(profile); err == nil {
 		profile = abs
 	}
 	if err := os.MkdirAll(profile, 0o755); err != nil {
-		return fmt.Errorf("创建浏览器配置目录失败: %w", err)
+		return reopened, fmt.Errorf("创建浏览器配置目录失败: %w", err)
 	}
 	var opts []chromedp.ExecAllocatorOption
 	if h.headless {
@@ -224,22 +304,28 @@ func (h *BrowserHost) ensureStarted() error {
 		if err != nil {
 			cancel()
 			allocCancel()
-			return fmt.Errorf("启动浏览器失败（需要系统自带的 Edge，或已安装的 Chrome）: %w", err)
+			return reopened, fmt.Errorf("启动浏览器失败（需要系统自带的 Edge，或已安装的 Chrome）: %w", err)
 		}
 	case <-time.After(20 * time.Second):
 		cancel()
 		allocCancel()
-		return fmt.Errorf("启动浏览器失败（需要系统自带的 Edge，或已安装的 Chrome）: 20 秒内未完成启动（可能被残留浏览器实例占用配置目录）")
+		return reopened, fmt.Errorf("启动浏览器失败（需要系统自带的 Edge，或已安装的 Chrome）: 20 秒内未完成启动（可能被残留浏览器实例占用配置目录）")
 	}
 	h.allocCancel, h.tabCancel = allocCancel, cancel
 	h.tabCtx = ctx
 	h.vw, h.vh = browserDefW, browserDefH
-	return nil
+	return reopened, nil
 }
 
 func (h *BrowserHost) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.closeLocked()
+}
+
+// closeLocked 彻底清场（调用方需持有 h.mu）：取消并清空 ctx/句柄与元数据。
+// 显式关闭与「发现实例已死后重开前的清场」共用，保证字段回到干净初始态。
+func (h *BrowserHost) closeLocked() {
 	if h.tabCancel != nil {
 		h.tabCancel()
 	}
@@ -247,7 +333,7 @@ func (h *BrowserHost) Close() {
 		h.allocCancel()
 	}
 	h.tabCtx, h.allocCancel, h.tabCancel = nil, nil, nil
-	h.url, h.title = "", ""
+	h.url, h.title, h.reopened = "", "", false
 }
 
 // ---------- 导航 ----------
@@ -266,9 +352,13 @@ func (h *BrowserHost) navigate(raw string, allowFile bool) (string, string, erro
 	} else if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		return "", "", fmt.Errorf("只支持 http/https 地址，收到: %s", u)
 	}
-	if err := h.Start(); err != nil {
+	reopened, err := h.startIfNeeded()
+	if err != nil {
 		return "", "", err
 	}
+	h.mu.Lock()
+	h.reopened = reopened
+	h.mu.Unlock()
 	var url, title string
 	if err := h.do(func(ctx context.Context) error {
 		if err := chromedp.Run(ctx, chromedp.Navigate(u)); err != nil {
@@ -283,6 +373,17 @@ func (h *BrowserHost) navigate(raw string, allowFile bool) (string, string, erro
 	}
 	h.setNav(url, title)
 	return url, title, nil
+}
+
+// ReopenNote 最近一次 Navigate 若检测到上一实例已死并自动重开，返回给工具
+// 层的回显说明（老窗口多半是用户手关的，得让模型知道发生了什么）。
+func (h *BrowserHost) ReopenNote() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reopened {
+		return "检测到上一实例已被关闭，已自动重新打开"
+	}
+	return ""
 }
 
 // NavAction 后退/前进/刷新（面板与工具共用）。
@@ -365,19 +466,19 @@ func clampInt(v, lo, hi int) int {
 
 // BrowserInputMsg 面板转发的人的输入事件；AI 工具的点击/输入最终也汇入同一批 CDP 调用。
 type BrowserInputMsg struct {
-	Type string `json:"type"` // down|up|move|scroll|key|text
-	X    float64 `json:"x"`
-	Y    float64 `json:"y"`
-	DX   float64 `json:"dx"`
-	DY   float64 `json:"dy"`
-	Button string `json:"button"` // left|middle|right（缺省 left）
-	Count int    `json:"count"`   // down/up 的连击数（1=单击 2=双击）
-	Key   string `json:"key"`     // key：键名（Enter/Backspace/ArrowDown/…）
-	Text  string `json:"text"`    // text：整段文本（InsertText，中文正确）
-	Ctrl  bool   `json:"ctrl"`
-	Alt   bool   `json:"alt"`
-	Shift bool   `json:"shift"`
-	Meta  bool   `json:"meta"`
+	Type   string  `json:"type"` // down|up|move|scroll|key|text
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	DX     float64 `json:"dx"`
+	DY     float64 `json:"dy"`
+	Button string  `json:"button"` // left|middle|right（缺省 left）
+	Count  int     `json:"count"`  // down/up 的连击数（1=单击 2=双击）
+	Key    string  `json:"key"`    // key：键名（Enter/Backspace/ArrowDown/…）
+	Text   string  `json:"text"`   // text：整段文本（InsertText，中文正确）
+	Ctrl   bool    `json:"ctrl"`
+	Alt    bool    `json:"alt"`
+	Shift  bool    `json:"shift"`
+	Meta   bool    `json:"meta"`
 }
 
 var browserKeyMap = map[string]struct {
@@ -546,7 +647,13 @@ func (h *BrowserHost) do(action func(ctx context.Context) error) error {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, browserTimeout)
 	defer cancel()
-	return chromedp.Run(runCtx, chromedp.ActionFunc(action))
+	err := chromedp.Run(runCtx, chromedp.ActionFunc(action))
+	if err != nil && h.dead() {
+		// 操作中途实例死了（用户关掉窗口/进程退出）：报「已被关闭」而不是
+		// 裸的 context canceled——模型看得懂，也知道下一步该重新 browser_open。
+		return errBrowserClosed
+	}
+	return err
 }
 
 // BroadcastPointer 对 chromedp 宿主是空操作：AI 位置标记只对原生面板有意义
@@ -646,7 +753,7 @@ func (a *App) handleBrowserNavigate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
 		return
 	}
-	h := a.browserFor("") // 面板地址栏也是用户发起：内嵌形态随之成为工具作用目标
+	h := a.browserFor("", "") // 面板地址栏也是用户发起：内嵌形态随之成为工具作用目标
 	if p.Action != "" {
 		if err := h.NavAction(p.Action); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -707,9 +814,9 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 		H       float64 `json:"h"`
 		Dpr     float64 `json:"dpr"`
 		Visible bool    `json:"visible"`
-		IW      float64 `json:"iw"` // 临时诊断字段（前端视口宽）
-		IH      float64 `json:"ih"` // 临时诊断字段（前端视口高）
-		OZ      float64 `json:"oz"` // 临时诊断字段（visualViewport.scale）
+		IW      float64 `json:"iw"`      // 临时诊断字段（前端视口宽）
+		IH      float64 `json:"ih"`      // 临时诊断字段（前端视口高）
+		OZ      float64 `json:"oz"`      // 临时诊断字段（visualViewport.scale）
 		Desktop bool    `json:"desktop"` // 上报者是否桌面壳（唯一合法写者）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
@@ -843,7 +950,7 @@ func insideWorkspace(tctx *toolContext, abs string) bool {
 //   * url：http/https 直接在内嵌实例打开；
 //   * path：会话工作区内已存在的文件——本地工作区转 file://（同目录相对
 //     资源可用），SSH 远程工作区转 /api/browser/view 流式地址。
-// 一律经 browserFor("") 打开：内嵌实例成为工具作用目标（active）。不注入
+// 一律经 browserFor(p.Session, "") 打开：内嵌实例成为该会话的工具作用目标。不注入
 // 任何对话回报（用户打开什么不经模型；需要看画面时用户会说，模型用
 // panel_screenshot 截右侧栏）。
 func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
@@ -890,7 +997,7 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "需要 url 或 path")
 		return
 	}
-	h := a.browserFor("") // 用户发起的打开：内嵌形态成为工具作用目标
+	h := a.browserFor(p.Session, "") // 用户发起的打开：内嵌形态成为该会话的工具作用目标
 	if _, _, err := h.NavigatePrivileged(target); err != nil {
 		writeErr(w, http.StatusBadGateway, "打开失败: "+err.Error())
 		return
