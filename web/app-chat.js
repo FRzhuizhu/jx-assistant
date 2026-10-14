@@ -5393,14 +5393,37 @@ const skillCreateModeUI = {
 };
 
 // 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
-// 扩展模式（设计人员等）＝在这里加一项 + 后端加对应提示词分支，
-// 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
-const CHAT_MODES = [
+// **清单的唯一数据源在后端**（chatmodes.go 的 chatModes → GET /api/modes）：
+// 值、中文名与一句话说明都由后端下发，启动时 loadChatModes() 重建本数组——
+// 与数字助理 dispatch_task 的 mode 参数是同一份清单，加模式只改后端一处，
+// 下拉与派发自然一致（与子对话专家清单同一取舍，见后端 experts.go 文件头）。
+// 下面这份内置兜底只为接口不可达时页面仍能渲染（取名与后端保持一致）。
+let CHAT_MODES = [
   { v: 'office', label: '标准办公', desc: '面向日常办公：文档、资料、表格、沟通文案，成果落文件' },
-  { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件', ui: codingModeUI },
-  { v: 'beginner-coding', label: '新手编程', desc: '面向不懂编程的你：先问清需求再动手，全程大白话讲解，成果落项目文件', ui: codingModeUI },
-  { v: 'skill-create', label: '创建技能', desc: '把「怎么做」沉淀成给 AI 的教程：点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；默认完全访问', ui: skillCreateModeUI },
+  { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件' },
+  { v: 'beginner-coding', label: '新手编程', desc: '面向不懂编程的你：先问清需求再动手，全程大白话讲解，成果落项目文件' },
+  { v: 'skill-create', label: '创建技能', desc: '把「怎么做」沉淀成给 AI 的教程：点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；默认完全访问' },
 ];
+// 模式前端定制点：工作模式要对界面做定向增补时，按**值**在这里挂 ui 对象
+// ——mount(view) 首挂控件并返回根元素、sync(view, s, el) 随 syncComposer 刷
+// 状态（应用点见 applyModeUI）。没挂 ui 的模式零影响：后端加一个模式，前端
+// 一字不改就会出现在下拉里，要定制再回这里按值补。
+const MODE_UI = {
+  coding: codingModeUI,
+  'beginner-coding': codingModeUI,
+  'skill-create': skillCreateModeUI,
+};
+// loadChatModes 用后端下发的清单重建 CHAT_MODES（值/中文名/说明）并把前端
+// 定制钩子按值挂回去；接口不可达时保留上面的内置兜底清单，页面照常可用。
+async function loadChatModes() {
+  try {
+    const d = await api('/api/modes');
+    const list = (d && d.modes) || [];
+    if (!list.length) return;
+    CHAT_MODES = list.map((m) => ({ v: m.value, label: m.label, desc: m.desc || '', ui: MODE_UI[m.value] }));
+    renderModePop();
+  } catch (e) { /* 接口不可达：留在内置兜底清单上 */ }
+}
 const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', label: '标准办公', desc: '' };
 
 // applyDraftMode：切换首页工作模式，带「创建技能」的权限联动——该模式要

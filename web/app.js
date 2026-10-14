@@ -17,6 +17,7 @@ applySidebarState();
 resetEmpty();
 loadStatus().then(loadSessions);
 loadModels();
+loadChatModes(); // 工作模式清单：唯一数据源在后端（GET /api/modes），拉回来重建模式下拉
 connectEvents();
 loadApprovals();
 loadQuestions();

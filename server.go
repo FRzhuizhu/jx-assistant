@@ -156,6 +156,10 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	// 技能可见性全模式契约自检：任何模式丢了技能清单注入或 read_skill，
 	// 直接拒绝启动（见 skill_manager.go 的 assertSkillVisibility）
 	a.assertSkillVisibility()
+	// 工作模式清单自检：chatModes（人工新建会话的可选模式）里每个值都必须
+	// 是已知会话模式——前端下拉与 dispatch_task 的 mode 取值都照这份清单，
+	// 出现建不出来的模式即拒绝启动（见 chatmodes.go 的 assertChatModes）
+	assertChatModes()
 	a.recoverInterrupted()
 	// 交付队列崩溃残留兜底：上一进程若死在执行中（running），复位回 pending
 	// 并统一重放——登记过的交付不能因为重启就丢
@@ -217,6 +221,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
 	mux.HandleFunc("POST /api/config", a.handleSetConfig)
 	mux.HandleFunc("GET /api/models", a.handleModels)
+	mux.HandleFunc("GET /api/modes", a.handleChatModes) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
 	mux.HandleFunc("POST /api/providers", a.handleUpsertProvider)
 	mux.HandleFunc("POST /api/providers/delete", a.handleDeleteProvider)
 	mux.HandleFunc("POST /api/providers/test", a.handleTestProvider)
@@ -813,6 +818,13 @@ func (a *App) DefaultProviderID() string {
 		return a.Cfg.Providers[0].ID
 	}
 	return ""
+}
+
+// handleChatModes 返回「人工新建会话」可选的工作模式清单（chatmodes.go 的
+// chatModes，单一事实源）：前端模式下拉启动时拉取它重建选项，值与
+// dispatch_task 的 mode 参数同源——加模式只改后端一处，下拉与派发自然一致。
+func (a *App) handleChatModes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"modes": chatModes})
 }
 
 // handleModels 返回模型选择器用的扁平清单。
@@ -2261,11 +2273,10 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 // 路径后送到这里。与 multipart 不同的是原件路径被登记进 uploads 表——
 // 它是 deliver_file 的交付目标来源，注记里会向模型说明这一点。
 // 原件就在工作区内时不做复制（避免自己覆盖自己），只登记。
+// 具体动作在 registerUploadPath（uploadpath.go）：数字助理派发的附件
+// （dispatch_task 的 attachments）复用同一份实现，人工上传与派发附件效果
+// 完全一致。
 func (a *App) handleUploadByPath(w http.ResponseWriter, r *http.Request, m *SessionMeta) {
-	if m.Remote != nil {
-		writeErr(w, 400, "远程会话不支持按本机路径上传，请用网页文件上传")
-		return
-	}
 	var p struct {
 		Path string `json:"path"`
 	}
@@ -2273,64 +2284,13 @@ func (a *App) handleUploadByPath(w http.ResponseWriter, r *http.Request, m *Sess
 		writeErr(w, 400, "请求体解析失败: "+err.Error())
 		return
 	}
-	src := strings.TrimSpace(p.Path)
-	if src == "" {
-		writeErr(w, 400, "缺少 path 字段")
-		return
-	}
-	abs, err := filepath.Abs(src)
+	u, note, err := a.registerUploadPath(m, p.Path)
 	if err != nil {
-		writeErr(w, 400, "路径解析失败: "+err.Error())
+		writeErr(w, uploadErrCode(err), err.Error())
 		return
 	}
-	fi, err := os.Stat(abs)
-	if err != nil {
-		writeErr(w, 400, "文件不存在或不可访问: "+abs)
-		return
-	}
-	if fi.IsDir() {
-		writeErr(w, 400, "路径是目录不是文件: "+abs)
-		return
-	}
-	name := filepath.Base(abs)
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/`) {
-		writeErr(w, 400, "非法文件名")
-		return
-	}
-	tctx := &toolContext{app: a, sess: m}
-	ws, err := tctx.resolve("")
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	dst := filepath.Join(ws, name)
-	inWorkspace := strings.EqualFold(canonicalFor(abs), canonicalFor(dst))
-	if !inWorkspace {
-		// 用户主动上传不走模型权限审批，直接复制进工作区（流式，不受
-		// multipart 的 32MB 上限约束）
-		if err := copyFileAtomic(dst, abs); err != nil {
-			writeErr(w, 500, "复制进工作区失败: "+err.Error())
-			return
-		}
-	}
-	u := &Upload{SessionID: m.ID, OrigPath: abs, CopyPath: dst, Name: name, Size: fi.Size(), CreatedAt: now()}
-	if err := a.Store.AddUpload(u); err != nil {
-		writeErr(w, 500, "上传登记落库失败: "+err.Error())
-		return
-	}
-	var note string
-	if inWorkspace {
-		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：文件位于工作区内 %s，该路径现在可用作交付工具（deliver_file）的交付目标。",
-			u.UID, name, fi.Size(), filepath.ToSlash(dst))
-	} else {
-		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：原件位于 %s，该路径现在可用作交付工具（deliver_file）的交付目标；已复制一份到工作区 %s。",
-			u.UID, name, fi.Size(), filepath.ToSlash(abs), filepath.ToSlash(dst))
-	}
-	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
-	m.UpdatedAt = now()
-	_ = a.Store.SaveMeta(m)
-	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
-	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(dst), "orig": filepath.ToSlash(abs), "uid": u.UID, "size": fi.Size()})
+	a.landUploadNote(m, note)
+	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(u.CopyPath), "orig": filepath.ToSlash(u.OrigPath), "uid": u.UID, "size": u.Size})
 }
 
 // handleOpenFolder 在系统资源管理器中打开一个目录（工作区行的快捷入口）。
