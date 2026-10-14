@@ -544,10 +544,16 @@ function isMatItem(it) {
 // 注意：fold（已折叠标注行）刻意不归入材料折叠——它是用户要看的状态标注，
 // 与压缩摘要行同样常显，藏进材料分组就失去「这里压缩过」的提示意义
 
+// 折叠条只报一个数：模型调用次数（步数）。口径 = 向模型发送请求的次数——
+// 一步 = 主循环一次迭代（一次模型调用，该步触发的全部工具调用——含并行——都算同一步），
+// 与后端 agent.go 的 step 计步一致（见《最大步数计步口径排查报告.md》）。
+// 消息数据里没有现成的步数字段，用「本段出现过的 assistant 行数」精确还原：
+// think/text/tool/subtask/plancard 条目都由 assistant 行拆出、同一行拆出的条目
+// seq 相同，按 seq 去重即行数（一次返回多个并行工具调用只产一条 assistant 行）；
+// 该口径含无工具调用的最终答复轮，比 assistant.go 摘要只数带 tool_calls 的行更准。
 function foldLabel(cnt) {
   const parts = [];
-  if (cnt.think) parts.push(cnt.think + ' 次思考');
-  if (cnt.tool) parts.push(cnt.tool + ' 次工具调用');
+  if (cnt.steps) parts.push('调用 AI ' + cnt.steps + ' 次');
   if (cnt.mat) parts.push(cnt.mat + ' 条上下文材料');
   if (cnt.note) parts.push(cnt.note + ' 条系统通知');
   if (!parts.length) parts.push('已折叠 ' + cnt.rows + ' 行');
@@ -555,13 +561,15 @@ function foldLabel(cnt) {
 }
 
 function secCount(items) {
-  const cnt = { think: 0, tool: 0, mat: 0, note: 0, rows: items.length };
-  for (const it of items) {
-    if (it.k === 'think') cnt.think++;
-    else if (it.k === 'tool' || it.k === 'subtask') cnt.tool++;
-    else if (it.k === 'note') cnt.note++;
+  const cnt = { steps: 0, mat: 0, note: 0, rows: items.length };
+  const steps = new Set();
+  items.forEach((it, i) => {
+    if (it.k === 'think' || it.k === 'text' || it.k === 'tool' || it.k === 'subtask' || it.k === 'plancard') {
+      steps.add(it.seq != null ? it.seq : 'i' + i); // 旧数据缺 seq 时按条目位置退化计数
+    } else if (it.k === 'note') cnt.note++;
     else if (isMatItem(it)) cnt.mat++;
-  }
+  });
+  cnt.steps = steps.size;
   return cnt;
 }
 
@@ -1960,7 +1968,7 @@ function renderStreamingTurn(box, turn, key) {
     if (!seg.length) return;
     box.appendChild(foldSection(seg, key, {
       open: open,
-      prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.think || c.tool || c.mat) ? ' · ' + foldLabel(c) : ''),
+      prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.steps || c.mat || c.note) ? ' · ' + foldLabel(c) : ''),
     }));
     seg = [];
   };
