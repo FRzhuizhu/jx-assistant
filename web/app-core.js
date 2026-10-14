@@ -552,16 +552,86 @@ function slidePane(el, from, to, onEnd) {
   setTimeout(fin, 460); // 兜底：transitionend 不来（嵌入浏览器节流）也定版
 }
 
-/* ---------- 数字助理按钮的脸部动画 ---------- */
+/* ---------- 数字助理按钮的小人动画（方案三：双循环随机轮播） ----------
+   data-state 仍由 setFace 驱动（idle/thinking/done），触发点与旧版完全一致；
+   这里在状态切换上挂一套动作调度（节奏照搬《干活小人方案三预览.html》）：
+   - thinking（干活中）：循环一「低头读纸」/ 循环二「拿纸核对」随机轮播，
+     循环间随机歇 1.2–2.8 秒；眨眼独立随机 2.6–6.8 秒；
+   - idle（待机）：只眨眼；
+   - done（完成微笑，约 4 秒后回 idle）：不跑循环，微笑交给 CSS（da-squish/da-pop）。
+   动作通过给 #da-face 挂 is-* class 驱动（样式见 style.css 同名注释块）。 */
 
 let faceTimer = null;
+let dollGen = 0;      // 动画代际：setFace 换状态时自增，旧异步循环发现代际不符即退场
+let dollState = null; // 已启动的状态。幂等：delta/reasoning 事件会高频调
+                      // setFace('thinking')，状态没变就不重启循环——否则第一循环
+                      // 永远被顶掉，动画僵在开头
+
+const daRand = (a, b) => a + Math.random() * (b - a);
+const daWait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 循环一：低头读纸——纸在正中出现，眼睛慢慢转下去盯着它（盯久一点），再慢慢抬回，纸收起
+async function daLoopStare(face, gen) {
+  face.classList.add('is-read', 'is-stare');
+  await daWait(900); if (gen !== dollGen) return;   // 慢慢转下去
+  await daWait(2600); if (gen !== dollGen) return;  // 低头盯着中间那张纸，盯久一点
+  face.classList.remove('is-stare');
+  await daWait(900); if (gen !== dollGen) return;   // 慢慢抬回来
+  face.classList.remove('is-read');
+}
+// 循环二：拿纸核对——纸出现随 1.1s 赶工起伏，中途飘起对一对，再落回收个尾
+async function daLoopWork(face, gen) {
+  face.classList.add('is-work');
+  await daWait(800); if (gen !== dollGen) return;
+  face.classList.add('is-float');
+  await daWait(1400); if (gen !== dollGen) return;
+  face.classList.remove('is-float');
+  await daWait(700); if (gen !== dollGen) return;
+  face.classList.remove('is-work');
+  await daWait(1000);
+}
+// 干活主循环：每回掷硬币选循环一/二，循环间随机歇一口气
+async function daWorkLoop(face, gen) {
+  while (gen === dollGen) {
+    if (Math.random() < 0.5) await daLoopStare(face, gen);
+    else await daLoopWork(face, gen);
+    await daWait(daRand(1200, 2800));
+  }
+}
+// 眨眼独立随机：待机/干活都眨（随机 2.6–6.8 秒一次，一次 130ms）
+async function daBlinkLoop(face, gen) {
+  while (gen === dollGen) {
+    await daWait(daRand(2600, 6800)); if (gen !== dollGen) return;
+    face.classList.add('is-blink');
+    setTimeout(() => { if (gen === dollGen) face.classList.remove('is-blink'); }, 130);
+  }
+}
+
+// 状态切换：清场（代际自增让旧循环退场）后按新状态起新循环
+function dollStart(st) {
+  if (dollState === st) return;
+  dollState = st;
+  dollGen++;
+  const face = document.getElementById('da-face');
+  if (!face) return;
+  ['is-read', 'is-stare', 'is-work', 'is-float', 'is-blink'].forEach((c) => face.classList.remove(c));
+  if (st === 'thinking') { daWorkLoop(face, dollGen); daBlinkLoop(face, dollGen); }
+  else if (st === 'idle') daBlinkLoop(face, dollGen);
+  // 'done'：微笑交给 CSS，不跑循环（眨眼也停——挤眼动画期间别再插一眨）
+}
+
 function setFace(st, revertMs) {
   const f = document.getElementById('da-face');
   if (!f) return;
   f.setAttribute('data-state', st);
+  dollStart(st);
   if (faceTimer) { clearTimeout(faceTimer); faceTimer = null; }
-  if (revertMs) faceTimer = setTimeout(() => f.setAttribute('data-state', 'idle'), revertMs);
+  if (revertMs) faceTimer = setTimeout(() => {
+    f.setAttribute('data-state', 'idle');
+    dollStart('idle');
+  }, revertMs);
 }
+dollStart('idle'); // 脚本在 body 末尾加载、da-face 已就绪：直接进待机眨眼
 
 /* ---------- 子对话视图（右侧边栏首个视图：顶上下拉选/新建，下方内嵌完整对话） ---------- */
 

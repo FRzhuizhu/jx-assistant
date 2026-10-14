@@ -30,6 +30,9 @@
   --chat-fs: 14px;
   /* 顶栏高度：进度面板浮层贴在它下面；窄屏左右栏浮层也用它（窄屏另覆盖为 66px） */
   --tb-h: 48px;
+  /* 小人手里的纸（#da-face 方案三动画）：底色随主题、描边走 currentColor、字线中性灰 */
+  --da-paper: #ffffff;
+  --da-paper-line: #9aa0a8;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -121,6 +124,70 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 @media (prefers-reduced-motion: reduce) {
   #sidebar .actions .side-btn.wig > svg { animation: none; }
 }
+
+/* ---------- 数字助理按钮的小人动画（方案三：双循环随机轮播） ----------
+   左上角「数字助理主对话」按钮里的圆脸小人（#da-face），视觉规则照搬
+   《工作目录/干活小人方案三预览.html》：圆头 + 圆眼 + 一张纸，全部 currentColor
+   （纸的底色/字线用 --da-paper / --da-paper-line 随主题）。
+   动作 class（is-*）由 app-core.js 的 dollStart 按方案三节奏施加：
+   - is-work：1.1s 赶工起伏（头身上下浮动），纸在侧前方出现；
+   - is-float：纸飘起、头微抬——「对一对」动作的顶点；
+   - is-read + is-stare：循环一「低头读纸」——纸摆正中、眼睛慢慢转下去盯住再抬回；
+   - is-blink：眨眼（独立随机，与动作循环错开）。
+   data-state 仍由 setFace 驱动（idle/thinking/done），触发时机与旧版一致：
+   thinking = 双循环随机轮播 + 眨眼；idle = 只眨眼；done = 微笑（沿用旧动画）。 */
+#da-face .bob { transform-box: fill-box; transform-origin: center; }
+#da-face.is-work .bob { animation: da-write-bob 1.1s ease-in-out infinite; }
+@keyframes da-write-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-0.9px); } }
+#da-face .head {
+  transform-box: fill-box; transform-origin: center;
+  transition: transform .5s cubic-bezier(.34, 1.25, .5, 1);
+}
+#da-face .da-eye { transform-box: fill-box; transform-origin: center; transition: transform .09s ease-out; }
+#da-face .da-eyes {
+  transform-box: fill-box; transform-origin: center;
+  transform: translateY(0);
+  transition: transform .85s ease-in-out;
+}
+/* 循环一：低头盯看——眼睛像球一样慢慢转下去（0.9s）盯住正中的纸，再慢慢抬回 */
+#da-face.is-stare .da-eyes { transform: translateY(2.1px) scaleY(.82); transition-duration: .9s; }
+/* 纸：默认收起；出现/飘起由 transition 演出（底色随主题、currentColor 描边、灰字线） */
+#da-face .da-paper {
+  transform-box: fill-box; transform-origin: 50% 100%;
+  transform: translate(0, 0) rotate(0deg); opacity: 0;
+  transition: transform .5s cubic-bezier(.3, 1.25, .45, 1), opacity .4s ease;
+}
+#da-face .da-paper rect { fill: var(--da-paper); stroke: currentColor; stroke-width: 1.5; }
+#da-face .da-paper line { stroke: var(--da-paper-line); stroke-width: 1.15; stroke-linecap: round; }
+/* 循环一：低头读纸——纸摆在正中间，静静被读 */
+#da-face.is-read .da-paper { opacity: 1; transform: translate(-8.5px, 0.4px); }
+/* 循环二：拿纸核对——纸在侧前方随赶工起伏，中途飘起对一对再落回 */
+#da-face.is-work .da-paper { opacity: 1; }
+#da-face.is-float .da-paper { transform: translate(-0.6px, -4.2px) rotate(-8deg); }
+#da-face.is-float .head { transform: translateY(-0.4px); }
+#da-face.is-float .da-eyes { transform: translateY(-0.7px); transition-duration: .4s; }
+/* 眨眼：眼睛压成一条线（JS 独立随机节奏驱动） */
+#da-face.is-blink .da-eye { transform: scaleY(.06); }
+/* 完成态（done，约 4 秒后回 idle）：挤眼 + 微笑（沿用旧版动画） */
+#da-face .da-smile { opacity: 0; }
+#da-face[data-state="done"] .da-eye { animation: da-squish 6s cubic-bezier(.5, 0, .5, 1) infinite; }
+#da-face[data-state="done"] .da-smile { animation: da-pop 6s cubic-bezier(.5, 0, .5, 1) infinite; }
+@keyframes da-squish { 0%, 7% { transform: scaleY(1); } 12% { transform: scaleY(.06); } 86% { transform: scaleY(.06); } 91%, 100% { transform: scaleY(1); } }
+@keyframes da-pop { 0%, 11.5% { opacity: 0; } 15%, 85% { opacity: 1; } 88.5%, 100% { opacity: 0; } }
+/* 悬停眼晃（原版交互保留）：只在待机时生效——干活（is-stare/is-float 借 transform
+   过渡做低头/抬头）与微笑期间若叠加 animation 会盖掉 transform、让眼睛跳回中线 */
+[data-da-face][data-state="idle"]:hover .da-eyes,
+button:hover [data-da-face][data-state="idle"] .da-eyes { animation: da-hover 1s ease-in-out infinite; }
+[data-da-face][data-state="done"]:hover .da-eyes,
+button:hover [data-da-face][data-state="done"] .da-eyes { animation: none; }
+@keyframes da-hover { 0%, 100% { transform: translateX(0); } 22% { transform: translateX(3.2px); } 45% { transform: translateX(-0.6px); } 70% { transform: translateX(-3.2px); } 90% { transform: translateX(0.6px); } }
+@media (prefers-reduced-motion: reduce) {
+  #da-face .bob { animation: none; }
+  #da-face .head, #da-face .da-eyes, #da-face .da-paper, #da-face .da-eye { transition: none; }
+  #da-face .da-eye, #da-face .da-eyes, #da-face .da-smile { animation: none !important; }
+  #da-face[data-state="done"] .da-smile { opacity: 1; }
+}
+
 
 .side-section {
   padding: 12px 18px 6px; font-size: 11.5px; color: var(--text-3);
@@ -2302,6 +2369,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   --danger: #ff9d8f;
   /* 暗色主题：用户气泡不能加白（否则亮底配亮字），改成「主题色调暗」的同色系深色 */
   --bubble-mine: color-mix(in srgb, var(--accent) 34%, var(--bg));
+  --da-paper: #22262c;
+  --da-paper-line: #8a9099;
 }
 :root[data-theme='dark'] .popover { background: #1d2026; box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .modal-card { background: #1d2026; }
