@@ -188,7 +188,7 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
 | 命令沙箱 | `sandbox_windows.go`(+`_stub`) / `sandbox_linux.go`(+`_stub`) + `sandbox.go` 分派 | android 分支：无 OS 沙箱、直接执行，隔离由应用沙箱承担 |
 | 沙箱审计 | `sandbox_audit_windows.go` / `_other.go` | 常驻 ACE/密级标签仅 Windows，其余恒空 |
 | 电脑操控 | `tool_computer_windows.go` / `_other.go` | 仅 Windows，其余注册时报错 |
-| 演示记录器 | `recorder_windows.go` / `_other.go`（定义在 `recorder.go`，跨平台） | 创建技能模式专用；仅 Windows 有真实现（全局钩子+截屏+MCI 录音），其余报「不支持」 |
+| 演示记录器 | `recorder_windows.go` / `_other.go`（定义在 `recorder.go`，跨平台） | 创建技能模式专用、归用户直控（界面录制按钮 → `/api/demo-record/*` 端点，模型无录制工具）；仅 Windows 有真实现（全局钩子+截屏+waveIn 录音+VAD 分段随录随转），其余报「不支持」 |
 | 进程退出信号 | `pdeathsig_android.go` / `_other.go` | android 用 PR_SET_PDEATHSIG |
 | sqlite 兼容 | `sqlite_android_amd64.go` / `sqlite_android_stub.go` | 仅 android/amd64 打 seccomp 补丁 |
 | 手机操控工具 | `tool_device_android.go` / `_other.go` | 仅安卓注册 device_*/adb_*（三件套，见 android/README.md）；桥端点 device_bridge.go 全平台编译（无壳轮询自然空闲） |
@@ -277,6 +277,18 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   `releases/latest` 是程序内更新检查的源，发布后线上客户端自动收到横幅。
   注意 git 推送凭据（凭据管理器的 OAuth）**不能**调 API——两套体系，别再
   临时登服务器开令牌。
+
+  **安装期清理（防旧文件残留出错）**：升级安装对「随包分发」的目录**整目录
+  先删后装**（`[InstallDelete]`）：`技能\_runtime`、内置技能、内置组件、
+  `md-viewer`——清理清单由 `打包安装包.ps1` 按 stage 现货自动生成
+  （`打包\清理清单.iss`，构建产物已 gitignore），新增内置组件自动跟进。
+  **用户的东西严格不碰**：`data\`（会话库/组件开关/市场记账/MCP/CC 插件）、
+  `config.json`、`默认工作区\`（含旧名「工作区」）、`技能\user\`（用户技能）、
+  `插件\`（用户装的 DSH 插件原件）、`组件\<非随包 id>`（市场装的组件）。
+  历史遗留布局钉死在 iss 的静态清理段（如 v1.0.2 的 `asr\`）；**下架内置组件
+  或改目录结构时，必须同步往静态段补一条**。热更路（组件块）天然合规：只
+  `RemoveAll` 自己那个组件目录再整建，其余一概不碰；技能与 `_runtime` 不在
+  分块体系内，只随安装包变更。
 
 ## Electron 壳（jx-desktop，迁移期新形态）
 
@@ -602,6 +614,10 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   （展开折叠后与发给模型的逐字一致，只允许折叠行数/按钮/排版差异），顺序也与
   模型收到的一致；绝不出现「模型收到了、用户看不到」。审计工件
   （request/audit）不发模型，不在对话区展示（有导出出口）。
+  压缩不破例：折叠行原文在前端照常完整展示（前端 ≥ 模型所见），并在连续折叠
+  段末尾的**真实压缩位置**常显「已折叠 · 此前 N 个回合…」标注行（groupTurns
+  按 compact 标记算边界）；运行中改权限等 PATCH 落的环境快照行要同时进全局
+  广播**和本会话执行流**，流式视图实时翻新，不能等下一轮才可见。
 - **对话区的提示词材料按「变化」展示**：首轮在真实拼装顺序上完整交代——
   「工具定义」（请求体**顶层字段**，与 `messages` 平级、不属于消息序列；模型侧
   KV 前缀以它打头，所以排在最上）与「系统提示词已拼装」（`messages[0]`）在用户
@@ -778,9 +794,9 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 | 模式 | 说明 | 工具 |
 |---|---|---|
 | `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + 历史查询 |
-| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + 历史查询 |
+| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
-| `skill-create` | 创建技能：用户演示操作 → 沉淀成给后续 AI 照做的 SKILL.md 教程；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **demo_record_start/stop/status/transcribe（演示记录器，仅 Windows 真实现）+ register_skill（注册/覆盖技能）** |
+| `skill-create` | 创建技能：把「怎么做」沉淀成给后续 AI 照做的 SKILL.md 教程——用户点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **register_skill（注册/覆盖技能）**；演示录制归用户直控（界面按钮经 `/api/demo-record/*`，材料以【演示记录】通知进对话） |
 
 （各模式共有的常驻工具不再逐行列出：`read_skill` 对**所有模式**注册，
 技能清单经环境快照对**所有模式**注入——见下文「技能」节与启动自检
@@ -791,10 +807,13 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 像用户发消息一样只给一段自足描述；`dispatch_sub` 派出**子对话**（挂在当前会话
 下、右栏抽屉可见，完成后回报并触发父会话继续），按专家预设选择是否继承上下文
 （`expert=名称`，默认标准子对话不带）。工作任务同样只有 `dispatch_sub`。右栏
-子对话因此可能来自 AI 派发或人工新建（人工的挂 `parent_id`、`origin=human`，
-统一带完整上下文；一级限制对所有子对话生效）。此外总控还有 `list_sessions`
+子对话因此可能来自 AI 派发或人工新建（专家的挂 `parent_id`、`origin=human`，统一带完整上下文；一级限制对所有子对话生效）。此外总控还有 `list_sessions`
 （找任务）、`read_session_summary`（看最终答复等摘要）、`read_session_messages` /
-`search_sessions`（翻查内容）与 `send_to_session`（给已有任务发消息）。
+`search_sessions`（翻查内容）、`send_to_session`（给已有任务发消息）与
+`deliver_result`（汇报派发成果时把文件登记成交付卡片展示在本对话——文件本身
+可能已被任务会话交付到位，总控只负责让用户在总控对话里看得见、拿得到，
+不重复搬运；路径填绝对值，登记失败多半是文件已被搬走，翻该会话的
+【交付完成】注记找新位置）。
 
 ## 执行的生死与对话中途发消息
 
@@ -904,8 +923,10 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 下载落盘，缺 curl/wget 环境的兜底）、`apkinfo`（引擎子命令 `apkinfo`
 读取 APK 包名/版本/签名指纹，安装前验包，纯 Go 实现）。自带技能常开、不可
 删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（按钮选本机含
-SKILL.md 的文件夹/zip；**整个文件夹或 .zip 拖进技能页即装**——文件夹经
-webkitGetAsEntry 递归遍历走 `POST /api/skills/install-files`，路径穿越拒收）、
+SKILL.md 的文件夹，或 .zip 压缩包/单个 .md 说明文件——.md 自动包装成
+`<文件名>/SKILL.md` 再装，id 取文件名；**文件夹、.zip、.md 拖进技能页即装**
+——文件夹经 webkitGetAsEntry 递归遍历走 `POST /api/skills/install-files`，路
+径穿越拒收；单文件走 `POST /api/skills/upload`）、
 开关、删除。SKILL.md frontmatter 认 name/displayName/description/version/tags：
 **name 保持行业规范**（Agent Skills：小写字母/数字/中划线），**displayName 是
 给人看的显示名（中文为主）**——技能清单、环境快照、设置页与市场卡片都按
@@ -924,29 +945,38 @@ webkitGetAsEntry 递归遍历走 `POST /api/skills/install-files`，路径穿越
 这两个模式；现由启动自检 `assertSkillVisibility` 逐模式看护，任何模式丢了
 清单注入或 read_skill 都拒绝启动，模式全集以 `sessionModes` 为单一事实源）。
 
-**创建技能模式（`skill-create`）**——技能的生产端：用户演示操作（或口述），
-AI 观察学习后写成 SKILL.md 并注册进 `技能/user/`。闭环三件套：
+**创建技能模式（`skill-create`）**——技能的生产端：用户演示操作（或直接派活
+让 AI 探路），AI 观察学习后写成 SKILL.md 并注册进 `技能/user/`。闭环三件套：
 ①**演示记录器**（`recorder.go` 定义 + `recorder_windows.go` 实现，纯 syscall
-无 cgo）：`demo_record_start` 起录——WH_MOUSE_LL/WH_KEYBOARD_LL 全局钩子
+无 cgo）：用户点输入框旁的录制按钮起录（`POST /api/demo-record/start`，模型
+不持有录制工具）——WH_MOUSE_LL/WH_KEYBOARD_LL 全局钩子
 （回调只投递 channel，慢活全在 worker；带 LLMHF_INJECTED 标记的自家
 computer_* 注入事件被过滤）在每次点击、回车/Tab、窗口切换时截屏（复用
-BitBlt 截屏、逐字节去重、上限 400 张），连续打字聚合成 text 事件（Shift
-上档与 Ctrl/Alt 组合键还原；中文输入法只记原始按键，上屏结果以截图为准），
-MCI waveaudio 全程录 16kHz 单声道 audio.wav（无麦克风自动降级）；
-`demo_record_stop` 收录成 `工作区/演示记录/record-<时间戳>/{NNN.png,
-events.jsonl, audio.wav, INDEX.md}`——INDEX.md 是时间线对照表（事件↔截图↔
-字幕段），模型 read INDEX.md 定位、read_image 看图。事件毫秒时间轴与录音
-同源，SRT 字幕接上后天然对齐。仅 Windows 真实现，其他平台空桩报「不支持」
-（环境快照提前公告，模型引导用户口述替代）。②**语音转写接口位预留**：
-`recorder.go` 的 `activeSpeechTranscriber` 当前恒 nil（不引 whisper、不下载
-模型），配置结构 `Config.SpeechAPI`（provider/endpoint/apiKey/language）已
-留好——微软语音 API 调稳后实现一个注册进来，stop/`demo_record_transcribe`
-即自动产出 讲解.srt，历史录音可随时补转（语音组件的朗读走 Edge 免密钥通道、
-听写走浏览器 SpeechRecognition，都不读这份配置）；未接入时理解演示以截图+
-事件+用户对话讲解为准。③**注册闭环**：`register_skill(path[, update])` 走
+BitBlt 截屏、逐字节去重、上限 400 张），连续打字聚合成 text 事件（组合键
+还原成 Ctrl+S / Alt+F4 / Win+E / Shift+Tab 整键记录，修饰键认主码+左右码、
+同名 400ms 去重；中文输入法只记原始按键，上屏结果以截图为准），
+waveIn 缓冲采集全程录 16kHz 单声道 16bit PCM（无麦克风自动降级）；
+停录（按钮 / `POST /api/demo-record/stop`；桌面退出有 `recorderShutdown`
+兜底：保音频、生成 INDEX）收录成 `工作区/演示记录/record-<时间戳>/{NNN.png,
+events.jsonl, audio.wav, 讲解.srt, INDEX.md}`——INDEX.md 是时间线对照表（事件↔截图↔
+字幕段），模型 read INDEX.md 定位、read_image 看图。停录即向所在会话追加
+【演示记录】系统通知（同文件上传机制，origin=demo）；建技能会话时若工作区
+已有材料则注入清单通知（`recorderRecentDirs`，首页「先录后聊」的入口）。
+事件毫秒时间轴与录音/字幕同源（都取 time.Since(start)），天然对齐。仅
+Windows 真实现，其他平台空桩报「不支持」（status 端点与环境快照提前公告，
+模型引导用户口述替代）。②**随录随转（本地语音转写）**：录制期间同一路
+PCM 喂 VAD 停顿分段——分段语义与语音组件听写线（组件/voice/client.js
+makeLocalRec）逐常量对齐：350ms 起效 / 3 秒尾静音定稿 / 18 秒强制切段 /
+静音垫 1.5 秒上限，能量判据 rms > max(0.008, 底噪×3.5)、底噪自适应。定稿段
+经 `recorderASR` 钩子（`voiceasr.go`，NewApp 注册）直调语音组件的常驻
+X-ASR worker（组件桥 callRaw，与前端听写同一通道），文本逐段落
+`讲解.srt`（整文件重写，崩溃不丢已落盘段）；停录尾部不足 3 秒静音的余段
+照转，等在途识别上限 8 秒。语音组件停用时优雅降级为纯录音（该段字幕丢弃），
+停录通知与环境公告如实说明。③**注册闭环**：`register_skill(path[, update])` 走
 `addUserSkill` 装进 `技能/user/`（update=true 先删旧再装，支持迭代改进），
 `read_skill` 读回自查。权限默认完全访问（`handleCreateSession` 分支 +
-前端 `applyDraftMode` 联动），演示记录器工具门控 `capComputer`（fail closed）。
+前端 `applyDraftMode` 联动），用户主动点按钮起录与文件上传同哲学，不走模型
+权限审批。
 
 **运行环境自包含**：技能一律使用随软件分发的便携运行时
 `技能/_runtime/python`，**不探测、不依赖用户机器上的系统 Python**——
@@ -1309,8 +1339,8 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装——发给模型的内容一律来自引擎 Assembly）；`envPrompt` 生成运行环境快照（不含时间——时间走 context.go 的 timeAfter 派生通道） |
 | `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截 |
 | `plans.go` | 计划读取端点：从会话日志里取回 exit_plan_mode 的正文（右栏「计划」视图的数据源） |
-| `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/驳回/忽略 |
-| `interact_plan_test.go` | 计划审批的时限与持久化语义测试（跨重启挂待审批、批准/驳回/忽略三分支、plan 无 TTL） |
+| `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；ask 提问限时（timeout_sec 设秒数，默认 300、钳 30-600、显式 0=不限时；分档准则在系统提示词「提问的分寸」段，状态公告在环境快照「提问等待」行；界面倒计时、悬停/触碰/按钮停表转不限时，超时视为放行）；久等声光提醒（默认开、240 秒、设置·常规可调：MessageBeep 叮声 + ask_alert 全屏闪烁 + TTS 朗读，停表连提醒一并暂停）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/驳回/忽略 |
+| `interact_plan_test.go` | 计划审批的时限与持久化语义测试（跨重启挂待审批、批准/驳回/忽略三分支、plan 无 TTL、ask 的 timeout_sec 与停表） |
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
 | `browser_ops.go` | browserTarget 操作面：browser_* 工具与面板端点的形态无关接口 |
@@ -1390,6 +1420,12 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 `retry`（重试开始，半截流式作废）/ `auto_retry`（自动重试提示）/ `sub_start` / `sub_end` /
 `title` / `done` / `stopped` / `error`。全局事件流另含 `sub_tool`、
 `report_ready`、`session_updated`、`approval_required` / `approval_resolved`（审批卡）、
-`question_required` / `question_resolved`（助手提问 / 计划审批卡）、`todos`（会话待办刷新）、
+`question_required` / `question_resolved`（助手提问 / 计划审批卡；required 带
+deadlineMs 倒计时截止——ask_user_question 可用 timeout_sec 设秒数，默认 300、
+钳 30-600、显式 0=不限时；`question_deadline`（held）是停表广播：用户悬停/触碰
+卡片或点停止按钮即停表转不限时；`ask_alert` 是久等声光提醒——设置·常规的
+询问提醒（默认开、240 秒）到点未答且未停表时：后端 MessageBeep 叮一声 +
+广播此事件，前端全屏闪烁并按配置文案走语音组件 TTS 朗读，停表连提醒一并
+暂停）、`todos`（会话待办刷新）、
 `todo_tasks`（待办/定时任务清单变化，组件 `todo-scheduler`）
 （均带 sessionId，前端按会话过滤渲染）。

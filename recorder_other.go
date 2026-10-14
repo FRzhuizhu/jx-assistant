@@ -3,8 +3,8 @@
 package main
 
 // 演示记录器的非 Windows 空桩：全局键鼠钩子与麦克风录音目前只有 Windows
-// 实现（recorder_windows.go）。其他平台工具定义照常注册（请求形状跨平台
-// 稳定），调用时如实报「当前平台不支持」；环境快照会提前告知模型。
+// 实现（recorder_windows.go）。其他平台起录请求如实报「当前平台不支持」
+//（HTTP 端点经 recorderSupported 提前拦下，模型侧不再持有录制工具）。
 
 import "fmt"
 
@@ -21,3 +21,6 @@ func recorderStop() (*recorderStats, error) {
 func recorderStatusText() string {
 	return "当前平台不支持演示记录器（仅 Windows 桌面）。"
 }
+
+// recorderActiveInfo 非 Windows 恒为未在录（与真实现同签名，status 端点共用）。
+func recorderActiveInfo() (bool, string) { return false, "" }

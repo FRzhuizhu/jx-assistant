@@ -333,6 +333,7 @@ func runDesktop(app *App, url string) error {
 		}
 		w.Run()
 		voiceGlobalShutdown() // 桌面窗口关闭：卸全局钩子（浏览器/远程端不受影响）
+		recorderShutdown()    // 还在录演示就停录收尾（保 audio.wav、生成 INDEX.md）
 		// 收尾在 UI 线程（Run 返回处即主线程）：关面板与主控的 COM Close，
 		// 让两棵浏览器进程树真正退场（GPU/句柄全释放），再拆窗口句柄。
 		releaseFrontend(app, w)

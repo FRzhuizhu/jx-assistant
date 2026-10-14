@@ -1023,6 +1023,11 @@ body.rp-open .w-handle { display: none; }
 .cbtn svg { width: 15px; height: 15px; }
 .cbtn:hover { color: var(--accent); border-color: rgba(77, 107, 254, .4); background: var(--hover); }
 /* .cbtn.on（按钮激活态 + voice-pulse 动画）只有语音输入按钮用得到：随语音组件迁到 组件/voice/client.css */
+/* 演示录制按钮（创建技能模式，权限芯片右侧）：录制中红底白图标（同停止发送
+   按钮的红），图标在 ▶/■ 间切换（hidden 类控制）；不支持平台禁用灰显 */
+.rec-btn.on { background: #d93a3a; border-color: #d93a3a; color: #fff; }
+.rec-btn.on:hover { background: #c62f2f; border-color: #c62f2f; color: #fff; }
+.rec-btn:disabled { opacity: .45; cursor: not-allowed; }
 .chip-btn {
   display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2);
   border: 1px solid var(--border); background: var(--bg); border-radius: 999px;
@@ -1714,6 +1719,48 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .ap-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .ap-head b { font-size: 13px; }
 .ap-head span { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 提问卡倒计时（ask_user_question 的 timeout_sec）：mm:ss 胶囊推到标题行右侧，
+   ≤10 秒变红；停表后显示「∞ 不限时」；旁边的停止按钮一键停表（悬停/触碰卡片同效） */
+.q-count {
+  margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+  font-variant-numeric: tabular-nums; color: var(--text-3); background: var(--hover);
+  white-space: nowrap; flex: none;
+}
+.q-count.urgent { color: #fff; background: #d93a3a; }
+.q-stop {
+  width: 20px; height: 20px; margin-left: 2px; padding: 0; flex: none;
+  border: 1px solid var(--border); border-radius: 50%; background: var(--bg);
+  color: var(--text-3); cursor: pointer; display: inline-flex;
+  align-items: center; justify-content: center; align-self: center;
+}
+.q-stop svg { width: 9px; height: 9px; }
+.q-stop:hover { color: #d93a3a; border-color: #d93a3a; }
+/* 询问声光提醒层（#ask-alert）：淡压暗整屏 + 蓝色光晕温和呼吸，点击跳去作答。
+   护眼设计：光晕在 ::before 上动（中央卡片不闪）；2 秒一个呼吸周期、明暗差
+   收窄（.45–1，不整屏大开大合）；6 秒后 JS 加 .settle 停成静态淡光，
+   15 秒无操作或问题解决即整层收起。叮声走系统音效、朗读走语音组件。 */
+#ask-alert {
+  position: fixed; inset: 0; z-index: 70; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(31, 35, 40, .12); /* 很淡的整屏压暗：一眼有提醒感，不遮内容 */
+}
+#ask-alert.hidden { display: none; }
+#ask-alert::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(77, 107, 254, .28), rgba(77, 107, 254, .10) 60%, transparent);
+  animation: aa-breathe 2s ease-in-out infinite;
+}
+#ask-alert.settle::before { animation: none; opacity: .55; }
+@keyframes aa-breathe { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.aa-box {
+  position: relative; /* 压过 ::before 的光晕，卡片保持清晰不闪 */
+  background: var(--bg); border: 1px solid var(--accent); border-radius: 14px;
+  padding: 18px 24px; max-width: 440px; margin: 0 16px; text-align: center;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .28);
+}
+.aa-box b { font-size: 14px; }
+.aa-box p { margin: 8px 0; font-size: 13px; color: var(--text-2); word-break: break-all; }
+.aa-box span { font-size: 12px; color: var(--text-3); }
 .ap-body code {
   display: block; font-size: 12px; background: var(--hover); border-radius: 8px;
   padding: 8px 10px; white-space: pre-wrap; word-break: break-all; max-height: 130px; overflow: auto;
@@ -2261,7 +2308,13 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 .qd-act svg { width: 14px; height: 14px; }
 .qd-act:hover { background: var(--hover); color: var(--text); }
-.qd-act.qd-steer:hover { color: var(--accent); }
+/* 插话=排队项的首要动作：文字按钮直说语义（图标不直观）。中性灰配色——
+   与旁边铅笔/叉图标钮同一家族，不抢主题色；悬停同 qd-act 的常规反馈 */
+.qd-act.qd-steer {
+  width: auto; height: 20px; padding: 0 8px; border: 1px solid var(--border-2);
+  font-size: 12px; color: var(--text-2);
+}
+.qd-act.qd-steer:hover { background: var(--hover); color: var(--text); }
 .qd-pause:hover { color: var(--accent); }
 /* 拖拽排序：把手 + 落点指示（上下半行=插前/插后，锚线上送服务端定序） */
 .qd-grip {

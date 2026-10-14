@@ -2,7 +2,8 @@ package main
 
 // 用户技能管理单测（skill_manager.go）：displayName 中文名体系、环境快照的
 // 显示名优先与描述截断、安装口的内容体检（空 SKILL.md 拦截）、文件夹拖拽
-// 安装端点（/api/skills/install-files）。
+// 安装端点（/api/skills/install-files）、单个 .md 说明文件的包装安装
+//（addUserSkill 路径安装与 /api/skills/upload 拖拽上传两条通道）。
 
 import (
 	"encoding/json"
@@ -97,6 +98,87 @@ func TestAddUserSkillRejectsEmptyBody(t *testing.T) {
 	}
 	if _, err := a.addUserSkill(zipPath); err == nil || !strings.Contains(err.Error(), "空文件") {
 		t.Fatalf("空 SKILL.md 的 zip 应被拦: %v", err)
+	}
+}
+
+func TestAddUserSkillFromMDFile(t *testing.T) {
+	a := newSkillTestApp(t)
+	dir := t.TempDir()
+	// 单个 .md 说明文件：id 取文件名，frontmatter 提供名称与描述
+	md := filepath.Join(dir, "gitea-helper.md")
+	os.WriteFile(md, []byte("---\nname: gitea-helper\ndisplayName: Gitea 助手\ndescription: 调 Gitea API\n---\n\n使用说明正文"), 0644)
+	entry, err := a.addUserSkill(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "gitea-helper" || entry.DisplayName != "Gitea 助手" || entry.Description != "调 Gitea API" {
+		t.Fatalf("安装结果不对: %#v", entry)
+	}
+	// 内容应落为 技能/user/<文件名>/SKILL.md
+	installed := filepath.Join(mustUserDir(t, a), "gitea-helper", "SKILL.md")
+	data, err := os.ReadFile(installed)
+	if err != nil || !strings.Contains(string(data), "使用说明正文") {
+		t.Fatalf(".md 应包装成 SKILL.md 安装: %v", err)
+	}
+	// 清单扫描同样能发现
+	list, _ := a.listSkills()
+	if len(list.User) != 1 || list.User[0].ID != "gitea-helper" {
+		t.Fatalf("清单应含包装安装的技能: %#v", list.User)
+	}
+
+	// 空正文的 .md 走同一条内容体检被拦
+	emptyMD := filepath.Join(dir, "empty-skill.md")
+	os.WriteFile(emptyMD, []byte("---\nname: empty-skill\n---\n"), 0644)
+	if _, err := a.addUserSkill(emptyMD); err == nil || !strings.Contains(err.Error(), "正文") {
+		t.Fatalf("空正文的 .md 应被拦: %v", err)
+	}
+
+	// 不认识的扩展名明确报错
+	txt := filepath.Join(dir, "note.txt")
+	os.WriteFile(txt, []byte("x"), 0644)
+	if _, err := a.addUserSkill(txt); err == nil || !strings.Contains(err.Error(), ".md") {
+		t.Fatalf("非 zip/md 文件应报支持范围: %v", err)
+	}
+}
+
+func TestUploadSkillMDEndpoint(t *testing.T) {
+	a := newSkillTestApp(t)
+	// 拖拽安装通道（multipart 单文件）：.md 与 .zip 同走 /api/skills/upload
+	var body = &strings.Builder{}
+	mw := multipart.NewWriter(body)
+	fw, _ := mw.CreateFormFile("file", "日历操作.md")
+	fw.Write([]byte("---\nname: calendar\ndisplayName: 日历操作\ndescription: 读写日程\n---\n\n正文"))
+	mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/upload", strings.NewReader(body.String()))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	a.handleUploadSkill(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("期待 200，收到 %d：%s", rec.Code, rec.Body.String())
+	}
+	out := userSkillEntry{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != "日历操作" || out.DisplayName != "日历操作" {
+		t.Fatalf("上传安装结果不对: %#v", out)
+	}
+	if _, err := os.Stat(filepath.Join(mustUserDir(t, a), "日历操作", "SKILL.md")); err != nil {
+		t.Fatal(".md 上传应包装安装")
+	}
+
+	// 其他扩展名拒收并提示支持范围
+	var body2 = &strings.Builder{}
+	mw2 := multipart.NewWriter(body2)
+	fw2, _ := mw2.CreateFormFile("file", "run.py")
+	fw2.Write([]byte("print(1)"))
+	mw2.Close()
+	req2 := httptest.NewRequest(http.MethodPost, "/api/skills/upload", strings.NewReader(body2.String()))
+	req2.Header.Set("Content-Type", mw2.FormDataContentType())
+	rec2 := httptest.NewRecorder()
+	a.handleUploadSkill(rec2, req2)
+	if rec2.Code != 400 || !strings.Contains(rec2.Body.String(), ".md") {
+		t.Fatalf("非 zip/md 上传应 400，实得 %d：%s", rec2.Code, rec2.Body.String())
 	}
 }
 

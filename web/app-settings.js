@@ -152,13 +152,17 @@ async function openSettings(pane) {
   resetProvDraft(c);
   renderProvCards();
   selRefs.compactMode.set(c.compactMode || 'rule');
-  $('set-keeprounds').value = c.keepRounds || 5;
-  $('set-ruleinterval').value = c.ruleInterval || 5;
+  $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
   selRefs.compactThreshold.set(String(c.compactThreshold || 0.8));
   // 常规页：文件备份（服务端配置，改动即时保存）
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
   $('set-snapshot-days').value = c.snapshotDays != null ? c.snapshotDays : 7;
+  // 常规页：询问提醒（服务端配置，改动即时保存；三键嵌套部分提交）
+  const aa = c.askAlert || {};
+  $('set-askalert-on').checked = aa.enabled !== false;
+  $('set-askalert-sec').value = aa.afterSec || 240;
+  $('set-askalert-text').value = aa.text || '';
   // 常规页：任务最大步数（服务端配置，改动即时保存）
   $('set-maxsteps').value = c.maxSteps || 100;
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
@@ -932,8 +936,7 @@ async function saveSettings() {
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
-      keepRounds: parseInt($('set-keeprounds').value, 10) || 5,
-      ruleInterval: parseInt($('set-ruleinterval').value, 10) || 5,
+      keepChars: parseInt($('set-keepchars').value, 10) || 100000,
       threshold: parseFloat(selRefs.compactThreshold.get()) || 0.8,
     },
   };
@@ -981,6 +984,29 @@ $('set-snapshot-days').onchange = () => {
   if (isNaN(v) || (v < 1 && v !== -1)) { alert('天数需为 ≥1 的整数，或 -1（永不过期）'); return; }
   saveSnapshotCfg({ snapshotDays: v });
 };
+
+/* ---------- 常规页：询问提醒（服务端配置，改动即时保存；嵌套部分提交，
+   只传变的键，服务端按键合并并钳制 30-600） ---------- */
+async function saveAskAlertCfg(patch) {
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ askAlert: patch }) });
+    const aa = c.askAlert || {};
+    $('set-askalert-on').checked = aa.enabled !== false;
+    if (aa.afterSec) $('set-askalert-sec').value = aa.afterSec;
+    if (aa.text !== undefined) $('set-askalert-text').value = aa.text; // 空串=默认文案，回显留空
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  }
+}
+$('set-askalert-on').onchange = () => saveAskAlertCfg({ enabled: $('set-askalert-on').checked });
+$('set-askalert-sec').onchange = () => {
+  let v = parseInt($('set-askalert-sec').value, 10);
+  if (isNaN(v)) v = 240;
+  v = Math.min(600, Math.max(30, v));
+  $('set-askalert-sec').value = v;
+  saveAskAlertCfg({ afterSec: v });
+};
+$('set-askalert-text').onchange = () => saveAskAlertCfg({ text: $('set-askalert-text').value.trim() });
 
 /* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ---------- */
 
@@ -1653,22 +1679,22 @@ async function renderSkillsPanel() {
   }
 
   if (!(data.user || []).length) {
-    uBox.innerHTML = '<div class="skill-empty">还没有用户技能。点上方「添加技能」选择文件夹或 ZIP 压缩包，或把 .zip / 技能文件夹直接拖进本页安装。</div>';
+    uBox.innerHTML = '<div class="skill-empty">还没有用户技能。点上方「添加技能」选择文件夹、ZIP 压缩包或 .md 文件，或把它们直接拖进本页安装。</div>';
   }
 }
 
 // 添加技能：弹操作系统原生选择框（后端代选，拿真实路径），文件夹整目录复制、
-// ZIP 解压安装；用户取消选择框时静默返回。
+// ZIP 解压安装、单个 .md 说明文件包装安装；用户取消选择框时静默返回。
 async function installSkillFromPicker(kind) {
   closePopovers();
   // 手机端（窄屏）：系统选择框由后端弹在宿主机屏幕上，点了只会白等或直接
   // 报错（安卓上「仅支持 Windows」）——与「添加工作目录」同款口径，指到电脑端
-  if (isNarrow()) { alert('手机端不支持选择技能文件夹/压缩包：请在电脑端（宽屏）的设置页添加技能。'); return; }
+  if (isNarrow()) { alert('手机端不支持选择技能文件/文件夹：请在电脑端（宽屏）的设置页添加技能。'); return; }
   const btn = $('skill-add-btn');
   let picked;
   try {
-    const url = (kind === 'zip' ? '/api/pick-file' : '/api/pick-folder') +
-      '?title=' + encodeURIComponent(kind === 'zip' ? '选择技能 ZIP 压缩包' : '选择技能文件夹');
+    const url = (kind === 'file' ? '/api/pick-file' : '/api/pick-folder') +
+      '?title=' + encodeURIComponent(kind === 'file' ? '选择技能文件（ZIP 压缩包 / MD 说明）' : '选择技能文件夹');
     picked = await api(url);
   } catch (e) { alert('无法打开选择框：' + e.message); return; }
   const p = (picked && picked.path) || '';
@@ -1685,13 +1711,14 @@ async function installSkillFromPicker(kind) {
 
 $('skill-add-btn').onclick = () => openPopover('skill-add-pop', $('skill-add-btn'));
 $('sa-folder').onclick = () => installSkillFromPicker('folder');
-$('sa-zip').onclick = () => installSkillFromPicker('zip');
+$('sa-zip').onclick = () => installSkillFromPicker('file');
 
-/* ---------- 技能拖拽安装（拖 .zip 或整个文件夹进技能页） ----------
-   .zip 走 POST /api/skills/upload（multipart 单文件）；文件夹走 webkitGetAsEntry
-   递归遍历 → POST /api/skills/install-files（multipart files+paths，后端组装成
-   技能目录再走同一条 addUserSkill）。两条路最终都落 addUserSkill。 */
-async function uploadSkillZip(file, note) {
+/* ---------- 技能拖拽安装（拖 .zip / .md 文件或整个文件夹进技能页） ----------
+   单文件（.zip 解压、.md 包装）走 POST /api/skills/upload（multipart 单文件）；
+   文件夹走 webkitGetAsEntry 递归遍历 → POST /api/skills/install-files
+   （multipart files+paths，后端组装成技能目录再走同一条 addUserSkill）。
+   两条路最终都落 addUserSkill。 */
+async function uploadSkillFile(file, note) {
   const fd = new FormData();
   fd.append('file', file, file.name);
   try {
@@ -1786,21 +1813,21 @@ function bindSkillDropZone() {
       renderSkillsPanel();
       return;
     }
-    // 散文件：只认 .zip（散的技能文件装不了，指路按钮）
+    // 散文件：只认 .zip / .md（其他散文件装不了，指路按钮）
     const files = [...(dt.files || [])];
-    const zips = files.filter((f) => /\.zip$/i.test(f.name));
-    if (!zips.length) {
+    const packs = files.filter((f) => /\.(zip|md)$/i.test(f.name));
+    if (!packs.length) {
       alert(files.length
-        ? '只支持拖入 .zip 压缩包或整个技能文件夹安装（散文件请先用「添加技能」按钮）'
+        ? '只支持拖入 .zip 压缩包、单个 .md 文件或整个技能文件夹安装（其他散文件请先用「添加技能」按钮）'
         : '拖入的内容不是文件（技能文件夹请用「添加技能」按钮选择）');
       return;
     }
-    note.textContent = `安装中（${zips.length} 个）…`;
+    note.textContent = `安装中（${packs.length} 个）…`;
     let ok = 0;
-    for (const f of zips) { if (await uploadSkillZip(f, note)) ok++; }
-    note.textContent = ok === zips.length
+    for (const f of packs) { if (await uploadSkillFile(f, note)) ok++; }
+    note.textContent = ok === packs.length
       ? `已安装 ${ok} 个技能${ok > 1 ? '包' : ''}，清单见下方`
-      : `完成：成功 ${ok} / ${zips.length}`;
+      : `完成：成功 ${ok} / ${packs.length}`;
     renderSkillsPanel();
   });
 }

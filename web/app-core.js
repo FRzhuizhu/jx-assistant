@@ -824,8 +824,17 @@ function sendKeyHint() {
 function updateSendKeyHint() {
   const el = $('input');
   if (!el) return;
+  // 执行中占位符带着插话/排队提示段（setStreamUI 追加的）：这里只更新存货，
+  // 流结束由 setStreamUI 拼上新文案还原，别把执行中的提示段顶掉
+  if (el.dataset.runPh) { el.dataset.idlePh = sendKeyHint(); return; }
   el.placeholder = sendKeyHint();
 }
+
+// 执行中追加在输入框占位符末尾的插话/排队提示段（灰字）。完整占位符＝
+// 发送快捷键提示 ＋ 语音组件的语音提示（window.JXVoiceHint）＋ 本段（仅执行中）。
+// setStreamUI（app-chat.js）负责换上/还原；语音组件刷新子输入框占位时也带上它
+// （组件/voice/client.js 的 refreshShortcutPlaceholders）。
+const RUN_HINT_SEGMENT = '；执行中：输入内容可插话或排队发送';
 
 /* ---------- 轻提示（toast） ---------- */
 // toast：右下角短暂浮出的非阻塞通知（静默组件更新完成等「不打扰但留痕」的

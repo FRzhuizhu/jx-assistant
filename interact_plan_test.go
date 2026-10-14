@@ -310,7 +310,6 @@ func TestPlanAskHasNoTTL(t *testing.T) {
 	}
 }
 
-
 // 计划获批要把主循环的步数预算从头计：exit_plan_mode 获批时应置位
 // toolContext.planApproved（主循环据此重置 step）；驳回不置位（仍在计划模式，没开始执行）。
 func TestPlanApprovalSignalsStepReset(t *testing.T) {
@@ -358,5 +357,86 @@ func TestPlanApprovalSignalsStepReset(t *testing.T) {
 	}
 	if run("第二步改一下") {
 		t.Fatal("计划被驳回不该置位步数重算信号（仍留在计划模式修订，没有开始执行）")
+	}
+}
+
+// ask_user_question 的 timeout_sec：自定义时长落到 deadline（DeadlineMs）、
+// 钳制 5-3600、到点未答返回超时（视为放行）；停表（holdQuestion，对应界面
+// 悬停/触碰/停止按钮）后越过原时限仍在等，且随后作答照常返回。
+func TestAskTimeoutSecAndHold(t *testing.T) {
+	st := testPlanStore(t)
+	a := newPlanTestApp(t, st)
+	sess := createPlanSession(t, st, "s1", "会话一", false)
+
+	waitAsk := func(q *UserQuestion) {
+		for i := 0; i < 500; i++ {
+			if q.ID != "" {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		t.Fatal("等待提问登记超时")
+	}
+
+	// 自定义时长生效 + 钳制边界
+	q7 := &UserQuestion{Kind: askKindAsk, Question: "七秒的问题", TimeoutSec: 7}
+	go func() { _, _ = a.requestUserAnswer(context.Background(), sess, q7) }()
+	waitAsk(q7)
+	if d := time.Until(time.UnixMilli(q7.DeadlineMs)); d <= 5*time.Second || d > 7*time.Second {
+		t.Fatalf("timeout_sec=7 未生效：剩余 %v", d)
+	}
+	if clampAskTimeoutSec(1) != 30 || clampAskTimeoutSec(99999) != 600 || clampAskTimeoutSec(45) != 45 {
+		t.Fatal("timeout_sec 钳制（30-600）不正确")
+	}
+	a.resolveQuestion(q7.ID, "答了")
+
+	// 显式不限时（timeout_sec=0 → NoTimeout）：无截止、无计时器，一直等作答
+	qN := &UserQuestion{Kind: askKindAsk, Question: "必须确认的问题", NoTimeout: true}
+	go func() { _, _ = a.requestUserAnswer(context.Background(), sess, qN) }()
+	waitAsk(qN)
+	if !qN.expiresAt.IsZero() || qN.DeadlineMs != 0 {
+		t.Fatal("不限时提问不应有截止时刻")
+	}
+	if qN.timer != nil {
+		t.Fatal("不限时提问不应建计时器")
+	}
+	a.resolveQuestion(qN.ID, "定了")
+
+	// 到点未作答：ok=false（上层文案告知模型视为放行）
+	qT := &UserQuestion{Kind: askKindAsk, Question: "会超时的问题", TimeoutSec: 5}
+	ans := make(chan bool, 1)
+	go func() { _, ok := a.requestUserAnswer(context.Background(), sess, qT); ans <- ok }()
+	waitAsk(qT)
+	if ok := <-ans; ok {
+		t.Fatal("到点未作答应超时返回 ok=false")
+	}
+
+	// 停表：越过原时限仍在等，随后作答照常返回
+	qH := &UserQuestion{Kind: askKindAsk, Question: "停表的问题", TimeoutSec: 2}
+	held := make(chan string, 1)
+	go func() {
+		s, ok := a.requestUserAnswer(context.Background(), sess, qH)
+		if ok {
+			held <- s
+		}
+	}()
+	waitAsk(qH)
+	a.holdQuestion(qH.ID)
+	a.permMu.Lock()
+	heldFlag := qH.TimerHeld
+	a.permMu.Unlock()
+	if !heldFlag {
+		t.Fatal("停表标记未落")
+	}
+	time.Sleep(2500 * time.Millisecond) // 越过原 2 秒时限
+	a.permMu.Lock()
+	_, waiting := a.questions[qH.ID]
+	a.permMu.Unlock()
+	if !waiting {
+		t.Fatal("停表后越过原时限不应超时退出")
+	}
+	a.resolveQuestion(qH.ID, "慢慢选好了")
+	if s := <-held; s != "慢慢选好了" {
+		t.Fatalf("停表后作答应照常返回，实际 %q", s)
 	}
 }

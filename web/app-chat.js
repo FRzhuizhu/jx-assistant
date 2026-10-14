@@ -278,7 +278,7 @@ const LONG_TEXT_CHARS = 100;
 // 前缀清单与规范 §1.4 的 origin 子类一一对应。
 function isSysNote(txt) {
   return txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') ||
-    txt.startsWith('【文件上传】') || txt.startsWith('【文件回退】') || txt.startsWith('【目标续跑】') ||
+    txt.startsWith('【文件上传】') || txt.startsWith('【演示记录】') || txt.startsWith('【文件回退】') || txt.startsWith('【目标续跑】') ||
     txt.startsWith('【派发子对话】') || txt.startsWith('【数字助理派发】') || txt.startsWith('【数字助理转达】') ||
     txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>') || txt.startsWith('【交付完成】');
 }
@@ -446,6 +446,18 @@ function summaryRow(text, origin, covers, seq) {
   return row;
 }
 
+// 规则压缩折叠行：在压缩真实发生的位置（连续折叠段的末尾）标注「此处及更早
+// 已折叠」。前端仍完整展示原文（所见≥所发），这行只标注发给模型的是精简表示
+function foldRow(rounds, seq) {
+  const row = document.createElement('div');
+  row.className = 'proc-row';
+  if (seq != null) row.dataset.seq = seq;
+  row.innerHTML =
+    '<div class="proc-head"><span class="p-name">已折叠</span><span class="p-sub">· 此前 ' + rounds +
+    ' 个回合发给模型的是精简版（保留用户输入与正文、工具调用名与参数；省略思考过程、工具结果与环境快照，原文可经历史查询工具读取）</span></div>';
+  return row;
+}
+
 // 思考行：标题带字数，点开看原文
 function thinkRow(text, seq, opts = {}) {
   const row = document.createElement('div');
@@ -529,6 +541,8 @@ function toolRow(tc, result, opts = {}) {
 function isMatItem(it) {
   return it.k === 'time' || it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange';
 }
+// 注意：fold（已折叠标注行）刻意不归入材料折叠——它是用户要看的状态标注，
+// 与压缩摘要行同样常显，藏进材料分组就失去「这里压缩过」的提示意义
 
 function foldLabel(cnt) {
   const parts = [];
@@ -786,9 +800,32 @@ function groupTurns(msgs, resultOf, base) {
   st.ensure = () => {
     if (!st.cur) { st.cur = { userMsg: null, items: [] }; st.turns.push(st.cur); }
   };
+  // 规则压缩的「已折叠」边界：compact 非空的行属于折叠区（发给模型的是精简
+  // 表示或整行省略，原文前端照常完整展示——所见≥所发）。连续折叠段的最后一
+  // 条**可见**行后插一条折叠标注行，位置即压缩真实发生的位置（可能在好几轮
+  // 之前）；多段折叠各自成行。折叠回合数按段内的回合起始行（chat-user/aiuser/report）计。
+  // 注意只看可见对话行（chat/aiuser/report/env）：prompt/request/audit 等归档行
+  // 本就不展示也不带 compact 标记，把它们算进连续性判断会把折叠区打碎、
+  // 生成一串多余的边界行
+  const foldVisible = (m) => ['chat', 'aiuser', 'report', 'env'].includes(m.kind);
+  const foldEndSeq = new Map();
+  let foldRounds = 0;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (!foldVisible(m)) continue;
+    if (!m.compact) continue;
+    if (m.kind === 'report' || ((m.kind === 'chat' || m.kind === 'aiuser') && m.role === 'user')) foldRounds++;
+    let nextVisible = null;
+    for (let j = i + 1; j < msgs.length && !nextVisible; j++) if (foldVisible(msgs[j])) nextVisible = msgs[j];
+    if (!nextVisible || !nextVisible.compact) foldEndSeq.set(m.seq, foldRounds);
+  }
   for (const m of msgs) {
     const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
     if (build) build(m, st);
+    if (foldEndSeq.has(m.seq)) {
+      st.ensure();
+      st.cur.items.push({ k: 'fold', seq: m.seq, rounds: foldEndSeq.get(m.seq) });
+    }
   }
   st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv };
   st.turns.base = st.base; // 挂在返回的 turns 上：renderMessages 接力给正文段的分组
@@ -877,15 +914,22 @@ function msgActions(m, opts) {
   cb.className = 'act-copy act-compact';
   const cbOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>压缩';
   cb.innerHTML = cbOrig;
-  cb.title = '把此消息之前的旧对话压缩为一条摘要（最近几轮保持原样）';
+  cb.title = '折叠此回合及更早的对话：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果；原文可随时用历史查询工具搜回';
   cb.onclick = async () => {
     if (!state.cur || state.streaming) return;
+    const sid = m.sessionId || state.cur.id;
     cb.textContent = '压缩中…';
     cb.disabled = true;
     try {
-      await api('/api/sessions/' + state.cur.id + '/compact', { method: 'POST' });
+      await api('/api/sessions/' + sid + '/compact', { method: 'POST', body: JSON.stringify({ upTo: m.seq }) });
       cb.textContent = '已压缩';
-      await openSession(state.cur.id);
+      // 会话可能不在主视图（子面板消息的按钮）：各自刷新，不切换视图
+      if (mainView.state.cur && mainView.state.cur.id === sid) {
+        openSession(sid);
+      } else if (typeof subState !== 'undefined' && subState.cur && subState.cur.id === sid) {
+        refreshDrawer();
+        openSubSession(sid);
+      }
       setTimeout(() => { cb.innerHTML = cbOrig; cb.disabled = false; }, 1500);
     } catch (e) {
       alert('压缩失败：' + e.message);
@@ -940,6 +984,7 @@ function renderItem(it, opts) {
   if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
   if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
   if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
+  if (it.k === 'fold') return foldRow(it.rounds, it.seq);
   if (it.k === 'think') return thinkRow(it.text, it.seq);
   if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
   if (it.k === 'plancard') return planCardRow(it.tc, it.seq, it.result);
@@ -1862,6 +1907,8 @@ function renderFinishedTurn(box, turn, key, isLast) {
   items.forEach((it, i) => {
     if (it.k === 'plancard' || (it.k === 'text' && isLongText(it.text))) anchor.add(i);
   });
+  // 「已折叠」标注行常显：它标记的就是折叠这件事本身，折进折叠段等于没标
+  items.forEach((it, i) => { if (it.k === 'fold') anchor.add(i); });
   items.forEach((it, i) => {
     if (it.k !== 'note') return;
     const nb = (j) => j >= 0 && j < items.length && foldable(items[j]);
@@ -1903,7 +1950,7 @@ function renderStreamingTurn(box, turn, key) {
   // 执行期间的中断/上传提示不能被折没；完成态里与材料/过程相邻的进顶层大折叠，
   // 孤立与尾部的常显，见 renderFinishedTurn）与运行中的子任务卡（实时进度）。
   // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
-  const pinned = (it) => it.k === 'note' || it.k === 'plancard' || (it.k === 'subtask' && !it.result);
+  const pinned = (it) => it.k === 'note' || it.k === 'plancard' || it.k === 'fold' || (it.k === 'subtask' && !it.result);
   let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段
   const flush = () => {
     if (!seg.length) return;
@@ -2094,6 +2141,24 @@ function handleGlobalEvent(ev) {
     case 'question_resolved':
       removeQuestion(ev.questionId);
       break;
+    case 'question_deadline':
+      // 停表广播（本窗口或其他端触发的）：就地更新倒计时显示，不重建卡片
+      //（重建会丢自由输入框的焦点）
+      if (ev.questionId) {
+        const q = state.questions.find((x) => x.id === ev.questionId);
+        if (q && !q.timerHeld) { q.timerHeld = true; q.deadlineMs = 0; }
+        if (q) document.querySelectorAll('.q-card[data-qid="' + ev.questionId + '"]').forEach((card) => {
+          const chip = card.querySelector('.q-count');
+          if (chip) paintQCount(chip, q, Date.now());
+          const stop = card.querySelector('.q-stop');
+          if (stop) stop.classList.add('hidden');
+        });
+      }
+      break;
+    case 'ask_alert':
+      // 久等未答的声光提醒（叮声后端已响）：全屏闪烁 + 朗读，点击跳去作答
+      showAskAlert(ev);
+      break;
     case 'children':
       // 本会话有子进程起/停：刷新进度面板底部的「运行中的程序」
       loadProgress();
@@ -2112,6 +2177,18 @@ function handleGlobalEvent(ev) {
       api('/api/status').then((st) => {
         if (st.update) showUpdateBanner(st.update);
       }).catch(() => {});
+      break;
+    case 'demo_record_started':
+    case 'demo_record_stopped':
+      // 演示记录器归用户直控（按钮）：任何窗口起录/停录，所有录制按钮同步收敛
+      demoRec.active = ev.type === 'demo_record_started';
+      demoRec.dir = ev.output || demoRec.dir;
+      document.querySelectorAll('.rec-btn').forEach(demoRecSyncBtn);
+      // 停录：【演示记录】通知落进该会话，正看着就翻新让它落屏
+      if (ev.type === 'demo_record_stopped' && ev.sessionId) {
+        if (state.cur && state.cur.id === ev.sessionId && !state.streaming) refreshCurrent();
+        if (subState.cur && subState.cur.id === ev.sessionId && !subState.streaming) refreshCurrentSub();
+      }
       break;
     case 'components_updated':
       // 组件已静默热更：前端半边对账增删（不刷新页面），轻提示不打扰
@@ -2351,6 +2428,8 @@ function pushQuestion(ev) {
     id: ev.questionId, sessionId: ev.sessionId || '', sessionTitle: ev.title || '',
     kind: ev.kind || 'ask', question: ev.summary || '', plan: ev.plan || '',
     options: ev.options || [],
+    deadlineMs: ev.deadlineMs || 0, timerHeld: !!ev.held, // 倒计时（仅 ask/enter-plan 有）
+    noTimeout: !!ev.noTimeout, // 模型显式不限时（timeout_sec=0）：一直等用户作答
   });
   renderPanels();
   noteFreshPlanQuestions(); // 新到达的计划：右栏切到这一份（别停在上次看的那版）
@@ -2360,6 +2439,7 @@ function pushQuestion(ev) {
 function removeQuestion(id) {
   const q = state.questions.find((x) => x.id === id);
   if (q && q.kind === 'plan') stashPlanDoc(q); // 提问没了，计划本身要留在右栏（持久化）
+  hideAskAlertIfMatched(id); // 声光提醒正为它闪着：问题解决了就收起
   state.questions = state.questions.filter((x) => x.id !== id);
   askDraftClear(id);
   renderPanels();
@@ -2371,6 +2451,7 @@ async function loadQuestions() {
     state.questions = (d.questions || []).map((q) => ({
       id: q.id, sessionId: q.sessionId, sessionTitle: q.sessionTitle || '',
       kind: q.kind || 'ask', question: q.question || '', plan: q.plan || '', options: q.options || [],
+      deadlineMs: q.deadlineMs || 0, timerHeld: !!q.timerHeld, noTimeout: !!q.noTimeout,
     }));
     renderPanels();
     noteFreshPlanQuestions(); // 新到达的计划（含重启后拉回的待审批）：右栏切到这一份
@@ -2478,6 +2559,112 @@ function buildApprovalCard(e, own) {
   return card;
 }
 
+/* ---------- 提问卡倒计时（ask_user_question 的 timeout_sec） ----------
+   后端是计时的唯一权威；前端只按 deadlineMs 跳显示，且只改 textContent——
+   绝不进 askSigOf 卡片签名（签名一变整卡重建，自由输入框的焦点就没了）。
+   停表是单向的：倒计时旁的停止按钮 / 鼠标经过卡片（电脑端）/ 轻触卡片
+   （手机端）都触发；停了就转为不限时，选完选项即止。 */
+let askTickTimer = 0;
+function askEnsureTicker() {
+  if (askTickTimer) return;
+  askTickTimer = setInterval(() => {
+    const now = Date.now();
+    for (const q of state.questions) {
+      if (q.kind === 'plan' || (!q.deadlineMs && !q.timerHeld && !q.noTimeout)) continue;
+      document.querySelectorAll('.q-card[data-qid="' + q.id + '"] .q-count').forEach((chip) => paintQCount(chip, q, now));
+    }
+  }, 500);
+}
+
+function paintQCount(chip, q, now) {
+  if (q.timerHeld || q.noTimeout) {
+    chip.textContent = '∞ 不限时';
+    chip.classList.add('held');
+    chip.classList.remove('urgent');
+    return;
+  }
+  if (!q.deadlineMs) { chip.classList.add('hidden'); return; }
+  const remain = Math.max(0, Math.ceil((q.deadlineMs - now) / 1000));
+  chip.classList.remove('held', 'hidden');
+  chip.classList.toggle('urgent', remain > 0 && remain <= 10);
+  chip.textContent = remain <= 0 ? '超时中…' : Math.floor(remain / 60) + ':' + String(remain % 60).padStart(2, '0');
+}
+
+// askHoldTimer 停表（幂等）：就地更新所有窗口里的这张卡，再通知后端；
+// 后端会广播 question_deadline，让别的端同步（本地已画好，广播到达是确认）。
+function askHoldTimer(id) {
+  const q = state.questions.find((x) => x.id === id);
+  if (!q || q.timerHeld || q.noTimeout) return; // 不限时本就没有表可停
+  q.timerHeld = true;
+  q.deadlineMs = 0;
+  document.querySelectorAll('.q-card[data-qid="' + id + '"]').forEach((card) => {
+    const chip = card.querySelector('.q-count');
+    if (chip) paintQCount(chip, q, Date.now());
+    const stop = card.querySelector('.q-stop');
+    if (stop) stop.classList.add('hidden');
+  });
+  api('/api/questions/' + id, { method: 'POST', body: JSON.stringify({ stop_timer: true }) }).catch(() => {});
+}
+
+/* ---------- 询问声光提醒（设置·常规：久等未答时叮声+全屏闪烁+朗读） ----------
+   叮声由后端系统音效负责（触发时已响）；这里只管闪烁层与朗读——朗读走语音
+   组件的 /api/voice/tts（组件停用时该端点 404，静默跳过：只闪不读）。 */
+let askAlertQid = '';
+let askAlertHideTimer = 0;
+let askAlertSettleTimer = 0; // 呼吸 6 秒后停成静态淡光（护眼：不一直动）
+
+function showAskAlert(ev) {
+  const ov = $('ask-alert');
+  if (!ov) return;
+  askAlertQid = ev.questionId || '';
+  $('ask-alert-text').textContent =
+    (ev.title ? '来自「' + ev.title + '」的提问：' : '') + (ev.summary || '有个问题需要你确认');
+  ov.classList.remove('hidden', 'settle');
+  if (askAlertSettleTimer) clearTimeout(askAlertSettleTimer);
+  askAlertSettleTimer = setTimeout(() => ov.classList.add('settle'), 6000);
+  if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
+  askAlertHideTimer = setTimeout(hideAskAlert, 15000);
+  // 随手一点就能关、且不打扰当前操作：点背景＝只关闭（原地不动，用户可能
+  // 正在别的对话里忙）；点中央卡片＝关闭并跳去回答；Esc 同效关闭。三层互不
+  // 冒泡，第一次点击永远只做关闭这一件事。
+  ov.onclick = hideAskAlert;
+  const box = ov.querySelector('.aa-box');
+  if (box) box.onclick = (e) => { e.stopPropagation(); hideAskAlert(); askJumpTo(ev.sessionId); };
+  fetch('/api/voice/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: ev.output || '有个问题需要您确认一下。', rate: 1 }),
+  }).then((r) => (r.ok ? r.blob() : Promise.reject(new Error('tts ' + r.status))))
+    .then((b) => {
+      const u = URL.createObjectURL(b);
+      const el = new Audio(u);
+      el.onended = () => URL.revokeObjectURL(u);
+      return el.play();
+    }).catch(() => { /* 组件停用/播放被拦：只闪不读 */ });
+}
+
+// hideAskAlert 关闭提醒层并清干净两个定时器（点击/Esc/超时/问题解决共用）。
+function hideAskAlert() {
+  const ov = $('ask-alert');
+  if (ov) ov.classList.add('hidden');
+  if (askAlertHideTimer) { clearTimeout(askAlertHideTimer); askAlertHideTimer = 0; }
+  if (askAlertSettleTimer) { clearTimeout(askAlertSettleTimer); askAlertSettleTimer = 0; }
+  askAlertQid = '';
+}
+
+function hideAskAlertIfMatched(id) {
+  if (id && id === askAlertQid) {
+    hideAskAlert();
+  }
+}
+
+// Esc 关闭提醒层（只在层可见时生效，不影响别的 Esc 行为）。
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const ov = $('ask-alert');
+  if (ov && !ov.classList.contains('hidden')) hideAskAlert();
+});
+
 function buildQuestionCard(e, own) {
   const q = e.it;
   const isPlan = q.kind === 'plan';
@@ -2489,6 +2676,27 @@ function buildQuestionCard(e, own) {
   head.className = 'ap-head';
   head.innerHTML = '<b>' + (isPlan ? '计划审批' : (isEnter ? '进入计划模式？' : '助手提问')) + '</b>';
   card.appendChild(head);
+  // 倒计时 + 停止按钮（计划审批与显式不限时没有表可停，只显示 ∞）：
+  // data-qid 是倒计时就地刷写的定位锚；悬停/轻触卡片即停表（单向），停止按钮同效。
+  if (!isPlan && (q.deadlineMs || q.timerHeld || q.noTimeout)) {
+    card.dataset.qid = q.id;
+    const count = document.createElement('span');
+    count.className = 'q-count';
+    head.appendChild(count);
+    if (!q.noTimeout) { // 不限时没有停止按钮（也没必要挂悬停停表）
+      const stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'q-stop' + (q.timerHeld ? ' hidden' : '');
+      stop.title = '停止计时：不限时作答，选完选项即止';
+      stop.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>';
+      stop.onclick = (ev) => { ev.stopPropagation(); askHoldTimer(q.id); };
+      head.appendChild(stop);
+      card.addEventListener('mouseenter', () => askHoldTimer(q.id));
+      card.addEventListener('touchstart', () => askHoldTimer(q.id), { passive: true });
+    }
+    askEnsureTicker();
+    paintQCount(count, q, Date.now());
+  }
 
   if (isPlan) {
     // 计划：这里只给摘要，全文在右栏「计划」视图（Markdown 渲染，可反复打开）
@@ -3390,11 +3598,30 @@ async function clearRemote() {
 
 /* ---------- 发送与事件流 ---------- */
 
+// 占位符「执行中」段的开关（setStreamUI 与 prepareSend 的提前亮起共用）：
+// 追加/收回都幂等。完整占位符三段＝发送快捷键 + 语音组件的语音提示 + 本段
+// （仅执行中）。前两段整体存 dataset 作存货：闲时文案可能中途被改（设置页换
+// 发送键 / 语音组件刷新），updateSendKeyHint 会同步更新存货，恢复时不至于拿
+// 回旧文案。
+function runHintOn(view) {
+  const ph = view.input;
+  if (!ph) return;
+  if (!ph.dataset.runPh) { ph.dataset.idlePh = ph.placeholder; ph.dataset.runPh = '1'; }
+  ph.placeholder = ph.dataset.idlePh + RUN_HINT_SEGMENT;
+}
+function runHintOff(view) {
+  const ph = view.input;
+  if (!ph || !ph.dataset.runPh) return;
+  ph.placeholder = ph.dataset.idlePh || ph.placeholder;
+  delete ph.dataset.runPh; delete ph.dataset.idlePh;
+}
+
 function setStreamUI(on, view) {
   view = view || mainView;
   // 发送按钮保持可用：执行中发送 = 插话或排队（常规页「对话中途发送行为」）
   view.stopBtn.classList.toggle('hidden', !on);
   if (!on) view.hint.textContent = '';
+  if (on) runHintOn(view); else runHintOff(view);
 }
 
 function handleEvent(ev, view) {
@@ -3412,9 +3639,13 @@ function handleEvent(ev, view) {
       break;
     }
     case 'message': {
-      view.state.streamText = '';
-      view.state.streamThinking = '';
-      removeLive(view);
+      // 环境快照行（运行中改权限等 PATCH 落的 env）可能在模型流式输出中途到达：
+      // 只入列重渲染，不清半截正文——收尾动作只属于会关闭当前步的消息
+      if (ev.kind !== 'env') {
+        view.state.streamText = '';
+        view.state.streamThinking = '';
+        removeLive(view);
+      }
       // 用户消息回显落地：「发送中」占位功成身退（助手/工具事件不会先于它到达）
       if (view.state.pendingSend && ev.message && ev.message.role === 'user') {
         view.state.pendingSend = null;
@@ -3792,7 +4023,7 @@ function renderQueueDock(view) {
     txt.textContent = pm.content.length > 200 ? pm.content.slice(0, 200) + '…' : pm.content;
     txt.title = pm.content;
     li.appendChild(txt);
-    li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '<path d="M12 19V5M5 12l7-7 7 7"/>'));
+    li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '', '立即插话'));
     // 编辑只给自己发的排队项（kind 空/chat）；数字助理派发注入的不参与
     if (!pm.kind || pm.kind === 'chat') {
       li.appendChild(qdAction('edit', view, pm, '退回输入框编辑', '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'));
@@ -3864,12 +4095,15 @@ async function movePendingTo(view, id, before) {
   }
 }
 
-function qdAction(action, view, pm, title, path) {
+// 排队项动作钮：带 label 的渲染成文字按钮（插话是首要动作，中文直说不用猜图标），
+// 不带的照旧渲染圆形图标钮（编辑/移除是次要动作，图标 + 悬停提示够了）
+function qdAction(action, view, pm, title, path, label) {
   const b = document.createElement('button');
   b.className = 'qd-act' + (action === 'steer' ? ' qd-steer' : '');
   b.type = 'button';
   b.title = title;
-  b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
+  if (label) b.textContent = label;
+  else b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
   b.onclick = () => (action === 'edit' ? editPendingMsg(view, pm) : pendingAction(view, pm.id, action));
   return b;
 }
@@ -3993,12 +4227,20 @@ function userChatLanded(msgs, content) {
 // 进入流式阶段。_sendBusy 闸门防重入：准备段有多个 await 点（钩子/建会话/附件
 // 落盘），快速连按回车会重入——闸门期间的重复触发直接忽略；进入流式态后由
 // streaming 标志分流（改走插话/排队），闸门随即放行，任何出口都不会卡死发送。
+// 一点发送就把占位符的「执行中」段提前亮起（不等钩子/懒建会话/附件落盘）——
+// 用户视角：点了发送就是开始执行，听写尾段识别、建会话这些等待不该让提示迟
+// 到。只动占位符，不动 state.streaming（闸门/分流语义不受影响）；真正的流式
+// 态由本函数尾部的 setStreamUI(true) 接管（dataset 幂等，不会叠加）。准备段
+// 中途放弃发送的出口要收回（armed 只记自己置的位：进函数时已在流式态的，段
+// 属于正在跑的那轮，不动）。
 async function prepareSend(forceContent, view) {
   if (view._sendBusy) return null;
   view._sendBusy = true;
+  const armed = !view.state.streaming;
+  if (armed) runHintOn(view);
   try {
   // 发送前钩子（可等待，JX.awaitHooks）：组件在此刻意收尾——听写组件等尾段识别
-  // 落定再放行，随说的内容随本条消息一起发出。逐个 await、异常隔离、总超时放行，
+  // 落定再放行，随说的内容随这条消息一起发出。逐个 await、异常隔离、总超时放行，
   // 组件卡死不会卡死发送。回车 / Ctrl+回车 / 发送按钮 / 子对话，所有发送路径都
   // 经过这里；没有组件注册钩子时是空操作。
   await JX.awaitHooks('send', { view });
@@ -4011,9 +4253,10 @@ async function prepareSend(forceContent, view) {
   if (!content) {
     // 只挂了附件、没写字：不替用户编消息，提示补齐再发（附件留在输入框上方）
     if (staged.length) attachHint(view, '写一句要让数字助理做什么，' + staged.length + ' 个附件会随这条消息一起上传');
+    if (armed) runHintOff(view);
     return;
   }
-  if (view._attachFlush) return; // 附件正在落盘：忽略重复点发送
+  if (view._attachFlush) { if (armed) runHintOff(view); return; } // 附件正在落盘：忽略重复点发送
   if (view.state.streaming) {
     // 执行中插话/排队：附件先在当前会话落盘（通知照旧），再按原路插话或排队
     if (staged.length && !(await flushAttachments(view))) return;
@@ -4052,6 +4295,7 @@ async function prepareSend(forceContent, view) {
       openPopover('sub-dd-pop', $('sub-dd'));
       view.hint.textContent = '先选择或新建一个子对话';
       setTimeout(() => { view.hint.textContent = ''; }, 2500);
+      if (armed) runHintOff(view);
       return;
     }
   }
@@ -4059,7 +4303,7 @@ async function prepareSend(forceContent, view) {
   // 之前）；有失败就中止本轮——输入内容与失败项都留着，让用户重试或移除
   if (attachmentsOf(view).length) {
     view.state.attachSid = view.state.cur.id;
-    if (!(await flushAttachments(view))) return;
+    if (!(await flushAttachments(view))) { if (armed) runHintOff(view); return; }
   }
 
   if (fromInput) {
@@ -4088,6 +4332,9 @@ async function prepareSend(forceContent, view) {
   renderMessages(view.state.msgs, view);
   if (view === mainView) JX.emit('send', { content });
     return { input, content, sid, fromInput };
+  } catch (e) {
+    if (armed) runHintOff(view); // 准备段异常（懒建会话失败等）：收回提前亮起的提示
+    throw e;
   } finally {
     view._sendBusy = false;
   }
@@ -5020,13 +5267,85 @@ const codingModeUI = {
   },
 };
 
+/* ---------- 演示记录器（创建技能模式）：录制按钮，归用户直控 ----------
+   模型不持有录制工具；按钮 POST /api/demo-record/* 起录/停录，材料以【演示记录】
+   系统通知进对话（同文件上传机制）。状态唯一权威在后端单例，按钮只是视图：
+   SSE demo_record_started/stopped 与 status 接口把所有窗口/视图收敛一致。 */
+const demoRec = { supported: true, active: false, dir: '', loaded: false, busy: false };
+
+function demoRecSyncBtn(btn) {
+  if (!btn) return;
+  btn.disabled = demoRec.loaded && !demoRec.supported;
+  btn.classList.toggle('on', demoRec.active);
+  btn.title = demoRec.active ? '停止录制并收录材料'
+    : (demoRec.supported ? '演示记录：开始录制（操作时自动截图＋记事件＋录音）' : '演示记录（仅 Windows 桌面可用）');
+  const play = btn.querySelector('.ico-play');
+  const stop = btn.querySelector('.ico-stop');
+  if (play) play.classList.toggle('hidden', demoRec.active);
+  if (stop) stop.classList.toggle('hidden', !demoRec.active);
+}
+
+function demoRecLoadOnce() {
+  if (demoRec.loaded) return;
+  demoRec.loaded = true;
+  api('/api/demo-record/status').then((st) => {
+    demoRec.supported = !!st.supported;
+    demoRec.active = !!st.active;
+    demoRec.dir = st.dir || '';
+    document.querySelectorAll('.rec-btn').forEach(demoRecSyncBtn);
+  }).catch(() => { demoRec.loaded = false; }); // 失败可重试：下次挂载再拉
+}
+
+async function demoRecToggle(view) {
+  if (demoRec.busy) return;
+  const sess = (view.state && view.state.cur) || null; // 会话内停录：【演示记录】通知落进该会话；首页（未开会话）也能录
+  const body = sess ? { session: sess.id } : {};
+  demoRec.busy = true;
+  try {
+    if (demoRec.active) {
+      const r = await api('/api/demo-record/stop', { method: 'POST', body: JSON.stringify(body) });
+      demoRec.active = false;
+      demoRec.dir = r.dir || demoRec.dir;
+      toast(sess ? '演示已收录，回到对话让 AI 分析即可' : '已收录到 ' + (r.dir || '') + '，开个对话即可让 AI 分析');
+    } else {
+      const r = await api('/api/demo-record/start', { method: 'POST', body: JSON.stringify(body) });
+      demoRec.active = true;
+      demoRec.dir = r.dir || '';
+      toast('开始录制：去电脑上正常操作并口头讲解，做完回来点停止');
+    }
+  } catch (e) {
+    toast((demoRec.active ? '停止' : '开始') + '录制失败：' + e.message);
+  }
+  demoRec.busy = false;
+  document.querySelectorAll('.rec-btn').forEach(demoRecSyncBtn);
+}
+
+// 创建技能模式定制：输入框工具条上一枚录制按钮（▶ 起录 / ■ 红底停止），
+// 与「计划」开关同一插槽（权限芯片右侧）。首页与子对话视图都生效。
+const skillCreateModeUI = {
+  mount(view) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'cbtn rec-btn';
+    btn.innerHTML = '<svg class="ico-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>' +
+      '<svg class="ico-stop hidden" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>';
+    btn.addEventListener('click', () => demoRecToggle(view));
+    viewEl(view, 'perm-chip').after(btn);
+    demoRecLoadOnce();
+    demoRecSyncBtn(btn);
+    return btn;
+  },
+  sync(view, s, el) { demoRecSyncBtn(el); },
+};
+
 // 新对话可选的工作模式（后端 systemPrompt/toolsFor 按 mode 分流）。
 // 扩展模式（设计人员等）＝在这里加一项 + 后端加对应提示词分支，
 // 其余机制（胶囊、下拉、会话流转、徽章）完全复用；数字助理主对话是专属模式，不在此列。
 const CHAT_MODES = [
   { v: 'office', label: '标准办公', desc: '面向日常办公：文档、资料、表格、沟通文案，成果落文件' },
   { v: 'coding', label: '编程', desc: '面向软件开发：读改代码、编译构建、调试排障，成果直接落项目文件', ui: codingModeUI },
-  { v: 'skill-create', label: '创建技能', desc: '看用户演示操作（自动截屏＋录音）→ 总结成给其他 AI 照做的技能教程；默认完全访问' },
+  { v: 'beginner-coding', label: '新手编程', desc: '面向不懂编程的你：先问清需求再动手，全程大白话讲解，成果落项目文件', ui: codingModeUI },
+  { v: 'skill-create', label: '创建技能', desc: '把「怎么做」沉淀成给 AI 的教程：点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；默认完全访问', ui: skillCreateModeUI },
 ];
 const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', label: '标准办公', desc: '' };
 
@@ -5212,10 +5531,10 @@ function openPlusMenu(view) {
 const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer', 'device'];
 
 // 默认能力（后端 perm.go 的 capDefaultsForMode 是同一策略的唯一权威，这里是镜像）：
-// 「工作区内读写」默认开启「操作浏览器」，只对真会注册 browser_* 的四种模式生效；
+// 「工作区内读写」默认开启「操作浏览器」，只对真会注册 browser_* 的模式生效；
 // 只读 / 完全访问不带默认项。用在「切档时把默认项补回」——完全访问 ⇄ 工作区内读写、
 // 创建技能模式 ⇄ 普通模式往返，都不能把默认能力丢掉（与后端 strip+merge 对齐）。
-const CAP_DEFAULT_MODES = ['task', 'office', 'coding', 'skill-create'];
+const CAP_DEFAULT_MODES = ['task', 'office', 'coding', 'beginner-coding', 'skill-create'];
 function applyCapDefaults(tools, mode, perm) {
   const out = [...(tools || [])];
   if (perm === 'workspace-write' && CAP_DEFAULT_MODES.includes(mode) && !out.includes('browser')) out.push('browser');

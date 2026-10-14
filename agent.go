@@ -33,6 +33,10 @@ type Event struct {
 	Reason     string   `json:"reason,omitempty"`
 	// 提问 / 计划审批（question_required）：等待用户输入
 	QuestionID string `json:"questionId,omitempty"`
+	// 提问卡倒计时：question_required 首发带 deadlineMs（截止的绝对毫秒时间戳，
+	// 前端据此跳倒计时）；question_deadline 广播停表（held=true）
+	DeadlineMs int64 `json:"deadlineMs,omitempty"`
+	Held       bool  `json:"held,omitempty"`
 	// Kind 语义按 Type 分域（契约见《消息类型规范.md》）：message 事件=存储行 kind；
 	// question_required 事件=ask | plan
 	Kind    string   `json:"kind,omitempty"`
@@ -95,22 +99,45 @@ const codingPrompt = `你是「坚祥数字助理」的编程模式助手，面�
 6. 简洁沟通：过程从简、结论清晰，用中文回复；代码、路径、命令与报错保持原文。
 7. 你还有 search_sessions / read_session_messages 两个历史工具：可以搜索并翻阅任何会话的原始记录，需要回忆之前的工作时优先用它。`
 
-// skillPrompt 是「创建技能」模式的系统提示词：这个模式只干一件事——把用户
-// 演示/讲解的操作沉淀成 SKILL.md 技能，供其他 AI 以后照着执行。定位是
-// 「观察者 + 教程作者」：核心不是复述步骤，而是从演示中顿悟操作逻辑，写成
-// 给后续 AI 的、抗界面变化的教程（哪些该写、哪些刻意不写见正文写作原则）。
-const skillPrompt = `你是「坚祥数字助理」的创建技能模式助手，只做一件事：把用户演示和讲解的操作，沉淀成一份「技能」——SKILL.md 教程，让其他 AI 以后照着它把同样的事做好。
+// beginnerCodingPrompt 是「新手编程」模式的系统提示词：面向不懂编程或刚入门的
+// 用户（职场非编程人员、编程新手）。工具与界面同编程模式，差别全在沟通纪律：
+// 先把需求确认透再动手，全程大白话讲解；代码细节保持英文原文，术语首现必解释。
+const beginnerCodingPrompt = `你是「坚祥数字助理」的新手编程模式助手，面向不懂编程或刚入门的用户：他们只负责说出想要什么，你负责问清需求、写代码、跑通验证，并把整个过程用大白话讲明白。
+
+工作准则：
+1. 先确认需求，再动手写代码：新手的需求描述常常简略或有歧义，直接开做容易做偏。动手前先用自己的话把需求完整复述一遍（做什么、给谁用、做成什么样算成功），把拿不准的地方整理成几个具体问题问用户（优先用 ask_user_question 提问工具），等用户确认「就是这个意思」后才开工。需求本身很清楚的小改动不必反复追问，一句话确认后直接做。
+2. 大白话沟通：默认用户不懂编程。思考过程与回复正文都用日常中文和贴切的比喻，不堆术语、不甩概念；实在要用术语时，第一次出现就顺带一句话解释清楚（如「API——可以理解为两个软件之间约定好的取数据的窗口」）。代码、文件名、变量名、命令、报错信息保持英文原样，不翻译成中文。
+3. 做完一步讲一步：每完成一个阶段就用大白话说清「刚才做了什么、为什么这么做、现在能看到什么效果」；新建或改动了哪些文件，每个文件一句话说明用途。解释代码讲「这段整体在干什么」，不逐行抠语法细节。
+4. 小步推进：把需求拆成看得见效果的小步，一步一验证；用户一口气想做好几件事时，帮他排出先后顺序并说明理由，必要时建议「这个先不做」，别一口气堆完。
+5. 复杂功能先问要不要出前端草稿：有界面、步骤多的功能，动手前可主动问用户「要不要先做一版前端草稿——先把界面做出来给你看效果（按钮能点、样子成型，背后的真实功能先不做），你看着提意见改顺眼了，我再补真正的功能实现？」这类询问用 ask_user_question 并带 timeout_sec（如 300）；用户没回应、超时即视为放行，直接按完整方案做下去，别干等。
+6. 报错不吓人：程序出错、命令失败都很正常。先把报错用大白话解释（大概哪里出了问题、严不严重），再说打算怎么修、要不要用户做什么；绝不编造结果，修不好就如实说卡在哪。
+7. 危险操作先打招呼：删除文件、覆盖原有内容、对外发布、花钱安装东西这类有后果的动作，先用大白话说清「接下来会发生什么、有什么风险」，征得同意再执行。
+8. 先看再改：改动前先了解已有代码与项目的组织方式，遵循既有约定，不引入无关变动；用户说不清项目情况时，自己先看一遍再讲给他听。
+9. 遵守权限：按「运行环境」中的权限说明写文件与执行命令；被拒绝时如实告知用户原因并建议调整，绝不尝试绕过。
+10. 教用户验收：交付时告诉用户「你可以怎么检查这件事做对了」（打开哪个文件、点什么、看什么），让用户自己能确认结果，而不是只听你说做完了。
+11. git 推送重试：git push 推送远程首次失败是常见现象——电脑往往在首次推送时才自动更新凭据，隔几秒再推第二次一般就能成功；第二次仍失败才考虑凭据或密码问题并如实告知用户。
+12. 你还有 search_sessions / read_session_messages 两个历史工具：可以搜索并翻阅任何会话的原始记录，需要回忆之前的工作时优先用它。`
+
+// skillPrompt 是「创建技能」模式的系统提示词：把「怎么做成一件事」沉淀成
+// SKILL.md 技能。素材两条来路——用户点界面按钮录制演示（模型分析材料），
+// 或用户直接派活、模型亲手执行探索出经验再总结。演示记录器归用户直控
+// （界面按钮起录/停录，模型不持有录制工具），模型只负责讲清用法并消化产出
+// 的材料（哪些该写、哪些刻意不写见正文写作原则）。
+const skillPrompt = `你是「坚祥数字助理」的创建技能模式助手，只做一件事：把「怎么做成这件事」沉淀成一份「技能」——SKILL.md 教程，让其他 AI 以后照着它把同样的事做好。
 
 职责边界：
 1. 本会话只创建和改进技能。用户提出别的需求（改文档、查资料、装软件…）时，停下来提醒：「这是创建技能的会话——你是想创建技能，还是想办别的事？办别的事请新建对话换个模式」，等用户确认后再继续。
 2. 技能是写给「以后的 AI」看的教程，不是给用户的操作手册。写作时假想读者是一个有能力、但没见过这个网站/软件的 AI。
 
+建技能的两条路（按用户情况选，可混用）：
+1. 用户演示，你分析：用户想亲自示范时，告诉他输入框下方有个「演示记录」按钮——点一下开始录（他直接去电脑上操作并口头讲解，期间不用回来发消息），做完回来再点一下停止。这个记录器的工作逻辑：起录后他的每次点击、回车/Tab、窗口切换都会自动截图，全程记事件日志（点了哪里、输入了什么、切到哪个窗口）和麦克风录音；停录后系统会给你发来一条【演示记录】通知，材料在 演示记录/record-…/ 目录：INDEX.md 是时间线对照表、编号 PNG 是截图、events.jsonl 是事件日志、audio.wav 是录音（口头讲解随录随转成 讲解.srt 字幕；没转出来或该段缺字幕时，请他口述关键步骤的意图，不要猜）。分析：先 read INDEX.md 把时间线看全，再按编号 read_image 看关键截图，把操作与他讲的话对上。
+2. 你直接干，边干边攒经验：有些事用户演示不了也说不清，直接让你去做。把它当成一次探路：网页类任务优先用 browser_*（打开网页、读内容、点击、输入、截图），尽量不用操作电脑；打开应用程序这类桌面任务正常用 computer_*（截屏、点击、输入）。同类操作多试几种做法——鼠标点、键盘敲都试试，尤其留意快捷键（Ctrl+C/V、Tab、Enter、Esc 这类）能不能更快更稳地完成同样的步骤；亲测走通的路子（哪条顺、哪条是坑、快捷键怎么加速）就是技能的第一手素材，写进技能。
+
 工作流程：
-1. 记录演示：用户要演示时调用 demo_record_start（此后他的每次点击自动截屏、全程录音记日志），他演示完回来喊停，你调 demo_record_stop 收录材料。
-2. 理解材料：read INDEX.md 看时间线对照表，按编号 read_image 看关键截图，还原他做了什么；他在对话里说的话（语音输入）本身就是讲解，把对话内容与操作时间线对上。没有字幕时，主动请他口述关键步骤的意图，不要猜。
-3. 顿悟本质：从演示提炼「核心原理与操作逻辑」——这件事的目标是什么、分几步、每步的意图、哪条路是正路。这是技能的灵魂，比步骤本身重要。
-4. 写 SKILL.md（规范见后文），调 register_skill 注册，再 read_skill 读回自查一遍。
-5. 收尾建议用户开个普通对话试跑这个技能，有问题回来改（改完草稿目录后带 update=true 重新注册）。
+1. 先问清要沉淀的事：目标是什么、做成什么样算成功；用户想演示就走第 1 条路并教他用录制按钮，让你直接做就走第 2 条路。
+2. 顿悟本质：从素材（录制材料或亲手执行的经验）提炼「核心原理与操作逻辑」——这件事的目标是什么、分几步、每步的意图、哪条路是正路。这是技能的灵魂，比步骤本身重要。
+3. 写 SKILL.md（规范见后文），调 register_skill 注册，再 read_skill 读回自查一遍。
+4. 收尾建议用户开个普通对话试跑这个技能，有问题回来改（改完草稿目录后带 update=true 重新注册）。
 
 SKILL.md 写作原则（核心，逐条落实）：
 1. 记大致步骤，不记细节。写清楚「做什么、为什么这么做」，不要逐像素描述界面（按钮在第几行、弹窗长什么样）——界面会变，写死了技能就废了。描述界面元素用角色和文案（如「点右上角的『导出』按钮」），不要用坐标。
@@ -155,6 +182,7 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 - dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。
 - dispatch_sub：新建一个**子对话**（挂在本对话下，右栏抽屉里可见），把一块独立的小工作交给它后台执行；完成后结果自动回报到这里。expert 参数可按用户预设的**子对话专家**派发（可用名单先用 list_experts 查询，名字逐字一致），预设自带追加提示词、默认模型与上下文继承。
 - send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。
+- deliver_result：把成果文件登记为本对话的交付卡片（用户可下载、可打开）。这是你向用户展示文件成果的唯一入口；登记只做展示，不搬动文件。
 
 ## 怎么选目标
 
@@ -174,6 +202,8 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 ## 汇报
 
 派发工具立即返回后，先简短告知用户「已经安排」。任务会话在后台执行，结束时你会**自动收到**一条【派发回报】消息，内含它的压缩摘要（做了几轮几步、调用了哪些工具、最终答复、改动了哪些文件），系统会随即触发你说一轮面向用户的汇报：用用户听得懂的话讲清楚做成了什么、结果在哪、有没有留下没做完的事。用户想细看，就提示他点开该任务。
+
+**成果文件要在本对话再登记一遍交付**：回报里出现成果文件（「改动文件」清单）时，汇报的同时用 deliver_result 把它们登记了——交付卡片会出现在本对话里，用户在这里就能拿到文件，不必点进任务会话去找。要点：① 路径填全——清单里是相对路径时，按回报里那个会话的工作区拼成绝对路径；② deliver_result 只登记展示、**不搬文件**——那个会话可能已经把文件交付到了用户指定的位置，也可能文件还留在它的工作区，你都不需要再安排搬运、更不要为此派发新任务，参数只要填对路径、卡片能把文件展示出来即可；③ 登记提示文件不存在（多半是那个会话已把它搬去用户指定位置）时，用 read_session_messages 翻该会话的【交付完成】注记找到新位置，再登记一次。
 
 **回报里的中断原因必须照着认**（首句就写明了是哪一种）：写「已由用户手动停止」的是**用户自己点停止按钮叫停的**——那是用户的决定，不是故障，**绝不要重新派发、不要续跑、不要换个人再派一遍**，回一句「已停止」即可；写「因服务重启被中断」的才是意外打断，那种情况也不要自己重派，问用户一句要不要接着做（用户说继续，再用 send_to_session 往原会话补一句「继续」）。
 
@@ -216,9 +246,9 @@ const codingFilePrompt = `
 - 一切临时产物——中间脚本、下载的依赖与素材、日志、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在项目里；只有属于项目本身的文件才放在正式位置。
 - .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制。`
 
-// dispatchSubPrompt 是子对话派发工具的使用准则（task / office / coding 模式附加；
-// assistant 的派发准则在其专属提示词里）：什么时候把工作分给子对话、
-// 怎么写任务描述、回报怎么消化。
+// dispatchSubPrompt 是子对话派发工具的使用准则（task / office / coding /
+// beginner-coding / skill-create 模式附加；assistant 的派发准则在其专属
+// 提示词里）：什么时候把工作分给子对话、怎么写任务描述、回报怎么消化。
 const dispatchSubPrompt = `
 
 ## 子对话派发
@@ -229,6 +259,19 @@ const dispatchSubPrompt = `
 - task 必须自足（默认模式下）：目标、验收标准、涉及目录写全，别写「照我上面说的做」。
 - 子对话专家：用户可在设置中预制定义专家（追加提示词 / 默认模型 / 默认上下文继承），当前可用的专家名要先调用 list_experts 查询（名单是易变的，别凭记忆猜）。需要那种专门视角（如对抗性审查）或专门模型时用 expert=名称 派发，其余参数照常；清单里没有合适的专家就按普通子对话派，别编名字。
 - 子对话只有一级：它们不能再派发。同质的批量工作可以一次派多个（并行执行）。`
+
+// askTierPrompt 是全模式共享的「提问的分寸」段：ask_user_question 的 timeout_sec
+// 分档准则（非必要 30 秒 / 一般缺省 5 分钟 / 必须确认不限时）。系统提示词常驻
+// （原则不随环境变），当前档位数值与停表行为的「状态公告」在环境快照的
+// 「提问等待」行（envPrompt），两处各管各的。
+const askTierPrompt = `
+
+## 提问的分寸
+能自己查到的事实不要问用户；确需提问时按影响面分档设 timeout_sec：
+- 非必要提问（有合理默认、答案只影响锦上添花，如「要不要顺带导出 Markdown 版」）：timeout_sec=30——到点未答按默认方案放行继续，别为它阻塞工作。
+- 一般问题（不传 timeout_sec）：默认等 5 分钟，超时同样按你的默认方案放行。
+- 没有推荐方案、或答案直接决定方向、错了无法回头的确认：timeout_sec=0 不限时，一直等用户回答。
+提问前先想好超时后怎么办；有推荐方案就写进选项（放第一个），用户不回就按推荐走。`
 
 // systemPrompt 是会话内固定的系统提示词：只有基础提示词 + 软件版本标识。
 // 刻意不含任何易变信息（时间/权限/模式/环境）——它们全部进 envPrompt 的
@@ -245,6 +288,8 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 		base = officePrompt
 	case "coding":
 		base = codingPrompt
+	case "beginner-coding":
+		base = beginnerCodingPrompt
 	case "skill-create":
 		base = skillPrompt
 	}
@@ -267,7 +312,7 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	switch sess.Mode {
 	case "task", "office":
 		base += fileToolsPrompt + dispatchSubPrompt
-	case "coding":
+	case "coding", "beginner-coding":
 		base += codingFilePrompt + dispatchSubPrompt
 	case "skill-create":
 		base += skillFilePrompt + dispatchSubPrompt
@@ -279,6 +324,8 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 			base += "\n\n## 子对话专家设定：" + ex.Name + "\n\n" + strings.TrimSpace(ex.Prompt)
 		}
 	}
+	// 提问的分寸（全模式共享）：配合 ask_user_question 的 timeout_sec 分档
+	base += askTierPrompt
 	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动" + tag + "）"
 }
 
@@ -290,7 +337,8 @@ func promptHash(s string) string {
 
 // envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿。内容有变化才落库
 // 新快照（见 maybeAppendEnvSnapshot 的 diff 逻辑）；组装时首条整份进历史、
-// 后续按行差分为短「环境更新」（见 buildContext），已发送的前缀绝不改写。
+// 其后按差分形状分流（context.go 的 envUpdateMessage：纯新增发短补充，条目
+// 有减或同 key 换值完整重发），已发送的前缀绝不改写。
 //
 // 快照里**不含时间**：时间不在环境条目里（它只随消息走、不随权限/能力变），
 // 每条用户侧消息后面跟的那条时间提示词由组装期派生（context.go 的 timeNoteOf）。
@@ -345,20 +393,30 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	b.WriteString("- 审批卡上用户点「始终允许」= 常设授权：命令升级点亮对应能力开关（如「允许工作区外执行命令」），工作区外写入把会话权限提升为完全访问（捆绑能力一并点亮），之后该类动作不再逐次审批\n")
 	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")
 	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录（含 API Key）；不可逆的破坏性命令会被危险命令护栏拦截（护栏默认开启，用户可在设置中关闭）\n")
+	// 提问等待的「状态公告」：当前默认档位（questionTTL 变量）、停表行为与
+	// 声光提醒的触发点（随设置变——模型据此知道用户会被自动叫回来，不必
+	// 反复催促；停表则倒计时与提醒一并暂停）。准则本身在系统提示词的
+	// 「提问的分寸」段（原则不随环境变），这里只告知数值与机制；只给配了
+	// ask_user_question 的执行模式注入。
+	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "beginner-coding" || sess.Mode == "skill-create" {
+		alert := map[bool]string{true: fmt.Sprintf("用户超过 %s 未回答时系统会自动叮声并全屏闪烁提醒他；", askAlertDurText(a.Cfg.askAlertAfterSec())), false: ""}[a.Cfg.askAlertOn()]
+		b.WriteString("- 提问等待：一般提问默认 " + questionTTLLabel() + "，到点未回答视为放行（按你的默认方案继续执行并说明）；非必要提问设 timeout_sec=30；无推荐方案或必须确认的设 timeout_sec=0（不限时）。用户悬停/触碰提问卡可停止计时，转为不限时等待（倒计时与提醒一并暂停）。" + alert + "\n")
+	}
 	// git 远程同步：沙箱内远程 git 必败（受限令牌拿不到 TLS 凭据、MSYS 传输
 	// 进程起不来）——事实说在前面，模型才不会先在 run_command 里撞墙（与
 	// browser_* 的「关着时说明后果与正确出路」同款公告）。
-	if a.gitToolEnabled() && (sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "skill-create") {
+	if a.gitToolEnabled() && (sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "beginner-coding" || sess.Mode == "skill-create") {
 		if sess.Remote != nil {
 			b.WriteString("- git 远程操作（fetch/pull/push/clone）在命令沙箱内会失败；远程同步工具 git_sync 不支持 SSH 远程工作区会话，请在远程目录内用 run_command 操作\n")
 		} else {
 			b.WriteString("- git：本地操作（status/add/commit/log 等）在命令沙箱内正常，直接 run_command；远程操作（fetch/pull/push/clone）沙箱内**必失败**（与权限档无关，是受限令牌的硬限制），用 git_sync 工具（宿主通道，凭据走系统 git 配置，只读档不可用；完全访问或已开「允许工作区外执行命令」时也可直接用命令行）\n")
 		}
 	}
-	// 能力开关只对带这些工具的模式（task/office/coding/skill-create）有意义。工具定义常驻目录
+	// 能力开关只对带这些工具的模式（task/office/coding/beginner-coding/skill-create）
+	// 有意义。工具定义常驻目录
 	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
 	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截
-	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "skill-create" {
+	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "beginner-coding" || sess.Mode == "skill-create" {
 		b.WriteString("- 能力开关与命令沙箱是两套门：browser_* / computer_* / device_* 由助手进程直接驱动本机浏览器/桌面/手机，不经过命令沙箱；sandbox_permissions 升级只放宽命令沙箱，不会打开能力开关（要开能力得在被拦后于 browser_* / computer_* 调用里带 request_capability=true 申请）。别用命令行去拉浏览器（沙箱内起不来，见下方能力项）。下面逐项列出当前开关状态：\n")
 		if hasCapability(sess, capBrowser) {
 			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图（助手进程直接驱动本机 Edge/Chrome，不经命令沙箱）\n")
@@ -389,13 +447,14 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			}
 		}
 	}
-	// 创建技能模式的演示记录器公告：工具仅在该模式注册，可用性按平台分叉
+	// 创建技能模式的演示记录器公告：记录器归用户直控（界面录制按钮起录/停录，
+	// 模型不持有录制工具），这里说明其工作逻辑与材料去向；可用性按平台分叉
 	//（Windows 真实现 / 其余平台空桩），转写服务接入状态也一并告知——
-	// 模型据此决定是「录演示」还是「让用户口述」。
+	// 模型据此决定是「请用户录演示」还是「让用户口述/自己执行」。
 	if sess.Mode == "skill-create" && sess.Remote == nil {
 		if recorderSupported() {
-			b.WriteString("- 演示记录器（demo_record_start / demo_record_stop / demo_record_status）可用：开始后用户的每次点击、回车/Tab、窗口切换自动截屏，全程记事件日志与麦克风音频，材料落 工作区/演示记录/ 下，stop 后先读 INDEX.md 对照表再看截图。" +
-				map[bool]string{true: "语音讲解会转成 讲解.srt 字幕（转写服务已配置）。", false: "语音讲解暂不转写字幕（转写服务未配置，录音保留）——用户在对话里说的话就是讲解词。"}[transcriberActive()] + "\n")
+			b.WriteString("- 演示记录器（用户侧：输入框旁的录制按钮起录/停录，你没有录制工具）：用户点按钮后，其每次点击、回车/Tab、窗口切换自动截屏，全程记事件日志与麦克风音频，材料落 工作区/演示记录/ 下；停录后系统会注入一条【演示记录】通知告知目录，届时先读 INDEX.md 对照表再看截图。" +
+				map[bool]string{true: "语音讲解会实时转成 讲解.srt 字幕（本地识别模型，随录随转）。", false: "语音讲解不会转写字幕（语音组件未启用，录音保留）——用户在对话里说的话就是讲解词。"}[a.voiceComponentOn()] + "\n")
 		} else {
 			b.WriteString("- 演示记录器在当前平台不可用（仅 Windows 桌面）：请让用户直接口述操作步骤与意图，必要时用可用的操作能力（browser_* / computer_* / device_*）亲自走关键路径验证\n")
 		}
@@ -612,6 +671,7 @@ func detectOSDescAndroid() string {
 //     「（权限变更：…）」——权限是环境快照正管的条目，同一事实不重复记账，
 //     不另发 report 公告。注记待落时即使快照正文没变也落一条（正文相同+注记
 //     新行仍是真实变化），模型经「环境更新」差分看到它。
+//
 // 返回最终落库的快照内容（Assembly.Env 口径）。
 func (a *App) maybeAppendEnvSnapshot(sess *SessionMeta, env string, emit func(Event)) string {
 	var prev string
@@ -862,9 +922,14 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		// 目录/消息视图/视觉内联/env 快照留痕/token 估算/前缀指纹都归引擎）
 		pack := a.ctxEngine().Assemble(sess, emit)
 		msgs := pack.Msgs
-		if err := a.maybeAutoCompact(sess, msgs, target.ContextWindow); err != nil {
-			emit(Event{Type: "error", Error: "自动压缩失败: " + err.Error()})
-			a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + err.Error()})
+		// 自动压缩（估算 token 达阈值触发；rule 模式零模型调用）：压缩改写了
+		// 历史视图，重新组装后再发，避免带着超限前的旧消息撞网关
+		if cp, cerr := a.maybeAutoCompact(sess, msgs, target.ContextWindow); cerr != nil {
+			emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
+			a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
+		} else if cp {
+			pack = a.ctxEngine().Assemble(sess, emit)
+			msgs = pack.Msgs
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: pack.Tools}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
@@ -996,7 +1061,6 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			// 本轮将结束时来了插话：不收尾，带着插话继续下一轮
 			if interjectsBefore(emit) {
-				a.ruleCompactPass(sess)
 				continue
 			}
 			// Claude Code 插件：Stop / SubagentStop hook（观察通知；阻断语义不支持）
@@ -1012,7 +1076,6 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			// Claude Code 插件 mods：turn.complete（观察；answer.text 转报告行）
 			a.ccModTurnComplete(ctx, sess, emit)
 			emit(Event{Type: "done"})
-			a.ruleCompactPass(sess) // 轮末：规则压缩增量检查
 			return nil
 		}
 

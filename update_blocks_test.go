@@ -134,8 +134,10 @@ func TestPlanComponentBlocks(t *testing.T) {
 // 状态记账往返：EnginePending/Argv/Applied 落盘再读回。
 func TestUpdateBlockStateRoundtrip(t *testing.T) {
 	a := &App{Cfg: &Config{DataDir: t.TempDir()}}
+	// pending 版本用远期日期：syncPendingToState 只认「比 appVersion 新」的
+	// pending，写死近期日期会在版本号追上当天后过期翻车
 	st := updateBlockState{
-		EnginePending: "20261012V1",
+		EnginePending: "20991231-1",
 		EngineArgv:    []string{"app.exe", "-config", "config.json"},
 		SwappedAt:     "2026-10-12T10:00:00+08:00",
 		Applied:       map[string]string{"voice": "2.0"},
@@ -151,7 +153,7 @@ func TestUpdateBlockStateRoundtrip(t *testing.T) {
 	// syncPendingToState 同步进横幅状态
 	a.syncPendingToState()
 	snap := updateSnapshot()
-	if !snap.PendingRestart || snap.PendingVersion != "20261012V1" {
+	if !snap.PendingRestart || snap.PendingVersion != "20991231-1" {
 		t.Fatalf("pending 应同步进快照: %+v", snap)
 	}
 }

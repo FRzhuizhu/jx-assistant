@@ -114,6 +114,32 @@ Copy-Item (Join-Path $mdvDir "使用说明.txt") (Join-Path $stage "md-viewer") 
 
 Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
 
+# ---- 安装期清理清单（清理清单.iss，被 安装包.iss 的 [InstallDelete] 段包含）----
+# 随包目录在升级安装时整目录重装（先删后装），包内已移除的文件不再残留——
+# 旧组件文件混进新版本是真会出错的（v1.0.2 的 asr\ 残留案例）。
+# 只列「随包发的」目录：技能\_runtime、内置技能、内置组件、md-viewer；
+# 技能\user（用户技能）与市场装的组件（id 不在 stage\组件 清单里）天然保留，
+# data\、config.json、默认工作区\、插件\ 不经此清单，永不触碰。
+$cleanLines = New-Object System.Collections.Generic.List[string]
+$cleanLines.Add('Type: filesandordirs; Name: "{app}\技能\_runtime"')
+Get-ChildItem (Join-Path $stage "技能") -Directory | Where-Object {
+  $_.Name -ne "_runtime" -and $_.Name -ne "user"
+} | ForEach-Object {
+  $cleanLines.Add('Type: filesandordirs; Name: "{app}\技能\' + $_.Name + '"')
+}
+if (Test-Path (Join-Path $stage "组件")) {
+  Get-ChildItem (Join-Path $stage "组件") -Directory | ForEach-Object {
+    $cleanLines.Add('Type: filesandordirs; Name: "{app}\组件\' + $_.Name + '"')
+  }
+}
+if (Test-Path (Join-Path $stage "md-viewer")) {
+  $cleanLines.Add('Type: filesandordirs; Name: "{app}\md-viewer"')
+}
+# PS5.1 的 utf8 带 BOM——ISCC 认 BOM 才能正确读中文路径（无 BOM 会被当
+# ANSI 码页读成乱码，清单失配只是清不掉，不会误删，但仍要写对）
+$cleanLines | Out-File (Join-Path $packDir "清理清单.iss") -Encoding utf8
+Write-Host "== 安装期清理清单：$($cleanLines.Count) 个随包目录升级时整目录重装（用户数据/用户装的组件插件技能不受影响）"
+
 Write-Host "== Inno Setup 编译安装包（LZMA2 压缩，耐心等待）"
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }

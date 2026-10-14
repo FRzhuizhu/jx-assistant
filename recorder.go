@@ -1,14 +1,15 @@
 package main
 
-// 演示记录器：创建技能模式（skill-create）的配套记录工具。
-// 用户演示操作时，demo_record_start 起录——全局鼠标/键盘钩子在每次点击、
-// 回车/Tab、窗口切换时自动截屏（画面没变则跳过），全程记事件日志与麦克风
-// 音频；demo_record_stop 收录成材料目录（截图序列 + events.jsonl + audio.wav
-// + INDEX.md 对照表）。模型 read INDEX.md 定位关键步骤、read_image 看截图，
-// 即可还原用户做了什么，进而沉淀成 SKILL.md 技能。
-// 工具定义跨平台，实现按平台分文件（recorder_windows.go 真实现，
-// recorder_other.go 空桩），与 computer_* 组件同一组织方式；全部工具要求
-// 会话开启「操作电脑」能力（perm.go 门控），fail closed。
+// 演示记录器：创建技能模式（skill-create）的配套记录工具，归用户直控——
+// 输入框旁的录制按钮经 HTTP 端点（/api/demo-record/*，见 server.go）起录/停录，
+// 模型不持有录制工具；停录后材料以【演示记录】系统通知进对话（同文件上传
+// 通知机制），模型 read INDEX.md 定位关键步骤、read_image 看截图，即可还原
+// 用户做了什么，进而沉淀成 SKILL.md 技能。
+// 起录后全局鼠标/键盘钩子在每次点击、回车/Tab、窗口切换时自动截屏（画面没变
+// 则跳过），全程记事件日志与麦克风音频；停录收录成材料目录（截图序列 +
+// events.jsonl + audio.wav + INDEX.md 对照表）。
+// 实现按平台分文件（recorder_windows.go 真实现，recorder_other.go 空桩），
+// 与 computer_* 组件同一组织方式。
 
 import (
 	"encoding/json"
@@ -21,16 +22,14 @@ import (
 	"time"
 )
 
-// ---------- 转写接口位（预留，当前空着） ----------
+// ---------- 转写接线位 ----------
 
-// activeSpeechTranscriber 把演示录音转成 SRT 字幕的服务商实现位。
-// 当前版本未接入任何服务商（恒为 nil）：demo_record_stop 只保留 audio.wav，
-// 理解演示以截图 + 事件日志 + 用户在对话里的讲解为准。微软语音 API 调通后，
-// 在这里注册一个 func（读 Cfg.SpeechAPI 的端点/密钥），stop / transcribe
-// 即自动开始产出 讲解.srt——历史录音都在，可随时补转。
-var activeSpeechTranscriber func(app *App, wavPath, srtPath string) error
-
-func transcriberActive() bool { return activeSpeechTranscriber != nil }
+// recorderASR 把一段 16kHz/单声道/16bit WAV 交给语音组件的本地识别 worker
+// （voiceasr.go 在 NewApp 注册；语音组件停用时调用返回错误＝该段字幕丢弃，
+// 不影响录制本体）。演示记录随录随转：VAD 按停顿切段（recorder_windows.go），
+// 每段经这里识别成文字，逐段落 讲解.srt——时间轴与事件/截图同源。测试环境
+// 不注册（nil）＝纯录音、无字幕，行为与接组件前完全一致。
+var recorderASR func(wav []byte) (string, error)
 
 // ---------- 材料 目录名约定 ----------
 
@@ -71,146 +70,76 @@ type recEvent struct {
 	Up     bool   `json:"up,omitempty"`
 }
 
-// ---------- 工具定义 ----------
+// ---------- 用户侧入口的支撑函数（HTTP 端点见 server.go） ----------
 
-func demoRecordTools() []Tool {
-	return []Tool{demoRecordStartTool(), demoRecordStopTool(), demoRecordStatusTool(), demoRecordTranscribeTool()}
+// recorderRecentDirs 列出工作区 演示记录/ 下已收录的记录目录，按目录名倒序
+//（名字含时间戳，倒序＝新→旧）取前 n 条。建技能会话时的【演示记录】清单
+// 通知用它告诉模型有哪些现成材料可分析——首页「先录后聊」的入口。
+func recorderRecentDirs(ws string, n int) []string {
+	if ws == "" || n <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(ws, recorderBaseDir))
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), recorderDirPrefix) {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dirs)))
+	if len(dirs) > n {
+		dirs = dirs[:n]
+	}
+	return dirs
 }
 
-func demoRecordStartTool() Tool {
-	return Tool{
-		Spec: toolSpec("demo_record_start",
-			"开始演示记录：此后用户在电脑上的每次鼠标点击、回车/Tab 按键、窗口切换都会自动截屏，全程记录事件日志与麦克风音频（用户可以边操作边口头讲解）。用户演示完毕后调用 demo_record_stop 收录材料。请在用户明确表示要开始演示时才调用。"+capNoteComputer,
-			objSchema(withCapRequest(map[string]any{})),
-		),
-		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
-				return "", err
-			}
-			if t.isRemote() {
-				return "", fmt.Errorf("演示记录器仅支持本地会话（当前挂载的是 SSH 远程工作区）")
-			}
-			dir := filepath.Join(t.workspace(), recorderBaseDir,
-				recorderDirPrefix+time.Now().Format("20060102-150405"))
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return "", err
-			}
-			if err := recorderStart(dir); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("已开始演示记录，材料落盘：%s\n"+
-				"请用户现在直接去电脑上操作并口头讲解（这里不用再发消息）；演示完回来喊停即可。\n"+
-				"提醒用户：记录包含键鼠操作与屏幕截图，仅保存在本机工作区，用完可删。",
-				filepath.ToSlash(dir)), nil
-		},
+// recorderShutdown 进程收尾兜底：还在录就停录（保存 audio.wav）并生成
+// INDEX.md，避免中途退出丢掉整段材料。桌面壳退出路径调用
+//（voiceGlobalShutdown 同款位置）；没在录时是空操作。此处不做语音转写
+//（可能涉网络与耗时，留给停录端点与将来的补转端点）。
+func recorderShutdown() {
+	stats, err := recorderStop()
+	if err != nil || stats == nil {
+		return
 	}
+	_ = buildRecorderIndex(stats)
 }
 
-func demoRecordStopTool() Tool {
-	return Tool{
-		Spec: toolSpec("demo_record_stop",
-			"停止演示记录并收录材料：停全局钩子与录音，生成截图序列、事件日志、INDEX.md 对照表（以及语音字幕——若转写服务已配置）。返回材料概要与目录。"+capNoteComputer,
-			objSchema(withCapRequest(map[string]any{})),
-		),
-		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
-				return "", err
-			}
-			stats, err := recorderStop()
-			if err != nil {
-				return "", err
-			}
-			srtNote := "未生成（转写服务未配置，理解演示以截图+事件+用户讲解为准）"
-			if stats.AudioOK {
-				if transcriberActive() {
-					wav := filepath.Join(stats.Dir, recorderAudioFn)
-					srtPath := filepath.Join(stats.Dir, recorderSrtFn)
-					if err := activeSpeechTranscriber(t.app, wav, srtPath); err != nil {
-						srtNote = "转写失败：" + err.Error() + "（audio.wav 已保留，可稍后用 demo_record_transcribe 补转）"
-					} else {
-						srtNote = "已生成 " + recorderSrtFn
-					}
-				}
-			} else if !stats.AudioOK {
-				srtNote = "未生成（本次没有可用的麦克风录音）"
-			}
-			indexNote := ""
-			if err := buildRecorderIndex(stats); err != nil {
-				indexNote = "\nINDEX.md 生成失败：" + err.Error() + "（可直接读 events.jsonl）"
-			}
-			dur := time.Duration(stats.MS) * time.Millisecond
-			return fmt.Sprintf("演示记录已收录：\n"+
-				"- 目录：%s\n- 时长 %s，事件 %d 条，截图 %d 张\n"+
-				"- 音频：%s\n- 字幕：%s%s\n\n"+
-				"下一步：read %s 看时间线对照表，再按编号 read_image 看关键截图。\n"+
-				"材料含用户的键鼠记录与截图，仅存本机；技能写完后提醒用户可删除该目录。",
-				filepath.ToSlash(stats.Dir), dur.Round(time.Second), stats.Events, stats.Shots,
-				map[bool]string{true: recorderAudioFn + " 已保存", false: "未录到（无可用麦克风）"}[stats.AudioOK],
-				srtNote, indexNote,
-				filepath.ToSlash(filepath.Join(stats.Dir, recorderIndexFn))), nil
-		},
+// demoRecordStopNote 停录后注入会话的【演示记录】通知正文（与文件上传通知
+// 同机制：kindReport 用户侧系统行，模型下一轮可见）。字幕行按材料实况描述
+//（随录随转：讲解.srt 是录制期间逐段落盘的，这里只如实汇报有没有、几段）。
+func demoRecordStopNote(stats *recorderStats) string {
+	srtNote := "未生成（语音组件未启用，或本次没识别到有效语音）"
+	if data, err := os.ReadFile(filepath.Join(stats.Dir, recorderSrtFn)); err == nil {
+		if n := len(parseSRT(string(data))); n > 0 {
+			srtNote = fmt.Sprintf("已生成 %s（%d 段，随录随转）", recorderSrtFn, n)
+		}
 	}
+	return fmt.Sprintf("【演示记录】用户点停止按钮完成了一段操作演示，材料已收录：\n"+
+		"- 目录：%s\n- 时长 %s，事件 %d 条，截图 %d 张\n- 音频：%s；字幕：%s\n"+
+		"下一步：read %s 看时间线对照表，再按编号 read_image 看关键截图；"+
+		"用户当时的口头讲解若没进对话，请他口述关键步骤的意图，不要猜。",
+		filepath.ToSlash(stats.Dir),
+		(time.Duration(stats.MS) * time.Millisecond).Round(time.Second),
+		stats.Events, stats.Shots,
+		map[bool]string{true: recorderAudioFn + " 已保存", false: "未录到（无可用麦克风）"}[stats.AudioOK],
+		srtNote, filepath.ToSlash(filepath.Join(stats.Dir, recorderIndexFn)))
 }
 
-func demoRecordStatusTool() Tool {
-	return Tool{
-		Spec: toolSpec("demo_record_status",
-			"查看演示记录器当前状态：是否在录、已产生的事件数与截图数。"+capNoteComputer,
-			objSchema(withCapRequest(map[string]any{})),
-		),
-		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
-				return "", err
-			}
-			return recorderStatusText(), nil
-		},
+// demoRecordListNote 建技能会话时的【演示记录】清单通知正文：工作区已有
+// 现成演示材料时告诉模型有哪些可分析（dirs 为 recorderRecentDirs 的结果）。
+func demoRecordListNote(dirs []string) string {
+	names := make([]string, len(dirs))
+	for i, d := range dirs {
+		names[i] = recorderBaseDir + "/" + d
 	}
-}
-
-func demoRecordTranscribeTool() Tool {
-	return Tool{
-		Spec: toolSpec("demo_record_transcribe",
-			"对一次已收录的演示记录补跑语音转写（生成 讲解.srt 并刷新 INDEX.md）。用于转写服务刚配置好、要给历史录音补字幕的场景。"+capNoteComputer,
-			objSchema(withCapRequest(map[string]any{
-				"dir": strProp("演示记录目录（相对或绝对路径，目录里需有 audio.wav）"),
-			}), "dir"),
-		),
-		Run: func(t *toolContext, args json.RawMessage) (string, error) {
-			if err := requireCapability(t, capComputer, "操作电脑", args); err != nil {
-				return "", err
-			}
-			var p struct {
-				Dir string `json:"dir"`
-			}
-			if err := json.Unmarshal(args, &p); err != nil {
-				return "", err
-			}
-			dir, err := t.resolve(p.Dir)
-			if err != nil {
-				return "", err
-			}
-			if isDir, _, serr := t.envStat(dir); serr != nil || !isDir {
-				return "", fmt.Errorf("目录不存在: %s", dir)
-			}
-			wav := filepath.Join(dir, recorderAudioFn)
-			if _, serr := os.Stat(wav); serr != nil {
-				return "", fmt.Errorf("目录里没有 %s，无法转写（%s）", recorderAudioFn, dir)
-			}
-			if !transcriberActive() {
-				return "转写服务未配置：当前版本尚未接入语音转写服务商（配置结构已预留）。" +
-					"请先用截图 + 事件日志 + 用户在对话里的讲解理解演示；录音已保留，接入后可用本工具补转。", nil
-			}
-			srtPath := filepath.Join(dir, recorderSrtFn)
-			if err := activeSpeechTranscriber(t.app, wav, srtPath); err != nil {
-				return "", fmt.Errorf("转写失败: %w", err)
-			}
-			// 补出字幕后刷新对照表（stats 按 events.jsonl 行数与截图数重建）
-			if err := rebuildRecorderIndex(dir); err != nil {
-				return fmt.Sprintf("字幕已生成：%s（INDEX.md 刷新失败：%v）", filepath.ToSlash(srtPath), err), nil
-			}
-			return fmt.Sprintf("字幕已生成并刷新对照表：%s", filepath.ToSlash(srtPath)), nil
-		},
-	}
+	return "【演示记录】工作区已有 " + strconv.Itoa(len(dirs)) + " 份演示材料（按时间倒序）：" +
+		strings.Join(names, "、") +
+		"。每份含 INDEX.md 时间线对照表、编号截图、events.jsonl 事件日志与 audio.wav 录音（暂无语音转文字，讲解需用户口述或对话里说明）。" +
+		"用户要分析某份时先 read 它的 INDEX.md，再按编号 read_image 看关键截图。"
 }
 
 // ---------- SRT 解析与 INDEX 生成（跨平台共用） ----------
@@ -285,34 +214,48 @@ func parseSrtTime(s string) (int, bool) {
 	return ((h*60+m)*60+sec)*1000 + ms, true
 }
 
-// rebuildRecorderIndex 按目录里的 events.jsonl / 截图 / 字幕重建 stats 并生成 INDEX。
-func rebuildRecorderIndex(dir string) error {
-	events, err := os.ReadFile(filepath.Join(dir, recorderEventsFn))
-	if err != nil {
-		return fmt.Errorf("读 %s 失败: %w", recorderEventsFn, err)
+// writeSRTFile 把字幕段写成标准 SRT（序号/时间码/文本，块间空行）。随录随转
+// 用：每出一段整文件重写（段数小、代价可忽略），中途崩溃已落盘的段仍在。
+func writeSRTFile(path string, cues []srtCue) error {
+	var b strings.Builder
+	for i, c := range cues {
+		fmt.Fprintf(&b, "%d\n%s --> %s\n%s\n\n", i+1, srtTimecode(c.StartMs), srtTimecode(c.EndMs), strings.TrimSpace(c.Text))
 	}
-	evCount, shotCount, ms := 0, 0, 0
-	for _, line := range strings.Split(string(events), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		evCount++
-		var ev recEvent
-		if json.Unmarshal([]byte(line), &ev) == nil {
-			if ev.T > ms {
-				ms = ev.T
-			}
-			if ev.Shot != "" {
-				shotCount++
-			}
-		}
+	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// srtTimecode 毫秒 → SRT 时间码 HH:MM:SS,mmm。
+func srtTimecode(ms int) string {
+	if ms < 0 {
+		ms = 0
 	}
-	audioOK := false
-	if fi, err := os.Stat(filepath.Join(dir, recorderAudioFn)); err == nil && fi.Size() > 44 {
-		audioOK = true
-	}
-	return buildRecorderIndex(&recorderStats{Dir: dir, MS: ms, Events: evCount, Shots: shotCount, AudioOK: audioOK})
+	h, m, s := ms/3600000, ms/60000%60, ms/1000%60
+	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, ms%1000)
+}
+
+// recPcmToWav 给裸 PCM（16kHz/单声道/16bit，录制器的采集格式）包 RIFF 头，
+// 供识别 worker 消费（worker 按头自解析采样率与声道）。
+func recPcmToWav(pcm []byte) []byte {
+	hdr := make([]byte, 44)
+	copy(hdr[0:4], "RIFF")
+	recLe32(hdr[4:], uint32(36+len(pcm)))
+	copy(hdr[8:12], "WAVE")
+	copy(hdr[12:16], "fmt ")
+	recLe32(hdr[16:], 16) // fmt 块长
+	hdr[20], hdr[22] = 1, 1
+	recLe32(hdr[24:], 16000) // 采样率
+	recLe32(hdr[28:], 32000) // 字节率
+	recLe16(hdr[32:], 2)     // 块对齐
+	recLe16(hdr[34:], 16)    // 位深
+	copy(hdr[36:40], "data")
+	recLe32(hdr[40:], uint32(len(pcm)))
+	return append(hdr, pcm...)
+}
+
+func recLe16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
+
+func recLe32(b []byte, v uint32) {
+	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
 }
 
 // buildRecorderIndex 生成 INDEX.md：事件时间线 + 截图编号 + 对应字幕段对照表。

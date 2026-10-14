@@ -104,8 +104,9 @@ func (t *toolContext) resolve(p string) (string, error) {
 }
 
 // toolsFor 按会话模式返回可用工具。数字助理总控拥有编排类工具（不亲自读写
-// 文件、不执行命令）；任务会话拥有全部实操工具 + 子对话派发；辅助对话只有
-// 只读工具（定位是答疑，不修改任何东西）。
+// 文件、不执行命令；deliver_result 是唯一例外——只读核对路径并登记展示，
+// 让派发产出的成果文件能以交付卡片出现在总控对话里）；任务会话拥有全部
+// 实操工具 + 子对话派发；辅助对话只有只读工具（定位是答疑，不修改任何东西）。
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
 // （见 agent.go 的 suspendedInPlan）；enter/exit_plan_mode / update_goal 因此常驻。
@@ -125,6 +126,7 @@ func (a *App) toolsFor(mode string) []Tool {
 	var tools []Tool
 	if mode == "assistant" {
 		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), a.dispatchSubTool(), a.listExpertsTool(), sendToSessionTool(),
+			deliverResultTool(),
 			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	} else if mode == "aux" {
 		// enter_plan_mode 不配：aux 只读答疑，没有可暂停的执行动作，计划无意义
@@ -132,11 +134,13 @@ func (a *App) toolsFor(mode string) []Tool {
 		tools = append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
 			exitPlanModeTool(), updateGoalTool()}, history...)
 	} else {
-		// 创建技能模式专属工具（demo_record_* 演示记录器 + register_skill 注册闭环）
-		// 只挂在该模式——其他模式的工具目录保持原形状（缓存与提示词都不受影响）。
+		// 创建技能模式专属工具：register_skill 注册闭环只挂在该模式——其他模式的
+		// 工具目录保持原形状（缓存与提示词都不受影响）。演示记录器 demo_record_*
+		// 已从模型工具集摘除：录制归用户直控（界面按钮经 /api/demo-record/* 端点，
+		// 见 recorder.go / server.go），材料以【演示记录】系统通知进对话。
 		skillCreate := []Tool{}
 		if mode == "skill-create" {
-			skillCreate = append(demoRecordTools(), registerSkillTool())
+			skillCreate = append(skillCreate, registerSkillTool())
 		}
 		tools = append(append([]Tool{
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),

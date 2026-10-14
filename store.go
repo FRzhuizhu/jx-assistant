@@ -31,7 +31,7 @@ type StoredMessage struct {
 	Seq        int64  `json:"seq"`
 	Kind       string `json:"kind"`
 	Origin     string `json:"origin,omitempty"` // summary 来源：auto | manual
-	Compact    string `json:"-"`
+	Compact    string `json:"compact,omitempty"` // 规则压缩标记：非空=已折叠（"omit"=整行丢弃）；前端据此显示「已折叠」行，原文照常完整展示
 	CoversUpTo int64  `json:"coversUpTo,omitempty"`
 	Superseded bool   `json:"superseded,omitempty"`
 	CreatedAt  string `json:"createdAt,omitempty"`
@@ -1764,18 +1764,24 @@ func (s *Store) DeletePendingJobsForSession(sessionID string) error {
 }
 
 // SearchMessages 跨会话全文搜索（当前 LIKE 实现；个人规模数据足够，量大后可升 FTS）。
-func (s *Store) SearchMessages(query string, limit int) ([]SearchHit, error) {
+// 搜索范围覆盖三列：消息正文（含工具结果行）、工具调用参数（tool_calls JSON）、
+// 思考过程（thinking）。ctxRadius 是命中片段的半径（<=0 时取默认短片段 90 字）。
+func (s *Store) SearchMessages(query string, limit, ctxRadius int) ([]SearchHit, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("query 不能为空")
 	}
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
+	if ctxRadius <= 0 {
+		ctxRadius = 90
+	}
 	rows, err := s.db.Query(`
-		SELECT m.session_id, s.title, s.mode, m.seq, m.role, m.content
+		SELECT m.session_id, s.title, s.mode, m.seq, m.role, m.content, m.tool_calls, m.thinking
 		FROM messages m JOIN sessions s ON s.id = m.session_id
-		WHERE m.kind IN ('chat','report') AND m.content LIKE '%' || ? || '%'
-		ORDER BY m.id DESC LIMIT ?`, query, limit*3)
+		WHERE m.kind IN ('chat','report')
+		  AND (m.content LIKE '%' || ? || '%' OR m.tool_calls LIKE '%' || ? || '%' OR m.thinking LIKE '%' || ? || '%')
+		ORDER BY m.id DESC LIMIT ?`, query, query, query, limit*3)
 	if err != nil {
 		return nil, err
 	}
@@ -1783,11 +1789,17 @@ func (s *Store) SearchMessages(query string, limit int) ([]SearchHit, error) {
 	hits := []SearchHit{}
 	for rows.Next() {
 		var h SearchHit
-		var content sql.NullString
-		if err := rows.Scan(&h.SessionID, &h.Title, &h.Mode, &h.Seq, &h.Role, &content); err != nil {
+		var content, toolCalls, thinking sql.NullString
+		if err := rows.Scan(&h.SessionID, &h.Title, &h.Mode, &h.Seq, &h.Role, &content, &toolCalls, &thinking); err != nil {
 			continue
 		}
-		h.Snippet = snippetAround(content.String, query, 90)
+		// 片段取自第一个命中的列（按优先级：正文 > 调用参数 > 思考）
+		for _, src := range []string{content.String, toolCalls.String, thinking.String} {
+			if strings.Contains(src, query) {
+				h.Snippet = snippetAround(src, query, ctxRadius)
+				break
+			}
+		}
 		hits = append(hits, h)
 	}
 	// 同一会话只留一条最佳命中（最新的），避免刷屏

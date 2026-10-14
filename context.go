@@ -17,10 +17,15 @@ import (
 
 const compactOmit = "omit" // 规则压缩的特殊标记：组装时整行跳过
 
-const (
-	argKeepLimit    = 500 // 工具调用参数保留上限（防 write 带整文件内容）
-	resultKeepLimit = 200 // 工具结果保留的开头长度
-)
+// argKeepLimit 是折叠视图里工具调用参数的保留上限（防 write 带整文件内容）。
+// 思考过程与工具结果在折叠视图里完全丢弃——原文 append-only 永久在库，
+// 模型可经 search_sessions / read_session_messages 查回。
+const argKeepLimit = 500
+
+// foldBoundaryNote 是折叠边界的提示标签：组装时注入在「已折叠区 → 原文区」
+// 的交界处（全折时缀在尾部），告知模型上方是压缩视图、细节可用历史查询工具
+// 取回。文案是常量——同一段历史的组装逐字节稳定，前缀缓存不受扰动。
+const foldBoundaryNote = "（以上为压缩后的历史：保留了用户输入与模型结论的要点；省略了思考过程、工具结果与环境快照等中间细节。需要查看某处的完整原文时，先用 search_sessions 按关键词搜索定位，再用 read_session_messages（from_seq=命中 seq）读取原文。）"
 
 // round 是一轮对话：一条用户消息（chat/aiuser/report）到下一条用户消息之前的全部。
 type round struct {
@@ -98,7 +103,8 @@ func activeSummaries(msgs []*StoredMessage) []*StoredMessage {
 // （规则压缩视图生效，最近轮保持原文），并修剪结尾悬空的工具调用。
 // 环境快照行（kind=env）按落位进上下文，**追加式**（已发送的前缀绝不改写）：
 // 可见的首条快照整份呈现（摘要折叠后以边界后首条重新作为完整基线），
-// 其后相邻快照按行差分渲染为一条短的「环境更新」消息——变化永远以新消息
+// 其后相邻快照按差分形状分流——纯新增渲染为短的「环境更新」补充，条目有减
+// 或同 key 换值则完整重发新快照（见 envUpdateMessage）——变化永远以新消息
 // 出现在尾部，系统提示词与历史前缀逐字节稳定，前缀缓存命中最大化。
 func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
@@ -120,26 +126,41 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		out = append(out, TextMessage("user", s.Text()))
 	}
 	prevEnv := "" // 上一条可见快照；空 = 下一条整份呈现（首轮，或摘要折叠后的首条）
+	foldSeen := false // 已见过折叠行：遇到首条未折叠可见行时在交界注入提示标签
 	for _, m := range raw {
 		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" || m.Kind == "audit" {
+			continue
+		}
+		if ruleMode {
+			if m.Compact == "" && foldSeen {
+				out = append(out, TextMessage("user", foldBoundaryNote))
+				foldSeen = false
+			}
+			if m.Compact != "" {
+				foldSeen = true
+			}
+		}
+		// 折叠丢弃的行先跳过——含压缩区内的环境快照（不再走差分渲染，
+		// 保留区首个可见快照自然成为整份基线）
+		if ruleMode && m.Compact == compactOmit {
 			continue
 		}
 		if m.Kind == "env" {
 			env := m.Text()
 			if prevEnv == "" {
 				out = append(out, TextMessage("user", env))
-			} else {
-				out = append(out, TextMessage("user", envUpdateMessage(prevEnv, env)))
+			} else if s := envUpdateMessage(prevEnv, env); s != "" {
+				// 纯新增 → 短补充；有减/换值 → 完整重发（见 envUpdateMessage）
+				out = append(out, TextMessage("user", s))
 			}
 			prevEnv = env
 			continue
 		}
 		if ruleMode && m.Compact != "" {
-			if m.Compact == compactOmit {
-				continue // 整行跳过（工具结果行）
-			}
-			// 压缩表示：纯文本消息，不带 tool_calls（协议要求配对完整）
+			// 压缩表示：纯文本消息，不带 tool_calls（协议要求配对完整）。
+			// 用户侧输入的折叠视图与原文一致，时间提示词照常派生
 			out = append(out, Message{Role: m.Role, Content: m.Compact})
+			out = append(out, a.timeAfter(m)...)
 			continue
 		}
 		// 空正文且无工具调用（例如只留下思考过程的行）：对模型没有信息，
@@ -160,6 +181,10 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		// 流都看不到噪音行）；同一份存储重复组装逐字节相同，前缀缓存不受影响。
 		// 环境快照因此不再含时间行，用户发消息不再连带触发一条「环境更新」。
 		out = append(out, a.timeAfter(m)...)
+	}
+	// 整段可见历史都已折叠（按钮把最后一轮也折了）：提示标签缀在尾部
+	if ruleMode && foldSeen {
+		out = append(out, TextMessage("user", foldBoundaryNote))
 	}
 	// 全序列修复工具调用配对（协议硬要求；残缺可能出现在任何位置，见函数注释）
 	return repairToolPairing(out)
@@ -230,57 +255,67 @@ func repairToolPairing(msgs []Message) []Message {
 	return fixed
 }
 
-// envUpdateMessage 把相邻两份环境快照渲染成一条短的「环境更新」：只含有变化
-// 的行（新增/修改按新文原文），被移除的条目归入「不再适用」清单。确定性纯函数
-// （存储文本唯一决定输出），同文快照的标题行会被精确匹配自然滤掉。
-// 被替换条目的旧行（如旧值 "- 用户最近发消息时间：22:00" → 新值已在上文）不再重复
-// 报进「不再适用」——按 envLineKey 抑制；纯注记行（非 "- " 条目，如技能变更
-// 说明）过期后静默消失，不进清单。
+// envUpdateMessage 把相邻两份环境快照渲染成发给模型的消息，按差分形状分流：
+//   - 纯新增条目 → 短「环境更新」只列新增行（叠加语义，旧快照仍然有效，
+//     前缀缓存友好）；
+//   - 条目有减（被移除），或同 key 换值（= 有增有减的变更）→ 完整重发新快照
+//     （标题行标明「完整重发」）——让模型自己按「不再适用」清单脑内合并旧快照
+//     容易读错状态，减法一律给全量，一眼即最新。
+//
+// 确定性纯函数（存储文本唯一决定输出），同文快照的标题行会被精确匹配自然滤掉。
+// 纯注记行（非 "- " 条目，如技能变更说明）过期后静默消失不触发全量重发，
+// 新出现的注记行按新增进补充消息。
 func envUpdateMessage(prev, cur string) string {
 	prevCount := map[string]int{}
+	prevKeys := map[string]bool{} // 旧快照的条目 key 集：识别「同 key 换值」
 	for _, l := range strings.Split(prev, "\n") {
 		prevCount[l]++
+		if k := envLineKey(l); k != "" && strings.HasPrefix(strings.TrimSpace(l), "- ") {
+			prevKeys[k] = true
+		}
 	}
 	changed := []string{}
-	curKeys := map[string]bool{}
+	keyReplaced := false
 	for _, l := range strings.Split(cur, "\n") {
 		if prevCount[l] > 0 {
 			prevCount[l]--
 			continue // 整行未变
 		}
-		if k := envLineKey(l); k != "" {
-			curKeys[k] = true
+		if k := envLineKey(l); k != "" && prevKeys[k] {
+			keyReplaced = true // 同一条目换了取值：按变更处理
 		}
 		changed = append(changed, l)
 	}
-	removed := []string{}
+	entryRemoved := false
 	for l, n := range prevCount {
-		if n == 0 || strings.TrimSpace(l) == "" {
-			continue
+		if n > 0 && strings.HasPrefix(strings.TrimSpace(l), "- ") {
+			entryRemoved = true // 有 "- " 条目在新快照里没了（含被换值的旧值）
+			break
 		}
-		if !strings.HasPrefix(strings.TrimSpace(l), "- ") {
-			continue // 纯注记行（标题/技能变更说明等）：过期即消失，不作条目公告
-		}
-		if curKeys[envLineKey(l)] {
-			continue // 同条目已有新值在上文，旧值不重复报
-		}
-		removed = append(removed, l)
 	}
-	sort.Strings(removed)
-	sort.Strings(changed) // 均来自 map/无序收集，排序保证确定性
-
+	if entryRemoved || keyReplaced {
+		return fullResendEnv(cur)
+	}
+	if len(changed) == 0 {
+		return "" // 完全同文（防御：落库层等值比较已保证不会走到这）
+	}
+	sort.Strings(changed) // 无序收集，排序保证确定性
 	var b strings.Builder
-	b.WriteString("# 环境更新（取代更早的快照与更新）\n")
+	b.WriteString("# 环境更新（新增条目，叠加在更早的快照与更新之上；条目减少或变更时会完整重发快照）\n")
 	for _, l := range changed {
 		b.WriteString(l + "\n")
 	}
-	if len(removed) > 0 {
-		b.WriteString("（以下条目已不再适用）\n")
-		for _, l := range removed {
-			b.WriteString(l + "\n")
-		}
-	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// fullResendEnv 把新快照渲染成一次完整重发：正文用新快照原文，首行标题换成
+// 「完整重发」声明，取代此前所有快照与差分更新（模型无需再回头合并旧文）。
+func fullResendEnv(cur string) string {
+	body := cur
+	if i := strings.IndexByte(cur, '\n'); i >= 0 && strings.HasPrefix(cur, "# ") {
+		body = cur[i+1:]
+	}
+	return "# 运行环境快照（完整重发，取代更早的快照与更新）\n" + strings.TrimRight(body, "\n")
 }
 
 // envLineKey 取环境快照行的条目键："- key：value" 形式取 key（同条目的新旧
@@ -470,8 +505,22 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			add("摘要", TextMessage("user", s.Text()))
 		}
 		prevEnv := "" // 与 buildContext 同一套环境快照渲染口径（首条整份、后续差分）
+		foldSeen := false // 与 buildContext 同一折叠边界口径：交界处注入提示标签
 		for _, m := range raw {
 			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
+				continue
+			}
+			if ruleMode {
+				if m.Compact == "" && foldSeen {
+					add("消息", TextMessage("user", foldBoundaryNote))
+					foldSeen = false
+				}
+				if m.Compact != "" {
+					foldSeen = true
+				}
+			}
+			// 与 buildContext 同一折叠口径：omit 行（含压缩区环境快照）不进上下文
+			if ruleMode && m.Compact == compactOmit {
 				continue
 			}
 			if m.Kind == "env" {
@@ -485,10 +534,11 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 				continue
 			}
 			if ruleMode && m.Compact != "" {
-				if m.Compact == compactOmit {
-					continue
-				}
 				add("消息", Message{Role: m.Role, Content: m.Compact})
+				// 与 buildContext 同一派生口径：折叠的用户侧行同样跟时间消息
+				for _, tm := range a.timeAfter(m) {
+					add("消息", tm)
+				}
 				continue
 			}
 			add("消息", m.Message)
@@ -497,6 +547,10 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			for _, tm := range a.timeAfter(m) {
 				add("消息", tm)
 			}
+		}
+		// 与 buildContext 同一口径：整段可见历史都已折叠时提示标签缀尾
+		if ruleMode && foldSeen {
+			add("消息", TextMessage("user", foldBoundaryNote))
 		}
 	}
 
@@ -532,103 +586,224 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 
 // ---------- 规则压缩（零模型调用） ----------
 
-// ruleCompactPass 在每轮对话结束后调用：新增轮数达到间隔阈值时，
-// 把「保留窗口之外、尚未压缩」的轮次折叠为轻量表示。
-// 用户消息与模型正文永远保留原文；工具调用保留名字+参数（超长截断）；
-// 工具结果只留开头片段。以轮为单位整体折叠，绝不拆散调用/结果配对。
-func (a *App) ruleCompactPass(sess *SessionMeta) {
-	if a.Cfg.CompactMode != "rule" {
-		return
+// 规则压缩不随轮次自动跑（每轮改写历史前缀会持续打断 KV 缓存），只在两种
+// 时机执行：上下文估算达到阈值时（maybeAutoCompact）与手动压缩时
+//（handleCompact 的 upTo）。折叠语义分两级（见 compactRound）：一级保留用户
+// 输入与正文、调用名+参数，丢弃思考/工具结果/环境快照；二级（已折过的轮再被
+// 更大的压缩范围覆盖）只留用户输入与模型最终输出。组装时在折叠边界注入
+// foldBoundaryNote 提示模型「以上已压缩、细节可查历史」；以轮为单位整体折叠，
+// 绝不拆散调用/结果配对。
+// visibleSize 是一行消息在「模型可见表面」上的字数（rune）：折叠过的行按
+// 折叠视图计（omit=0），原文行计正文+思考+工具参数（这些都会随请求发出）；
+// 视图外的归档行（summary/prompt/request/audit/inherit）不计。
+func visibleSize(m *StoredMessage) int {
+	switch {
+	case m.Kind == "summary" || m.Kind == "prompt" || m.Kind == "request" || m.Kind == "audit" || m.Kind == inheritKind:
+		return 0
+	case m.Compact == compactOmit:
+		return 0
+	case m.Compact != "":
+		return len([]rune(m.Compact))
 	}
+	n := len([]rune(m.Text())) + len([]rune(m.Thinking))
+	for _, tc := range m.ToolCalls {
+		n += len([]rune(tc.Function.Arguments))
+	}
+	return n
+}
+
+// keepRoundsByBudget 按保留预算（KeepChars，字）算自动压缩保留几轮：从最新
+// 一轮往前累计模型可见字数，装得下的整轮都保留；命中点可能落在某一轮中间，
+// 轮是原子单位——往上扩到整轮保留，宁可略超预算也不劈半轮。至少保 1 轮
+//（最近一轮独大时只留它，更早的全部折叠）。
+func (a *App) keepRoundsByBudget(raw []*StoredMessage) int {
+	rounds := splitRounds(raw)
+	if len(rounds) == 0 {
+		return 0
+	}
+	sizeOf := func(r round) int {
+		n := 0
+		for _, m := range raw {
+			if m.Seq >= r.startSeq && m.Seq <= r.endSeq {
+				n += visibleSize(m)
+			}
+		}
+		return n
+	}
+	kept, total := 1, sizeOf(rounds[len(rounds)-1])
+	for i := len(rounds) - 2; i >= 0; i-- {
+		s := sizeOf(rounds[i])
+		if total+s > a.Cfg.KeepChars {
+			break
+		}
+		total += s
+		kept++
+	}
+	return kept
+}
+
+// ruleCompactAuto 阈值触发/溢出兜底的自动入口：把保留窗口之外、尚未折叠的
+// 轮次全部折叠。keep<=0 表示自动触发——按 KeepChars 字数预算保留最近的完整
+// 轮（规则与模型摘要两种压缩共用同一预算口径）；keep=1 是溢出兜底的最大化
+// 压缩（只留最近一轮）。返回折叠的轮数。
+func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
-		return
+		return 0
 	}
 	rounds := splitRounds(raw)
-	if len(rounds) <= a.Cfg.KeepRounds {
-		return
+	if keep <= 0 {
+		keep = a.keepRoundsByBudget(raw)
 	}
-	// 已压缩边界：最后一条带 compact 标记的消息 seq
+	if len(rounds) <= keep {
+		return 0
+	}
+	// 保留窗口起点的前一条即压缩终点
+	return a.foldRounds(sess, raw, rounds, rounds[len(rounds)-keep].startSeq-1)
+}
+
+// ruleCompactTo 手动压缩：折叠 upTo 所在轮（含）及更早、尚未折叠的全部轮，
+// upTo 之后的轮保持原文。返回折叠的轮数。
+func (a *App) ruleCompactTo(sess *SessionMeta, upTo int64) (int, error) {
+	raw, err := a.Store.RawMessagesAll(sess.ID)
+	if err != nil {
+		return 0, err
+	}
+	rounds := splitRounds(raw)
+	// 找 upTo 所在轮：该轮整体折叠（一轮是不可分割的压缩单位，拆半轮会让
+	// 正文与调用分家）；upTo 落在轮外的行（inherit 标记等）时并给下一轮
+	end := int64(0)
+	for _, r := range rounds {
+		if upTo >= r.startSeq && upTo <= r.endSeq {
+			end = r.endSeq
+			break
+		}
+	}
+	if end == 0 {
+		for _, r := range rounds {
+			if r.startSeq > upTo {
+				end = r.endSeq
+				break
+			}
+		}
+	}
+	if end == 0 {
+		return 0, fmt.Errorf("第 %d 条之前没有可折叠的回合", upTo)
+	}
+	if n := a.foldRounds(sess, raw, rounds, end); n > 0 {
+		return n, nil
+	}
+	return 0, fmt.Errorf("第 %d 条之前的回合都已折叠过了", upTo)
+}
+
+// foldRounds 折叠 endSeq 及更早、尚未折叠的全部轮，返回**新**折叠轮数。
+// 已折叠边界 = 带任意 compact 标记的行（含 omit 的工具结果与环境快照）的最大
+// seq——compactRound 对每轮至少标一行（用户输入也标），边界因此总能推进。
+// 二级升级：本次有新折叠时，边界之前的旧折叠轮同步升级为二级压缩（只留用户
+// 输入与模型最终输出）——压缩标签以上的部分进一步丢弃中间过程；标签以下
+//（本次新折的）按一级规则。无新折叠时不做任何事（重复点击保持幂等报错）。
+func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round, endSeq int64) int {
 	ruleSeq := int64(0)
 	for _, m := range raw {
-		if m.Compact != "" && m.Seq > ruleSeq && m.Kind == "chat" {
+		if m.Compact != "" && m.Seq > ruleSeq {
 			ruleSeq = m.Seq
 		}
 	}
-	// 统计边界后的新增轮数，达到间隔才做一次
-	newRounds := 0
+	folded, upgraded, from := 0, 0, int64(0)
 	for _, r := range rounds {
-		if r.startSeq > ruleSeq {
-			newRounds++
-		}
-	}
-	if newRounds < a.Cfg.RuleInterval {
-		return
-	}
-	// 压缩 [已压缩边界之后, 保留窗口之前] 的所有轮
-	keepFrom := rounds[len(rounds)-a.Cfg.KeepRounds].startSeq
-	folded, from, to := 0, int64(0), int64(0)
-	for _, r := range rounds {
-		if r.startSeq <= ruleSeq || r.startSeq >= keepFrom {
+		if r.startSeq <= ruleSeq || r.endSeq > endSeq {
 			continue
 		}
 		a.compactRound(sess.ID, r, raw)
 		if folded == 0 {
 			from = r.startSeq
 		}
-		to = r.endSeq
 		folded++
 	}
 	if folded > 0 {
+		for _, r := range rounds {
+			if r.startSeq <= ruleSeq && r.endSeq <= endSeq {
+				a.compactRoundAgain(sess.ID, r, raw)
+				upgraded++
+			}
+		}
 		// 审计留痕：规则压缩改写模型可见前缀，是缓存命中率突降的常见原因
-		a.auditWrite(sess, map[string]any{"type": "compact", "rounds": folded, "from": from, "to": to})
+		a.auditWrite(sess, map[string]any{"type": "compact", "rounds": folded, "upgraded": upgraded, "from": from, "to": endSeq})
+		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 	}
+	return folded
 }
 
-// compactRound 把一轮里的工具调用/结果折叠为轻量表示并落库。
+// compactRound 把一整轮**首次**折叠为一级轻量表示并落库（幂等，不改原文；
+// 已折过的轮由 foldRounds 路由到 compactRoundAgain 做二级升级）：
+//   - 用户侧输入（chat/aiuser/report）：Compact=原文（视图逐字节不变，标记只为推进边界）
+//   - 助手正文行：Compact=原文（思考过程丢弃——折叠视图不带 ReasoningContent）
+//   - 带工具调用的助手行：正文 + [调用 名 参数=clip]（工具结果不保留）
+//   - 工具结果行与环境快照行：omit（组装时整行跳过）
 func (a *App) compactRound(sid string, r round, raw []*StoredMessage) {
-	// 该轮内 assistant 的工具调用行：正文保留 + 调用清单（参数限长、结果开头）
 	for _, m := range raw {
 		if m.Seq < r.startSeq || m.Seq > r.endSeq {
 			continue
 		}
 		switch {
+		case m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit":
+			// 视图外的归档行不标（组装本来就跳过）
 		case len(m.ToolCalls) > 0:
 			var b strings.Builder
 			if s := m.Text(); strings.TrimSpace(s) != "" {
 				b.WriteString(s + "\n")
 			}
-			results := toolResultsOf(raw, r, m)
-			for i, tc := range m.ToolCalls {
+			for _, tc := range m.ToolCalls {
 				b.WriteString(fmt.Sprintf("[调用 %s", tc.Function.Name))
 				if args := clipText(tc.Function.Arguments, argKeepLimit); args != "" {
 					b.WriteString(" 参数=" + args)
 				}
-				if i < len(results) {
-					b.WriteString(" 结果=" + clipText(results[i], resultKeepLimit))
-				}
 				b.WriteString("]\n")
 			}
 			_ = a.Store.SetCompact(sid, m.Seq, strings.TrimRight(b.String(), "\n"))
-		case m.Role == "tool":
+		case m.Role == "tool" || m.Kind == "env":
 			_ = a.Store.SetCompact(sid, m.Seq, compactOmit)
+		case m.Role == "assistant" || m.Role == "user":
+			if s := m.Text(); strings.TrimSpace(s) != "" {
+				_ = a.Store.SetCompact(sid, m.Seq, s)
+			}
 		}
 	}
 }
 
-// toolResultsOf 取与调用行配对的结果文本（按 ToolCallID 对齐）。
-func toolResultsOf(raw []*StoredMessage, r round, callRow *StoredMessage) []string {
-	byID := map[string]string{}
+// compactRoundAgain 是二级压缩：对已折叠过的轮再压，只留用户输入与模型最终
+// 输出（= 该轮最后一条纯正文助手行），其余整行 omit。
+func (a *App) compactRoundAgain(sid string, r round, raw []*StoredMessage) {
+	finalSeq := int64(0)
 	for _, m := range raw {
-		if m.Seq >= r.startSeq && m.Seq <= r.endSeq && m.Role == "tool" && m.ToolCallID != "" {
-			byID[m.ToolCallID] = m.Text()
+		if m.Seq < r.startSeq || m.Seq > r.endSeq {
+			continue
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) == 0 && strings.TrimSpace(m.Text()) != "" {
+			finalSeq = m.Seq
 		}
 	}
-	out := []string{}
-	for _, tc := range callRow.ToolCalls {
-		out = append(out, byID[tc.ID])
+	for _, m := range raw {
+		if m.Seq < r.startSeq || m.Seq > r.endSeq {
+			continue
+		}
+		switch {
+		case m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit":
+			// 视图外的归档行不标
+		case m.Role == "user":
+			// 用户输入保留原文（一级时已标，幂等；只补漏）
+			if m.Compact == "" && strings.TrimSpace(m.Text()) != "" {
+				_ = a.Store.SetCompact(sid, m.Seq, m.Text())
+			}
+		case m.Seq == finalSeq:
+			// 模型最终输出保留原文
+			_ = a.Store.SetCompact(sid, m.Seq, m.Text())
+		default:
+			// 中间过程全部丢弃：调用行、过程性正文、工具结果、环境快照
+			_ = a.Store.SetCompact(sid, m.Seq, compactOmit)
+		}
 	}
-	return out
 }
 
 // ---------- 模型摘要压缩 ----------
@@ -639,10 +814,12 @@ const summarizeInstruction = `请把下面这段对话历史压缩成一份结�
 2. 保留精确的路径、命令、错误信息、数字与名称，不得改写。
 3. 只输出摘要本身，不要评论、不要提及压缩这件事。`
 
-// doSummarize 把 [最后摘要边界, 保留窗口之前] 的区间压成一条摘要。
+// doSummarize 把 [最后摘要边界, 压缩终点] 的区间压成一条摘要。
 // origin=auto 时合并旧自动摘要（DSH 式单一检查点）；origin=manual 时独立叠加、永不重压。
-// keepTail=0 表示溢出兜底（保留尾为零，最大化压缩）。
-func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (string, error) {
+// upTo>0（手动按钮）时压缩终点=upTo 所在轮（含），之后的轮保持原文；
+// 否则按保留窗口从尾部倒数——keepTail<=0 表示自动触发，与规则压缩共用同一
+// 字数预算（keepRoundsByBudget）；溢出兜底显式传 1（只留最近一轮）。
+func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo int64) (string, error) {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
 		return "", err
@@ -660,15 +837,33 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 	}
 	keep := keepTail
 	if keep <= 0 {
-		keep = a.Cfg.KeepRounds
+		keep = a.keepRoundsByBudget(raw)
 	}
 	rounds := splitRounds(raw)
 	segEnd := int64(0)
-	if len(rounds) > keep {
+	if upTo > 0 {
+		for _, r := range rounds {
+			if upTo >= r.startSeq && upTo <= r.endSeq {
+				segEnd = r.endSeq
+				break
+			}
+		}
+		if segEnd == 0 {
+			for _, r := range rounds {
+				if r.startSeq > upTo {
+					segEnd = r.endSeq
+					break
+				}
+			}
+		}
+		if segEnd == 0 {
+			return "", fmt.Errorf("第 %d 条之前没有可压缩的回合", upTo)
+		}
+	} else if len(rounds) > keep {
 		segEnd = rounds[len(rounds)-keep].startSeq - 1
 	}
 	if segEnd <= boundary {
-		return "", fmt.Errorf("没有可压缩的区间（保留最近 %d 轮）", keep)
+		return "", fmt.Errorf("没有可压缩的区间（该范围之前的内容已压缩过）")
 	}
 	var b strings.Builder
 	if origin == "auto" && prevAuto != nil {
@@ -712,24 +907,36 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int) (strin
 // callSummarizer 已并入上下文引擎（ContextEngine.CallSummarizer）：摘要调用
 // 要把对话历史发给模型，拼装与发送归引擎统一口径，此处不再保留旁路。
 
-// maybeAutoCompact 在 llm 模式下请求前检查：估算 token 超过阈值就自动压缩。
-func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int) error {
-	if a.Cfg.CompactMode != "llm" || ctxWindow <= 0 {
-		return nil
+// maybeAutoCompact 在每次请求组装后检查：估算 token 超过阈值（CompactThreshold×
+// 窗口）就自动压缩——rule 模式做规则折叠（零模型调用），llm 模式生成摘要。
+// 返回是否发生了压缩：true 时调用方应重新组装请求，避免带着超限前的旧消息发出。
+func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int) (bool, error) {
+	if a.Cfg.CompactMode == "off" || ctxWindow <= 0 {
+		return false, nil
 	}
 	if estimateTokens(msgs) < int(float64(ctxWindow)*a.Cfg.CompactThreshold) {
-		return nil
+		return false, nil
 	}
-	_, err := a.doSummarize(sess, "auto", a.Cfg.KeepRounds)
-	return err
+	if a.Cfg.CompactMode == "rule" {
+		return a.ruleCompactAuto(sess, 0) > 0, nil
+	}
+	_, err := a.doSummarize(sess, "auto", 0, 0)
+	return err == nil, err
 }
 
-// overflowCompact 是上下文超限的兜底：保留尾为零强制压缩一次（DSH 式）。
+// overflowCompact 是上下文超限的兜底：最大化压缩一次。rule 模式规则折叠到
+// 只留最近 1 轮（零模型调用）；llm 模式生成只留最近 1 轮的摘要。
 func (a *App) overflowCompact(sess *SessionMeta) error {
 	if a.Cfg.CompactMode == "off" {
 		return fmt.Errorf("上下文超限且压缩已关闭，请手动精简会话或开启压缩")
 	}
-	_, err := a.doSummarize(sess, "manual", 0)
+	if a.Cfg.CompactMode == "rule" {
+		if a.ruleCompactAuto(sess, 1) > 0 {
+			return nil
+		}
+		return fmt.Errorf("没有可折叠的回合（上下文超限可能来自系统提示词或工具目录本身）")
+	}
+	_, err := a.doSummarize(sess, "manual", 1, 0)
 	return err
 }
 

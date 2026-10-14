@@ -11,6 +11,8 @@ import (
 // SessionMeta 是一个会话的元信息；消息正文存于 messages 表。
 // mode: task=普通任务会话 assistant=数字助理总控 aux=辅助答疑对话
 //      office=标准办公模式 coding=编程模式（扩展模式样板：设计人员等未来模式照此新增）
+//      beginner-coding=新手编程模式（工具与界面同编程模式，提示词面向不懂编程的
+//      用户：先确认需求再动手、全程大白话讲解）
 //      skill-create=创建技能模式（用户演示操作→沉淀 SKILL.md 技能；默认完全访问，
 //      配套演示记录器 demo_record_* 与 register_skill，见 recorder.go / agent.go）
 // permission: workspace-write=工作区内读写 full=完全访问 read-only=只读

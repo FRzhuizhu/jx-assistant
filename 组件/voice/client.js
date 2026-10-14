@@ -530,8 +530,11 @@
     if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
     const sub = document.getElementById('sub-input');
     if (sub) {
-      if (subBasePH === null) subBasePH = sub.placeholder || '向子对话发消息…';
-      sub.placeholder = subBasePH + voiceHintText();
+      // 取原始文案：组件激活若发生在执行中（setStreamUI 已追加插话/排队段），
+      // 从存货 dataset.idlePh 取，别把执行段错记成原始文案导致还原后多出一段
+      if (subBasePH === null) subBasePH = (sub.dataset.runPh && sub.dataset.idlePh) || sub.placeholder || '向子对话发消息…';
+      // 执行中（runPh 标记）占位符带着插话/排队段：刷新快捷键提示时同样带上
+      sub.placeholder = subBasePH + voiceHintText() + (sub.dataset.runPh ? RUN_HINT_SEGMENT : '');
     }
   }
   function restoreSubPlaceholder() {

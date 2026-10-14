@@ -206,15 +206,15 @@ func stripFullAccessCaps(tools []string) []string {
 // 前端 web/app-chat.js 的 applyCapDefaults 与它同一策略）。现行策略只有一条：
 // 「工作区内读写」默认开启「操作浏览器」——模型看网页是常态动作，默认给上；
 // 用户随时可在权限芯片里取消，显式取消不被覆盖（见各调用点的 tools 是否为 nil）。
-// 只对真会注册 browser_* 的四种模式生效（toolsFor：task/office/coding/
-// skill-create）；只读、完全访问、aux/assistant 不在默认之列——完全访问走
-// bundleFullAccessCaps 捆绑点亮，语义不同。
+// 只对真会注册 browser_* 的模式生效（toolsFor：task/office/coding/
+// beginner-coding/skill-create）；只读、完全访问、aux/assistant 不在默认之列——
+// 完全访问走 bundleFullAccessCaps 捆绑点亮，语义不同。
 func capDefaultsForMode(mode, perm string) []string {
 	if perm != permWorkspace {
 		return nil
 	}
 	switch mode {
-	case "task", "office", "coding", "skill-create":
+	case "task", "office", "coding", "beginner-coding", "skill-create":
 		return []string{capBrowser}
 	}
 	return nil

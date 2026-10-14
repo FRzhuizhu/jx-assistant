@@ -64,6 +64,19 @@ Source: "stage\组件\*"; DestDir: "{app}\组件"; Flags: ignoreversion recurses
 Source: "stage\md-viewer\*"; DestDir: "{app}\md-viewer"; Flags: ignoreversion
 Source: "stage\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; 安装期清理（升级时先删后装，防旧文件残留）：只清「随包分发、整体重装」的
+; 目录；用户的东西严格不碰——data\、config.json、默认工作区\（含旧名「工作区」）、
+; 技能\user\（用户技能）、插件\（用户装的 DSH 插件原件）、组件\<非随包 id>（市场
+; 装的组件）一律保留。随包目录的逐项清单由 打包安装包.ps1 按 stage 现货生成
+; （清理清单.iss），这里只钉死历史遗留布局：v1.0.2 时代本地语音 worker 装在
+; {app}\asr，之后迁入 组件\voice\ 但旧目录会一直残留并曾被误用——下架内置
+; 组件/改目录结构时，同样往这里补一条。
+Type: filesandordirs; Name: "{app}\asr"
+#if FileExists(AddBackslash(SourcePath) + "清理清单.iss")
+  #include "清理清单.iss"
+#endif
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Parameters: "-desktop"
 Name: "{group}\卸载{#MyAppName}"; Filename: "{uninstallexe}"

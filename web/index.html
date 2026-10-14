@@ -170,7 +170,7 @@
     <div id="mk-upload-modal" class="modal hidden">
       <div class="modal-card mku-card">
         <h3>上传技能到市场</h3>
-        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip 或文件夹）。</p>
+        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip、.md 文件或文件夹）。</p>
         <div id="mku-skills" class="mku-skills"></div>
         <div class="mku-meta">
           <label>技能 ID <span class="mku-req">必填</span>
@@ -563,6 +563,30 @@
               </div>
             </div>
           </div>
+          <div class="gen-section">
+            <h4>询问提醒</h4>
+            <div class="set-field">
+              <div class="sf-label">声音和灯光提醒</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-askalert-on"><span></span></label>
+                <span class="sf-desc">提问久等未答时：叮一声＋全屏闪烁＋语音朗读（语音组件启用时才朗读）</span>
+              </div>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">触发时长（秒）</div>
+              <div class="sf-inline">
+                <input id="set-askalert-sec" type="number" min="30" max="600">
+                <span class="sf-desc">提问等待达到该秒数仍未回答（且没碰过提问卡）时提醒，30–600，默认 240（4 分钟）</span>
+              </div>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">朗读文案</div>
+              <div class="sf-inline">
+                <input id="set-askalert-text" class="pf-input" placeholder="领导，在吗？有个问题需要您审批确认一下。" autocomplete="off" spellcheck="false">
+                <span class="sf-desc">提醒触发时朗读这句话；留空用默认文案</span>
+              </div>
+            </div>
+          </div>
           <div class="gen-section" id="render-mode-section" style="display:none">
             <h4>界面渲染（桌面版）</h4>
             <div class="set-field">
@@ -683,18 +707,15 @@
         <div class="set-pane" id="set-pane-context">
           <h3>对话历史与压缩</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留，压缩只影响发给模型的内容</div>
+            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留、可随时查回，压缩只影响发给模型的内容。规则压缩：折叠的回合保留用户输入与正文、工具调用名与参数；丢弃思考过程、工具结果与环境快照。达到阈值自动压缩（按保留字数预算保留最近的完整轮），消息上的「压缩」按钮则按该回合位置向上折叠</div>
             <div class="compact-row">
               <label>模式
                 <div id="sel-compact-mode"></div>
               </label>
-              <label>保留最近轮数
-                <input id="set-keeprounds" type="number" min="1">
+              <label>保留字数（自动压缩）
+                <input id="set-keepchars" type="number" min="10000" step="5000">
               </label>
-              <label>规则压缩间隔（轮）
-                <input id="set-ruleinterval" type="number" min="1">
-              </label>
-              <label>摘要触发阈值
+              <label>自动压缩阈值
                 <div id="sel-compact-threshold"></div>
               </label>
             </div>
@@ -745,7 +766,7 @@
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
           <div class="prov-section skill-drop-zone">
-            <div class="tip-inline" style="margin:0 0 10px">技能 = 带说明与脚本的能力包。<b>支持把 .zip 压缩包或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
+            <div class="tip-inline" style="margin:0 0 10px">技能 = 带说明与脚本的能力包。<b>支持把 .zip 压缩包、单个 .md 说明文件或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
             <button id="skill-add-btn" class="pf-add">＋ 添加技能</button>
           </div>
           <div class="gen-section">
@@ -892,7 +913,7 @@
   </button>
 </div>
 
-<!-- 技能添加方式：选文件夹 / 选 ZIP 压缩包（都弹操作系统原生选择框，后端代选并拿真实路径） -->
+<!-- 技能添加方式：选文件夹 / 选 ZIP·MD 文件（都弹操作系统原生选择框，后端代选并拿真实路径） -->
 <div id="skill-add-pop" class="popover hidden">
   <button class="pop-item" id="sa-folder">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -900,7 +921,7 @@
   </button>
   <button class="pop-item" id="sa-zip">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
-    从 ZIP 压缩包添加…
+    从 ZIP / MD 文件添加…
   </button>
 </div>
 
@@ -1063,6 +1084,17 @@
 
 <!-- 轻提示（toast）：静默组件更新完成等不打扰用户的通知，自动消失 -->
 <div id="app-toast" class="app-toast hidden"></div>
+
+<!-- 询问声光提醒层：提问久等未答时全屏淡压暗＋光晕呼吸（叮声与朗读在事件到达时触发）。
+     关闭永远一步到位：点背景＝只关闭不打扰当前操作，点中央卡片＝关闭并跳去回答，Esc 同效；
+     15 秒无操作或问题被解决后自动收起 -->
+<div id="ask-alert" class="hidden" title="点击关闭提醒">
+  <div class="aa-box">
+    <b>⏰ 有个提问在等你确认</b>
+    <p id="ask-alert-text"></p>
+    <span>点这张卡片前往回答 · 点其他任意处或按 Esc 关闭</span>
+  </div>
+</div>
 
 <!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → ctxmenu（桌面壳右键菜单）→ settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
 <script src="/qrcode.lib.js"></script>

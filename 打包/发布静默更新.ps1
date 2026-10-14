@@ -40,8 +40,8 @@ $exe = Join-Path $work "坚祥数字助理GO.exe"
 if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
-  Write-Host "== 编译主程序（注入桌面模式默认值）"
-  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1" -o $exe $root
+  Write-Host "== 编译主程序（注入桌面模式默认值与版本号——engine 块进程重启后要靠 appVersion 认出自己已是新版，漏注入会让待重启横幅永远不消）"
+  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1 -X main.appVersion=$Version" -o $exe $root
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }
 $engineZip = Join-Path $outDir "engine-$Version.zip"

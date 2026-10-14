@@ -108,11 +108,10 @@ func TestRecorderRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRecorderNoTranscriber：未接转写服务时 transcriberActive 为 false，
-// demo_record_transcribe 的返回文案走「未配置」分支（这里只验证判定函数，
-// 工具层的文案在 recorder.go）。
-func TestRecorderNoTranscriber(t *testing.T) {
-	if transcriberActive() {
-		t.Fatal("默认不应有已接入的转写服务")
+// TestRecorderASRHookNil：默认不接线转写（voiceasr.go 的 NewApp 注册才有），
+// 未接线时录制照常、只是不出字幕——测试环境保持这个前提。
+func TestRecorderASRHookNil(t *testing.T) {
+	if recorderASR != nil {
+		t.Fatal("测试环境不应注册转写钩子")
 	}
 }

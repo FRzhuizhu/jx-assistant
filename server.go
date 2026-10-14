@@ -167,6 +167,9 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	a.Todos = newTodoScheduler(a)
 	// 声明式组件桥（componentbridge.go）：manifest 声明 workers 的组件后端通用宿主
 	a.Bridge = newBridgeManager(a)
+	// 演示记录器随录随转：把语音组件的本地识别 worker 接给录制器（voiceasr.go；
+	// 组件停用时调用报错、优雅降级为纯录音）
+	recorderASR = a.transcribeWavBytes
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
 	// 公司接入自动同步（sync.go）：跟随服务端变化（模型/公司名/地址迁移）
@@ -179,7 +182,7 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 // sessionModes 是会话模式全集（单一事实源）：建会话校验（handleCreateSession）
 // 与启动自检（assertSkillVisibility）共用。新增模式必须加进本列表——自检会
 // 逐模式强制「技能清单注入 + read_skill 在场」的全模式契约，漏加即启动炸响。
-var sessionModes = []string{"assistant", "aux", "office", "coding", "task", "skill-create"}
+var sessionModes = []string{"assistant", "aux", "office", "coding", "beginner-coding", "task", "skill-create"}
 
 // modeKnown 判断模式是否在 sessionModes 全集里。
 func modeKnown(m string) bool {
@@ -330,6 +333,11 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/voice/global/start", a.handleVoiceGlobalStart)
 	mux.HandleFunc("POST /api/voice/global/stop", a.handleVoiceGlobalStop)
 	mux.HandleFunc("POST /api/voice/global/finish", a.handleVoiceGlobalFinish)
+	// 演示记录器（创建技能模式）：录制归用户直控——输入框旁的按钮 POST 这里
+	// 起录/停录，模型不持有录制工具，材料以【演示记录】系统通知进对话（recorder.go）
+	mux.HandleFunc("POST /api/demo-record/start", a.handleDemoRecordStart)
+	mux.HandleFunc("POST /api/demo-record/stop", a.handleDemoRecordStop)
+	mux.HandleFunc("GET /api/demo-record/status", a.handleDemoRecordStatus)
 	// 声明式组件桥（componentbridge.go）：组件自包含后端的统一端点前缀——
 	// /api/c/<组件id>/<path> 按 manifest 的 workers 声明分发（call=HTTP 一行一答、
 	// ws=WebSocket 哑转发）；组件未声明/未启用 404。挂 /api/ 下远程中继天然覆盖
@@ -1051,10 +1059,9 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"updateURL":        a.Cfg.UpdateURL,
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
-		"keepRounds":       a.Cfg.KeepRounds,
+		"keepChars":        a.Cfg.KeepChars,
 		"snapshotEnabled":  a.snapshotsEnabled(),
 		"snapshotDays":     a.Cfg.SnapshotDays,
-		"ruleInterval":     a.Cfg.RuleInterval,
 		"compactThreshold": a.Cfg.CompactThreshold,
 		"voiceGlobal": map[string]any{
 			"enabled": a.Cfg.VoiceGlobal.Enabled == nil || *a.Cfg.VoiceGlobal.Enabled,
@@ -1062,6 +1069,12 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"kbd":     a.Cfg.VoiceGlobal.Kbd,
 		},
 		"accentColor": a.Cfg.AccentColor,
+		// 询问提醒（设置·常规）：下发解析后的生效值（enabled 已按 nil=开解析）
+		"askAlert": map[string]any{
+			"enabled":  a.Cfg.askAlertOn(),
+			"afterSec": a.Cfg.askAlertAfterSec(),
+			"text":     a.Cfg.askAlertText(),
+		},
 	})
 }
 
@@ -1072,34 +1085,38 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Model           *string `json:"model"`
 		Workspace       *string `json:"workspace"`
 		BindHost        *string `json:"bindHost"`
-		RemoteEnabled   *bool   `json:"remoteEnabled"` // 远程接入（公网中继）总开关，即时生效（保存即热启停）
-		RemoteMyID      *string `json:"remoteMyId"`    // 远程接入设备号（手机入口 /a/<设备号>）
-		RemotePairKey   *string `json:"remotePairKey"` // 远程接入配对密钥（端到端加密密钥的种子）
-		RemoteHost      *string `json:"remoteHost"`    // 中继网关地址（域名或 IP，不带协议与端口）
-		RemotePort      *int    `json:"remotePort"`    // 中继网关端口
-		MarketURL       *string `json:"marketURL"`     // 市场（技能/组件/插件）服务器清单地址
-		PublisherName   *string `json:"publisherName"` // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
-		WizardDone      *bool   `json:"wizardDone"`    // 首启向导：完成/跳过（不再自动弹）
+		RemoteEnabled   *bool   `json:"remoteEnabled"`  // 远程接入（公网中继）总开关，即时生效（保存即热启停）
+		RemoteMyID      *string `json:"remoteMyId"`     // 远程接入设备号（手机入口 /a/<设备号>）
+		RemotePairKey   *string `json:"remotePairKey"`  // 远程接入配对密钥（端到端加密密钥的种子）
+		RemoteHost      *string `json:"remoteHost"`     // 中继网关地址（域名或 IP，不带协议与端口）
+		RemotePort      *int    `json:"remotePort"`     // 中继网关端口
+		MarketURL       *string `json:"marketURL"`      // 市场（技能/组件/插件）服务器清单地址
+		PublisherName   *string `json:"publisherName"`  // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
+		WizardDone      *bool   `json:"wizardDone"`     // 首启向导：完成/跳过（不再自动弹）
 		CompanyLinkOff  *bool   `json:"companyLinkOff"` // 公司接入停用（设置·网络访问开关）：不弹向导、向导接口拒绝、同步器停转
-		RegistryURL     *string `json:"registryURL"`   // 总服务器地址（向导发现不到公司时的查询兜底）
-		UpdateURL       *string `json:"updateURL"`     // 更新检查发布源（"off"/空串关闭）
-		UpdateMode      *string `json:"updateMode"`    // 更新方式：auto=分块静默（默认）/manual=仅提醒
+		RegistryURL     *string `json:"registryURL"`    // 总服务器地址（向导发现不到公司时的查询兜底）
+		UpdateURL       *string `json:"updateURL"`      // 更新检查发布源（"off"/空串关闭）
+		UpdateMode      *string `json:"updateMode"`     // 更新方式：auto=分块静默（默认）/manual=仅提醒
 		AllowShell      *bool   `json:"allowShell"`
 		MaxSteps        *int    `json:"maxSteps"`
 		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
 		SnapshotDays    *int    `json:"snapshotDays"`    // 快照自动清理天数（-1=永不过期）
 		Compact         *struct {
-			Mode         string  `json:"mode"`
-			KeepRounds   *int    `json:"keepRounds"`
-			RuleInterval *int    `json:"ruleInterval"`
-			Threshold    float64 `json:"threshold"`
+			Mode      string  `json:"mode"`
+			KeepChars *int    `json:"keepChars"`
+			Threshold float64 `json:"threshold"`
 		} `json:"compact"`
 		VoiceGlobal *struct {
-			Enabled *bool  `json:"enabled"` // 全局语音输入法开关（装卸系统钩子，热生效）
-			Mode    string `json:"mode"`    // tap=点按切换（默认）| hold=按住说话
-			AltKey  *bool  `json:"altKey"`  // 独按 Alt 的全局键盘钩子（页面副快捷键含 Alt 时 true）
+			Enabled *bool      `json:"enabled"` // 全局语音输入法开关（装卸系统钩子，热生效）
+			Mode    string     `json:"mode"`    // tap=点按切换（默认）| hold=按住说话
+			Kbd     [][]string `json:"kbd"`     // 键盘快捷键组合（页面主/副槽的键盘部分，照此监测）
 		} `json:"voiceGlobal"`
 		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：全局语音浮窗等独立环境取色
+		AskAlert    *struct {
+			Enabled  *bool   `json:"enabled"`  // 询问提醒开关（nil=不改；存 nil 时表示默认开）
+			AfterSec *int    `json:"afterSec"` // 触发秒数（30-600，钳制后存）
+			Text     *string `json:"text"`     // 朗读文案（空串=恢复默认）
+		} `json:"askAlert"` // 询问提醒三键，嵌套部分合并：只传变的键
 		Providers *[]struct {
 			ID      string     `json:"id"`
 			Name    string     `json:"name"`
@@ -1287,14 +1304,31 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		if body.Compact.Mode != "" {
 			a.Cfg.CompactMode = body.Compact.Mode
 		}
-		if body.Compact.KeepRounds != nil && *body.Compact.KeepRounds > 0 {
-			a.Cfg.KeepRounds = *body.Compact.KeepRounds
-		}
-		if body.Compact.RuleInterval != nil && *body.Compact.RuleInterval > 0 {
-			a.Cfg.RuleInterval = *body.Compact.RuleInterval
+		if body.Compact.KeepChars != nil && *body.Compact.KeepChars > 0 {
+			a.Cfg.KeepChars = *body.Compact.KeepChars
 		}
 		if body.Compact.Threshold > 0.5 && body.Compact.Threshold < 1 {
 			a.Cfg.CompactThreshold = body.Compact.Threshold
+		}
+	}
+	// 询问提醒三键合并（只传变的键）：afterSec 钳 30-600；text 去空白，空串
+	// 存空（askAlertText 读取时回默认）。开关原样存（nil=默认开的语义在读取侧）。
+	if body.AskAlert != nil {
+		if body.AskAlert.Enabled != nil {
+			a.Cfg.AskAlert.Enabled = body.AskAlert.Enabled
+		}
+		if body.AskAlert.AfterSec != nil {
+			v := *body.AskAlert.AfterSec
+			if v < 30 {
+				v = 30
+			}
+			if v > 600 {
+				v = 600
+			}
+			a.Cfg.AskAlert.AfterSec = v
+		}
+		if body.AskAlert.Text != nil {
+			a.Cfg.AskAlert.Text = strings.TrimSpace(*body.AskAlert.Text)
 		}
 	}
 	a.Cfg.syncLegacyFields()
@@ -1321,7 +1355,7 @@ func (a *App) handleVoiceGlobalStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleVoiceGlobalStop 只停不 toggle：页面内听写开启前静默收掉全局会话
-//（防双录：全局浮窗开着时用户切回输入框按快捷键的场景）。
+// （防双录：全局浮窗开着时用户切回输入框按快捷键的场景）。
 func (a *App) handleVoiceGlobalStop(w http.ResponseWriter, r *http.Request) {
 	if !voiceGlobalSupported() {
 		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
@@ -1348,6 +1382,112 @@ func (a *App) handleVoiceGlobalFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	voiceGlobalFinish(body.Text, body.Epoch)
 	writeJSON(w, 200, map[string]any{"ok": 1})
+}
+
+// ---------- 演示记录器端点（用户直控：输入框旁的录制按钮，见 recorder.go） ----------
+
+// demoRecordBody 起录/停录请求体：session 可选——在会话里点按钮时带上（停录后
+// 【演示记录】通知落进该会话）；首页（还没开会话）录制时不带，材料照常落全局
+// 默认工作区，建会话时由清单通知兜底。workspace 仅首页起录的兜底路径用。
+type demoRecordBody struct {
+	Session   string `json:"session"`
+	Workspace string `json:"workspace"`
+}
+
+// demoRecordSession 解析可选的 session 参数并做守卫（存在、本地、创建技能模式）；
+// 没带 session 时返回 (nil, nil) 表示首页起录。
+func (a *App) demoRecordSession(id string) (*SessionMeta, error) {
+	if id == "" {
+		return nil, nil
+	}
+	m, err := a.Store.Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("会话不存在：%s", id)
+	}
+	if m.Remote != nil {
+		return nil, fmt.Errorf("演示记录器仅支持本地会话（当前挂载的是 SSH 远程工作区）")
+	}
+	if m.Mode != "skill-create" {
+		return nil, fmt.Errorf("演示录制按钮只在「创建技能」模式的会话里可用")
+	}
+	return m, nil
+}
+
+// handleDemoRecordStart 用户点录制按钮起录。用户主动操作与文件上传同哲学，
+// 不走模型权限审批；首页也允许（没开会话时材料落全局默认工作区）。
+func (a *App) handleDemoRecordStart(w http.ResponseWriter, r *http.Request) {
+	var body demoRecordBody
+	_ = json.NewDecoder(r.Body).Decode(&body) // 允许空请求体
+	if !recorderSupported() {
+		writeErr(w, 400, "演示记录器仅支持 Windows 桌面")
+		return
+	}
+	sess, err := a.demoRecordSession(body.Session)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	ws := ""
+	if sess != nil {
+		ws = sess.Workspace
+	}
+	if ws == "" {
+		ws = body.Workspace
+	}
+	if ws == "" {
+		ws = a.Cfg.Workspace
+	}
+	dir := filepath.Join(ws, recorderBaseDir, recorderDirPrefix+time.Now().Format("20060102-150405"))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := recorderStart(dir); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	a.broadcast(Event{Type: "demo_record_started", Output: filepath.ToSlash(dir)})
+	writeJSON(w, 200, map[string]any{"ok": 1, "dir": filepath.ToSlash(dir)})
+}
+
+// handleDemoRecordStop 停录并收录材料（停钩子、存音频、生成 INDEX.md）；带
+// session 时向该会话追加【演示记录】系统通知（同文件上传通知机制），模型下一轮
+// 即可 read INDEX.md 开始分析。
+func (a *App) handleDemoRecordStop(w http.ResponseWriter, r *http.Request) {
+	var body demoRecordBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	sess, err := a.demoRecordSession(body.Session)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	stats, err := recorderStop()
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if err := buildRecorderIndex(stats); err != nil {
+		log.Printf("演示记录 INDEX.md 生成失败：%v（%s 的 events.jsonl 仍可直接读）", err, stats.Dir)
+	}
+	if sess != nil {
+		note := demoRecordStopNote(stats)
+		_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "demo", CreatedAt: now()})
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+	}
+	ev := Event{Type: "demo_record_stopped", Output: filepath.ToSlash(stats.Dir)}
+	if sess != nil {
+		ev.SessionID = sess.ID
+	}
+	a.broadcast(ev)
+	writeJSON(w, 200, map[string]any{"ok": 1, "dir": filepath.ToSlash(stats.Dir),
+		"ms": stats.MS, "events": stats.Events, "shots": stats.Shots, "audio": stats.AudioOK})
+}
+
+// handleDemoRecordStatus 录制按钮的初始态/恢复态查询：supported 决定按钮是否
+// 可用，active+dir 决定显示 ▶（起录）还是 ■（停止收录）。
+func (a *App) handleDemoRecordStatus(w http.ResponseWriter, r *http.Request) {
+	active, dir := recorderActiveInfo()
+	writeJSON(w, 200, map[string]any{"supported": recorderSupported(), "active": active, "dir": dir, "text": recorderStatusText()})
 }
 
 func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -1503,6 +1643,18 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			_ = a.Store.Delete(m.ID)
 			writeErr(w, 500, "继承父对话上下文失败: "+err.Error())
 			return
+		}
+	}
+	// 首页「先录后聊」的兜底入口：建创建技能会话时工作区若已有演示材料，
+	// 注入一条【演示记录】清单通知（同文件上传通知机制），模型开轮即知道
+	// 有哪些现成记录可分析——不管录制是多久以前、页面刷没刷新都成立。
+	if m.Mode == "skill-create" && m.Remote == nil {
+		ws := m.Workspace
+		if ws == "" {
+			ws = a.Cfg.Workspace
+		}
+		if dirs := recorderRecentDirs(ws, 3); len(dirs) > 0 {
+			_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", demoRecordListNote(dirs)), Kind: kindReport, Origin: "demo", CreatedAt: now()})
 		}
 	}
 	writeJSON(w, 200, m)
@@ -1729,7 +1881,18 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		if note := permChangeNote(permSrcPanel, permWas, permWasTools, m); note != "" {
 			a.stashPermNote(m.ID, note)
 		}
-		a.maybeAppendEnvSnapshot(m, a.envPrompt(m), func(ev Event) { ev.SessionID = m.ID; a.broadcast(ev) })
+		// 环境快照行同时进「全局广播」与「本会话执行流」：空闲会话靠前者翻新，
+		// 运行中的会话靠后者把「运行环境更新」行实时推进流式视图——只广播的话
+		// 流式中的前端会跳过刷新（msgs 数组里没有这行），权限变更提示就看不见
+		emit := func(ev Event) {
+			ev.SessionID = m.ID
+			if r := a.runOf(m.ID); r != nil {
+				r.observe(ev)
+				r.publish(ev)
+			}
+			a.broadcast(ev)
+		}
+		a.maybeAppendEnvSnapshot(m, a.envPrompt(m), emit)
 	}
 	writeJSON(w, 200, m)
 }
@@ -1825,8 +1988,9 @@ func (a *App) startupIntegrityLabelRestore(primary string) {
 	}
 }
 
-// handleCompact 手动压缩：把 [最后摘要边界, 保留轮数之前] 的区间压成一条
-// 手动摘要；已有摘要永不重压，多次手动压缩叠加。
+// handleCompact 手动压缩：按按钮位置（body.upTo）压缩该回合及更早的内容。
+// rule 模式即时规则折叠（零模型调用，毫秒级）；llm 模式生成覆盖到该轮的摘要；
+// 空请求体时按自动压缩的同一字数预算划保留范围。已有摘要永不重压，多次叠加。
 func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
@@ -1847,7 +2011,26 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	summary, err := a.doSummarize(m, "manual", a.Cfg.KeepRounds)
+	var body struct {
+		UpTo int64 `json:"upTo"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if a.Cfg.CompactMode == "rule" {
+		folded, err := 0, error(nil)
+		if body.UpTo > 0 {
+			folded, err = a.ruleCompactTo(m, body.UpTo)
+		} else if folded = a.ruleCompactAuto(m, 0); folded == 0 {
+			err = fmt.Errorf("没有可折叠的回合（保留最近约 %d 字）", a.Cfg.KeepChars)
+		}
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+		writeJSON(w, 200, map[string]any{"ok": 1, "folded": folded})
+		return
+	}
+	summary, err := a.doSummarize(m, "manual", 0, body.UpTo)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -2079,10 +2262,10 @@ func (a *App) handlePickFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"path": path})
 }
 
-// handlePickFile 同款系统原生对话框，但选择文件。默认过滤器限定 *.zip
-// （技能 ZIP 安装包，旧调用方）；query 加 filter=all 时不设过滤器（任意
-// 文件，聊天上传采集原件真实路径用），multi=1 允许多选。用户取消时
-// paths 为空数组；返回体保留 path 字段（首个）兼容旧调用方。
+// handlePickFile 同款系统原生对话框，但选择文件。默认过滤器限定 *.zip 与
+// *.md（技能安装文件，设置页「添加技能」在用）；query 加 filter=all 时不设
+// 过滤器（任意文件，聊天上传采集原件真实路径用），multi=1 允许多选。用户
+// 取消时 paths 为空数组；返回体保留 path 字段（首个）兼容旧调用方。
 func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
 	start := strings.TrimSpace(r.URL.Query().Get("start"))
 	if start == "" {
@@ -2272,7 +2455,11 @@ func (a *App) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	seqMap := map[int64]int64{} // 源 seq → 新会话 seq（AppendRow 顺序分配），供快照/交付按图复制
 	for _, x := range msgs {
-		row := &StoredMessage{Message: x.Message, Kind: x.Kind, CreatedAt: fork.CreatedAt}
+		// Compact/Thinking/Origin/Superseded 一并照搬：分支必须继承源会话的
+		// 规则压缩视图（否则折叠状态丢失、上下文瞬间膨胀回去）与思考过程
+		//（DeepSeek 思考模式的历史回传依赖它）
+		row := &StoredMessage{Message: x.Message, Kind: x.Kind, Origin: x.Origin,
+			Compact: x.Compact, Superseded: x.Superseded, Thinking: x.Thinking, CreatedAt: fork.CreatedAt}
 		if err := a.Store.AppendRow(fork.ID, row); err == nil {
 			seqMap[x.Seq] = row.Seq
 		}
@@ -2882,12 +3069,20 @@ func (a *App) handleListQuestions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"questions": a.pendingQuestions()})
 }
 
-// handleResolveQuestion 接收用户对提问的回答（计划批准用 __approve__）。
+// handleResolveQuestion 接收用户对提问的回答（计划批准用 __approve__）；
+// stop_timer=true 则是「停止倒计时」（悬停/触碰提问卡或点停止按钮）：该提问
+// 转为无限等待，直到作答或本轮被停止。
 func (a *App) handleResolveQuestion(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Answer string `json:"answer"`
+		Answer    string `json:"answer"`
+		StopTimer bool   `json:"stop_timer"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.StopTimer {
+		a.holdQuestion(r.PathValue("id"))
+		writeJSON(w, 200, map[string]string{"ok": "1"})
+		return
+	}
 	if err := a.resolveQuestion(r.PathValue("id"), body.Answer); err != nil {
 		writeErr(w, 404, err.Error())
 		return
