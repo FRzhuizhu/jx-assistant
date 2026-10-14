@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -60,6 +61,7 @@ func stdHandleValid(h uintptr) bool {
 // 落空。检测到无有效标准输出句柄时把 log 改落到 data\desktop.log
 // （超 5MB 轮转成 .old），诊断信息不丢；带控制台/管道启动（终端调试、
 // 脚本调用）保持原样打屏。
+// 脚本调用）保持原样打屏。无控制台时 panic/fatal 的堆栈同样接到这份日志。
 func guiLogRedirect() {
 	if h, _, _ := procGetStdHandle.Call(stdOutputHandle); stdHandleValid(h) {
 		return
@@ -74,6 +76,15 @@ func guiLogRedirect() {
 		return
 	}
 	log.SetOutput(f)
+	// 崩溃现场也要落盘（2026-10-14）：GUI 子系统构建没有控制台，panic / fatal
+	// error 的堆栈默认写 stderr，而 stderr 句柄同样无效——「闪退」于是不留任何
+	// 痕迹（事件查看器也看不到 Application Error：Go 自己接住了异常后 exit(2)）。
+	// 把 stderr 接到同一份日志，并交给 runtime 的 crash 输出通道，下次闪退就能
+	// 在 data\desktop.log 里直接看到堆栈。
+	os.Stderr = f
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		log.Printf("崩溃输出接管失败（panic 堆栈可能仍丢失）: %v", err)
+	}
 }
 
 // attachParentConsole：GUI 子系统 exe 在终端里跑 CLI 子命令（如
@@ -304,6 +315,15 @@ func runDesktop(app *App, url string) error {
 		app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
 		if bp, ok := app.nativePanel.(*browserPanel); ok {
 			panelReassertHook.Store(func() { bp.reassertTopOnUI() })
+			// 主窗口被用户拖动/缩放（含最大化还原拖动）时让面板暂停落位：系统的
+			// 模态移动循环里不再碰 WebView2 子窗口（详见 holdForWindowDrag）。
+			panelDragHoldHook.Store(func(hold bool) {
+				if hold {
+					bp.holdForWindowDrag()
+				} else {
+					bp.releaseAfterWindowDrag()
+				}
+			})
 		}
 		// 右侧栏截图（panel_screenshot 工具）的通道：shellEval 注入主界面 JS，
 		// 探针把右栏矩形 POST /api/shell/panel-view 回到 panelViewCh。
@@ -479,6 +499,8 @@ const (
 	sizeMinimized      = 1
 	wmActivate         = 0x0006
 	wmWindowPosChanged = 0x0047
+	wmEnterSizeMove    = 0x0231 // 用户开始拖动/缩放窗口（标题栏拖动、最大化还原拖动都算）
+	wmExitSizeMove     = 0x0232 // 系统的模态移动/缩放循环结束
 	swpNoSizeFlag      = 0x0001
 	swpNoMoveFlag      = 0x0002
 	waInactive         = 0
@@ -496,12 +518,24 @@ var (
 	// panelReassertHook 主窗口激活/Z 序变化时重申面板 Z 序（runDesktop 注入，
 	// 见 browserPanel.reassertTopOnUI）。原子指针：subclass 回调与窗口循环并发的护栏。
 	panelReassertHook    atomic.Value // 存 func()：主窗口激活时重申面板 Z 序
+	// panelDragHoldHook 用户拖动/缩放主窗口时通知面板层让路（runDesktop 注入，
+	// 见 browserPanel.holdForWindowDrag）。存 func(bool)：true=进入拖动，
+	// false=拖动结束。与 panelReassertHook 同样的原子指针护栏。
+	panelDragHoldHook atomic.Value
 	procSetWindowLongPtrW = desktopUser32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW   = desktopUser32.NewProc("CallWindowProcW")
 	procDefWindowProcW    = desktopUser32.NewProc("DefWindowProcW")
 	mainWndOrigProc       uintptr
 	mainWndNudgeCb        = windows.NewCallback(mainWndSubclassProc)
 	lastMainWndNudgeMs    int64
+	// mainWndInSizeMove = 1：UI 线程正处在系统的模态移动/缩放循环内（用户按住
+	// 标题栏/边框正在拖动窗口，含最大化窗口被拖出还原）。拖动期间一律不做自发
+	// 挪窗与面板 Z 序重申——拖动由系统驱动，我们在自己的回调栈上同步改窗口几何
+	// 会让拖动错乱，并把 WebView2 控制器（PutBounds /
+	// NotifyParentWindowPositionChanged / 面板子窗口 SetWindowPos）在同一栈上重入；
+	// 2026-10-14 的「全屏拖动闪退」正出在这条路上。拖动结束
+	// （WM_EXITSIZEMOVE，栈已干净）一次性补做唤醒与 Z 序重申。
+	mainWndInSizeMove     int32
 )
 
 // subclassMainWindow 换掉主窗口原 wndproc（安装必须在 UI 线程；此后所有消息
@@ -521,21 +555,43 @@ func subclassMainWindow(hwnd uintptr) {
 }
 
 func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
+	// 本过程跑在原生的 Windows 消息栈上：panic 从这里冒出去＝整个进程当场消失、
+	// 日志一个字都不留（windowsgui 子系统下无 stderr）。就地兜住并落堆栈：
+	// 进程保住，现场留下（返回 0＝按已处理对待，行为上等价于不做额外动作）。
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("主窗口过程 panic（已兜住，未终止进程）: %v\n%s", r, debug.Stack())
+		}
+	}()
 	switch msg {
 	case wmSize:
 		if wp == sizeMinimized {
 			return 0 // 别让绑定库把最小化下的退化矩形 PutBounds 给 WebView2
 		}
-		nudgeMainWindow(hwnd)
+		nudgeMainWindowIfIdle(hwnd)
 	case wmActivate:
-		if wp&0xffff != waInactive {
-			nudgeMainWindow(hwnd)
+		if wp&0xffff != waInactive && atomic.LoadInt32(&mainWndInSizeMove) == 0 {
+			nudgeMainWindowIfIdle(hwnd)
 			panelReassertZ()
 		}
+	case wmEnterSizeMove:
+		// 用户开始拖动/缩放窗口（含把最大化窗口拖出还原）：系统接着就在本次
+		// WM_NCLBUTTONDOWN 处理里跑它的模态移动循环，期间窗口几何全由系统驱动。
+		// 置位后三个自理动作分支一律让路（见 mainWndInSizeMove 注释）。
+		atomic.StoreInt32(&mainWndInSizeMove, 1)
+		panelDragHold(true)
+	case wmExitSizeMove:
+		// 模态循环已退出、栈已干净：把拖动期间攒下的唤醒与面板 Z 序重申补做一次，
+		// 黑屏唤醒/面板浮层的既有作用不丢。
+		atomic.StoreInt32(&mainWndInSizeMove, 0)
+		panelDragHold(false)
+		nudgeMainWindow(hwnd)
+		panelReassertZ()
 	case wmWindowPosChanged:
 		if p := (*windowPosMirror)(lp); p != nil &&
-			p.flags&swpNoSizeFlag != 0 && p.flags&swpNoMoveFlag != 0 {
-			nudgeMainWindow(hwnd)
+			p.flags&swpNoSizeFlag != 0 && p.flags&swpNoMoveFlag != 0 &&
+			atomic.LoadInt32(&mainWndInSizeMove) == 0 {
+			nudgeMainWindowIfIdle(hwnd)
 			panelReassertZ()
 		}
 	}
@@ -554,10 +610,26 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 // ProcessFailed 自动重载来修）。
 // panelReassertZ 主窗口激活/Z 序变化：把右栏面板提回兄弟窗口顶（Chromium
 // 聚焦时会把主 WebView2 重新提到顶、压住面板——右栏白屏的根因之一）。
+// panelDragHold 通知面板层「用户开始/结束拖动、缩放主窗口」（见 panelDragHoldHook）。
+func panelDragHold(hold bool) {
+	if f, ok := panelDragHoldHook.Load().(func(bool)); ok && f != nil {
+		f(hold)
+	}
+}
+
 func panelReassertZ() {
 	if f, ok := panelReassertHook.Load().(func()); ok && f != nil {
 		f()
 	}
+}
+
+// nudgeMainWindowIfIdle 拖动/缩放让路版：系统的模态移动循环内一律不做
+// （见 mainWndInSizeMove 注释），循环外与 nudgeMainWindow 等价。
+func nudgeMainWindowIfIdle(hwnd uintptr) {
+	if atomic.LoadInt32(&mainWndInSizeMove) != 0 {
+		return
+	}
+	nudgeMainWindow(hwnd)
 }
 
 func nudgeMainWindow(hwnd uintptr) {
@@ -616,6 +688,14 @@ func scheduleSelfCheck(hwnd uintptr) {
 	atomic.StoreInt64(&selfCheckLastMs, now)
 	go func() {
 		defer atomic.StoreInt32(&selfCheckBusy, 0)
+		// 用户正在拖动/缩放窗口：本轮不判黑、不升级。拖动中窗口由系统拖影驱动、
+		// 不做常规合成，判黑必成假阳；而升级动作会在系统的模态移动循环里改窗口
+		// 几何——正是闪退那条路（见 mainWndInSizeMove）。拖动结束后的下一次唤醒
+		// 会重新自检。
+		if atomic.LoadInt32(&mainWndInSizeMove) != 0 {
+			log.Printf("黑屏自检：窗口正被拖动/缩放，本轮跳过")
+			return
+		}
 		time.Sleep(500 * time.Millisecond)
 		if !windowIsBlack(hwnd) {
 			log.Printf("黑屏自检：通过")
@@ -626,6 +706,9 @@ func scheduleSelfCheck(hwnd uintptr) {
 			resizeNudgeDone := make(chan struct{})
 			mainWndDispatch(func() {
 				defer close(resizeNudgeDone)
+				if atomic.LoadInt32(&mainWndInSizeMove) != 0 {
+					return // 拖动/缩放中：不插手动窗口几何（见 mainWndInSizeMove）
+				}
 				var r panelRect
 				if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ok == 0 {
 					return

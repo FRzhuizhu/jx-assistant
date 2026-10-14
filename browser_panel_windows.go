@@ -37,6 +37,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -275,6 +276,7 @@ type browserPanel struct {
 	newWinToken   int64
 	titleToken    int64
 	closing       bool        // Close 已进入：跳过迟到事件里对将亡控件的调用
+	dragHold      int32       // 1 = 用户正在拖动/缩放主窗口：暂停面板落位（见 holdForWindowDrag）
 	newWinHandler *evtHandler // 引用保活：COM 侧只存裸指针，Go 侧必须持有
 	titleHandler  *evtHandler
 }
@@ -424,6 +426,12 @@ func (p *browserPanel) createOnUI() error {
 // 兜底（见 desktop_windows.go 的 mainWndSubclassProc）。实测：面板被压到主
 // WebView2 之下时导航/标题/CDP 全部正常，画面永远看不见。
 func (p *browserPanel) applyRectOnUI() {
+	if atomic.LoadInt32(&p.dragHold) != 0 {
+		// 用户正在拖动/缩放主窗口：本轮不落位（见 holdForWindowDrag）。面板是
+		// 主窗口的子窗口，会跟着窗口一起动；拖动结束由 releaseAfterWindowDrag
+		// 用缓存矩形一次性落位。
+		return
+	}
 	p.stateMu.Lock()
 	x, y, w, h, visible := p.rectX, p.rectY, p.rectW, p.rectH, p.visible
 	ctl, hwnd := p.ctl, p.hwnd
@@ -488,6 +496,23 @@ func (p *browserPanel) reassertTopOnUI() {
 	}
 	_, _, _ = procPanelSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
 		swpNoSizeFlag|swpNoMoveFlag|swpNoActivate)
+}
+
+// holdForWindowDrag / releaseAfterWindowDrag：用户拖动/缩放主窗口期间的面板让路。
+// 由 desktop_windows.go 的 WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE 钩子调用（仅 UI 线程）。
+// 拖动期间系统正在模态移动循环里驱动窗口几何，此刻对 WebView2 子窗口做
+// SetWindowPos / putBounds / NotifyParentWindowPositionChanged，等于把这些 COM 调用
+// 插进系统的拖动循环里：拖动会错乱，控制器还在同一条回调栈上重入——2026-10-14
+// 「全屏拖动闪退」排查中锁定的最后一段自研动作。拖动中只打标记不落位，拖完用缓存
+// 矩形补落一次（面板是子窗口，拖动期间本来就跟着窗口走，视觉不跳）。
+func (p *browserPanel) holdForWindowDrag() {
+	atomic.StoreInt32(&p.dragHold, 1)
+}
+
+func (p *browserPanel) releaseAfterWindowDrag() {
+	if atomic.CompareAndSwapInt32(&p.dragHold, 1, 0) {
+		p.dispatch(p.applyRectOnUI)
+	}
 }
 
 // SetRect 前端矩形同步入口（CSS px 原值，见 handleBrowserPanelRect 的换算
@@ -735,6 +760,11 @@ func (p *browserPanel) callCDP(method string, params map[string]any) (json.RawMe
 	}
 	res := make(chan cdpResult, 1)
 	h := &cdpCompletedHandler{vtbl: &cdpCompletedVtblInst, ch: res}
+	// 引用保活（同 newWinHandler 的保活注释：COM 侧只存裸指针，Go 侧必须持有）：
+	// dispatch 闭包执行完即失引用，若 evaluate 跑数秒（重渲染+同步 XHR），期间
+	// GC 会把 h 当垃圾回收——原生完成回调踩已释放内存，整进程无声闪退、无堆栈
+	// 无事件（2026-10-14 19:56:44 与 20:04:27 两次实锤均落于此窗口期）。
+	defer runtime.KeepAlive(h)
 	p.dispatch(func() {
 		_, _, _ = wvVtblOf(wv).callDevToolsProtocolMethod.Call(
 			uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(m16)), uintptr(unsafe.Pointer(pj16)),
