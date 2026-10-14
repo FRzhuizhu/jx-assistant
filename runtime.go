@@ -386,6 +386,25 @@ func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *de
 	return &delivery{Started: true, Run: run}
 }
 
+// deliverToSessionNoKick 是「投递但绝不拉起执行」的变体（人为叫停的回报专用）：
+// 目标会话忙则照常进它的排队/插话队列（那是它自己已在跑的一轮，结束后按统一
+// 规则自动发出——不是我们拉起的）；空闲则**只落库**，不占执行权、不起汇报轮。
+// 为什么叫停要走它：用户刚把任务停掉，数字助理不该被这条回报自动叫醒——那是
+// 它自作主张（重新派发/续跑）的来源；用户下次与它对话时自然看到回报（见
+// stop_session_test.go 的验收：回报必须落库、但主对话不得自动起轮）。投递路径
+// 仍然唯一（同一把会话锁、同一个 landUserSide/pushPending），与 deliverToSession
+// 只差「空闲时是否占住执行权」一件事，不存在第三条旁路。
+func (a *App) deliverToSessionNoKick(m *SessionMeta, content, kind, origin string) {
+	lock := a.sessLock(m.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	if a.IsRunning(m.ID) {
+		a.pushPending(m.ID, a.midrunMode(), content, kind, origin)
+		return
+	}
+	a.landUserSide(m, content, kind, origin, nil)
+}
+
 // subQueueNote 组织「目标会话正在执行，派发需求已进队列」时回给模型的文案：
 // 插话（steer）下一步注入，排队（queue）本轮结束后作为独立一轮发送。
 func subQueueNote(sub *SessionMeta, mode, note string) string {
@@ -940,15 +959,23 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 		followUp = "这是用户主动叫停，不是故障：不要再自动重新派发、续跑或补做这个任务，用一句话向用户确认已停止即可。"
 	}
 	reportText := head + "\n\n" + summary + "\n\n" + followUp
-	// 回报**只有这一条投递路径**：按「用户侧消息」统一投（deliverToSession）——
-	// 父会话空闲就落库并立刻起汇报轮（助理＝面向用户汇报，工作任务＝带着结果继续
-	// 推）；正被用户占用就走它自己那个排队队列，等本轮结束**自动**发出（与真人
-	// 消息、AI 用户消息同一条规则，不再卡在「继续发送」按钮上）。正常结束、失败、
-	// 用户叫停的差别全在回报正文（head/followUp：中断原因与「不要再自动重新派发、
-	// 续跑」的指示），投递行为完全一致——不再有「叫停那一路直写落库」的旁路分支。
-	// 投递即登记执行权，再广播回报就绪：前端收到 report_ready 重查会话时必见
-	// running，能立刻接上这轮流。
-	d := a.deliverToSession(parent, reportText, kindAiUser, "dispatch")
+	// 回报的投递路径仍然统一在 deliverToSession 一族（按「用户侧消息」投，父会话
+	// 空闲就落库并起汇报轮；正被占用就进它的排队队列）：正常结束与失败都走
+	// deliverToSession；唯一例外是人为叫停——改走 NoKick 变体（见下），差别只在
+	// 「空闲时是否拉起汇报轮」，落库/排队的行为完全一致，不存在直写旁路。
+	// 广播回报就绪：前端收到 report_ready 重查会话（正常路径投递即起轮，必见
+	// running、能接上这轮流；叫停路径本轮不拉起，前端只会看到未读绿点）。
+
+	// 投递方式按收尾形态分：人为叫停（stopped）走 deliverToSessionNoKick——回报
+	// 落库/进队，但绝不自动拉起父会话那一轮（用户刚叫停，数字助理被自动叫醒正是
+	// 它自作主张的来源）；正常完成/失败仍走 deliverToSession，父空闲即起汇报轮。
+	var d *delivery
+	if stopped {
+		a.deliverToSessionNoKick(parent, reportText, kindAiUser, "dispatch")
+		d = &delivery{}
+	} else {
+		d = a.deliverToSession(parent, reportText, kindAiUser, "dispatch")
+	}
 	a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
 	if d.Started {
 		go func() {
