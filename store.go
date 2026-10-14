@@ -845,6 +845,61 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
+// ClearSession 清空一个会话的全部历史：消息表整表清掉（含摘要、环境快照、
+// 请求环形缓存、审计行），随消息产生的工件（文件快照、交付登记、上传登记、
+// 待执行交付作业）一并清掉，会话附属 meta（laststop / sessdata:*）也删掉；
+// 会话自身运行态计数归零（status=idle、未读=0、用量=0）。
+// 会话本体保留（id、标题、工作目录、权限、模型、thinking、工具开关都不动），
+// 因此清完就是一个「全新的同一个对话」——子会话（parent_id 指向它）与
+// 待办/定时任务记录不在此列，清空只作用于这个会话自己的历史。
+// 返回删掉的消息条数（供前端显示「已清空 N 条」）。供设置页
+// 「对话历史与压缩 · 清空数字助理主对话」使用；会话正在执行时由调用方拒绝。
+func (s *Store) ClearSession(id string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	var msgs int64
+	// 带 session_id 的表：消息与本会话的全部工件登记
+	for _, q := range []string{
+		`DELETE FROM messages WHERE session_id=?`,
+		`DELETE FROM checkpoints WHERE session_id=?`,
+		`DELETE FROM deliveries WHERE session_id=?`,
+		`DELETE FROM uploads WHERE session_id=?`,
+		`DELETE FROM delivery_jobs WHERE session_id=?`,
+	} {
+		res, err := tx.Exec(q, id)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		if strings.HasSuffix(q, "FROM messages WHERE session_id=?") {
+			msgs, _ = res.RowsAffected()
+		}
+	}
+	// 会话附属 meta：异常中断标记、待审批计划、运行属主、停止记录
+	keys := []string{"laststop:" + id, "sessdata:pendingplan:" + id,
+		"sessdata:" + runOwnerKey + ":" + id, "sessdata:" + stopRecordKey + ":" + id}
+	for _, k := range keys {
+		if _, err := tx.Exec(`DELETE FROM meta WHERE k=?`, k); err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET status='idle', unread=0,
+			usage_prompt=0, usage_cache_hit=0, usage_calls=0, usage_output=0, updated_at=?
+		WHERE id=?`, now(), id); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return msgs, nil
+}
+
 func (s *Store) UpdateStatus(id, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

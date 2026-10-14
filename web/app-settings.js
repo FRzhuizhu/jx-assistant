@@ -1267,6 +1267,79 @@ $('btn-wizard-rerun').onclick = () => {
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;
 
+/* ---------- 对话历史与压缩：数字助理主对话的两个动作按钮 ----------
+   两个按钮都作用于「数字助理主对话」这一个会话（服务端按 mode=assistant
+   解析会话，前端不必知道是哪个），不是当前打开的这个对话；点下立即生效、
+   不参与底部「保存」。压缩固定走模型摘要（后端 /api/assistant/compact
+   强制 llm 策略，忽略上面的「模式」）；清空走两级确认，后端真删
+   （消息 + 摘要 + 快照/交付/上传登记），会话设置保留。 */
+
+// confirmAboveSettings 在设置页里弹居中确认框：窄屏下 #settings 的层级
+// （230）高于确认框（60），不抬一下就会被设置页盖住——临时抬高，弹完还原。
+async function confirmAboveSettings(msg, up) {
+  const m = $('confirm-modal');
+  const saved = m.style.zIndex;
+  m.style.zIndex = '240';
+  try { return await confirmCenter(msg, false, !!up); }
+  finally { m.style.zIndex = saved; }
+}
+
+// refreshAssistantOps 动作后的界面定版：会话列表、正开着的主对话区、右栏子对话清单。
+async function refreshAssistantOps() {
+  try { await loadSessions(); } catch (e) { /* 列表拉取失败不影响操作结果 */ }
+  const m = (state.sessions || []).find((s) => s.mode === 'assistant' && !s.parentId && !s.archived);
+  if (!m) return;
+  if (state.cur && state.cur.id === m.id) { openSession(m.id); return; }
+  try { refreshDrawer(); } catch (e) { /* 右栏没开时跳过 */ }
+}
+
+// assistantOpsState 写按钮下方那行状态说明（操作结果回执）。
+function assistantOpsState(msg) {
+  const el = $('assistant-ops-state');
+  if (el) el.textContent = msg;
+}
+
+$('btn-assistant-compact').onclick = async () => {
+  const btn = $('btn-assistant-compact');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '压缩中…（模型生成摘要，可能要几秒）';
+  try {
+    const r = await api('/api/assistant/compact', { method: 'POST' });
+    const sum = String(r.summary || '').replace(/\s+/g, ' ').trim();
+    assistantOpsState('已用模型摘要压缩数字助理主对话。摘要开头：' +
+      (sum ? sum.slice(0, 80) + (sum.length > 80 ? '…' : '') : '（摘要为空）') +
+      '　原始历史仍可查回；对话区已翻新。');
+    await refreshAssistantOps();
+  } catch (e) {
+    alert('压缩失败：' + e.message);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+};
+
+$('btn-assistant-clear').onclick = async () => {
+  if (!(await confirmAboveSettings('清空「数字助理主对话」的全部历史消息？\n' +
+      '将删除它的全部聊天记录、压缩摘要以及随消息产生的文件快照登记、交付登记、上传登记，' +
+      '并丢弃待发的插话/排队；会话设置（工作目录、权限、模型等）保留。\n此操作不可恢复。'))) return;
+  if (!(await confirmAboveSettings('再次确认：数字助理主对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
+  const btn = $('btn-assistant-clear');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '清空中…';
+  try {
+    const r = await api('/api/assistant/clear', { method: 'POST' });
+    assistantOpsState('已清空数字助理主对话（' + (r.cleared || 0) + ' 条消息），它现在是全新对话。');
+    await refreshAssistantOps();
+  } catch (e) {
+    alert('清空失败：' + e.message);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+};
+
 /* ---------- 设置导航：状态唯一、渲染集中 ----------
    心智模型两端同构：设置＝一级菜单＋二级分区页。桌面双栏并排框定（左一级
    右二级，level 只决定左栏高亮与否）；窄屏一屏一级或二级（pane-open 翻页，

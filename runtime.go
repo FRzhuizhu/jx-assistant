@@ -514,6 +514,18 @@ func (a *App) queuePausedOf(sessionID string) bool {
 	return a.queuePaused[sessionID]
 }
 
+// dropPending 丢掉会话的全部待生效消息（插话与排队）并复位队列暂停标志，
+// 随后广播一份空快照——前端排队坞立即清空。用于清空主对话（历史都没了，
+// 挂在旧历史上下文上的待发消息也不该再发）。调用方须保证会话不在执行中。
+func (a *App) dropPending(sessionID string) {
+	a.pendMu.Lock()
+	delete(a.pendingSteer, sessionID)
+	delete(a.pendingQueue, sessionID)
+	delete(a.queuePaused, sessionID)
+	a.pendMu.Unlock()
+	a.broadcastPending(sessionID)
+}
+
 // broadcastPending 把待生效消息的最新快照推给所有在线前端（多窗口/刷新后一致）。
 func (a *App) broadcastPending(sessionID string) {
 	a.broadcast(Event{Type: "pending", SessionID: sessionID, Pending: a.pendingOf(sessionID)})

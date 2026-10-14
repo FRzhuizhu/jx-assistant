@@ -730,6 +730,14 @@
             </div>
           </div>
           <div class="gen-section">
+            <h4>数字助理主对话</h4>
+            <div class="compact-actions">
+              <button id="btn-assistant-compact" class="set-act" type="button" title="立即对数字助理主对话执行一次压缩：固定由模型生成摘要（不受上面的模式影响）">压缩数字助理主对话</button>
+              <button id="btn-assistant-clear" class="set-act danger" type="button" title="清空数字助理主对话的全部历史消息（需要二次确认，不可恢复）">清空数字助理主对话</button>
+            </div>
+            <p class="sf-desc" id="assistant-ops-state">两个按钮都作用于「数字助理主对话」这一个会话（不是当前打开的这个对话），点下立即生效、不随底部「保存」提交。「压缩」固定走模型摘要压缩：把保留预算之外的历史交给模型压成一份摘要，摘要进对话区、原文永久保留可随时查回（不受上面的「模式」影响）；「清空」经二次确认后删除它的全部历史消息与摘要，会话设置保留，助理回到全新对话状态（不可恢复）。</p>
+          </div>
+          <div class="gen-section">
             <h4>文件备份</h4>
             <div class="set-field">
               <div class="sf-label">文件历史快照</div>

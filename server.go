@@ -233,6 +233,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/interject", a.handleInterject)
 	mux.HandleFunc("POST /api/sessions/{id}/pending", a.handlePending)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", a.handleCompact)
+	// 设置 · 对话历史与压缩：对数字助理主对话的两个动作（会话由服务端按
+	// mode=assistant 解析，前端不必知道是哪个会话）。压缩固定走模型摘要。
+	mux.HandleFunc("POST /api/assistant/compact", a.handleAssistantCompact)
+	mux.HandleFunc("POST /api/assistant/clear", a.handleAssistantClear)
 	mux.HandleFunc("GET /api/sessions/{id}/progress", a.handleGetProgress)
 	mux.HandleFunc("GET /api/sessions/{id}/plans", a.handleListPlans)
 	mux.HandleFunc("POST /api/sessions/{id}/plans/export", a.handleExportPlan)
@@ -2037,6 +2041,118 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
 	writeJSON(w, 200, map[string]any{"ok": 1, "summary": truncateRunes(summary, 300)})
+}
+
+// assistantMainSession 取数字助理主对话（mode=assistant、无父会话、未归档，
+// 与前端「数字助理主对话」入口和 todo.assistantSession 同一口径：会话列表
+// 按更新时间倒序，因此命中的就是最近用的那个）。没建过时返回 nil——设置页的
+// 「清空 / 压缩」是作用于既有对话的动作，不该顺手建出一个空对话，
+// 前端据 404 提示「还没有数字助理主对话」。
+func (a *App) assistantMainSession() *SessionMeta {
+	sessions, err := a.Store.List()
+	if err != nil {
+		return nil
+	}
+	for _, m := range sessions {
+		if m.Mode == "assistant" && m.ParentID == "" && !m.Archived {
+			return m
+		}
+	}
+	return nil
+}
+
+// lastManualSummaryCover 返回会话里「手动」摘要覆盖到的最远 seq（没有则 0）。
+// 设置页的压缩按钮要在对话区留一条系统通知，文案里要有「这次压到哪一条」——
+// 摘要行本身只带 covers_up_to（见 doSummarize），这里读出来供注记使用。
+func (a *App) lastManualSummaryCover(sessionID string) int64 {
+	raw, err := a.Store.RawMessagesAll(sessionID)
+	if err != nil {
+		return 0
+	}
+	cover := int64(0)
+	for _, m := range raw {
+		if m.Kind == kindSummary && m.Origin == "manual" && m.CoversUpTo > cover {
+			cover = m.CoversUpTo
+		}
+	}
+	return cover
+}
+
+// handleAssistantClear 清空数字助理主对话（设置 · 对话历史与压缩 · 清空按钮）。
+// 二次确认在前端（居中确认弹窗，两级）；服务端只做真活：消息与随消息产生的
+// 工件（文件快照登记与正文文件、交付登记、上传登记、待执行交付作业）全部清掉、
+// 会话运行态归零（status=idle/未读/用量），并丢掉待生效的插话与排队——
+// 清完就是一个全新的同一个对话（会话 id、标题、工作目录、权限、模型不动，
+// 子会话与待办记录也不受影响）。
+// 执行中一律拒绝（409）：正在跑的一轮会继续往历史里写，清了也会立刻被冲回来。
+func (a *App) handleAssistantClear(w http.ResponseWriter, r *http.Request) {
+	m := a.assistantMainSession()
+	if m == nil {
+		writeErr(w, 404, "还没有数字助理主对话，无需清空")
+		return
+	}
+	if a.IsRunning(m.ID) {
+		writeErr(w, 409, "数字助理主对话正在执行，等这一轮跑完再清空")
+		return
+	}
+	// 快照正文文件要按 id 删（行删掉后就查不到 id 了），先取清单
+	cps, _ := a.Store.CheckpointsAfter(m.ID, 0)
+	ids := make([]int64, 0, len(cps))
+	for _, cp := range cps {
+		ids = append(ids, cp.ID)
+	}
+	n, err := a.Store.ClearSession(m.ID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if len(ids) > 0 { // .jxai/snapshots/<会话id>/ 下的正文文件随行删除，不留孤儿
+		(&toolContext{app: a, sess: m}).deleteSnapshotFiles(ids)
+	}
+	a.dropPending(m.ID)   // 待生效的插话/排队一并丢弃（界面上的排队坞随之清空）
+	a.clearRunError(m.ID) // 输入框上方的报错条也随历史一起消失
+	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+	log.Printf("[设置] 已清空数字助理主对话 %s（%d 条消息）", m.ID, n)
+	writeJSON(w, 200, map[string]any{"ok": 1, "sessionId": m.ID, "cleared": n})
+}
+
+// handleAssistantCompact 立即压缩数字助理主对话（设置 · 对话历史与压缩 ·
+// 压缩按钮）。这个入口**固定走模型摘要压缩**：不读 Cfg.CompactMode，一律
+// 调用模型生成摘要（forceSummaryCompact），保证它不受规则折叠等其他压缩
+// 策略影响——设置页的按钮就代表「模型摘要」这一个动作。
+// 执行中拒绝（409）；PreCompact 插件 hook 与手动压缩同一口径（可被阻断）。
+// 压完在对话区补一条【已压缩】系统通知：摘要行只是上下文材料、不进普通
+// 消息流，用户在对话里见不到它（通知同时是模型可见的 user 消息，下一轮模型
+// 自然知道历史已被压缩，与消息级「已折叠」边界提示同一口径）。
+func (a *App) handleAssistantCompact(w http.ResponseWriter, r *http.Request) {
+	m := a.assistantMainSession()
+	if m == nil {
+		writeErr(w, 404, "还没有数字助理主对话，没有可压缩的历史")
+		return
+	}
+	if a.IsRunning(m.ID) {
+		writeErr(w, 409, "数字助理主对话正在执行，等这一轮跑完再压缩")
+		return
+	}
+	if a.CCPlugins != nil && a.CCPlugins.hasAnyHooks() {
+		if oc := a.ccEmitHookEvent(r.Context(), m, "PreCompact", "", nil, nil); oc.Block {
+			writeErr(w, 403, "压缩被插件 hook 拒绝："+oc.Reason)
+			return
+		}
+	}
+	summary, err := a.forceSummaryCompact(m)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	a.landUserSide(m, fmt.Sprintf(
+		"【已压缩】数字助理主对话已用模型摘要压缩：覆盖至第 %d 条历史，摘要 %d 字。摘要开头：%s",
+		a.lastManualSummaryCover(m.ID), len([]rune(summary)), clipText(summary, 200)),
+		kindReport, "compact", nil)
+	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+	log.Printf("[设置] 已压缩数字助理主对话 %s（模型摘要 %d 字）", m.ID, len([]rune(summary)))
+	writeJSON(w, 200, map[string]any{"ok": 1, "sessionId": m.ID, "strategy": "llm",
+		"summary": truncateRunes(summary, 300)})
 }
 
 // handleExport 导出两类审计材料，统一向上下文引擎申请（引擎是记录者）：

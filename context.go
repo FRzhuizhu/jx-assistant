@@ -904,6 +904,31 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 	return summary, nil
 }
 
+// forceSummaryCompact 是「立即压缩」的强制模型摘要入口（设置 ·
+// 对话历史与压缩 · 「压缩数字助理主对话」专用）：不读 Cfg.CompactMode，
+// 一律调用模型生成摘要，保证该按钮触发的压缩方式固定为模型摘要，
+// 绝不落到规则折叠（rule）、截断、滑窗等别的策略上。
+// 压缩区间与手动压缩一致：保留字数预算之外的历史压成一条「手动」摘要
+//（独立叠加、永不重压）；历史还没超出保留预算时退化为只保留最近一轮——
+// 点一次就是要压一次，不能因为「预算内没东西可压」让按钮变成空操作。
+func (a *App) forceSummaryCompact(sess *SessionMeta) (string, error) {
+	sum, err := a.doSummarize(sess, "manual", 0, 0)
+	if err == nil {
+		return sum, nil
+	}
+	if !strings.Contains(err.Error(), "没有可压缩的区间") {
+		return "", err
+	}
+	sum, err2 := a.doSummarize(sess, "manual", 1, 0)
+	if err2 == nil {
+		return sum, nil
+	}
+	if strings.Contains(err2.Error(), "没有可压缩的区间") {
+		return "", fmt.Errorf("没有可压缩的历史：这个对话只有一轮内容（或更早的内容已被摘要覆盖）")
+	}
+	return "", err2
+}
+
 // callSummarizer 已并入上下文引擎（ContextEngine.CallSummarizer）：摘要调用
 // 要把对话历史发给模型，拼装与发送归引擎统一口径，此处不再保留旁路。
 
