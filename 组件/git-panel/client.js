@@ -129,7 +129,6 @@
     commitMsg: '',        // 提交信息框文本（轮询刷新只重画清单、不重画提交框，但文本另存一份兜底）
     aiBusy: false,        // AI 摘要生成中（跨刷新保留：按钮文案/禁用不被轮询复位）
     commitBusy: false,    // 提交进行中（同上：防刷新后按钮回活、重复提交）
-    syncBusy: false,      // 远程同步进行中（⟲ 按钮）
     pullBusy: false,      // 拉取进行中（提交栏「↓ 拉取」按钮）
     fetchBusy: false,     // 后台探远程状态进行中（refreshAll 触发，静默）
     pushBusy: false,      // 推送进行中（提交栏「↑ 推送」按钮）
@@ -234,53 +233,6 @@
     brSel.title = '切换本地分支（未提交改动会被覆盖时 git 会拒绝）';
     brSel.onchange = () => checkoutBranch(brSel.value);
     top.appendChild(brSel);
-    /* ⟲ 同步：fetch → 快进/无冲突自动合并 → push 当前分支。
-     * 机器能自动完成的面板做；需要决策的（分叉冲突/无上游/被拒…）
-     * 后端原样退回，前端弹卡建议用户回对话派工作任务。 */
-    const sync = el('button', 'gitp-icon-btn gitp-sync-btn', '⟲');
-    sync.id = 'gitp-sync-btn';
-    sync.title = '与远程同步：拉取（能自动合并的自动合并）并推送；无法自动完成的会建议交回对话处理';
-    sync.onclick = () => doSync();
-    top.appendChild(sync);
-    /* 「?」帮助：悬停向下展开清单——列面板没做的 Git 能力，引导去对话里说。
-     * 纯提示不响应点击（点也只保持展开）；悬停离开短暂延时后收起。 */
-    const helpWrap = el('div', 'gitp-helpwrap');
-    const helpBtn = el('button', 'gitp-icon-btn', '?');
-    helpBtn.title = '这个面板没做哪些 Git 操作？悬停查看清单（都建议在对话里让数字助理做）';
-    const drop = el('div', 'gitp-helpdrop hidden');
-    drop.appendChild(el('div', 'gitp-helpdrop-title', '面板只做安全的本地操作；这些 Git 事情请在对话里说'));
-    const feats = [
-      ['配置远程地址、设置上游分支', 'remote add / push -u'],
-      ['变基、强推（改写历史）', 'rebase / push --force'],
-      ['检出、新建、重命名、删除分支', 'checkout / branch'],
-      ['贮藏与恢复手头改动', 'stash'],
-      ['放弃更改、回退到某次提交', 'restore / reset / revert'],
-      ['解决合并冲突', 'merge conflict'],
-      ['打标签、摘取某个提交', 'tag / cherry-pick'],
-      ['子模块、工作树、二分排查', 'submodule / worktree / bisect'],
-      ['翻历史与差异细节', 'log / reflog / diff'],
-    ];
-    for (const [name, cmd] of feats) {
-      const rowEl = el('div', 'gitp-helpdrop-item');
-      rowEl.appendChild(el('span', 'gitp-helpdrop-name', name));
-      rowEl.appendChild(el('code', 'gitp-helpdrop-cmd', cmd));
-      drop.appendChild(rowEl);
-    }
-    drop.appendChild(el('div', 'gitp-helpdrop-tip',
-      '以上功能没有按钮——直接在对话里说即可，例如：「帮我把当前仓库与远程同步，有冲突帮我解决并汇报」。'));
-    helpWrap.appendChild(helpBtn);
-    helpWrap.appendChild(drop);
-    let helpHideTimer = null;
-    helpWrap.addEventListener('mouseenter', () => {
-      if (helpHideTimer) { clearTimeout(helpHideTimer); helpHideTimer = null; }
-      drop.classList.remove('hidden');
-    });
-    helpWrap.addEventListener('mouseleave', () => {
-      if (helpHideTimer) clearTimeout(helpHideTimer);
-      helpHideTimer = setTimeout(() => drop.classList.add('hidden'), 200);
-    });
-    helpBtn.onclick = () => drop.classList.toggle('hidden'); // 触屏没有悬停：点按开关
-    top.appendChild(helpWrap);
     const layoutBtn = el('button', 'gitp-icon-btn gitp-layout-btn', S.layout === 'vertical' ? '⇕' : '⇔');
     layoutBtn.id = 'gitp-layout-btn';
     layoutBtn.title = '切换布局：上下堆叠 / 左右分栏（当前：' + (S.layout === 'vertical' ? '上下' : '左右') + '）';
@@ -388,6 +340,7 @@
     strip.classList.add('hidden');
     const show = (cls, text) => {
       strip.classList.remove('hidden');
+      strip.classList.remove('err', 'warn', 'note'); // 先清旧颜色类：上次绿条(note)残留时 err 会被叠成绿色
       strip.classList.add(cls);
       strip.textContent = text;
     };
@@ -467,40 +420,82 @@
     }
   }
 
-  /* ---------- 远程同步（⟲ 按钮） ---------- */
+  /* ---------- 「使用教程」下拉（同步按钮旁的 ▾） ---------- */
 
-  async function doSync() {
-    if (S.syncBusy) return;
-    const btn = $id('gitp-sync-btn');
-    S.syncBusy = true;
-    S.opError = '';
-    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
-    renderStrip();
-    let handOff = null; // 需要人/AI 决策的原因（非空则弹建议卡）
-    try {
-      const d = await gitPost('sync');
-      if (d.needHelp) {
-        handOff = d.summary || '这一步没法自动完成';
-      } else {
-        S.error = '';
-        S.opError = '';
-        S.note = d.summary || '已同步';
-        renderStrip();
-        await refreshAll();
-      }
-    } catch (e) {
-      S.opError = e.message;
-      handOff = e.message; // 网络失败（无远程/凭据）等技术问题同样引导去对话
-      renderStrip();
+  /* 列出面板没做的 Git 能力，引导用户去对话里跟 AI 沟通操作。弹层挂 body
+   * （fixed 定位）：提交栏在 .gitp-pane 的 overflow:hidden 里，嵌在按钮
+   * 下面会被裁掉。点按钮开/关；点别处、Esc、窗口变化时关。 */
+  let tutDrop = null;
+  const TUT_FEATS = [
+    ['配置远程地址、设置上游分支', 'remote add / push -u'],
+    ['变基、强推（改写历史）', 'rebase / push --force'],
+    ['检出、新建、重命名、删除分支', 'checkout / branch'],
+    ['贮藏与恢复手头改动', 'stash'],
+    ['放弃更改、回退到某次提交', 'restore / reset / revert'],
+    ['解决合并冲突', 'merge conflict'],
+    ['打标签、摘取某个提交', 'tag / cherry-pick'],
+    ['子模块、工作树、二分排查', 'submodule / worktree / bisect'],
+    ['翻历史与差异细节', 'log / reflog / diff'],
+  ];
+  function closeTut() {
+    if (!tutDrop) return;
+    tutDrop.remove();
+    tutDrop = null;
+    document.querySelectorAll('.gitp-tut-btn').forEach((x) => { x.textContent = '▾'; });
+    document.removeEventListener('pointerdown', onTutAway, true);
+    document.removeEventListener('keydown', onTutEsc, true);
+    window.removeEventListener('resize', closeTut);
+    window.removeEventListener('blur', closeTut);
+  }
+  const onTutAway = (e) => {
+    if (tutDrop && !tutDrop.contains(e.target) &&
+        !(e.target.closest && e.target.closest('.gitp-tut-btn'))) closeTut();
+  };
+  const onTutEsc = (e) => { if (e.key === 'Escape') closeTut(); };
+
+  function toggleTut(btn) {
+    if (tutDrop) { closeTut(); return; }
+    const d = el('div', 'gitp-helpdrop gitp-tutdrop');
+    d.appendChild(el('div', 'gitp-helpdrop-title', '使用教程：Git 还可以做这些事情'));
+    d.appendChild(el('div', 'gitp-helpdrop-sub', '以下操作面板没有提供按钮——请跟 AI 沟通操作，在对话里直接说你的需求即可。'));
+    for (const [name, cmd] of TUT_FEATS) {
+      const rowEl = el('div', 'gitp-helpdrop-item');
+      rowEl.appendChild(el('span', 'gitp-helpdrop-name', name));
+      rowEl.appendChild(el('code', 'gitp-helpdrop-cmd', cmd));
+      d.appendChild(rowEl);
     }
-    S.syncBusy = false;
-    if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
-    if (handOff) await suggestTask(handOff);
+    d.appendChild(el('div', 'gitp-helpdrop-tip',
+      '例如对数字助理说：「帮我把当前仓库与远程同步，有冲突帮我解决并汇报」。'));
+    document.body.appendChild(d);
+    // 贴在按钮正下方、右缘对齐（右栏窄，向左展开；并防出屏）
+    const r = btn.getBoundingClientRect();
+    const w = d.getBoundingClientRect().width;
+    d.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
+    d.style.top = (r.bottom + 6) + 'px';
+    tutDrop = d;
+    setTimeout(() => {
+      document.addEventListener('pointerdown', onTutAway, true);
+      document.addEventListener('keydown', onTutEsc, true);
+      window.addEventListener('resize', closeTut);
+      window.addEventListener('blur', closeTut);
+    }, 0);
+  }
+
+  function tutBtn() {
+    const b = el('button', 'gitp-btn gitp-tut-btn', '▾');
+    b.title = '使用教程：Git 还可以做哪些事情？点开看清单';
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const opening = !tutDrop;
+      toggleTut(b);
+      b.textContent = opening ? '▴' : '▾';
+    };
+    return b;
   }
 
   /* 单独拉取 / 推送（提交栏按钮）：op='pull'|'push'，后端同样走 sync 接口。
    * 可用性由 syncCommitBar 按 ahead/behind 控制；这里只处理执行与结果反馈，
-   * 需要决策（冲突、凭据等）时与 ⟲ 同步一样交回对话。 */
+   * 需要决策（冲突、凭据等）时一样交回对话。 */
   async function doRemote(op) {
     if (S.pullBusy || S.pushBusy) return;
     const isPull = op === 'pull';
@@ -637,6 +632,7 @@
       renderStrip();
     };
     btns.appendChild(rmt);
+    btns.appendChild(tutBtn()); // 同步旁的 ▾：点开「使用教程」清单
     btns.appendChild(ai);
     btns.appendChild(ok);
     cm.appendChild(ta);
@@ -1220,6 +1216,7 @@
       delete rpViews.git;
       commitBar = null; // 提交框节点随 root 一起丢弃：下次激活重建（文本仍在 S.commitMsg 里）
       closeFileMenu(); // 右键菜单挂在 body 上，不随 root 走，必须显式撤
+      closeTut(); // 教程下拉同样挂在 body 上，一并撤
       if (typeof rpRenderTabs === 'function') rpRenderTabs();
       if (root && root.parentNode) root.parentNode.removeChild(root);
       root = null;
