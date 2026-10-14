@@ -3823,6 +3823,7 @@ function hideRunError(view, remember) {
 //    「稍后」等下次自然重启。在线时由 update_available/update_ready 门铃事件
 //    触发，刚打开页面时从 /api/status 的 update 恢复。
 function showUpdateBanner(u) {
+  syncUpdatePill(u);
   if (!u || !u.latest) return;
   const bar = document.getElementById('update-banner');
   if (!bar) return;
@@ -3851,6 +3852,35 @@ function showUpdateBanner(u) {
   }
   bar.classList.remove('hidden');
 }
+
+// syncUpdatePill 左下角「更新」胶囊（反馈胶囊左侧）：与置顶更新横幅同源——
+// 无更新隐藏；新版本可用（available，manual/整包路）或已静默换装待重启
+// （pendingRestart，auto/分块路）都出现。与横幅的差异只在「常驻」：横幅点过
+// 「稍后」就藏，胶囊仍是随时再入的入口（点它唤起横幅，完整动作都在横幅里）。
+let curUpdateState = null;
+function syncUpdatePill(u) {
+  curUpdateState = u || null;
+  const pill = document.getElementById('btn-update');
+  if (!pill) return;
+  const on = !!(u && (u.available || u.pendingRestart));
+  pill.classList.toggle('hidden', !on);
+  if (!on) return;
+  if (u.pendingRestart && u.pendingVersion) {
+    pill.title = '新版本 ' + u.pendingVersion + ' 已就绪，重启软件后生效——点击查看';
+  } else if (u.latest) {
+    pill.title = '发现新版本 ' + u.latest + '——点击查看';
+  }
+}
+document.getElementById('btn-update')?.addEventListener('click', (e) => {
+  e.stopPropagation(); // 拦住外层设置按钮的默认打开路径，只唤起更新横幅
+  if (curUpdateState) showUpdateBanner(curUpdateState);
+});
+document.getElementById('btn-update')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault(); e.stopPropagation();
+    if (curUpdateState) showUpdateBanner(curUpdateState);
+  }
+});
 
 $('update-banner').addEventListener('click', (e) => {
   const bar = e.currentTarget;
