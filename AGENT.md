@@ -793,8 +793,8 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 | 模式 | 说明 | 工具 |
 |---|---|---|
-| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + 历史查询 |
-| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（补需求，可选 permission 只能同等或降权）+ deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
+| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + **call_api（与前端同接口的通用直调，见 callapi.go）** + 历史查询 |
+| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（补需求，可选 permission 只能同等或降权）/ stop_session（按用户指示协作式停止，与人工停止按钮同一停止函数、仅触发者不同）/ **call_api（与前端同接口的通用直调，见 callapi.go）** + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
 | `skill-create` | 创建技能：把「怎么做」沉淀成给后续 AI 照做的 SKILL.md 教程——用户点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **register_skill（注册/覆盖技能）**；演示录制归用户直控（界面按钮经 `/api/demo-record/*`，材料以【演示记录】通知进对话） |
 
@@ -872,7 +872,7 @@ goroutine 并行执行；
 进度经全局事件流 `GET /api/events` 实时推送（sub_start / sub_tool / sub_end /
 report_ready / done / stopped），前端常驻订阅：父对话里的子任务卡片实时滚动工具
 活动，完成后自动注入【派发回报】（助理主对话收到「向用户汇报」的指示、工作任务
-收到「带着结果继续推进」的指示），父会话空闲则自动跑一轮消化回报——正看着父
+收到「带着结果继续推进」的指示），父会话空闲则自动跑一轮消化回报。**人为叫停是唯一例外**：用户（或数字助理按用户指示代停）叫停的任务，其回报走 deliverToSessionNoKick——只落库/进队，**不自动拉起**父会话那一轮（用户刚叫停，数字助理被回报自动叫醒正是它自作主张重派/续跑的来源；用户下次与它对话时自然看到回报）。正看着父
 会话时会自动接上这轮流、实时看输出；没在看则侧栏亮「完成未查看」绿点，打开即清。
 服务重启时未完成的执行会补
 【系统中断】记录，发「继续」即可接续（原始历史完整保留）。
@@ -1348,7 +1348,9 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `browser_host.go` | chromedp 浏览器宿主：有头独立窗口 + 网页形态的后台无头内嵌目标 |
 | `browser_panel_windows.go` | 桌面右栏原生浏览器面板：第二个 WebView2 控件 + 控件级官方 CDP 通道 + 矩形同步 |
 | `tool_browser.go` | browser_* 九件工具（形态无关，作用于 browserTarget） |
-| `assistant.go` | 数字助理总控：编排工具 + 会话压缩摘要 |
+| `assistant.go` | 数字助理总控：编排工具 + 会话压缩摘要（建会话/模型选择走 sessioncreate.go 的 service） |
+| `callapi.go` | call_api 通用直通工具：路由元数据注册表（server.go apiRoute 注册即元数据，AI 可调接口目录是注册的副产品）+ 进程内直调执行器（httptest Recorder 打到与前端同一 mux）+ 按会话权限档过滤与危险接口审批；环境快照「可调接口」区块的渲染 |
+| `sessioncreate.go` | 建会话/改权限的 service 单源：createSession（HTTP 人工建会话、dispatch_task、dispatch_sub 三入口共用：模式/权限默认、能力默认、分支克隆、历史继承（失败回滚）、skill-create 演示材料兜底）+ applyPermissionChange（权限档落装与能力联动，人工 PATCH 与 send_to_session 共用） |
 | `historytools.go` | 跨会话历史查询工具（search / read_session_messages） |
 | `context.go` | 上下文组装管线（环境快照**追加式**：首条整份、后续按行差分为短更新，已发送前缀绝不改写）+ 规则压缩 + 模型摘要 + 溢出兜底 |
 | `runtime.go` | 后台运行时：执行注册表、全局事件总线、派发执行体、中断恢复 |
@@ -1372,6 +1374,8 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 > **服务端已独立成仓库**（`D:\智能体工作区\jxaiserver`，module jxai-server）：远程访问中继 + 技能/组件/插件市场（含 /admin 管理页）+ 更新分发（日期+V序号版本体系）+ 公司接入（登记/UDP 发现/按人发 new-api 令牌/每月额度）。本仓库只保留客户端半边（market.go 市场客户端、wizard.go 接入向导、update.go 更新检查——与服务端的协议契约见各自文件头注释）；其部署与用法见该仓库 README/部署。开发完全分开，两边接口变更需双侧同步。
 
 ## 前后端接口
+
+下表是人类（前端）使用的接口。**AI 另有一条通用直通通道**：call_api 工具（assistant 与全部任务模式可用，aux 无）——同一批接口按「注册即元数据」开放（server.go 的 .apiRoute(..., apiMeta{...})，元数据缺席=不对 AI 开放；SSE 流、multipart 上传、二进制下载、组件桥等不适合同步直调的保持关闭），进程内直调与前端同一 handler（见 callapi.go）；目录经环境快照「可调接口」区块按会话权限档过滤下发，危险接口（删除/清空类）调用前走审批卡。执行类工具与意图工具（dispatch_task 等）不受影响——它们与前端共用 service（sessioncreate.go / deliverToSession / stopRunBy / registerUploadPath / chatModes）。
 
 | 方法与路径 | 说明 |
 |---|---|
