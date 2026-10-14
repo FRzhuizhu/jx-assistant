@@ -2302,15 +2302,21 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Content string `json:"content"`
-		Mode    string `json:"mode"`
-		Midrun  string `json:"midrun"` // 前端设置项 jx.midrun（queue/interject）的原值，记下来供派发注入按同一偏好处理
+		Content   string `json:"content"`
+		Mode      string `json:"mode"`
+		Midrun    string `json:"midrun"`     // 前端设置项 jx.midrun（queue/interject）的原值，记下来供派发注入按同一偏好处理
+		VoiceUsed bool   `json:"voiceUsed"`  // 本条消息含语音听写转写文字：置位会话粘性标记
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
 	a.noteMidrunPref(body.Midrun)
+	// 语音听写粘性标记：用过一次即置位且永不撤下（环境快照据此注入同音错字提示）
+	if body.VoiceUsed && !m.VoiceUsed {
+		m.VoiceUsed = true
+		_ = a.Store.MarkVoiceUsed(m.ID)
+	}
 	mode := "queue"
 	if body.Mode == "steer" && a.IsRunning(m.ID) {
 		mode = "steer"
@@ -3277,14 +3283,21 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Content string `json:"content"`
-		Midrun  string `json:"midrun"` // 前端设置项 jx.midrun 的原值（queue/interject）：记下来供派发注入按同一偏好处理
+		Content   string `json:"content"`
+		Midrun    string `json:"midrun"`    // 前端设置项 jx.midrun 的原值（queue/interject）：记下来供派发注入按同一偏好处理
+		VoiceUsed bool   `json:"voiceUsed"` // 本条消息含语音听写转写文字（组件听写落框时打的标记）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
 	a.noteMidrunPref(body.Midrun)
+	// 语音听写粘性标记：会话内用过一次即置位且永不撤下——环境快照（agent.go）
+	// 据此注入同音错字提示；内存对象同步置位，本轮组装快照时即已生效。
+	if body.VoiceUsed && !m.VoiceUsed {
+		m.VoiceUsed = true
+		_ = a.Store.MarkVoiceUsed(m.ID)
+	}
 	// Claude Code 插件：斜杠命令展开（插件命令正文或 mod 命令执行；未命中原样
 	// 发送，不影响普通输入）
 	if a.CCPlugins != nil {

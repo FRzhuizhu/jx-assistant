@@ -1,9 +1,10 @@
 package main
 
-// dsh-speech 插件的 Go 半边适配（对应 DSH 插件 jxSpeech Remote 中的
-// polish / setVoiceActive 两个方法）：转写润色走本程序已配置的 LLM，
-// 听写激活状态用于给会话系统提示词临时附加"转写瑕疵"提示段。
-// 其余能力（TTS、浏览器听写、设置区）都在浏览器半边 client.js 里转译。
+// dsh-speech 插件的 Go 半边适配（对应 DSH 插件 jxSpeech Remote 中的 polish
+// 方法）：转写润色走本程序已配置的 LLM。其余能力（TTS、听写、设置区）都在
+// 组件 组件/voice 里。原 setVoiceActive（听写激活后 N 分钟窗口内给系统提示词
+// 附加"转写瑕疵"段）已随插件退役：语音提示改为会话级粘性标记 SessionMeta.
+// VoiceUsed——chat/interject 上报置位、永不撤下（server.go / agent.go / store.go）。
 
 import (
 	"context"
@@ -11,7 +12,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -22,21 +22,14 @@ const speechPolishDefaultPrompt = `你是语音识别转写的润色器。用户
 - 不改变句意，不增删内容，不改写口吻，不翻译
 直接输出修正后的全文，不要任何解释、前后缀或代码块。`
 
-const speechVoiceHint = `（提示：用户刚才可能在使用语音输入，消息中若存在同音错字，请按上下文理解其本意并在回复中自然使用正确写法，不必特意指出。）`
-
-// speechVoiceActiveUntil 记录最近一次听写激活的失效时刻（unix 秒）。
-var speechVoiceActiveUntil atomic.Int64
-
 func init() {
 	registerGoHalf(speechPluginID, goHalf{
 		routes: speechRoutes,
-		prompt: speechPromptExtra,
 	})
 }
 
 func speechRoutes(a *App, mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/plugins/dsh-speech/polish", a.handleSpeechPolish)
-	mux.HandleFunc("POST /api/plugins/dsh-speech/voice-active", a.handleVoiceActive)
 }
 
 // handleSpeechPolish：保守纠错一段转写文本（复用主配置的 LLM，非流式收集）。
@@ -101,29 +94,4 @@ func normalizeWordList(s string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
-}
-
-// handleVoiceActive：听写开始时浏览器上报，之后 N 分钟内会话提示词带转写提示。
-func (a *App) handleVoiceActive(w http.ResponseWriter, r *http.Request) {
-	if a.Plugins == nil || !a.Plugins.IsEnabled(speechPluginID) {
-		writeErr(w, 404, "插件已停用或不存在")
-		return
-	}
-	var body struct {
-		Minutes float64 `json:"minutes"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.Minutes <= 0 || body.Minutes > 30 {
-		body.Minutes = 5
-	}
-	speechVoiceActiveUntil.Store(time.Now().Add(time.Duration(body.Minutes * float64(time.Minute))).Unix())
-	writeJSON(w, 200, map[string]string{"ok": "1"})
-}
-
-// speechPromptExtra：听写激活窗口内给所有会话附加提示段。
-func speechPromptExtra(a *App, sess *SessionMeta) string {
-	if time.Now().Unix() < speechVoiceActiveUntil.Load() {
-		return speechVoiceHint
-	}
-	return ""
 }

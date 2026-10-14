@@ -322,6 +322,16 @@ var storeMigrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_delivery_jobs_session ON delivery_jobs(session_id, status)`,
 		},
 	},
+	{
+		// 会话内用过语音听写（粘性标记）：前端随 chat 请求上报 voiceUsed
+		//（组件听写落框时打标记），置位后永久保持——环境快照据此稳定注入
+		// 同音错字提示（agent.go），不因后续轮次改打字而撤下。
+		id:       "0015_session_voice_used",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE sessions ADD COLUMN voice_used INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
@@ -668,14 +678,16 @@ func (s *Store) ClearStopPending(id string) error {
 
 // ---------- 会话 ----------
 
-const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert`
+const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert, voice_used`
 
 func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 
 func (s *Store) SaveMeta(m *SessionMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 注意：下面的 UPDATE 刻意不写 status——它只由 UpdateStatus 维护（执行中/空闲）。
+	// 注意：下面的 UPDATE 刻意不写 status——它只由 UpdateStatus 维护（执行中/空闲）；
+	// 同理不写 voice_used——它只由 MarkVoiceUsed 单调置位（chat 上报路径），陈旧
+	// 内存对象全列回写不得把它冲回去。
 	// 否则 appendMessage 之类拿着陈旧内存对象回写，会把 running 冲成 idle，
 	// 导致「正在执行」在侧栏与重启恢复里都不生效。
 	tools := ""
@@ -697,7 +709,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 			remote = string(b)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, mode=excluded.mode,
 		workspace=excluded.workspace, parent_id=excluded.parent_id, provider=excluded.provider,
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
@@ -712,7 +724,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote,
 		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt, m.Thinking,
 		m.GoalText, m.GoalStatus, m.GoalRounds, m.UsagePrompt, m.UsageCacheHit, m.UsageOutput, m.UsageCalls,
-		m.Origin, m.DispatchedBy, m.Expert)
+		m.Origin, m.DispatchedBy, m.Expert, boolInt(m.VoiceUsed))
 	return err
 }
 
@@ -736,15 +748,25 @@ func (s *Store) TouchRunMeta(m *SessionMeta) error {
 	return err
 }
 
+// MarkVoiceUsed 置位会话的语音听写粘性标记（用过一次即永久保持）。列所有权
+// 归本函数独占：SaveMeta 的 UPDATE 不回写该列（同 status 之于 UpdateStatus 的
+// 先例），陈旧内存对象的全列回写不会把已置位的标记冲掉。
+func (s *Store) MarkVoiceUsed(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE sessions SET voice_used=1 WHERE id=?`, id)
+	return err
+}
+
 func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) {
 	m := &SessionMeta{}
 	var perm, tools, remote string
-	var plan, goal, arch, unread int
+	var plan, goal, arch, unread, vu int
 	err := sc.Scan(&m.ID, &m.Title, &m.Mode, &m.Workspace, &m.ParentID,
 		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote,
 		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Thinking,
 		&m.GoalText, &m.GoalStatus, &m.GoalRounds, &m.UsagePrompt, &m.UsageCacheHit, &m.UsageOutput, &m.UsageCalls,
-		&m.Origin, &m.DispatchedBy, &m.Expert)
+		&m.Origin, &m.DispatchedBy, &m.Expert, &vu)
 	if err != nil {
 		return nil, err
 	}
@@ -753,6 +775,7 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 	m.GoalMode = goal == 1
 	m.Archived = arch == 1
 	m.Unread = unread == 1
+	m.VoiceUsed = vu == 1
 	if tools != "" {
 		_ = json.Unmarshal([]byte(tools), &m.Tools)
 	}

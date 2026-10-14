@@ -476,7 +476,13 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	if sess.ParentID != "" {
 		b.WriteString("- 本会话是子对话（父会话 " + sess.ParentID + "）：开头继承的上下文只是背景资料——其中可能正是父对话进行到一半的工作快照，不要去延续、续做或修改那些未完成的工作（父对话可能仍在执行，两边会冲突）；你只做交给自己的这一件事。子对话只有一级，不配备任何派发工具；需要并行分块时把安排写进你的答复，由父对话或用户来派。\n")
 	}
-	// 插件兼容层的动态段（如语音听写提示）也归入环境快照——它们随时间变化
+	// 会话内用过语音听写（粘性标记，chat/interject 上报置位，见 server.go）：
+	// 出现过即每轮都在、不因后续打字撤下——曾用的旧机制是全局 5 分钟时间窗
+	//（adapter_dsh_speech.go，已随插件退役），这里改为按会话终身有效。
+	if sess.VoiceUsed {
+		b.WriteString("- 用户在本对话中使用过语音输入（听写转写）：消息可能混有同音错字，请按上下文理解其本意，在回复中自然使用正确写法，不必特意指出\n")
+	}
+	// 插件兼容层的动态段（如有）也归入环境快照——它们随时间变化
 	if a.Plugins != nil {
 		if extra := a.Plugins.PromptExtra(a, sess); extra != "" {
 			b.WriteString(extra + "\n")

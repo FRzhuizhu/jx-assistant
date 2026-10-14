@@ -46,6 +46,10 @@ type SessionMeta struct {
 	// 数字助理派发的工作任务是顶层会话（左侧任务列表可见）；dispatched_by 记
 	// 派发它的助理会话 id，作为回报链（服务重启的中断回报 / list_sessions 标记）。
 	DispatchedBy string `json:"dispatchedBy,omitempty"`
+	// 本对话内用户用过语音听写（消息含转写文字）：置位后永久保持、不再撤下
+	//（后续轮次改打字也不清——环境快照据此稳定注入同音错字提示）。
+	// 消息级来源是前端随 chat 请求上报的 voiceUsed（组件听写落框时打标记）。
+	VoiceUsed bool `json:"voiceUsed,omitempty"`
 	Archived     bool   `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
 	Unread       bool   `json:"unread,omitempty"`   // 标为未读：侧栏红点
 	Status       string `json:"status,omitempty"`   // idle | running

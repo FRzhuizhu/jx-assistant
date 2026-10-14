@@ -844,11 +844,15 @@
     }, 6000);
   }
 
-  /** 把一段文字落进输入框正文（程序化写入不触发 input 事件：手动落草稿）。 */
+  /** 把一段文字落进输入框正文（程序化写入不触发 input 事件：手动落草稿）。
+   *  落框顺带打 jxVoice 标记：发送时 app-chat.js 读它随消息上报 voiceUsed，
+   *  后端置位会话粘性标记——用过一次语音，环境快照从此每轮带同音错字提示。
+   *  输入框被清空（发送清框 / 用户手动删光）时标记随之撤销（见 init 的监听）。 */
   function commitText(view, text) {
     if (!text) return;
     const inp = view.input;
     inp.value = voiceJoin(inp.value, text);
+    inp.dataset.jxVoice = '1';
     autoGrow(inp);
     if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
   }
@@ -1798,6 +1802,16 @@
         if (!b) continue;
         voiceCtl[view.key] = bindVoiceButton(view);
         b.classList.remove('hidden');
+      }
+
+      // 语音标记生命周期：输入框被清空时撤销 jxVoice（发送清框在 send 链路里
+      // 已删；这里兜用户手动删光的场景）——之后纯打字的消息不会被误标为语音。
+      // jxVoiceBound 防重挂（组件关开重载 init 会再跑一遍）。
+      for (const view of [mainView, subView]) {
+        const inp = view.input;
+        if (!inp || inp.dataset.jxVoiceBound) continue;
+        inp.dataset.jxVoiceBound = '1';
+        inp.addEventListener('input', () => { if (!inp.value) delete inp.dataset.jxVoice; });
       }
 
       // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）

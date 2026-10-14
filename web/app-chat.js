@@ -4176,12 +4176,12 @@ function applyPending(view, pending) {
 // 执行中发出的消息：按「对话中途发送行为」插话或排队（两种模式都在服务端排队）
 // 默认值=等待排队：新装/没设置过 jx.midrun 时排队；只有用户在设置里显式选过
 // 「插话」（localStorage 里存了 interject）才走 steer。手动切换照旧存同一个键。
-async function sendMidrun(content, viaInput, view) {
+async function sendMidrun(content, viaInput, view, voiceUsed) {
   view = view || mainView;
   const mode = lsGet('jx.midrun', 'queue') === 'interject' ? 'steer' : 'queue';
   try {
     const d = await api('/api/sessions/' + view.state.cur.id + '/interject', {
-      method: 'POST', body: JSON.stringify({ content, mode, midrun: lsGet('jx.midrun', 'queue') }),
+      method: 'POST', body: JSON.stringify({ content, mode, midrun: lsGet('jx.midrun', 'queue'), voiceUsed: !!voiceUsed }),
     });
     if (!d.accepted) { pendingHint(view, '发送失败：该会话当前不接受消息'); return; }
     // 本地立即出效果（插话贴到对话末尾，排队进坞）；服务端的 pending 广播可能
@@ -4202,6 +4202,7 @@ async function sendMidrun(content, viaInput, view) {
   }
   if (viaInput) {
     view.input.value = ''; clearQuote(view); autoGrow(view.input);
+    delete view.input.dataset.jxVoice; // 语音标记已随本条消息上报，随之退场
     if (view === mainView) clearSessionDraftLS(view.state.cur.id); else clearSubDraftLS(view.state.cur.id);
   }
 }
@@ -4246,6 +4247,9 @@ async function prepareSend(forceContent, view) {
   await JX.awaitHooks('send', { view });
   const input = view.input;
   const fromInput = typeof forceContent !== 'string';
+  // 本条消息含语音听写转写文字（组件听写落框时在输入框上打的标记 jxVoice）：
+  // 随消息上报后端置位会话粘性标记，环境快照自此每轮带同音错字提示（server.go）
+  const voiceUsed = fromInput && input.dataset.jxVoice === '1';
   // 从输入框发出的消息组装引用段（引用胶囊 →「用户引用：\n“引用1” 全文…」块）；forceContent
   // 路径（编辑重发/降级补发）内容已完整，不再叠加当前胶囊
   const content = (fromInput ? composeQuoted(view, input.value) : forceContent).trim();
@@ -4260,7 +4264,7 @@ async function prepareSend(forceContent, view) {
   if (view.state.streaming) {
     // 执行中插话/排队：附件先在当前会话落盘（通知照旧），再按原路插话或排队
     if (staged.length && !(await flushAttachments(view))) return;
-    await sendMidrun(content, fromInput, view);
+    await sendMidrun(content, fromInput, view, voiceUsed);
     return;
   }
   // 这条消息是不是从首页（新对话）发出的：决定了发送后清哪份草稿
@@ -4308,6 +4312,7 @@ async function prepareSend(forceContent, view) {
 
   if (fromInput) {
     input.value = ''; clearQuote(view); // 引用已组装进这条消息：输入框与胶囊一起退场
+    delete input.dataset.jxVoice; // 语音标记已随本条消息上报，随之退场
     autoGrow(input);
     // 发出即清：首页清 homeDraft 的 text，主对话清 jx.st.<id>，子对话清 jx.subst.<id>
     if (view === mainView) {
@@ -4331,7 +4336,7 @@ async function prepareSend(forceContent, view) {
   view.state.pendingSend = { sid, content };
   renderMessages(view.state.msgs, view);
   if (view === mainView) JX.emit('send', { content });
-    return { input, content, sid, fromInput };
+    return { input, content, sid, fromInput, voiceUsed };
   } catch (e) {
     if (armed) runHintOff(view); // 准备段异常（懒建会话失败等）：收回提前亮起的提示
     throw e;
@@ -4357,7 +4362,7 @@ async function send(forceContent, view) {
     const res = await fetch(`/api/sessions/${sid}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, midrun: lsGet('jx.midrun', 'queue') }),
+      body: JSON.stringify({ content, midrun: lsGet('jx.midrun', 'queue'), voiceUsed: !!pre.voiceUsed }),
       signal: view.state.abort.signal,
     });
     if (!res.ok) {
