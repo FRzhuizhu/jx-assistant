@@ -71,6 +71,8 @@ type App struct {
 	shellEpoch      int64 // 远程外壳版本代数：「关于」页一键清缓存按钮递增（remoteaccess.go，落盘 data/shell-epoch.json）
 	evtMu           sync.Mutex
 	subscribers     map[chan Event]bool // /api/events 的订阅者
+	syncFailMu      sync.Mutex
+	syncFails       int // 公司服务端连续失联轮数（sync.go：连续 2 轮自动停用公司通道）
 	pendMu          sync.Mutex
 	pendingSteer    map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
 	pendingQueue    map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
@@ -80,6 +82,9 @@ type App struct {
 	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
 	osOnce          sync.Once
 	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
+	selfOnce        sync.Once
+	selfExe         string // 引擎程序绝对路径（os.Executable，探测一次缓存；系统提示词用）
+	skillRTPrompt   string // 内置技能运行时段（技能/_runtime/python 绝对路径，探测一次缓存；系统提示词用）
 	browserMu       sync.Mutex
 	browserEmbedded *BrowserHost             // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
 	browsersHeaded  map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
@@ -223,6 +228,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/models", a.handleModels)
 	mux.HandleFunc("GET /api/modes", a.handleChatModes) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
 	mux.HandleFunc("POST /api/providers", a.handleUpsertProvider)
+	mux.HandleFunc("POST /api/providers/toggle", a.handleToggleProvider)
 	mux.HandleFunc("POST /api/providers/delete", a.handleDeleteProvider)
 	mux.HandleFunc("POST /api/providers/test", a.handleTestProvider)
 	mux.HandleFunc("POST /api/providers/fetch", a.handleFetchModels)
@@ -812,10 +818,11 @@ func updateSnapshot() UpdateState {
 	return updateState
 }
 
-// DefaultProviderID 返回全局默认提供方 id（providers[0]）。
+// DefaultProviderID 返回全局默认提供方 id（第一个可用提供方；全停时回落
+// providers[0]，与 firstSelectableProvider 同口径）。
 func (a *App) DefaultProviderID() string {
-	if len(a.Cfg.Providers) > 0 {
-		return a.Cfg.Providers[0].ID
+	if p := a.firstSelectableProvider(); p != nil {
+		return p.ID
 	}
 	return ""
 }
@@ -827,7 +834,7 @@ func (a *App) handleChatModes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"modes": chatModes})
 }
 
-// handleModels 返回模型选择器用的扁平清单。
+// handleModels 返回模型选择器用的扁平清单（含各提供方启停状态：停用的置灰展示）。
 func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 	type modelItem struct {
 		ProviderID      string   `json:"providerId"`
@@ -836,6 +843,7 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 		ModelName       string   `json:"modelName,omitempty"`
 		ContextWindow   int      `json:"contextWindow,omitempty"`
 		ReasoningLevels []string `json:"reasoningLevels,omitempty"`
+		ProviderOff     bool     `json:"providerOff,omitempty"` // 所属提供方已停用（手动或自动）
 	}
 	items := []modelItem{}
 	for _, p := range a.Cfg.Providers {
@@ -844,7 +852,7 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 			if len(levels) == 0 { // 老配置未存档位：按 ID 现场推断
 				levels = guessReasoningLevels(m.ID)
 			}
-			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow, levels})
+			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow, levels, !p.IsSelectable()})
 		}
 	}
 	t := a.DefaultTarget()
@@ -959,6 +967,12 @@ func (a *App) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
 	} else if old := a.providerByID(id); old != nil {
 		pc.APIKey = old.APIKey
 	}
+	// 启停状态与外网通道不在编辑表单里：替换保存时沿用旧值（toggle 端点与公告同步才是它们的写入口）
+	if old := a.providerByID(id); old != nil {
+		pc.Enabled = old.Enabled
+		pc.AutoDisabled = old.AutoDisabled
+		pc.PublicBaseURL = old.PublicBaseURL
+	}
 	replaced := false
 	for i := range a.Cfg.Providers {
 		if a.Cfg.Providers[i].ID == id {
@@ -976,6 +990,36 @@ func (a *App) handleUpsertProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": 1, "id": id})
+}
+
+// handleToggleProvider 手动启停单个提供方（设置页卡片开关）。手动启用顺带清除
+// 自动停用状态（自动恢复不动手动停用，但手动开启优先于一切）。
+func (a *App) handleToggleProvider(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.ID) == "" {
+		writeErr(w, 400, "需要 provider id 与 enabled")
+		return
+	}
+	p := a.providerByID(strings.TrimSpace(in.ID))
+	if p == nil {
+		writeErr(w, 404, "提供方不存在")
+		return
+	}
+	e := in.Enabled
+	p.Enabled = &e
+	if in.Enabled {
+		p.AutoDisabled = false
+	}
+	a.Cfg.syncLegacyFields()
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		writeErr(w, 500, "保存配置失败: "+err.Error())
+		return
+	}
+	a.broadcast(Event{Type: "providers"}) // 默认提供方可能变了：前端刷新模型菜单
+	writeJSON(w, 200, map[string]any{"ok": 1})
 }
 
 // handleDeleteProvider 删除单个提供方（模型页卡片「删除提供方」）。
@@ -1032,12 +1076,17 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		Preset       bool       `json:"preset"`
 		PresetURL    string     `json:"presetURL,omitempty"`
 		Models       []ModelCfg `json:"models"`
+		Enabled      bool       `json:"enabled"`                // 手动启停（解析后：nil=开）
+		AutoDisabled bool       `json:"autoDisabled,omitempty"` // 公司通道自动停用（连不上服务端）
+		Company      bool       `json:"company,omitempty"`      // 公司内部通道（wizardProviderID）
 	}
 	providers := []providerView{}
 	for _, p := range a.Cfg.Providers {
 		pv := providerView{
 			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL,
 			APIKeyMasked: maskKey(p.APIKey), Models: p.Models,
+			Enabled: p.Enabled == nil || *p.Enabled, AutoDisabled: p.AutoDisabled,
+			Company: p.ID == wizardProviderID,
 		}
 		if tpl, ok := PresetByID(p.ID); ok {
 			pv.Preset = true
@@ -1091,6 +1140,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"afterSec": a.Cfg.askAlertAfterSec(),
 			"text":     a.Cfg.askAlertText(),
 		},
+		// 排队消息自动续发（设置·常规）：下发解析后的生效值（nil=开）
+		"queueAutoSend": a.Cfg.queueAutoSendOn(),
 	})
 }
 
@@ -1133,6 +1184,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			AfterSec *int    `json:"afterSec"` // 触发秒数（30-600，钳制后存）
 			Text     *string `json:"text"`     // 朗读文案（空串=恢复默认）
 		} `json:"askAlert"` // 询问提醒三键，嵌套部分合并：只传变的键
+		QueueAutoSend *bool `json:"queueAutoSend"` // 排队消息自动续发（nil=不改；false=本轮结束后不自动发队列，排队坞给「继续发送」）
 		Providers *[]struct {
 			ID      string     `json:"id"`
 			Name    string     `json:"name"`
@@ -1346,6 +1398,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		if body.AskAlert.Text != nil {
 			a.Cfg.AskAlert.Text = strings.TrimSpace(*body.AskAlert.Text)
 		}
+	}
+	// 排队消息自动续发开关：原样存（读侧按「nil=默认开」解析，见 queueAutoSendOn）。
+	// 关掉后本轮结束不自动发队列，排队坞给「继续发送」入口。
+	if body.QueueAutoSend != nil {
+		v := *body.QueueAutoSend
+		a.Cfg.QueueAutoSend = &v
 	}
 	a.Cfg.syncLegacyFields()
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
@@ -2129,9 +2187,14 @@ func (a *App) handleAssistantClear(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAssistantCompact 立即压缩数字助理主对话（设置 · 对话历史与压缩 ·
-// 压缩按钮）。这个入口**固定走模型摘要压缩**：不读 Cfg.CompactMode，一律
-// 调用模型生成摘要（forceSummaryCompact），保证它不受规则折叠等其他压缩
-// 策略影响——设置页的按钮就代表「模型摘要」这一个动作。
+// 压缩按钮）。固定走上下文压缩里「AI 模型压缩」那条路（doSummarize）：无视
+// Cfg.CompactMode（规则/关闭都不看），保留窗口与区间划分原样沿用现有实现
+//（keepRoundsByBudget：从最近一轮往上数，保留「保留字数」预算内装得下的
+// 完整轮，至少保最近一轮，只把窗口之上的历史发给模型摘要）。
+// 设计目的：数字助理主对话平时也会自动压缩，默认走规则引擎（规则折叠）；等
+// 规则引擎也压不动、上下文仍然过长时，用户才会来点这个按钮——所以这里到点
+// 一定是模型压缩。origin=manual 与对话里消息级「压缩」按钮的 llm 分支同款
+//（独立叠加、永不重压）；没东西可压时透传现有错误文案，不另造话术。
 // 执行中拒绝（409）；PreCompact 插件 hook 与手动压缩同一口径（可被阻断）。
 // 压完在对话区补一条【已压缩】系统通知：摘要行只是上下文材料、不进普通
 // 消息流，用户在对话里见不到它（通知同时是模型可见的 user 消息，下一轮模型
@@ -2152,7 +2215,7 @@ func (a *App) handleAssistantCompact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	summary, err := a.forceSummaryCompact(m)
+	summary, err := a.doSummarize(m, "manual", 0, 0) // 与 llm 模式自动/手动压缩同一函数、同一保留窗口
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -2455,7 +2518,8 @@ func (a *App) handlePending(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "pending": a.pendingOf(m.ID)})
 }
 
-// kickQueue 会话空闲且有排队消息时，起一轮把它发出去（排队消息不依赖前端定时器）。
+// kickQueue 会话空闲且有排队消息时，起一轮把它发出去（排队消息不依赖前端
+// 定时器）：点「继续发送」、空闲时新到的消息、收口兜底续发都走这里。
 func (a *App) kickQueue(m *SessionMeta) {
 	run, ok := a.beginRun(m.ID)
 	if !ok {
@@ -2464,8 +2528,14 @@ func (a *App) kickQueue(m *SessionMeta) {
 	a.serveQueue(m, run)
 }
 
-// serveQueue 在后台把排队消息逐条发完（无请求订阅者时也要跑）。
+// serveQueue 在后台把排队消息发起来（无请求订阅者时也要跑）。被派发的会话
+// （有派发方）走同一条派发链：跑完照旧回报派发方——不能因为「这一轮是队列
+// 拉起的」就少了【派发回报】。
 func (a *App) serveQueue(m *SessionMeta, run *sessionRun) {
+	if owner := a.dispatchOwner(m); owner != nil {
+		go a.runSubAgent(owner, m, run)
+		return
+	}
 	go a.executeRun(m, run, nil)
 }
 

@@ -32,6 +32,7 @@ type sessionRun struct {
 	partial  string // 当前步骤已流出的正文（重连时补发，避免丢半句）
 	thinking string // 当前步骤已流出的思考原文
 	stopped  bool   // 是否由用户显式停止
+	cleanEnd bool   // 本轮是否正常收尾（没出错、没被停止）：收口时据此决定要不要兜底续发队列
 }
 
 // PendingMsg 是执行中的一条待生效用户消息：插话（下一步调用模型前注入）
@@ -126,6 +127,17 @@ func (a *App) finishRun(id string) {
 	// 本轮结束（正常/停止/报错收口都走这里）：执行已登记的会话后交付。
 	// 异步执行避免大文件搬运拖住收口；认领机制保证与启动恢复不重不漏。
 	go a.flushDeliveries(id)
+	// 收口这一侧兜底续发：本轮已经在收尾、消息却恰好在续发循环走完之后才挤进
+	// 队列（派发回报 / 插话 / 前端排队都可能撞上这个窗口）——执行权此刻已从注册
+	// 表摘掉，再查一次：还有待发消息就再拉一轮把它发出去，不再出现「消息躺在
+	// 队列里、界面上等用户点继续发送」。只认正常收尾＋开关开着；出错或被用户
+	// 停止的队列照旧保留给用户处置。
+	if r.endedCleanly() && a.queueAutoSendOn() && !a.queuePausedOf(id) && a.hasQueued(id) {
+		if m, err := a.Store.Get(id); err == nil {
+			log.Printf("[排队] 会话 %s 收口时队列仍有待发消息，自动拉起下一轮", id)
+			a.kickQueue(m)
+		}
+	}
 }
 
 // runOf 取会话执行中的运行体；未在执行返回 nil。
@@ -136,14 +148,49 @@ func (a *App) runOf(id string) *sessionRun {
 	return r
 }
 
-// stopRun 请求停止会话执行（协作式取消：模型流、工具、等待都会收到 ctx 取消），
-// 并连带终止该会话全部后台作业——停止要彻底：作业的 ctx 独立挂 Background()
-// （跨轮存活是它的常态），不在这里一并取消的话，停止后会话看着空闲、
-// 作业还在后台跑（见 jobs.go 的 stopSessionJobs）。
-// 同时把「用户手动停止」这件事落库（见 store.go 的 StopRecord）：只记内存的话，
+// 停止的触发者口径（StopRecord.Actor 的取值）：两种都是「人为叫停」——Kind 一律
+// 记 stopByUser（重启恢复据此按人为停止认，而不是当成服务重启那种意外中断），
+// 区别只在落库说明与回报首句里怎么称呼触发者。
+const (
+	stopActorUser      = "user"      // 用户亲自点界面上的停止按钮（POST /stop → App.stopRun）
+	stopActorAssistant = "assistant" // 数字助理按用户指示代停（stop_session 工具 → App.stopRunBy）
+)
+
+// stopActorLabel 停止触发者的中文称呼（回报首句用）。
+func stopActorLabel(actor string) string {
+	if actor == stopActorAssistant {
+		return "数字助理（受用户指示）"
+	}
+	return "用户"
+}
+
+// stopTriggerNote 触发方式的一句话说明：落库的 StopRecord.Note 与回报首句共用
+// 同一份文案，两处口径不会漂。
+func stopTriggerNote(actor string) string {
+	if actor == stopActorAssistant {
+		return "数字助理按用户指示代停（等效用户点停止按钮）"
+	}
+	return "用户点击停止按钮"
+}
+
+// stopRun 请求停止会话执行（人工点「停止」按钮的入口：POST /api/sessions/{id}/stop
+// → handleStop）。协作式取消：模型流、工具、等待都会收到 ctx 取消；并连带终止该
+// 会话全部后台作业——停止要彻底：作业的 ctx 独立挂 Background()（跨轮存活是它的
+// 常态），不在这里一并取消的话，停止后会话看着空闲、作业还在后台跑（见 jobs.go
+// 的 stopSessionJobs）。
+// 同时把「人为停止」这件事落库（见 store.go 的 StopRecord）：只记内存的话，
 // 服务一重启意图就丢了，启动恢复把「用户主动叫停」误报成「服务重启中断」，
 // 数字助理据此还会重新派发/续跑用户已经叫停的任务。
 func (a *App) stopRun(id string) bool {
+	return a.stopRunBy(id, stopActorUser, stopTriggerNote(stopActorUser))
+}
+
+// stopRunBy 是带**触发者**的停止入口：停止动作与 stopRun 完全一致（同一套协作式
+// 取消 + 终止该会话后台作业 + 停止原因落库），只有落库的 Actor/Note 不同——人工点
+// 按钮走 stopActorUser，数字助理的 stop_session 工具按用户指示代停走
+// stopActorAssistant。这样「谁把任务停了」在停止记录、重启恢复与派发回报里都分得开
+//（两者都算人为叫停：Kind 都是 stopByUser，不会被当成故障而重新派发）。
+func (a *App) stopRunBy(id, actor, note string) bool {
 	jobsKilled := a.stopSessionJobs(id)
 	r := a.runOf(id)
 	if r == nil {
@@ -155,15 +202,34 @@ func (a *App) stopRun(id string) bool {
 	r.mu.Unlock()
 	if first {
 		nowMS := time.Now().UnixMilli()
+		if strings.TrimSpace(note) == "" {
+			note = stopTriggerNote(actor)
+		}
 		_ = a.Store.SetStopRecord(id, StopRecord{
-			Kind: stopByUser, Actor: "user", At: now(), AtMs: nowMS,
-			Manual: true, // 这一轮还没收口：重启恢复按「用户停止」优先认它
-			Note:   "用户点击停止按钮",
+			Kind: stopByUser, Actor: actor, At: now(), AtMs: nowMS,
+			Manual: true, // 这一轮还没收口：重启恢复按「人为停止」优先认它
+			Note:   note,
 		})
-		log.Printf("[停止] 会话 %s 由用户请求停止（停止原因已落库，重启后仍可查）", id)
+		log.Printf("[停止] 会话 %s 由%s请求停止（停止原因已落库，重启后仍可查）", id, stopActorLabel(actor))
 	}
 	r.cancel()
 	return true
+}
+
+// stopReportHead 组织「这一轮被停掉」的派发回报首句（见 runSubAgent 的 stopped
+// 分支）：触发者与触发方式分开写（人工点按钮 / 数字助理按用户指示代停），但
+// 「已由用户手动停止」这个说法必须原样保留——上游提示词（agent.go 的
+// assistantPrompt「回报里的中断原因必须照着认」）与重启恢复（runowner.go 的
+// reapInterruptedSession）都按这句话认「人为叫停」，措辞一漂就会有人把它当成
+// 意外中断而重新派发。
+func stopReportHead(sub *SessionMeta, rec StopRecord, at string, rounds, steps int) string {
+	note := strings.TrimSpace(rec.Note)
+	if note == "" {
+		note = stopTriggerNote(rec.Actor)
+	}
+	return "【派发回报】任务会话「" + sub.Title + "」（" + sub.ID + "）已由用户手动停止（" + note +
+		"，停止时间 " + at + "｜触发者：" + stopActorLabel(rec.Actor) + "｜进度：见下方摘要（共 " +
+		itoa(rounds) + " 轮 / " + itoa(steps) + " 步））。这是用户主动叫停，不是异常中断、不是故障。"
 }
 
 // publish 把一个执行事件发给该会话的全部订阅者（订阅者跟不上就丢帧，绝不阻塞执行）。
@@ -543,6 +609,89 @@ func (a *App) subscribe() (chan Event, func()) {
 	}
 }
 
+// maxQueueDrainRounds 是单次收尾里自动续发排队消息的条数上限（防循环风暴）：
+// 排队消息每条只被消费一次，正常达不到这个数；真撞上了就停下，把剩下的留在
+// 队列里由用户点「继续发送」（不静默丢消息）。
+const maxQueueDrainRounds = 20
+
+// hasQueued 会话排队队列里是否还有待发消息（拉起与收口兜底判定用）。
+func (a *App) hasQueued(sessionID string) bool {
+	a.pendMu.Lock()
+	defer a.pendMu.Unlock()
+	return len(a.pendingQueue[sessionID]) > 0
+}
+
+// markCleanEnd / endedCleanly 记「本轮是否正常收尾」（没出错、没被用户停止）：
+// 收口（finishRun）据此决定要不要兜底续发队列——出错与用户停止后队列照旧保留，
+// 留给用户处置（既有的明确口径，不改）。
+func (r *sessionRun) markCleanEnd() {
+	r.mu.Lock()
+	r.cleanEnd = true
+	r.mu.Unlock()
+}
+
+func (r *sessionRun) endedCleanly() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cleanEnd
+}
+
+// queueAutoSendOn 是「执行结束后自动续发排队消息」开关（设置·常规，默认开）。
+// 关掉后本轮结束不自动发队列，排队坞给「继续发送」入口（点它照发）。
+func (a *App) queueAutoSendOn() bool {
+	return a.Cfg.queueAutoSendOn()
+}
+
+// drainQueue 是排队消息的统一续发口：**不分来源**——真人消息（chat）、派发
+// 回报/派发需求（aiuser）、系统注入（report）走的是同一个队列、同一条规则。
+// 会话被停止/出错、队列暂停、开关关闭都停下，剩下的留在队列里（前端排队坞给
+// 「继续发送」入口）；auto=false 表示「用户显式要求把队列发完」（点继续发送、
+// 空闲时新到消息的拉起），不受开关约束。
+func (a *App) drainQueue(sess *SessionMeta, run *sessionRun, emit func(Event), auto bool) error {
+	err := error(nil)
+	for sent := 0; ; sent++ {
+		if run.ctx.Err() != nil || a.queuePausedOf(sess.ID) {
+			break
+		}
+		if auto && !a.queueAutoSendOn() {
+			break // 开关关闭：本轮结束不自动续发，留给用户点「继续发送」
+		}
+		if sent >= maxQueueDrainRounds {
+			log.Printf("[排队] 会话 %s 单次收尾已自动续发 %d 条，暂停自动推进（剩余消息留在队列里）", sess.ID, sent)
+			break
+		}
+		pm := a.popQueue(sess.ID)
+		if pm == nil {
+			break
+		}
+		a.broadcastPending(sess.ID)
+		a.landUserSide(sess, pm.Content, pm.Kind, pm.Origin, emit)
+		if err = a.runGoalRounds(run.ctx, sess, emit); err != nil {
+			break
+		}
+		a.requeueSteer(sess.ID) // 本轮没来得及注入的插话转为排队，接着发
+	}
+	a.broadcastPending(sess.ID)
+	return err
+}
+
+// runRoundsWithQueue 是「一轮执行 + 排队续发」的统一收口：会话执行体
+// （executeRun）与派发任务执行体（runSubAgent）共用，两条路径的续发口径因此
+// 完全一致。opening=false 表示这次拉起没有新正文（空闲时把队列发起来，见
+// kickQueue）：此时若队列里已有待发消息就直接续发——先空跑一轮模型调用既白花
+// 一次调用，也不是用户点「继续发送」的意思。
+func (a *App) runRoundsWithQueue(sess *SessionMeta, run *sessionRun, emit func(Event), opening, auto bool) error {
+	if opening || !a.hasQueued(sess.ID) {
+		err := a.runGoalRounds(run.ctx, sess, emit)
+		a.requeueSteer(sess.ID) // 本轮结束仍没被注入的插话转为排队：作为独立一轮接着发
+		if err != nil {
+			a.broadcastPending(sess.ID)
+			return err
+		}
+	}
+	return a.drainQueue(sess, run, emit, auto)
+}
+
 // maxGoalRounds 是目标模式自动续跑的轮数上限（防止无限消耗）。
 const maxGoalRounds = 8
 
@@ -615,22 +764,15 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 		emit(ev)
 	}
 
-	err := a.runGoalRounds(run.ctx, m, emit)
-	// 本轮结束仍没被注入的插话转为排队：作为独立一轮接着发，消息不丢
-	a.requeueSteer(m.ID)
-
-	// 排队消息逐条续跑（停止/出错/暂停后不再自动续，留给用户决定）
-	for err == nil && run.ctx.Err() == nil && !a.queuePausedOf(m.ID) {
-		pm := a.popQueue(m.ID)
-		if pm == nil {
-			break
-		}
-		a.broadcastPending(m.ID)
-		a.landUserSide(m, pm.Content, pm.Kind, pm.Origin, emit)
-		err = a.runGoalRounds(run.ctx, m, emit)
-		a.requeueSteer(m.ID)
+	// 本轮 + 排队续发（统一收口，见 runRoundsWithQueue）：opening 非空＝真人发
+	// 消息/重试，这一轮收尾后的续发是「自动续发」，受设置开关约束；opening 为空
+	// ＝空闲时把队列发起来（kickQueue：点「继续发送」/空闲时新到的消息），那是
+	// 用户显式要求，发完为止，不看开关。排队消息**不分来源**（真人 / 派发回报 /
+	// 系统注入）一律照发；停止、出错、队列暂停后余下的才留在队列里（留给用户处置）。
+	err := a.runRoundsWithQueue(m, run, emit, len(opening) > 0, len(opening) > 0)
+	if err == nil {
+		run.markCleanEnd() // 正常收尾：收口时兜底续发窗口期内新挤进队列的消息
 	}
-	a.broadcastPending(m.ID)
 
 	// 终态：正常完成与用户停止都不往界面塞话（对话里只有真实对话）；
 	// 只有真实的失败（模型/网络/费用等）才进前端的报错区，并带重试按钮。
@@ -707,28 +849,56 @@ func (a *App) isStopped(run *sessionRun) bool {
 	return run.stopped
 }
 
+// dispatchOwner 取会话的派发方（先看派发链 dispatched_by，退回父会话）：被派发
+// 会话跑完要回报给它。重启恢复（runowner.go）与收口续发（server.go 的
+// serveQueue）共用这一处口径，不各写一份。
+func (a *App) dispatchOwner(s *SessionMeta) *SessionMeta {
+	if s == nil {
+		return nil
+	}
+	for _, id := range []string{s.DispatchedBy, s.ParentID} {
+		if id == "" {
+			continue
+		}
+		if m, err := a.Store.Get(id); err == nil {
+			return m
+		}
+	}
+	return nil
+}
+
 // runSubAgent 是派发子任务的后台执行体：执行 → 广播进度 → 回报主对话 →
 // 主对话空闲时自动跑一轮面向用户的汇报。run 由派发方通过 beginRun 登记后传入。
 func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun) {
 	defer a.finishRun(sub.ID)
 	a.broadcast(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
-	err := a.runGoalRounds(run.ctx, sub, func(ev Event) {
+	emit := func(ev Event) {
 		if ev.Type == "tool_start" || ev.Type == "tool_end" {
 			a.broadcast(Event{Type: "sub_tool", SessionID: sub.ID, Name: ev.Name, Args: ev.Args, Output: ev.Output})
 		}
 		ev.SessionID = sub.ID
 		run.observe(ev)
 		run.publish(ev)
-	})
+	}
+	// 本轮 + 排队续发（统一收口）：任务会话执行期间收到的派发需求 / 用户消息
+	// 与本轮跑完一起处理，同一个队列、同一条规则——不再有「排在队列里等用户
+	// 点继续发送」这一说。
+	err := a.runRoundsWithQueue(sub, run, emit, true, a.queueAutoSendOn())
+	if err == nil {
+		run.markCleanEnd() // 正常收尾：收口时兜底续发窗口期内新挤进队列的消息
+	}
 	// 用户手动停止（POST /stop → stopRun 取消 ctx）与真实的执行失败要分开交代：
 	// 停止不是异常——别把 "context canceled" 当错误抛给用户/模型，也别让数字助理
 	// 以为任务是被意外打断的（那正是它自作主张重新派发/续跑的来源）。
 	stopped := a.isStopped(run) || run.ctx.Err() != nil
 	if err != nil {
 		if stopped {
+			// 触发者照落库的停止记录写：人工点按钮＝「用户点击停止按钮」，
+			// 数字助理按用户指示代停＝「数字助理按用户指示代停…」（见 stopRunBy）
+			rec := a.Store.GetStopRecord(sub.ID)
 			a.broadcast(Event{Type: "sub_end", SessionID: sub.ID, Error: "已由用户手动停止"})
 			_ = a.Store.AppendRow(sub.ID, &StoredMessage{
-				Message: TextMessage("user", "【执行中断】本轮已按用户要求停止（用户点击停止按钮）。未完成的部分不会自动续跑，需要时发新消息即可接着做。"),
+				Message: TextMessage("user", "【执行中断】本轮已按用户要求停止（"+stopTriggerNote(rec.Actor)+"）。未完成的部分不会自动续跑，需要时发新消息即可接着做。"),
 				Kind:    kindReport, Origin: "interrupt", CreatedAt: now(),
 			})
 		} else {
@@ -745,8 +915,8 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	if parent == nil {
 		return
 	}
-	msgs, _ := a.Store.Messages(sub.ID)
-	summary := renderSummary(a, sub, msgs) // 压缩摘要格式与原先完全一致
+	rows, _ := a.Store.MessagesWithSeq(sub.ID)
+	summary := renderSummary(a, sub, rows, stopped || err != nil) // 回报体例：完整最终答复 + 结尾消息 + 折叠过程 + 核对过的改动文件
 	// 回报指令按父会话形态分流：数字助理向用户汇报；工作任务带着结果继续推进
 	followUp := "请用用户听得懂的话汇报这件事的结果。"
 	if parent.Mode != "assistant" {
@@ -761,39 +931,38 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 		if at == "" {
 			at = now()
 		}
-		// 进度与下方摘要同口径（同一批消息算出来的），所以两处数字必然一致
+		// 进度与下方摘要同口径（同一批消息算出来的），所以两处数字必然一致。
+		// 首句措辞（含触发者口径）由 stopReportHead 统一组织：人工点按钮与数字助理
+		// 按用户指示代停都要写成「已由用户手动停止」——上游提示词与重启恢复都按这句
+		// 话认「人为叫停」，不能被当成意外中断。
 		rounds, steps := a.sessionProgress(sub.ID)
-		head = "【派发回报】任务会话「" + sub.Title + "」（" + sub.ID + "）已由用户手动停止（用户点击停止按钮，停止时间 " +
-			at + "｜触发者：用户｜进度：见下方摘要（共 " + itoa(rounds) + " 轮 / " + itoa(steps) + " 步））。" +
-			"这是用户主动叫停，不是异常中断、不是故障。"
+		head = stopReportHead(sub, rec, at, rounds, steps)
 		followUp = "这是用户主动叫停，不是故障：不要再自动重新派发、续跑或补做这个任务，用一句话向用户确认已停止即可。"
 	}
-	_ = a.Store.AppendRow(parent.ID, &StoredMessage{
-		Message: TextMessage("user", head+"\n\n"+summary+"\n\n"+followUp),
-		Kind:    kindAiUser, Origin: "dispatch", CreatedAt: now(),
-	})
-	// 用户主动叫停的**不自动触发**父会话那一轮（那正是「助理自作主张」的来源）：
-	// 回报照旧落库、照旧广布 report_ready（前端可见），父会话下一轮自然带着这条
-	// 指令看到它。正常结束/失败仍按原样自动起汇报轮。
-	if stopped {
-		a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
-		a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
-		return
-	}
-	// 先登记消化回报的续跑轮再广播回报就绪：前端收到 report_ready 重查会话时
-	// 必见 running，能立刻接上这轮流、实时看输出。父会话空闲才续跑（助理＝
-	// 面向用户汇报，工作任务＝带着结果续推）；正被用户占用就等下轮对话自然带出
-	prun, started := a.beginRun(parent.ID)
+	reportText := head + "\n\n" + summary + "\n\n" + followUp
+	// 回报**只有这一条投递路径**：按「用户侧消息」统一投（deliverToSession）——
+	// 父会话空闲就落库并立刻起汇报轮（助理＝面向用户汇报，工作任务＝带着结果继续
+	// 推）；正被用户占用就走它自己那个排队队列，等本轮结束**自动**发出（与真人
+	// 消息、AI 用户消息同一条规则，不再卡在「继续发送」按钮上）。正常结束、失败、
+	// 用户叫停的差别全在回报正文（head/followUp：中断原因与「不要再自动重新派发、
+	// 续跑」的指示），投递行为完全一致——不再有「叫停那一路直写落库」的旁路分支。
+	// 投递即登记执行权，再广播回报就绪：前端收到 report_ready 重查会话时必见
+	// running，能立刻接上这轮流。
+	d := a.deliverToSession(parent, reportText, kindAiUser, "dispatch")
 	a.broadcast(Event{Type: "report_ready", SessionID: parent.ID, Title: sub.Title})
-	if started {
+	if d.Started {
 		go func() {
+			prun := d.Run
 			defer a.finishRun(parent.ID)
 			prun.publish(Event{Type: "run_start"})
-			_ = a.RunAgent(prun.ctx, parent, func(ev Event) {
+			err := a.runRoundsWithQueue(parent, prun, func(ev Event) {
 				ev.SessionID = parent.ID
 				prun.observe(ev)
 				prun.publish(ev)
-			})
+			}, true, a.queueAutoSendOn())
+			if err == nil {
+				prun.markCleanEnd() // 正常收尾：收口时兜底续发窗口期内新挤进队列的消息
+			}
 			a.broadcast(Event{Type: "session_updated", SessionID: parent.ID})
 			a.broadcast(Event{Type: "done", SessionID: parent.ID}) // 汇报轮结束：未查看的会话点亮绿点
 		}()

@@ -107,6 +107,7 @@ function rpRenderTabs() {
   for (const [id, def] of ordered) {
     const b = document.createElement('button');
     b.className = 'rp-tab' + (id === rpActive ? ' active' : '');
+    b.dataset.rpId = id; // 供 app-chat.js 识别「用户点开的是哪个视图」（点开「计划」＝已在处理）
     b.textContent = def.title;
     b.onclick = () => { if (id !== rpActive) rpOpen(id); };
     box.appendChild(b);
@@ -292,7 +293,7 @@ function renderSubDDPop() {
     const item = document.createElement('div');
     item.className = 'drawer-item' + (subState.cur && subState.cur.id === s.id ? ' active' : '');
     item.innerHTML =
-      `<span class="d-status ${s.status === 'running' ? 'run' : ''}">${s.status === 'running' ? '⟳' : '·'}</span>` +
+      `<span class="d-status ${s.status === 'running' ? 'run' : ''}">${s.status === 'running' ? '' : '·'}</span>` +  // 运行中留空：圆环由 CSS 画，转字符会晃
       `<span class="d-title">${esc(s.title || '(未命名)')}</span>` +
       (s.mode === 'aux' || s.origin === 'human' ? '<span class="d-src human">人工</span>' : '<span class="d-src">AI</span>') +
       `<span class="d-time">${esc(relTime(s.updatedAt))}</span>`;

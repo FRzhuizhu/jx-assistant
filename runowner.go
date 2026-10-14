@@ -172,8 +172,9 @@ func (a *App) sweepOrphanSessions() {
 // 启动恢复与 30s 补扫共用这一处，避免两套收口逻辑漂移。
 //
 // 中断原因分两种口径（这就是本函数比「一律按服务重启」更准的地方）：
-//   - 用户此前点过停止、且这一轮尚未收口（StopRecord.Manual，落库读回）：
-//     按「用户手动停止」认。用户点了停止紧接着服务重启时，绝不能报成
+//   - 人为停止过、且这一轮尚未收口（StopRecord.Manual，落库读回；人工点按钮与
+//     数字助理用 stop_session 按用户指示代停都记在这里，Actor 分得开是谁停的）：
+//     按「用户手动停止」认。人点了停止紧接着服务重启时，绝不能报成
 //     「因服务重启被中断」——那会让数字助理以为任务是意外打断的而重新派发。
 //   - 其余：系统异常中断（服务重启 / 进程崩溃），文案与原来一致，只补上
 //     中断时间、触发者与进度。
@@ -195,12 +196,17 @@ func (a *App) reapInterruptedSession(s *SessionMeta) {
 	reportText := "【派发回报】任务会话「" + s.Title + "」（" + s.ID + "）因服务重启被中断，未完成（中断时间 " +
 		at + "｜触发者：系统（服务重启）｜进度：已完成 " + itoa(rounds) + " 轮 / " + itoa(steps) + " 步）。"
 	if userStop {
-		// 用户先点了停止、随后服务重启：以用户手动停止为准
-		log.Printf("[恢复] 会话 %s 的重启中断按「用户手动停止」收口（停止时间 %s，停止原因落库）", s.ID, at)
-		reasonText = "【系统中断】服务在执行期间重启，但本会话此前已由用户手动停止（" + at +
-			"）。按用户停止处理：未完成的部分不自动续跑，需要时发新消息继续。"
-		reportText = "【派发回报】任务会话「" + s.Title + "」（" + s.ID + "）已由用户手动停止（用户点击停止按钮，停止时间 " +
-			at + "｜触发者：用户｜进度：已完成 " + itoa(rounds) + " 轮 / " + itoa(steps) +
+		// 人先叫了停（人工点按钮 / 数字助理按用户指示代停）、随后服务重启：以人为停止为准。
+		// 触发者口径照落库的停止记录写（Actor 是 user 还是 assistant 分得开）
+		note := strings.TrimSpace(rec.Note)
+		if note == "" {
+			note = stopTriggerNote(rec.Actor)
+		}
+		log.Printf("[恢复] 会话 %s 的重启中断按「%s叫停」收口（停止时间 %s，停止原因落库）", s.ID, stopActorLabel(rec.Actor), at)
+		reasonText = "【系统中断】服务在执行期间重启，但本会话此前已由用户手动停止（" + note + "，" + at +
+			"）。按人为停止处理：未完成的部分不自动续跑，需要时发新消息继续。"
+		reportText = "【派发回报】任务会话「" + s.Title + "」（" + s.ID + "）已由用户手动停止（" + note + "，停止时间 " +
+			at + "｜触发者：" + stopActorLabel(rec.Actor) + "｜进度：已完成 " + itoa(rounds) + " 轮 / " + itoa(steps) +
 			" 步）。这是用户主动叫停，不是异常中断：不要再自动重新派发、续跑或补做这个任务。"
 	} else {
 		log.Printf("[恢复] 会话 %s 按「系统异常中断（服务重启）」收口", s.ID)
@@ -225,18 +231,13 @@ func (a *App) reapInterruptedSession(s *SessionMeta) {
 	// 这一轮已经收口：待收口标志作废（记录里的时间/次数保留，历史仍查得出来）
 	_ = a.Store.ClearStopPending(s.ID)
 	// 中断回报的归属：优先派发链（dispatched_by），子对话退回父会话——
-	// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）
-	owner := s.DispatchedBy
-	if owner == "" {
-		owner = s.ParentID
-	}
-	if owner != "" {
-		if _, perr := a.Store.Get(owner); perr == nil {
-			_ = a.Store.AppendRow(owner, &StoredMessage{
-				Message: TextMessage("user", reportText),
-				Kind:    kindAiUser, Origin: "dispatch", CreatedAt: now(),
-			})
-		}
+	// 助理与工作任务都会派发，统一回报给派发方（重启后不自动续跑，等用户接续）。
+	// 归属解析与收口续发的 serveQueue 共用 dispatchOwner 一处口径，不各写一份。
+	if owner := a.dispatchOwner(s); owner != nil {
+		_ = a.Store.AppendRow(owner.ID, &StoredMessage{
+			Message: TextMessage("user", reportText),
+			Kind:    kindAiUser, Origin: "dispatch", CreatedAt: now(),
+		})
 	}
 }
 
@@ -248,6 +249,6 @@ func (a *App) sessionProgress(id string) (int, int) {
 	if err != nil {
 		return 0, 0
 	}
-	rounds, steps, _, _, _, _ := summarizeSession(msgs)
+	rounds, steps := summarizeSession(msgs)
 	return rounds, steps
 }

@@ -346,9 +346,9 @@ func TestAssistantCompactWorksWhenAutoCompactOff(t *testing.T) {
 	}
 }
 
-// 只有一轮历史（或更早内容已被摘要覆盖）时，压缩按钮给一句人话报错，
-// 且不改动历史。
-func TestAssistantCompactSingleRoundFriendlyError(t *testing.T) {
+// 只有一轮历史时（保留窗口至少保最近一轮，窗口之上没有内容），按钮透传
+// 现有错误文案（doSummarize 原话），且不改动历史、不落摘要。
+func TestAssistantCompactSingleRoundPassesExistingError(t *testing.T) {
 	f := newAssistantOpsFixture(t)
 	a, main := f.app, f.main
 	if _, err := a.Store.ClearSession(main.ID); err != nil {
@@ -361,42 +361,55 @@ func TestAssistantCompactSingleRoundFriendlyError(t *testing.T) {
 	if w.Code != 400 {
 		t.Fatalf("不可压缩应 400, got %d %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "没有可压缩的历史") {
-		t.Fatalf("报错应是人话（没有可压缩的历史）, got %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "没有可压缩的区间") {
+		t.Fatalf("应透传现有错误文案（没有可压缩的区间）, got %s", w.Body.String())
 	}
 	if n := msgCount(t, a, main.ID); n != 4 {
 		t.Fatalf("失败的压缩不该改动历史, got %d 条", n)
 	}
 }
 
-// 保留预算够大时（历史都在保留窗口内），压缩按钮退化为「只保留最近一轮」，
-// 而不是空点一下没反应。
-func TestAssistantCompactFallsBackToKeepLastRound(t *testing.T) {
+// 历史都在保留预算内（预算极大）：按钮与自动压缩同一口径——没有可压区间
+// 就是 400 报错，不额外发明「退化为只留最近一轮」之类的私有行为。
+func TestAssistantCompactWithinBudgetIsNoop(t *testing.T) {
 	f := newAssistantOpsFixture(t)
 	a, main := f.app, f.main
-	a.Cfg.KeepChars = 1000000 // 预算足够大：按预算算「没东西可压」
+	a.Cfg.KeepChars = 1000000 // 预算足够大：全部历史都在保留窗口内
 
 	w := post(t, a.handleAssistantCompact, "/api/assistant/compact")
-	if w.Code != 200 {
-		t.Fatalf("应退化压缩而不是报错, got %d %s", w.Code, w.Body.String())
+	if w.Code != 400 {
+		t.Fatalf("预算内没东西可压应 400 透传现有文案, got %d %s", w.Code, w.Body.String())
 	}
-	summaries := 0
+	if !strings.Contains(w.Body.String(), "没有可压缩的区间") {
+		t.Fatalf("应透传现有错误文案, got %s", w.Body.String())
+	}
+	if n := msgCount(t, a, main.ID); n != 12 {
+		t.Fatalf("无操作的压缩不该改动历史, got %d 条", n)
+	}
 	all, _ := a.Store.RawMessagesAll(main.ID)
 	for _, m := range all {
 		if m.Kind == kindSummary {
-			summaries++
-			if m.CoversUpTo < 1 {
-				t.Fatalf("退化压缩也要覆盖到第 1 轮之后, got %d", m.CoversUpTo)
-			}
+			t.Fatalf("不该落摘要行")
 		}
-	}
-	if summaries != 1 {
-		t.Fatalf("应落 1 条摘要行, got %d", summaries)
-	}
-	// 最近一轮（第 3 轮）必须保持原文可见：没有任何折叠标记
-	for _, m := range all {
 		if m.Compact != "" {
-			t.Fatalf("模型摘要压缩不该写规则折叠标记（第 %d 行 %q）", m.Seq, m.Compact)
+			t.Fatalf("不该有折叠标记（第 %d 行 %q）", m.Seq, m.Compact)
 		}
+	}
+}
+
+// 摘要指令按会话模式二选一：数字助理主对话用专属指令（记住用户偏好与长期
+// 约定），其他会话沿用通用指令。
+func TestSummarizeInstructionForMode(t *testing.T) {
+	ast := summarizeInstructionFor(&SessionMeta{Mode: "assistant"})
+	if !strings.Contains(ast, "用户偏好与习惯") || !strings.Contains(ast, "长期有效的约定") {
+		t.Fatalf("数字助理主对话应用专属指令, got %q", ast)
+	}
+	for _, mode := range []string{"task", "coding", "office", "aux", ""} {
+		if got := summarizeInstructionFor(&SessionMeta{Mode: mode}); got != summarizeInstruction {
+			t.Fatalf("mode=%q 应回退通用指令", mode)
+		}
+	}
+	if summarizeInstructionFor(nil) != summarizeInstruction {
+		t.Fatalf("nil 会话应回退通用指令")
 	}
 }

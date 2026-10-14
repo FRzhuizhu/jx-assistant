@@ -117,6 +117,9 @@ function loadProvDraft(c) {
     name: p.name || '',
     baseURL: p.baseURL || '',
     key: '', keyMasked: p.apiKeyMasked || '',
+    enabled: p.enabled !== false,   // 手动启停开关（服务商卡片头）
+    autoDisabled: !!p.autoDisabled, // 公司通道自动停用（连不上服务端）
+    company: !!p.company,           // 公司内部通道（删除提示/状态文案用）
     models: (p.models || []).map((m) => ({
       id: m.id || '', name: m.name || '',
       contextWindow: m.contextWindow || 0, maxOutput: m.maxOutput || 0,
@@ -162,9 +165,11 @@ async function openSettings(pane) {
   const aa = c.askAlert || {};
   $('set-askalert-on').checked = aa.enabled !== false;
   $('set-askalert-sec').value = aa.afterSec || 240;
+  // 发送页：排队消息自动续发（服务端配置，改动即时保存；缺省＝开）
+  $('set-queueauto-on').checked = c.queueAutoSend !== false;
   $('set-askalert-text').value = aa.text || '';
   // 常规页：任务最大步数（服务端配置，改动即时保存）
-  $('set-maxsteps').value = c.maxSteps || 100;
+  $('set-maxsteps').value = c.maxSteps || 200;
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
   $('set-lan-on').checked = c.bindHost === '0.0.0.0' || c.bindHost === '::';
   syncLanState(c);
@@ -541,19 +546,49 @@ function buildProvCard(p, key) {
   const card = document.createElement('div');
   card.className = 'prov-card' + (open ? ' open' : '');
 
-  // 折叠头：状态点 + 名称 + 模型数 + 编辑/收起
+  // 折叠头：状态点 + 名称 + 模型数 + 启停开关 + 编辑/收起
   // 预置提供方的名称实时取预置模板（模板改名后已保存的卡片跟着更新，
   // 不用存量用户重存一遍）
   const tp = p.presetId ? presetOf(p.presetId) : null;
   const configured = !!(p.key || p.keyMasked);
+  const offTag = p.autoDisabled
+    ? '<span class="pv-off-tag" title="连不上公司服务端时自动停用，恢复可达自动启用">已自动停用 · 服务端不可达</span>'
+    : (p.enabled === false ? '<span class="pv-off-tag">已停用</span>' : '');
   const head = document.createElement('div');
-  head.className = 'pv-head';
+  head.className = 'pv-head' + (p.enabled === false || p.autoDisabled ? ' off' : '');
   head.innerHTML =
     `<span class="pv-dot ${configured ? 'ok' : 'no'}" title="${configured ? '密钥已配置' : '未配置密钥'}"></span>` +
     `<b class="pv-name">${esc((tp && tp.name) || p.name || '未命名提供方')}</b>` +
+    offTag +
     `<span class="pv-meta">${p.models.length} 个模型</span>` +
-    (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '') +
-    `<span class="pv-edit">${open ? '收起' : '编辑'}</span>`;
+    (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '');
+  // 启停开关：停用的提供方不参与默认选择与会话解析（出了公司自动切到可用服务商
+  // 就靠它）；公司通道另有「自动停用」，手动开启会一并清掉
+  if (key !== 'new') {
+    const tg = document.createElement('label');
+    tg.className = 'pr-toggle pv-toggle';
+    tg.title = p.autoDisabled ? '已因连不上公司服务端自动停用；手动开启立即生效（恢复可达也会自动启用）'
+      : (p.enabled === false ? '已手动停用：不参与模型选择' : '停用后该服务商不参与模型选择');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = p.enabled !== false && !p.autoDisabled;
+    cb.onclick = (e) => e.stopPropagation();
+    cb.onchange = async () => {
+      const on = cb.checked;
+      try {
+        await api('/api/providers/toggle', { method: 'POST', body: JSON.stringify({ id: p.id, enabled: on }) });
+        await reloadProviders();
+      } catch (e) { alert((on ? '启用' : '停用') + '失败：' + e.message); reloadProviders(); }
+    };
+    tg.appendChild(cb);
+    tg.appendChild(document.createElement('span'));
+    tg.onclick = (e) => e.stopPropagation();
+    head.appendChild(tg);
+  }
+  const edit = document.createElement('span');
+  edit.className = 'pv-edit';
+  edit.textContent = open ? '收起' : '编辑';
+  head.appendChild(edit);
   head.onclick = () => {
     // 收起/展开只切换视图，不重载服务器数据：已输入的密钥、模型修改都留在草稿里，
     // 只有「取消」「保存」才丢弃或提交（修复：随便点哪，输入的内容就消失）
@@ -838,7 +873,10 @@ function buildProvCard(p, key) {
     delBtn.className = 'pf-del';
     delBtn.textContent = '删除提供方';
     delBtn.onclick = async () => {
-      if (!confirm('删除提供方「' + (p.name || p.id) + '」？以后可重新添加。')) return;
+      const msg = p.company
+        ? '删除公司通道「' + (p.name || p.id) + '」？\n重新连上公司服务端后会按你的姓名自动重建（含密钥）；长期不用请改用卡片上的停用开关。'
+        : '删除提供方「' + (p.name || p.id) + '」？以后可重新添加。';
+      if (!confirm(msg)) return;
       try {
         await api('/api/providers/delete', { method: 'POST', body: JSON.stringify({ id: p.id }) });
         reloadProviders();
@@ -1010,6 +1048,21 @@ $('set-askalert-sec').onchange = () => {
   saveAskAlertCfg({ afterSec: v });
 };
 $('set-askalert-text').onchange = () => saveAskAlertCfg({ text: $('set-askalert-text').value.trim() });
+
+/* ---------- 发送页：排队消息自动续发（服务端配置，改动即时保存） ----------
+   默认开：本轮回复完成后，队列里的待发消息（不分来源）自动逐条发出；关掉后
+   本轮结束队列保留，排队坞给「继续发送」入口（点它照发，不受开关限制）。 */
+
+$('set-queueauto-on').onchange = async () => {
+  const on = $('set-queueauto-on').checked;
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ queueAutoSend: on }) });
+    $('set-queueauto-on').checked = c.queueAutoSend !== false; // 以服务端落库值为准回显
+  } catch (e) {
+    $('set-queueauto-on').checked = !on;
+    alert('保存失败：' + e.message);
+  }
+};
 
 /* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ---------- */
 
@@ -1303,14 +1356,15 @@ function assistantOpsState(msg) {
 }
 
 $('btn-assistant-compact').onclick = async () => {
+  if (!(await confirmAboveSettings('立即压缩「跟数字经理对话」？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
   const btn = $('btn-assistant-compact');
   const orig = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '压缩中…（模型生成摘要，可能要几秒）';
+  btn.textContent = '压缩中…（要几秒）';
   try {
     const r = await api('/api/assistant/compact', { method: 'POST' });
     const sum = String(r.summary || '').replace(/\s+/g, ' ').trim();
-    assistantOpsState('已用模型摘要压缩数字助理主对话。摘要开头：' +
+    assistantOpsState('已压缩跟数字经理对话。摘要开头：' +
       (sum ? sum.slice(0, 80) + (sum.length > 80 ? '…' : '') : '（摘要为空）') +
       '　原始历史仍可查回；对话区已翻新。');
     await refreshAssistantOps();
@@ -1323,17 +1377,17 @@ $('btn-assistant-compact').onclick = async () => {
 };
 
 $('btn-assistant-clear').onclick = async () => {
-  if (!(await confirmAboveSettings('清空「数字助理主对话」的全部历史消息？\n' +
+  if (!(await confirmAboveSettings('清空「跟数字经理对话」的全部历史消息？\n' +
       '将删除它的全部聊天记录、压缩摘要以及随消息产生的文件快照登记、交付登记、上传登记，' +
       '并丢弃待发的插话/排队；会话设置（工作目录、权限、模型等）保留。\n此操作不可恢复。'))) return;
-  if (!(await confirmAboveSettings('再次确认：数字助理主对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
+  if (!(await confirmAboveSettings('再次确认：跟数字经理对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
   const btn = $('btn-assistant-clear');
   const orig = btn.textContent;
   btn.disabled = true;
   btn.textContent = '清空中…';
   try {
     const r = await api('/api/assistant/clear', { method: 'POST' });
-    assistantOpsState('已清空数字助理主对话（' + (r.cleared || 0) + ' 条消息），它现在是全新对话。');
+    assistantOpsState('已清空跟数字经理对话（' + (r.cleared || 0) + ' 条消息），它现在是全新对话。');
     await refreshAssistantOps();
   } catch (e) {
     alert('清空失败：' + e.message);

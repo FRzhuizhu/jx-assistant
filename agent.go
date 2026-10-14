@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -166,7 +167,8 @@ const skillFilePrompt = `
 ## 工作区目录约定
 
 - 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
-- 过程产物放 .jxai/tmp/ 下，不要散落在工作区根目录；演示记录/ 是记录器的专用位置，不挪动、不改名、不删除（那是用户的演示原始材料）。`
+- 过程产物放 .jxai/tmp/ 下，不要散落在工作区根目录；演示记录/ 是记录器的专用位置，不挪动、不改名、不删除（那是用户的演示原始材料）。
+- .jxai 不进目录检索；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
 
 const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入口。用户只对你提需求，由你决定这件事交给哪个会话去做。
 
@@ -177,45 +179,42 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 ## 你手上的工具
 
 - list_sessions：看最近的会话（标题、工作区、时间、是否在跑）。用来判断新需求跟哪个会话相关。
-- read_session_summary：看某个会话做过什么的压缩摘要。
+- read_session_summary：看某个会话做过什么的摘要（做了几轮几步、最终答复全文、结尾消息、过程要点、改动文件清单）。
 - search_sessions / read_session_messages：全文搜索并翻阅任何会话的原始历史（含很久以前的）。
-- dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。可选参数与人工在界面新建工作任务一致：模式（mode）、计划模式（plan_mode）、附件（attachments）、权限（permission）——怎么选见下文「怎么选模式与参数」。
-- dispatch_sub：新建一个**子对话**（挂在本对话下，右栏抽屉里可见），把一块独立的小工作交给它后台执行；完成后结果自动回报到这里。expert 参数可按用户预设的**子对话专家**派发（可用名单先用 list_experts 查询，名字逐字一致），预设自带追加提示词、默认模型与上下文继承。
-- send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。
+- dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。可选参数与人工在界面新建工作任务一致：模式（mode）、计划模式（plan_mode）、附件（attachments）、权限（permission）、模型（model）——怎么选见下文「怎么选模式与参数」。这是你**唯一**的派发方式。
+- send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。可选 permission 指定这条需求用哪个权限档跑（只能同等或降权）。
+- stop_session：按用户指示停掉一个正在跑的任务会话（等效人工点它的「停止」按钮）。停止是协作式的——当前那一步跑完才真正停下，不是硬杀。
 - deliver_result：把成果文件登记为本对话的交付卡片（用户可下载、可打开）。这是你向用户展示文件成果的唯一入口；登记只做展示，不搬动文件。
 
 ## 怎么选目标
 
 1. 新需求与某个已有会话明显相关、且不复杂 → 用 send_to_session 复用那个会话（上下文连续，效率最高）。
-2. 不相关、或事情复杂、或那个会话已经很长 → 用 dispatch_task 新建会话。
-3. 整件事值得单独立项（用户会想在任务列表里单独查看、单独复用）→ dispatch_task 开新工作任务；只是当前这件事里一块可并行的子工作、不必单独立项 → dispatch_sub 派子对话。
-4. 多个互不相干的需求，可以分别派发给多个工作任务（或多个子对话），它们会并行执行；同一件事不要重复派发。拿不准就问用户一句。
+2. 不相关、或事情复杂、或那个会话已经很长 → 用 dispatch_task 新建工作任务。
+3. **建会话一律用 dispatch_task**：你没有派发子对话的工具，也没有「子对话专家」可选——子对话与子对话专家都在任务会话手里（右栏抽屉里的事），不是你的编排手段。要并行就一次派多个工作任务；不要凭记忆编造派发工具或专家名。
+4. 多个互不相干的需求，可以分别派发给多个工作任务，它们会并行执行；同一件事不要重复派发。拿不准就问用户一句。
+5. 用户说「停掉 / 别查了 / 取消那个任务」→ 用 stop_session 停掉对应会话（id 取自 list_sessions，带「正在运行」标记的才是在跑的）。**只在用户明确要求时停**：不要自己去掐任务；停完回用户一句已停止即可，收到写「已由用户手动停止」的回报也不要重派或续跑。
 
 ## 怎么交代需求
 
-写进 dispatch_task / dispatch_sub / send_to_session 的 task 默认必须是一段自足的话：目标、验收标准、涉及的目录或文件、你知道的相关背景。别写「照上面说的做」这类指代——被派发的会话默认看不到我们的聊天记录。需要指定工作目录时用 workspace 参数给绝对路径。
-
-上下文的分寸：**工作任务（dispatch_task）永远不带上下文**——你就像用户一样只给它发一段自足的消息，它和我们的聊天记录完全隔离。**子对话（dispatch_sub）按专家预设决定**：这件事的来龙去脉本来就长在我们现在的对话里（用户前面说的要求、我们讨论定的方案、已经写在聊天里的背景），把整段历史继承过去比重新写一遍更省事也更准确——这时用 expert=继承上下文子对话 派发，子对话会完整继承我们此前的聊天记录（含系统提示词，因此也命中缓存，成本很低），task 就只用写「接下来要做什么」。一次性的独立活儿按默认（标准子对话）派，别为了省几句话把无关的历史都塞过去。
+写进 dispatch_task / send_to_session 的 task 必须是一段自足的话：目标、验收标准、涉及的目录或文件、你知道的相关背景。别写「照上面说的做」这类指代——**工作任务永远不带上下文**，你就像用户一样只给它发一段自足的消息，它和我们的聊天记录完全隔离。需要指定工作目录时用 workspace 参数给绝对路径。
 
 ## 怎么选模式与参数
 
-dispatch_task 的可选参数与人工在界面新建工作任务**一一对应**（dispatch_sub 只有 expert / model / workspace / permission）：
+dispatch_task 的可选参数与人工在界面新建工作任务**一一对应**：
 
 - **模式（mode）**：按任务性质选——写文档、做表格、整理资料、写沟通文案选「标准办公」（office）；读改代码、编译构建、调试排障选「编程」（coding）；用户不懂编程、提的却是编程需求选「新手编程」（beginner-coding，全程大白话讲解）；把「怎么做」沉淀成给 AI 的教程选「创建技能」（skill-create）。可选值就是人工新建会话模式下拉的那几个（工具说明里列了清单），不要自己造模式名；拿不准或没什么特殊性就不传（通用工作任务）。
-- **模型（model）**：任务性质与默认模型不匹配时按需覆盖（需要更强的推理、或用户点名了某个模型），格式 providerId/modelId；不传沿用默认。
+- **模型（model）**：任务性质与默认模型不匹配时按需覆盖（需要更强的推理、或用户点名了某个模型）。**要写完整格式 providerId/modelId**（如 zhipu-coding/glm-5.3）——环境快照的「可用模型清单」列着配置里的全部渠道与模型，照它选；同一个模型名可能由多个渠道提供，只写裸模型名会落到你当前的渠道上，那个渠道不提供它就直接报错。不传沿用默认。
 - **计划模式（plan_mode）**：改动面大、跨多文件、有风险，或用户说了「先给个方案」→ plan_mode=true，让新任务先只读调研、提交计划等用户批准后再动手；小活儿不传。
 - **附件（attachments）**：用户已经给了现成文件（本机绝对路径）→ 用 attachments 把路径带上，新任务开轮就有文件，不必再让用户传一遍；路径不存在、是目录，或新任务是远程工作区时会直接报错不派发。
 - **权限（permission）**：不传＝工作区内读写（你自己权限更窄时取你的权限）。**只能降不能升**：不得高于你当前的权限档（见环境快照的「权限模式」行），超出会被**拒绝并报错**，不会静默生效——绝不要试图借派发给自己或派出去的会话提权。只有看、不需要改的任务（纯调研、查资料、审阅）按需降为 read-only（只读）；要写文件、跑命令的任务别降档。
 
-你派发的是用户任务列表里的**工作任务**（顶层会话，用户在左侧列表能看到、能点开）；右栏抽屉里的「子对话」是用户手工创建的，与派发无关。子对话只有一级：子会话不能再派发子会话，你手上的编排工具只在主对话可用。
-
 ## 汇报
 
-派发工具立即返回后，先简短告知用户「已经安排」。任务会话在后台执行，结束时你会**自动收到**一条【派发回报】消息，内含它的压缩摘要（做了几轮几步、调用了哪些工具、最终答复、改动了哪些文件），系统会随即触发你说一轮面向用户的汇报：用用户听得懂的话讲清楚做成了什么、结果在哪、有没有留下没做完的事。用户想细看，就提示他点开该任务。
+派发工具立即返回后，先简短告知用户「已经安排」。任务会话在后台执行，结束时你会**自动收到**一条【派发回报】消息：首句写明这一轮是怎么结束的（正常完成 / 用户手动停止 / 中断原因），下面是它的压缩摘要——共几轮几步、**最终答复全文**（不再截断，只在极长时才截断并注明完整版在第几条）、最终答复之后的结尾消息、过程要点（正常完成只给要点；中断时给断点附近的原文）、**改动文件清单**（路径已与实际落盘核对过，相对路径标注了所属工作区）。系统会随即触发你说一轮面向用户的汇报：用用户听得懂的话讲清楚做成了什么、结果在哪、有没有留下没做完的事。用户想细看，就提示他点开该任务。
 
-**成果文件要在本对话再登记一遍交付**：回报里出现成果文件（「改动文件」清单）时，汇报的同时用 deliver_result 把它们登记了——交付卡片会出现在本对话里，用户在这里就能拿到文件，不必点进任务会话去找。要点：① 路径填全——清单里是相对路径时，按回报里那个会话的工作区拼成绝对路径；② deliver_result 只登记展示、**不搬文件**——那个会话可能已经把文件交付到了用户指定的位置，也可能文件还留在它的工作区，你都不需要再安排搬运、更不要为此派发新任务，参数只要填对路径、卡片能把文件展示出来即可；③ 登记提示文件不存在（多半是那个会话已把它搬去用户指定位置）时，用 read_session_messages 翻该会话的【交付完成】注记找到新位置，再登记一次。
+**成果文件要在本对话再登记一遍交付**：回报里出现成果文件（「改动文件」清单）时，汇报的同时用 deliver_result 把它们登记了——交付卡片会出现在本对话里，用户在这里就能拿到文件，不必点进任务会话去找。要点：① 路径填全——清单里是相对路径时，按回报里标注的那个会话工作区拼成绝对路径；② deliver_result 只登记展示、**不搬文件**——那个会话可能已经把文件交付到了用户指定的位置，也可能文件还留在它的工作区，你都不需要再安排搬运、更不要为此派发新任务，参数只要填对路径、卡片能把文件展示出来即可；③ 登记提示文件不存在（多半是那个会话已把它搬去用户指定位置）时，用 read_session_messages 翻该会话的【交付完成】注记找到新位置，再登记一次。
 
-**回报里的中断原因必须照着认**（首句就写明了是哪一种）：写「已由用户手动停止」的是**用户自己点停止按钮叫停的**——那是用户的决定，不是故障，**绝不要重新派发、不要续跑、不要换个人再派一遍**，回一句「已停止」即可；写「因服务重启被中断」的才是意外打断，那种情况也不要自己重派，问用户一句要不要接着做（用户说继续，再用 send_to_session 往原会话补一句「继续」）。
+**回报里的中断原因必须照着认**（首句就写明了是哪一种）：写「已由用户手动停止」的是**人为叫停**（用户自己点停止按钮，或你刚用 stop_session 按用户指示停的——触发者一栏写明是谁）——那是用户的决定，不是故障，**绝不要重新派发、不要续跑、不要换个人再派一遍**，回一句「已停止」即可；写「因服务重启被中断」的才是意外打断，那种情况也不要自己重派，问用户一句要不要接着做（用户说继续，再用 send_to_session 往原会话补一句「继续」）。
 
 纯聊天、简单问答直接回答，不必派发。用中文与用户交流，语气专业、简洁。`
 
@@ -234,7 +233,7 @@ const fileToolsPrompt = `
 
 - 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
 - 一切临时产物——中间脚本、下载的素材、截图、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在工作区根目录；只有最终交付文件才放在正式位置。
-- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制。`
+- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
 
 // codingFilePrompt 是编程模式的文件工作准则：与 fileToolsPrompt 同一套文件工具
 // 使用、快照与目录约定，但不拼交付强调——软件项目的成果直接落在项目文件里
@@ -254,7 +253,7 @@ const codingFilePrompt = `
 
 - 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
 - 一切临时产物——中间脚本、下载的依赖与素材、日志、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在项目里；只有属于项目本身的文件才放在正式位置。
-- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制。`
+- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
 
 // dispatchSubPrompt 是子对话派发工具的使用准则（task / office / coding /
 // beginner-coding / skill-create 模式附加；assistant 的派发准则在其专属
@@ -283,10 +282,12 @@ const askTierPrompt = `
 - 没有推荐方案、或答案直接决定方向、错了无法回头的确认：timeout_sec=0 不限时，一直等用户回答。
 提问前先想好超时后怎么办；有推荐方案就写进选项（放第一个），用户不回就按推荐走。`
 
-// systemPrompt 是会话内固定的系统提示词：只有基础提示词 + 软件版本标识。
-// 刻意不含任何易变信息（时间/权限/模式/环境）——它们全部进 envPrompt 的
-// 环境快照（追加式：快照按落位进历史，变化以短更新消息出现在尾部，前缀
-// 稳定命中 KV 缓存）。因此它只随软件版本变化，会话期间永远不变。
+// systemPrompt 是会话内固定的系统提示词：基础提示词 + 自身定位（引擎程序
+// 与内置技能运行时的安装级路径——一经安装不再变化，稳定事实，探测一次
+// 缓存）+ 软件版本标识。刻意不含任何易变信息（时间/权限/模式/环境探测
+// 结果）——它们全部进 envPrompt 的环境快照（追加式：快照按落位进历史，
+// 变化以短更新消息出现在尾部，前缀稳定命中 KV 缓存）。因此它只随软件版本
+// 与安装位置变化，会话期间永远不变。
 func (a *App) systemPrompt(sess *SessionMeta) string {
 	base := taskPrompt
 	switch sess.Mode {
@@ -327,6 +328,15 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	case "skill-create":
 		base += skillFilePrompt + dispatchSubPrompt
 	}
+	// 内置技能运行时段只给带技能工具的本地执行模式：远程会话的命令在远程
+	// 主机执行，本机内置运行时与其无关；安卓的就绪状态易变（首启装配），
+	// 由环境快照的 Termux 公告负责，这里不重复。
+	if sess.Remote == nil {
+		switch sess.Mode {
+		case "task", "office", "coding", "beginner-coding", "skill-create":
+			base += a.skillRuntimePrompt()
+		}
+	}
 	// 子对话专家的追加提示词：预设只记名字，这里按名解析拼接在模式基础提示词
 	// 之后（会话内稳定——专家固定于派发时；删改专家等同改引用文件，前缀随之变化）
 	if sess.Expert != "" {
@@ -336,7 +346,49 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	}
 	// 提问的分寸（全模式共享）：配合 ask_user_question 的 timeout_sec 分档
 	base += askTierPrompt
-	return base + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动" + tag + "）"
+	return base + a.selfExeLine() + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动" + tag + "）"
+}
+
+// selfExeLine 引擎程序自我定位句（全模式）：模型据此知道自己运行在哪、
+// 引擎支持哪些子命令。安装级稳定事实（DSH 同款做法），探测一次缓存。
+func (a *App) selfExeLine() string {
+	a.selfOnce.Do(a.probeSelfLoc)
+	if a.selfExe == "" {
+		return ""
+	}
+	return "\n\n本助手引擎程序：" + a.selfExe + "（支持子命令，如 `apkinfo <file.apk>` 查看 APK 包名/版本/签名）"
+}
+
+// skillRuntimePrompt 内置技能运行时段（带技能工具的执行模式）：直接给出
+// 便携 Python 的绝对路径，模型不必再去探测系统的 python/py。
+func (a *App) skillRuntimePrompt() string {
+	a.selfOnce.Do(a.probeSelfLoc)
+	return a.skillRTPrompt
+}
+
+// probeSelfLoc 探测自身定位并缓存：引擎程序绝对路径（os.Executable）+
+// 技能运行时路径（SkillsDir 下的 _runtime/python）。失败逐项降级、缺哪段
+// 省哪段，不阻塞会话。裸 exe 形态下 SkillsDir 会顺带释放内嵌技能母本
+// （本就是首次用技能时的必经动作），标准安装则目录已在、零开销。
+func (a *App) probeSelfLoc() {
+	if exe, err := os.Executable(); err == nil {
+		a.selfExe = exe
+	}
+	if runtime.GOOS != "windows" || isAndroidRuntime {
+		return
+	}
+	dir, err := a.SkillsDir()
+	if err != nil {
+		return
+	}
+	a.skillRTPrompt = skillRuntimePromptText(filepath.Join(dir, "_runtime", "python", "python.exe"))
+}
+
+// skillRuntimePromptText 运行时段正文（纯文本构造，便于单测）。既写明
+// 「现在就能用」也写明「不在时会自动装配」——两条都是稳定事实，模型无论
+// 看到哪台机器的形态都不会误去找系统 Python。
+func skillRuntimePromptText(pyExe string) string {
+	return "\n\n## 内置技能运行时\n\n技能运行时随软件内置，无需用户安装环境，也不要去找系统的 python/py（新装机通常只有商店占位符，与能否完成任务无关）：便携 Python 位于 `" + filepath.ToSlash(pyExe) + "`，pdf / ocr / office_skill 技能共用。需要执行 Python 时一律用这个解释器的绝对路径；若该文件尚不存在，先调用 pdf / ocr / office_skill 之一会自动联网装配，装配后仍在原路径；office_skill 的调用结果里还会再给出确切的解释器与结构校验命令。\n"
 }
 
 // promptHash 取提示词内容的短指纹（版本行/时间线标识用；非安全用途）。
@@ -366,9 +418,15 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		b.WriteString("- 操作系统：" + a.osDescription() + "\n")
 		b.WriteString("- 工作区目录：" + wsOr(a, sess) + "\n")
 	}
-	if exe, err := os.Executable(); err == nil {
-		b.WriteString("- 引擎程序：" + exe + "（支持子命令，如 `apkinfo <file.apk>` 查看 APK 包名/版本/签名）\n")
+	// 可用模型清单（易变的配置状态归环境快照正管）：派发工具的 model 参数要的
+	// 是「渠道+模型」完整格式，清单在这里一次列全、不截断——模型不必猜哪个渠道
+	// 有哪个模型（猜错只会得到「无可用渠道」这类看不懂的报错）。渠道增删或模型
+	// 清单变化只影响快照尾部（环境更新），系统提示词与工具目录的前缀稳定。
+	if line := a.modelCatalogLine(); line != "" {
+		b.WriteString(line)
 	}
+	// 引擎程序路径与 apkinfo 子命令提示已上移系统提示词（安装级稳定事实，
+	// 见 selfExeLine），环境快照只装易变信息、不再重复。
 	// 安卓：内置 Linux 运行时（Termux 快照）的就绪状态与用法。这是易变状态
 	//（首启装配约十几秒），归环境快照正管——就绪前后切换会以「环境更新」送达
 	// 模型，未就绪时模型不会误以为有 bash/python 可用。
@@ -531,6 +589,65 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 
 // buildLLMMessages 已废弃删除：真正的组装只走 buildContext。
 
+// modelCatalogLine 渲染环境快照的「可用模型清单」行：配置里**全部**渠道的
+// providerId/modelId（完整格式，供派发工具的 model 参数直接照抄），附渠道名与
+// 模型显示名；渠道被停用时注明（同一模型常由多个渠道提供，点名渠道才不会走错）。
+// 清单较长也不截断——截掉的那几个模型恰好被用到的代价，比多几百 token 高得多。
+// 没有任何渠道时返回空串（环境快照不出现这一行）。
+func (a *App) modelCatalogLine() string {
+	if a == nil || a.Cfg == nil || len(a.Cfg.Providers) == 0 {
+		return ""
+	}
+	parts := []string{}
+	for i := range a.Cfg.Providers {
+		p := &a.Cfg.Providers[i]
+		if p.ID == "" {
+			continue
+		}
+		disabled := ""
+		if !p.IsSelectable() {
+			disabled = "，已停用"
+		}
+		if len(p.Models) == 0 {
+			// 渠道还没配模型清单（如 doubao 的接入点、ollama 的本地模型）：
+			// 如实说明，模型可以直接写该渠道里的模型名
+			parts = append(parts, p.ID+"/*（"+providerLabel(a, p.ID)+"：该渠道模型清单还没配，可直接写模型名"+disabled+"）")
+			continue
+		}
+		for _, mc := range p.Models {
+			label := strings.TrimSpace(mc.Name)
+			if label == "" {
+				label = mc.ID
+			}
+			parts = append(parts, p.ID+"/"+mc.ID+"（"+label+disabled+"）")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "- 可用模型清单（派发工具的 model 参数请照抄完整格式 providerId/modelId；同一模型名可能由多个渠道提供，只写裸模型名会落到你当前所在渠道，它不提供就直接报错）：" + strings.Join(parts, "、") + "\n"
+}
+
+// modelErrWithChannelHint 给「这个模型/渠道用不了」的报错补上渠道线索：裸模型名
+// 在本地配置里其实由别的渠道提供时，直接把可用渠道列全并提示改用 providerId/modelId
+// 完整格式——比让用户对着「无可用渠道（503）」自己猜缺什么有用得多。与派发时的
+// 渠道校验（resolveDispatchModel）同一份事实来源（modelChannelsOf）。
+// 命中范围：模型不可用类报错（余额/鉴权/模型不存在/连不上）与提到「渠道/channel/
+// 无可用」的报错；其余报错原样返回，不乱加提示。
+func (a *App) modelErrWithChannelHint(target LLMTarget, err error) error {
+	if err == nil {
+		return nil
+	}
+	s := err.Error()
+	if !isModelUnavailableErr(err) && !containsAnyFold(s, []string{"渠道", "channel", "无可用"}) {
+		return err
+	}
+	hint := a.modelChannelHint(target.Model, target.ProviderID)
+	if hint == "" {
+		return err
+	}
+	return fmt.Errorf("%s。%s", s, hint)
+}
 // osDescription 探测并缓存本机系统描述（Windows 版本 + PowerShell 版本）。
 func (a *App) osDescription() string {
 	a.osOnce.Do(func() {
@@ -557,9 +674,12 @@ func detectOSDesc() string {
 }
 
 // detectOSDescWindows：Windows 版本（cmd /c ver）+ PowerShell 版本
-// （pwsh 优先，回退 powershell），附中文编码规则（沿袭 dsh-env-context
-// 插件的 WIN32_NOTES：cmd 默认 GBK 代码页、PowerShell 控制台编码、
-// 文件一律 UTF-8 无 BOM）。
+// （pwsh 优先，回退 powershell），附中文编码规则。编码是探测出来的易变
+// 环境（装没装 pwsh 7 决定建议哪条出路），归环境快照；系统提示词只装
+// 稳定事实。规则核心：write/edit 落盘固定 UTF-8 无 BOM，而 Windows
+// PowerShell 5.1 执行无 BOM 的 .ps1 按 ANSI/GBK 解析源码——「脚本文件
+// 本身的编码」必须与「控制台 I/O 编码」分开讲清，并给足模型可自选的
+// 出路（实测新装机在此栽过跟头：含中文的 .ps1 全部乱码）。
 func detectOSDescWindows() string {
 	desc := "Windows"
 	verCmd := exec.Command("cmd", "/c", "ver")
@@ -571,6 +691,7 @@ func detectOSDescWindows() string {
 		}
 	}
 	ps := "PowerShell（版本未知）"
+	hasPwsh7 := false
 	for _, name := range []string{"pwsh", "powershell"} {
 		cctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		psCmd := exec.CommandContext(cctx, name, "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()")
@@ -579,12 +700,25 @@ func detectOSDescWindows() string {
 		cancel()
 		if err == nil && strings.TrimSpace(string(out)) != "" {
 			ps = "PowerShell " + strings.TrimSpace(string(out))
+			hasPwsh7 = name == "pwsh"
 			break
 		}
 	}
-	return desc + " · " + ps + "（run_command 支持 powershell 与 cmd）\n" +
-		"- 中文编码：cmd 默认代码页 936（GBK），涉及中文输入输出先执行 chcp 65001；Windows PowerShell 5.1 按控制台编码输出，中文 I/O 前设 [Console]::OutputEncoding 为 UTF-8\n" +
-		"- 文件一律 UTF-8 无 BOM 读写；路径、标识符、命令保持原文不翻译（常见 GBK 命令输出引擎已自动解码）"
+	return desc + " · " + ps + "（run_command 支持 powershell 与 cmd）\n" + winEncodingNotes(hasPwsh7)
+}
+
+// winEncodingNotes 中文编码规则正文（纯文本构造、按是否装 pwsh 7 分支，
+// 便于单测）。注意 run_command 默认 shell 是 powershell（5.1），pwsh 需
+// 显式传 shell 参数——建议必须写明这一点，否则模型会以为版本探测到 pwsh
+// 就默认在用 pwsh。
+func winEncodingNotes(hasPwsh7 bool) string {
+	ps1 := "- .ps1 编码：write/edit 写出的文件固定为 UTF-8 无 BOM，而 Windows PowerShell 5.1 执行无 BOM 的 .ps1 时按 ANSI/GBK 解析源码，中文字面量必乱码——出路任选：① 脚本保持纯 ASCII（中文放数据文件或参数里）；② write 生成后转存带 BOM 再执行：$c=[IO.File]::ReadAllText('<脚本>'); [IO.File]::WriteAllText('<脚本>',$c,(New-Object Text.UTF8Encoding $true))；③ 含中文的脚本不用 write 落盘，改用 PowerShell 生成（Out-File / Set-Content -Encoding UTF8 自动带 BOM）"
+	if hasPwsh7 {
+		ps1 += "；④ run_command 带 shell=pwsh 执行（pwsh 默认按 UTF-8 读源码，无此坑）"
+	}
+	return "- 中文编码（乱码风险主要在脚本文件本身的编码，不在控制台输出）：cmd 默认代码页 936（GBK），涉及中文输入输出先执行 chcp 65001；run_command 默认用 Windows PowerShell 5.1，中文输出前先设 [Console]::OutputEncoding 为 UTF-8（pwsh 默认 UTF-8 无需设）；命令输出引擎已自动识别解码，不必为此反复折腾\n" +
+		ps1 + "\n" +
+		"- 其他文件编码：文本文件一律 UTF-8 无 BOM 读写；.cmd/.bat 按系统代码页（GBK）解析，不要把中文面值写进批处理；路径、标识符、命令保持原文不翻译\n"
 }
 
 // kernelRelease：uname -r，失败返回空。
@@ -895,8 +1029,9 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		runs[tl.Spec.Function.Name] = tl.Run
 	}
 	target := a.resolveTarget(sess)
-	overflowRetried := false
-	modelFallback := false // 专家预设模型不可用 → 切全局默认重试过一次（防循环）
+	overflowRetried := false // 上下文超限强制压缩重发只兜一次
+	modelFallback := false   // 专家预设模型不可用 → 切全局默认重试过一次（防循环）
+	autoSwitched := false    // 公司通道连接失败 → 自动停用并切可用提供方（每轮执行体一次）
 
 	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
@@ -1001,6 +1136,21 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				}
 				break
 			}
+			// 公司通道连接失败（内网+外网都试过）：立即自动停用并当步切到可用
+			// 提供方重试——出公司用私人模型的场景不等 5 分钟轮询才切换。每轮
+			// 执行体只切一次（autoSwitched），切完的目标再连不上就走正常报错。
+			if isConnFailure(err) && !autoSwitched && a.noteProviderConnFail(target) {
+				if nt := a.resolveTarget(sess); nt.BaseURL != target.BaseURL || nt.Model != target.Model {
+					a.auditWrite(sess, map[string]any{"type": "model_fallback",
+						"from_model": target.Model + " @ " + target.BaseURL, "to_model": nt.Model,
+						"reason":     "公司通道连接失败，自动停用并切换", "error": truncateRunes(err.Error(), 300)})
+					target = nt
+					autoSwitched = true
+					emit(Event{Type: "tool_wait", Name: "model-fallback",
+						Output: "公司通道连不上，已自动停用并切换到 " + nt.Model + " 继续执行（回到公司网络会自动恢复）"})
+					continue
+				}
+			}
 			if attempt >= modelTries || ctx.Err() != nil || !isRetryableModelErr(err) {
 				break
 			}
@@ -1060,7 +1210,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				}
 				a.appendMessageThinking(sess, TextMessage("assistant", text.String()+note), reasoning.String())
 			}
-			return err
+			return a.modelErrWithChannelHint(target, err)
 		}
 		if len(calls) == 0 {
 			if strings.TrimSpace(text.String()) != "" {

@@ -885,7 +885,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		b.WriteString(fmt.Sprintf("%s：%s\n", role, clipText(strings.TrimSpace(text), 4000)))
 	}
 
-	summary, err := a.ctxEngine().CallSummarizer(sess, summarizeInstruction+"\n\n"+b.String())
+	summary, err := a.ctxEngine().CallSummarizer(sess, summarizeInstructionFor(sess)+"\n\n"+b.String())
 	if err != nil {
 		return "", err
 	}
@@ -904,29 +904,30 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 	return summary, nil
 }
 
-// forceSummaryCompact 是「立即压缩」的强制模型摘要入口（设置 ·
-// 对话历史与压缩 · 「压缩数字助理主对话」专用）：不读 Cfg.CompactMode，
-// 一律调用模型生成摘要，保证该按钮触发的压缩方式固定为模型摘要，
-// 绝不落到规则折叠（rule）、截断、滑窗等别的策略上。
-// 压缩区间与手动压缩一致：保留字数预算之外的历史压成一条「手动」摘要
-//（独立叠加、永不重压）；历史还没超出保留预算时退化为只保留最近一轮——
-// 点一次就是要压一次，不能因为「预算内没东西可压」让按钮变成空操作。
-func (a *App) forceSummaryCompact(sess *SessionMeta) (string, error) {
-	sum, err := a.doSummarize(sess, "manual", 0, 0)
-	if err == nil {
-		return sum, nil
+// summarizeInstructionAssistant 是数字助理主对话（mode=assistant）专属的摘要
+// 指令。设计意图（为什么要有这一份）：其他会话是一次任务一个对话，压掉过程
+// 细节无妨，按模型自己的压缩习惯就好；数字助理主对话不同——它是用户与常驻
+// 助理的长期对话，跨任务、跨天数，历史里沉淀着用户的偏好、习惯与定下的约定，
+// 这些一旦被摘要压掉，助理就「不认识这个用户」了。所以它的摘要侧重点要
+// 先记人再记事：小节里专门加了「用户偏好与习惯」「长期有效的约定」两栏，
+// 其余小节与其他会话一致。
+const summarizeInstructionAssistant = `请把「数字助理主对话」的这段历史压缩成一份结构化中文摘要，供同一对话的后续轮次作为上下文使用。这是用户与常驻数字助理的长期对话，跨任务、跨天数——摘要首先要让助理"还认识这个用户、还记得这些事"。
+要求：
+1. 输出以下小节（没有内容的写「无」）：用户偏好与习惯 / 长期有效的约定 / 任务与结果 / 关键事实与决定 / 涉及的文件与改动 / 错误与教训 / 进行中与未完成 / 下一步。
+2. 「用户偏好与习惯」写：称呼与身份、沟通偏好（详略/语言/格式）、常用工具与工作流、常用路径/设备/软件线索、明确表达过的喜欢与不喜欢。
+3. 「长期有效的约定」逐条保留用户定下的做事方式、禁忌与必须遵守的口径，保留原意、不概括掉。
+4. 只输出摘要本身，不要评论、不要提及压缩这件事。`
+
+// summarizeInstructionFor 按会话模式选摘要指令——只是选「发给模型的提示词
+// 文字」，不改变压缩方式/路径/保留窗口（设置里的压缩模式照旧）：数字助理主
+// 对话用上面的专属指令，其余会话用通用指令 summarizeInstruction。自动摘要
+//（llm 模式）与手动压缩（消息级「压缩」按钮、设置页「压缩数字助理主对话」）
+// 的摘要调用都从这里取指令。
+func summarizeInstructionFor(sess *SessionMeta) string {
+	if sess != nil && sess.Mode == "assistant" {
+		return summarizeInstructionAssistant
 	}
-	if !strings.Contains(err.Error(), "没有可压缩的区间") {
-		return "", err
-	}
-	sum, err2 := a.doSummarize(sess, "manual", 1, 0)
-	if err2 == nil {
-		return sum, nil
-	}
-	if strings.Contains(err2.Error(), "没有可压缩的区间") {
-		return "", fmt.Errorf("没有可压缩的历史：这个对话只有一轮内容（或更早的内容已被摘要覆盖）")
-	}
-	return "", err2
+	return summarizeInstruction
 }
 
 // callSummarizer 已并入上下文引擎（ContextEngine.CallSummarizer）：摘要调用

@@ -13,6 +13,7 @@ package main
 // 服务端未配模型通道时 api 为空：市场/更新照配，前端给出提示。
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -70,9 +71,13 @@ type provisionPayload struct {
 	Company string `json:"company"`
 	User    string `json:"user"`
 	Server  string `json:"server"`
-	API     *struct {
-		BaseURL      string            `json:"baseURL"`
-		Key          string            `json:"key"`
+	// PublicServer 服务端自己的公网地址（管理页手动配置，空=未启用外网下发）：
+	// 存进 WizardPublicServer，出公司后作为公告拉取的兜底来源。
+	PublicServer string `json:"publicServer,omitempty"`
+	API          *struct {
+		BaseURL      string `json:"baseURL"`
+		PublicBaseURL string `json:"publicBaseURL,omitempty"` // 外网模型通道（被授权才下发）
+		Key          string `json:"key"`
 		Models       []wizardModelInfo `json:"models"`
 		DefaultModel string            `json:"defaultModel"`
 		// 每月额度（积分，1 积分 = 0.001 元；仅展示用，扣减在 new-api 侧）
@@ -84,6 +89,73 @@ type provisionPayload struct {
 }
 
 var wizardHTTP = &http.Client{Timeout: 15 * time.Second}
+
+// fetchProvision POST /provision 按人领配置包（向导接入与 sync.go 的公司通道
+// 自动重建共用）。任何失败都返回 error，由调用方决定提示方式。
+func fetchProvision(server, user string) (provisionPayload, error) {
+	var payload provisionPayload
+	pd, err := json.Marshal(map[string]string{"user": user})
+	if err != nil {
+		return payload, err
+	}
+	resp, err := wizardHTTP.Post(strings.TrimRight(server, "/")+"/provision", "application/json", bytes.NewReader(pd))
+	if err != nil {
+		return payload, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != 200 {
+		return payload, fmt.Errorf("服务端拒绝下发：%s", truncateRunes(string(raw), 300))
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return payload, fmt.Errorf("配置包格式不对：%w", err)
+	}
+	return payload, nil
+}
+
+// applyProvisionPayload 把配置包应用到运行配置：内部提供方置顶重建（即默认，
+// models[0]=公司默认模型），市场/更新一键配好。重跑向导与公司通道被删后的
+// 自动重建（sync.go）共用；返回应用的模型目录（未配模型通道时为 nil）。
+func (a *App) applyProvisionPayload(payload *provisionPayload) []ModelCfg {
+	var models []ModelCfg
+	if payload.API != nil && len(payload.API.Models) > 0 {
+		models = buildWizardModels(payload.API.Models)
+		if dm := payload.API.DefaultModel; dm != "" { // 默认模型置顶（models[0] 即默认）
+			for i := range models {
+				if models[i].ID == dm {
+					models = append([]ModelCfg{models[i]}, append(models[:i:i], models[i+1:]...)...)
+					break
+				}
+			}
+		}
+		name := payload.Company
+		if name == "" {
+			name = "公司"
+		}
+		internal := ProviderCfg{
+			ID: wizardProviderID, Name: name + "·内部通道",
+			BaseURL: payload.API.BaseURL, APIKey: payload.API.Key, Models: models,
+			PublicBaseURL: payload.API.PublicBaseURL,
+		}
+		providers := []ProviderCfg{internal}
+		for _, p := range a.Cfg.Providers { // 重跑/重建：替换旧的内部提供方，保留其它（含各自启停状态）
+			if p.ID != wizardProviderID {
+				providers = append(providers, p)
+			}
+		}
+		a.Cfg.Providers = providers
+	}
+	if payload.MarketURL != "" {
+		a.Cfg.MarketURL = payload.MarketURL
+		a.marketMu.Lock()
+		a.marketCache = marketCacheEntry{} // 市场缓存作废
+		a.marketMu.Unlock()
+	}
+	if payload.UpdateURL != "" {
+		a.Cfg.UpdateURL = payload.UpdateURL
+	}
+	return models
+}
 
 /* ---------- 发现 ---------- */
 
@@ -283,25 +355,9 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ② 取配置包
-	pd, err := json.Marshal(map[string]string{"user": user})
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	resp2, err := wizardHTTP.Post(server+"/provision", "application/json", strings.NewReader(string(pd)))
+	payload, err := fetchProvision(server, user)
 	if err != nil {
 		writeErr(w, 502, "取配置失败："+err.Error())
-		return
-	}
-	defer resp2.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp2.Body, 4<<20))
-	if resp2.StatusCode != 200 {
-		writeErr(w, 502, "服务端拒绝下发："+string(raw))
-		return
-	}
-	var payload provisionPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		writeErr(w, 502, "配置包格式不对："+err.Error())
 		return
 	}
 
@@ -313,47 +369,15 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 		"apiError":  payload.APIError,
 		"marketURL": payload.MarketURL, "updateURL": payload.UpdateURL,
 	}
-	if payload.API != nil && len(payload.API.Models) > 0 {
-		models := buildWizardModels(payload.API.Models)
-		if dm := payload.API.DefaultModel; dm != "" { // 默认模型置顶（models[0] 即默认）
-			for i := range models {
-				if models[i].ID == dm {
-					models = append([]ModelCfg{models[i]}, append(models[:i:i], models[i+1:]...)...)
-					break
-				}
-			}
-		}
-		name := payload.Company
-		if name == "" {
-			name = "公司"
-		}
-		internal := ProviderCfg{
-			ID: wizardProviderID, Name: name + "·内部通道",
-			BaseURL: payload.API.BaseURL, APIKey: payload.API.Key, Models: models,
-		}
-		providers := []ProviderCfg{internal}
-		for _, p := range a.Cfg.Providers { // 重跑向导：替换旧的内部提供方，保留其它
-			if p.ID != wizardProviderID {
-				providers = append(providers, p)
-			}
-		}
-		a.Cfg.Providers = providers
+	if models := a.applyProvisionPayload(&payload); models != nil {
 		respBody["defaultModel"] = firstModelID(models)
 		respBody["modelCount"] = len(models)
-	}
-	if payload.MarketURL != "" {
-		a.Cfg.MarketURL = payload.MarketURL
-		a.marketMu.Lock()
-		a.marketCache = marketCacheEntry{} // 市场缓存作废
-		a.marketMu.Unlock()
-	}
-	if payload.UpdateURL != "" {
-		a.Cfg.UpdateURL = payload.UpdateURL
 	}
 	a.Cfg.WizardDone = true
 	// 公司名/服务端地址留给自动同步器（sync.go）：跟随服务端变化、失联时按公司名重新发现
 	a.Cfg.WizardCompany = payload.Company
 	a.Cfg.WizardServer = server
+	a.Cfg.WizardPublicServer = payload.PublicServer // 空=服务端没配公网地址，出公司即自动停用公司通道
 	// 向导里填的姓名即默认「发布者姓名」（市场条目的归属名 owner）：发布技能时
 	// 随包上报，市场卡片据此判断哪些条目能「更新发布 / 删除」。重跑向导按新填的
 	// 姓名覆盖（向导填的就是"我是谁"）；只想改名去 设置 · 网络访问。

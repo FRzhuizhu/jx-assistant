@@ -54,7 +54,7 @@ function resetEmpty() {
         '<img class="logo-img" src="/logo.png" alt="坚祥数字助理">' +
         '<h1>更懂制造业的数字助理</h1>' +
       '</div>' +
-      '<p class="home-sub">描述你想做的事，或直接在左上角进入数字助理主对话。</p>' +
+      '<p class="home-sub">描述你想做的事，或直接在左上角点「跟数字经理对话」。</p>' +
       '<div id="home-composer"></div>' +
     '</div>';
   $('sess-title').textContent = '数字助理';
@@ -180,10 +180,29 @@ function applySessionChrome(view) {
   restoreQuoteLS(view); // 引用胶囊跟输入草稿一起换到目标会话（不残留上一个的）
 }
 
+// 「数字助理主对话」在界面上的显示名：会话标题是创建主对话时写进会话 meta 的
+// 「数字助理主对话」（老会话里存的也是它），界面统一显示「跟数字经理对话」且
+// 「经理」两字加粗。这里只做显示层映射——内部标识（mode=assistant）、库里存的标题、
+// 以及所有按 mode/parentId 分流的功能逻辑都不动，所以旧会话不必重开、不用改数据，
+// 打开即显示新名。
+const ASSISTANT_MAIN_TITLE_HTML = '跟数字<b>经理</b>对话';
+// 是否「数字助理主对话」本体（它名下的子对话有自己的标题，不套用这个名字）
+function isAssistantMainSession(s) {
+  return !!s && s.mode === 'assistant' && !s.parentId;
+}
+// 顶栏会话标题：数字助理主对话恒显示新名（内部带 b 的加粗结构，故走 innerHTML），
+// 其余会话照原样显示自己的标题。空标题 = 刚建、还没发出第一条消息的新会话
+// （服务端起标题后就换成真标题）
+function applySessTitle(s) {
+  const el = $('sess-title');
+  if (isAssistantMainSession(s)) el.innerHTML = ASSISTANT_MAIN_TITLE_HTML;
+  else el.textContent = (s && s.title) || '新工作任务';
+}
+
 // 顶栏标题与模式徽标（主对话区；乐观阶段与数据落地共用）
 function applyTopbar() {
-  // 空标题 = 刚建、还没发出第一条消息的新会话（服务端起标题后就换成真标题）
-  $('sess-title').textContent = state.cur.title || '新工作任务';
+  // 标题：数字助理主对话恒显示新名，其余会话显示自己的标题（见 applySessTitle）
+  applySessTitle(state.cur);
   const badge = $('mode-badge');
   // 模式徽标；挂在主对话下的子对话再标出来历（它可能是 task/office/coding/aux 任一模式）
   const modeLabel = state.cur.mode === 'assistant' ? '数字助理'
@@ -1094,7 +1113,7 @@ function subTaskCard(tc, result) {
   if (sid) d.dataset.sid = sid;
   d.innerHTML =
     `<div class="st-head">` +
-    `<span class="st-icon">${done ? '✓' : '⟳'}</span>` +
+    `<span class="st-icon">${done ? '✓' : ''}</span>` +  // 运行中留空：圆环由 CSS 画（style.css .st-icon），转字符会晃
     `<span class="st-title">${esc(title)}</span>` +
     `<span class="st-status">${done ? '已完成' : (dispatched ? '后台执行中' : '派发中…')}</span>` +
     `</div>` +
@@ -2118,6 +2137,11 @@ function handleGlobalEvent(ev) {
   // app-left.js 的 sessionPendingAsk）：下面的 push/remove 更新清单后 renderPanels
   // 会顺带刷新会话列表，不再单独维护事件驱动的 dotApproval 影子表。
   switch (ev.type) {
+    case 'providers':
+      // 模型服务商状态变化（公告同步/自动停用恢复/toggle）：刷新模型菜单，
+      // 公司通道自动停用时默认模型随即切到可用服务商
+      loadModels();
+      break;
     case 'sub_start':
       subActs[ev.sessionId] = [];
       delete subDone[ev.sessionId];
@@ -2340,9 +2364,11 @@ function askSrcStrip(sid, hint) {
   return b;
 }
 
-// 切到那条请求所属的对话（就在本对话时只是把焦点还给输入框）
+// 切到那条请求所属的对话（就在本对话时只是把焦点还给输入框）。跳过去＝用户
+// 开始处理了：这条对话下待审批的计划一并登记「已在处理」（久等提醒不再响）。
 function askJumpTo(sid) {
   if (!sid) return;
+  notePlanHandled(sid, '');
   if (state.cur && state.cur.id === sid) { $('input').focus(); return; }
   openSession(sid);
 }
@@ -2666,49 +2692,139 @@ function askHoldTimer(id) {
 }
 
 /* ---------- 询问声光提醒（设置·常规：久等未答时叮声+全屏闪烁+朗读） ----------
-   叮声由后端系统音效负责（触发时已响）；这里只管闪烁层与朗读——朗读走语音
-   组件的 /api/voice/tts（组件停用时该端点 404，静默跳过：只闪不读）。 */
+   时序（用户口径）：
+     ① 浮窗弹出：叮声在触发那一刻由后端系统音效立即响（事件到达即已响，前端不重复）；
+     ② 浮窗上显示 15 秒可见倒计时（数字 + 进度条）；
+     ③ 倒计时走完才开始朗读——朗读走语音组件的 /api/voice/tts
+        （组件停用时该端点 404，静默跳过：只闪不读）；
+     ④ 15 秒内用户按掉/取消/关闭这层，或从任何入口进去处理（计划页/浮窗，
+        见 notePlanHandled），都取消这次朗读；正在读的也一并掐断（代次作废）。
+   全层停留：朗读结束后 4 秒收起，最迟 40 秒兜底（朗读失败/被拦时不会一直挂着）。 */
+const ASK_ALERT_TTS_SEC = 15;   // 朗读前的倒计时（秒）
+const ASK_ALERT_MAX_MS = 40000; // 全层最长停留（兜底自动收起）
 let askAlertQid = '';
+let askAlertPayload = null;  // 本次提醒的内容（倒计时结束朗读时用）
 let askAlertHideTimer = 0;
 let askAlertSettleTimer = 0; // 呼吸 6 秒后停成静态淡光（护眼：不一直动）
+let askAlertCountTimer = 0;  // 倒计时数字/进度条刷新
+let askAlertTtsTimer = 0;    // 倒计时到点 → 开始朗读
+let askAlertAudio = null;    // 正在朗读的音频（取消时掐断）
+let askAlertAudioURL = '';
+let askAlertGen = 0;         // 代次：关掉/重开一次就 +1，作废在途的朗读请求
 
 function showAskAlert(ev) {
   const ov = $('ask-alert');
   if (!ov) return;
+  hideAskAlert(); // 上一次可能还挂着（同一条再来一次）：彻底收干净再开
   askAlertQid = ev.questionId || '';
+  askAlertPayload = ev;
   $('ask-alert-text').textContent =
     (ev.title ? '来自「' + ev.title + '」的提问：' : '') + (ev.summary || '有个问题需要你确认');
   ov.classList.remove('hidden', 'settle');
   if (askAlertSettleTimer) clearTimeout(askAlertSettleTimer);
   askAlertSettleTimer = setTimeout(() => ov.classList.add('settle'), 6000);
   if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
-  askAlertHideTimer = setTimeout(hideAskAlert, 15000);
+  askAlertHideTimer = setTimeout(hideAskAlert, ASK_ALERT_MAX_MS);
+  // 15 秒可见倒计时：走完才朗读（点掉/进去处理连它一起取消）
+  const gen = ++askAlertGen;
+  startAskAlertCount(Date.now() + ASK_ALERT_TTS_SEC * 1000);
+  if (askAlertTtsTimer) clearTimeout(askAlertTtsTimer);
+  askAlertTtsTimer = setTimeout(() => {
+    askAlertTtsTimer = 0;
+    if (gen === askAlertGen) speakAskAlert(gen);
+  }, ASK_ALERT_TTS_SEC * 1000);
   // 随手一点就能关、且不打扰当前操作：点背景＝只关闭（原地不动，用户可能
-  // 正在别的对话里忙）；点中央卡片＝关闭并跳去回答；Esc 同效关闭。三层互不
-  // 冒泡，第一次点击永远只做关闭这一件事。
+  // 正在别的对话里忙）；点中央卡片＝关闭并跳去回答（跳转＝进去处理，一并
+  // 停掉提醒计时）；Esc 同效关闭。三层互不冒泡，第一次点击永远只做关闭。
   ov.onclick = hideAskAlert;
   const box = ov.querySelector('.aa-box');
-  if (box) box.onclick = (e) => { e.stopPropagation(); hideAskAlert(); askJumpTo(ev.sessionId); };
+  if (box) box.onclick = (e) => {
+    e.stopPropagation();
+    notePlanHandled(ev.sessionId, ev.questionId); // 点卡片去处理：提醒计时一起停
+    hideAskAlert();
+    askJumpTo(ev.sessionId);
+  };
+}
+
+// 倒计时（数字 + 进度条）：只改文本/宽度，不重建节点。
+function startAskAlertCount(deadline) {
+  const wrap = $('ask-alert-count');
+  if (!wrap) return;
+  wrap.classList.remove('hidden', 'speaking');
+  $('ask-alert-num').textContent = String(ASK_ALERT_TTS_SEC);
+  $('ask-alert-tip').textContent = '秒后朗读提醒';
+  const bar = $('ask-alert-bar');
+  if (bar) bar.style.width = '0%';
+  const tick = () => {
+    const remain = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    $('ask-alert-num').textContent = String(remain);
+    if (bar) bar.style.width = Math.round(((ASK_ALERT_TTS_SEC - remain) / ASK_ALERT_TTS_SEC) * 100) + '%';
+    if (remain <= 0 && askAlertCountTimer) { clearInterval(askAlertCountTimer); askAlertCountTimer = 0; }
+  };
+  tick();
+  if (askAlertCountTimer) clearInterval(askAlertCountTimer);
+  askAlertCountTimer = setInterval(tick, 200);
+}
+
+// 倒计时结束：开始朗读提醒内容（组件停用/播放被拦：只闪不读，界面如实标注）。
+function speakAskAlert(gen) {
+  const wrap = $('ask-alert-count');
+  if (askAlertCountTimer) { clearInterval(askAlertCountTimer); askAlertCountTimer = 0; }
+  if (wrap) {
+    wrap.classList.add('speaking');
+    $('ask-alert-num').textContent = '🔊';
+    $('ask-alert-tip').textContent = '正在朗读提醒内容';
+  }
+  const ev = askAlertPayload || {};
   fetch('/api/voice/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text: ev.output || '有个问题需要您确认一下。', rate: 1 }),
   }).then((r) => (r.ok ? r.blob() : Promise.reject(new Error('tts ' + r.status))))
     .then((b) => {
+      if (gen !== askAlertGen) return; // 期间用户关掉/进去处理了：不朗读
       const u = URL.createObjectURL(b);
+      askAlertAudioURL = u;
       const el = new Audio(u);
-      el.onended = () => URL.revokeObjectURL(u);
-      return el.play();
-    }).catch(() => { /* 组件停用/播放被拦：只闪不读 */ });
+      askAlertAudio = el;
+      el.onended = () => {
+        URL.revokeObjectURL(u);
+        if (askAlertAudioURL === u) askAlertAudioURL = '';
+        if (askAlertAudio === el) askAlertAudio = null;
+        if (gen === askAlertGen) armAskAlertHide(4000); // 读完了：几秒后自动收起
+      };
+      el.play().catch(() => {
+        if (gen === askAlertGen) $('ask-alert-tip').textContent = '未能朗读（浏览器拦截了自动播放）';
+      });
+    })
+    .catch(() => {
+      if (gen !== askAlertGen) return;
+      if (wrap) $('ask-alert-tip').textContent = '语音组件未启用，未朗读'; // 只闪不读
+    });
 }
 
-// hideAskAlert 关闭提醒层并清干净两个定时器（点击/Esc/超时/问题解决共用）。
+// 重排自动收起（朗读结束用）：不动那份「最长停留」兜底以外的东西。
+function armAskAlertHide(ms) {
+  if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
+  askAlertHideTimer = setTimeout(hideAskAlert, ms);
+}
+
+// hideAskAlert 关闭提醒层并清干净定时器与音频（点击/Esc/自动收起/问题解决共用）：
+// 关掉之后在途的朗读请求一律作废（代次 +1）——15 秒内取消就不会出声。
 function hideAskAlert() {
   const ov = $('ask-alert');
   if (ov) ov.classList.add('hidden');
+  askAlertGen++;
   if (askAlertHideTimer) { clearTimeout(askAlertHideTimer); askAlertHideTimer = 0; }
   if (askAlertSettleTimer) { clearTimeout(askAlertSettleTimer); askAlertSettleTimer = 0; }
+  if (askAlertCountTimer) { clearInterval(askAlertCountTimer); askAlertCountTimer = 0; }
+  if (askAlertTtsTimer) { clearTimeout(askAlertTtsTimer); askAlertTtsTimer = 0; }
+  if (askAlertAudio) { try { askAlertAudio.pause(); } catch (e) { /* 已结束/被拦：忽略 */ } askAlertAudio = null; }
+  if (askAlertAudioURL) { URL.revokeObjectURL(askAlertAudioURL); askAlertAudioURL = ''; }
+  const wrap = $('ask-alert-count');
+  if (wrap) wrap.classList.add('hidden');
   askAlertQid = '';
+  askAlertPayload = null;
 }
 
 function hideAskAlertIfMatched(id) {
@@ -2722,6 +2838,34 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const ov = $('ask-alert');
   if (ov && !ov.classList.contains('hidden')) hideAskAlert();
+});
+
+/* ---------- 「用户已经在处理这份计划了」的唯一登记口（久等提醒去重） ----------
+   久等提醒（ask_alert）是给「没人管」的请求用的：用户已经点开看过了就不该再催。
+   打开计划页/浮窗的入口有四条，全部汇到这里登记：
+     · 输入区上方的待审批浮窗（buildQuestionCard 的计划卡，整张卡可点）；
+     · 右下角角标堆里的那张卡（同一个 builder：点卡＝跳过去并打开计划页）；
+     · 消息流里的计划卡（planCardRow，点整张卡打开右栏「计划」）；
+     · 右栏「计划」页签本身（下面委托点击的那条）。
+   登记动作＝对该计划提问调一次停表接口（幂等，前端 askHoldTimer）：后端据此
+   把那次久等提醒作废（interact.go 的 askAlertDue），前端把正在闪的提醒层收起
+   （连未开始的朗读一起取消）。「本回合新来的计划自动铺开」那一路不算用户打开
+   （见 openPlanView 的 silent），提醒照旧——它本来就是叫用户回来的。 */
+function notePlanHandled(sid, qid) {
+  const ids = [];
+  const add = (q) => { if (q && q.kind === 'plan' && ids.indexOf(q.id) < 0) ids.push(q.id); };
+  add((state.questions || []).find((x) => x.id === qid));
+  if (sid) for (const q of state.questions || []) if (q.sessionId === sid) add(q);
+  for (const id of ids) askHoldTimer(id); // 停计时（后端据此作废那次提醒）
+  if (askAlertQid && ids.indexOf(askAlertQid) >= 0) hideAskAlert(); // 正闪着它：收起并取消朗读
+}
+
+// 右栏「计划」页签被点开＝用户显式去看那份计划：同样登记。页签按钮由
+// rpRenderTabs 生成（带 data-rp-id），这里委托点击比逐处挂钩子稳。
+document.addEventListener('click', (e) => {
+  const tab = e.target && e.target.closest ? e.target.closest('#rp-tabs .rp-tab') : null;
+  if (!tab || tab.dataset.rpId !== 'plan') return;
+  notePlanHandled(planSid || (state.cur && state.cur.id) || '', '');
 });
 
 function buildQuestionCard(e, own) {
@@ -3115,15 +3259,16 @@ const planTried = {};  // 计划提问 id → 已补拉过历史（只补一次�
 
 function planKeyOf(d) { return d.pendingId ? 'q:' + d.pendingId : 'h:' + d.seq; }
 
-// 打开计划视图（sid 省略 = 跟随主对话）
 // 打开计划视图（sid 省略 = 跟随主对话；给 seq/qid 就是「直接定位到某一份」）
-function openPlanView(sid, seq, qid) {
+// opts.silent = 本回合新来的计划自动铺开：不算「用户打开」，久等提醒照旧。
+function openPlanView(sid, seq, qid, opts) {
   if (sid) planSid = sid;
   if (!planSid && state.cur) planSid = state.cur.id;
   // 一次性定位：点的是哪一份就看哪一份（右栏清单加载完自动选中，配不上就退回默认）
   if (seq) planWantSeq = seq;
   if (qid) planWantQid = qid;
   if (seq || qid) planPinned = ''; // 显式定位优先于「上次在下拉里选过的那份」
+  if (!(opts && opts.silent)) notePlanHandled(planSid, qid); // 用户打开＝已在处理：停提醒计时
   rpOpen('plan');
 }
 
@@ -3148,7 +3293,7 @@ function maybeAutoOpenPlan() {
   const q = state.questions.find((x) => x.kind === 'plan' && x.sessionId === sid);
   if (!q || planAutoOpened[q.id]) return;
   planAutoOpened[q.id] = true;
-  openPlanView(sid);
+  openPlanView(sid, 0, '', { silent: true });
 }
 
 // 提问/回答离场前先留一份正文副本：历史那边还没接上时右栏不会突然空掉
@@ -3771,7 +3916,7 @@ function handleEvent(ev, view) {
     case 'title':
       // 首条消息自动起标题（服务端只在会话标题为空时才发）；跟随当前会话更新顶栏
       if (view === mainView && state.cur && ev.sessionId === state.cur.id) {
-        $('sess-title').textContent = ev.title;
+        applySessTitle({ mode: state.cur.mode, parentId: state.cur.parentId, title: ev.title });
       }
       break;
     case 'error':
@@ -5274,13 +5419,15 @@ function renderModelPop(view) {
   let lastProv = '';
   for (const m of state.models || []) {
     if (m.providerId !== lastProv) {
-      html += `<div class="pop-group">${esc(m.providerName)}</div>`;
+      html += `<div class="pop-group">${esc(m.providerName)}${m.providerOff ? '（已停用）' : ''}</div>`;
       lastProv = m.providerId;
     }
     const k = m.providerId + '|' + m.modelId;
     const hasLv = m.reasoningLevels && m.reasoningLevels.length;
     const arrow = hasLv ? '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>' : '';
-    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}${modelPopExpand === k && hasLv ? ' exp' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${arrow}</button>`;
+    // 停用服务商的模型置灰（公司通道出公司自动停用期间仍可见，点了也能选——
+    // 会话解析时会自动回落到可用服务商，但选单里如实标注状态）
+    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}${modelPopExpand === k && hasLv ? ' exp' : ''}${m.providerOff ? ' off' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${arrow}</button>`;
   }
   pop.innerHTML = html;
   // 点模型 = 选中并在该行右侧弹出/收起它的思考档位浮窗

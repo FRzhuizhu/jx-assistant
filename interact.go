@@ -140,17 +140,14 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		DeadlineMs: q.DeadlineMs}
 	a.broadcast(ev)
 	// 声光提醒（设置·常规，默认开）：等待达到设定时长仍未答且未停表时，系统
-	// 叮一声（MessageBeep，不走语音组件）+ 广播 ask_alert（前端全屏闪烁并按
-	// 配置文案朗读）。作答/超时/停表/停止都会被下面的 defer 掐掉；触发那一刻
-	// 已停表的直接不响——停表=用户碰到过卡片（在场），连提醒一起暂停。
+	// 叮一声（MessageBeep，不走语音组件）+ 广播 ask_alert（前端全屏闪烁，并在
+	// 浮窗上走完 15 秒倒计时后才朗读配置文案）。作答/超时/停表/停止都会被下面
+	// 的 defer 掐掉；触发那一刻已停表的直接不响——停表=用户碰到过卡片，或已从
+	// 任何入口打开对应的计划页/浮窗在看（在场），连提醒一起暂停。
 	var alertTimer *time.Timer
 	if a.Cfg.askAlertOn() {
 		alertTimer = time.AfterFunc(time.Duration(a.Cfg.askAlertAfterSec())*time.Second, func() {
-			a.permMu.Lock()
-			_, pending := a.questions[q.ID]
-			held := pending && (q.decided || q.TimerHeld)
-			a.permMu.Unlock()
-			if !pending || held {
+			if !a.askAlertDue(q.ID) {
 				return
 			}
 			systemBeep()
@@ -218,24 +215,42 @@ func (a *App) resolveQuestion(id, answer string) error {
 	return nil
 }
 
-// holdQuestion 停止一张提问卡的倒计时（用户悬停/触碰卡片或点停止按钮）：
-// 单向操作——之后无限等待，直到作答或本轮被停止。只有带时限的提问
-// （kind=ask，有 timer）有表可停；停表即广播 question_deadline，所有端的
-// 倒计时统一换成「已停止计时」。
+// holdQuestion 标记「用户已经碰到/已经在看着这条请求」，并停掉它的计时：
+//   - 悬停/触碰卡片或点停止按钮（前端 askHoldTimer）：带时限的提问停表转不限时；
+//   - 从任何入口打开这条请求对应的页面（前端 notePlanHandled：右下角角标堆、
+//     输入区上方的浮窗、消息流里的计划卡、右栏「计划」页签）：计划审批这类
+//     本来就没有时限（timer == nil），没有表可停，但同样要置位 TimerHeld——
+//     久等声光提醒（askAlertDue）与后端那次已排定的触发据此判定「已在处理」，
+//     不再叮、前端也不朗读。
+//
+// 单向操作：置位后一直有效，直到作答或本轮被停止。停表即广播
+// question_deadline，所有端的倒计时统一换成「已停止计时」。
 func (a *App) holdQuestion(id string) {
 	a.permMu.Lock()
 	q, ok := a.questions[id]
 	held := false
-	if ok && !q.TimerHeld && q.timer != nil {
+	if ok && !q.TimerHeld {
 		q.TimerHeld = true
-		q.DeadlineMs = 0
-		q.timer.Stop()
+		if q.timer != nil { // 有时限的提问：停表转不限时（无时限的没有表可停）
+			q.DeadlineMs = 0
+			q.timer.Stop()
+		}
 		held = true
 	}
 	a.permMu.Unlock()
 	if held {
 		a.broadcast(Event{Type: "question_deadline", QuestionID: id, SessionID: q.SessionID, Held: true})
 	}
+}
+
+// askAlertDue 询问提醒（久等声光提醒）到点那一刻是否还该响：这条请求还在等、
+// 用户没作答、也没停表（悬停/触碰/点了停止，或从任何入口打开对应页面进入处理）。
+// 单独拆出来是为了可测——Timer 到点时的判定条件只有这一处。
+func (a *App) askAlertDue(id string) bool {
+	a.permMu.Lock()
+	defer a.permMu.Unlock()
+	q, pending := a.questions[id]
+	return pending && !q.decided && !q.TimerHeld
 }
 
 // resolvePersistedPlan 处理「库里那份待审批计划」的用户决定（批准/驳回）。

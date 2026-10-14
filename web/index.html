@@ -21,11 +21,13 @@
     <div class="actions">
       <button id="btn-new-task" class="side-btn" data-short="新任务">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        <span class="sb-label">新工作任务</span>
+        <span class="sb-label">派任务给新助理</span>
       </button>
       <button id="btn-new-assistant" class="side-btn" data-short="数据助理">
         <svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><g class="bob"><g class="head"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g></g><g class="da-paper"><rect x="26.5" y="28.5" width="12" height="14" rx="1.6"></rect><line x1="29" y1="32.5" x2="36" y2="32.5"></line><line x1="29" y1="35.5" x2="36" y2="35.5"></line><line x1="29" y1="38.5" x2="33.5" y2="38.5"></line></g></g></svg>
-        <span class="sb-label">数字助理主对话</span>
+        <!-- 显示名「跟数字经理对话」：「经理」两字加粗（b 只承担字重，不加任何样式类，
+             按钮的图标/尺寸/动画/布局一律不动） -->
+        <span class="sb-label">跟数字<b>经理</b>对话</span>
       </button>
     </div>
 
@@ -191,7 +193,7 @@
              重绘只重建内容变了的卡，不会打断输入。渲染见 app-chat.js 的「待用户决定的浮窗」 -->
         <div id="ask-bar" class="ask-bar hidden"></div>
         <div id="draft-chips">
-          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；数字助理主对话有专属模式，不在此选择）">
+          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；跟数字经理对话有专属模式，不在此选择）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>
             <b id="mode-row-name">标准办公</b>
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
@@ -534,6 +536,13 @@
               <div id="sel-midrun"></div>
               <p class="sf-desc">插话不打断执行：下一步调用模型时插话进去；等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
+            <div class="set-field">
+              <div class="sf-label">排队消息自动续发</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-queueauto-on"><span></span></label>
+                <span class="sf-desc">本轮回复完成后，队列里的待发消息（真人消息、派发回报、AI 用户消息，不分来源）自动逐条发出；关掉后队列保留，排队坞给「继续发送」入口</span>
+              </div>
+            </div>
           </div>
           <div class="gen-section">
             <h4>任务执行</h4>
@@ -703,12 +712,12 @@
             </div>
           </div>
           <div class="gen-section">
-            <h4>数字助理主对话</h4>
+            <h4>跟数字经理对话</h4>
             <div class="compact-actions">
-              <button id="btn-assistant-compact" class="set-act" type="button" title="立即对数字助理主对话执行一次压缩：固定由模型生成摘要（不受上面的模式影响）">压缩数字助理主对话</button>
-              <button id="btn-assistant-clear" class="set-act danger" type="button" title="清空数字助理主对话的全部历史消息（需要二次确认，不可恢复）">清空数字助理主对话</button>
+              <button id="btn-assistant-compact" class="set-act" type="button" title="立即对跟数字经理对话执行一次压缩：点击后先确认，再把较早的历史整理成一份摘要">压缩跟数字经理对话</button>
+              <button id="btn-assistant-clear" class="set-act danger" type="button" title="清空跟数字经理对话的全部历史消息（需要二次确认，不可恢复）">清空跟数字经理对话</button>
             </div>
-            <p class="sf-desc" id="assistant-ops-state">两个按钮都作用于「数字助理主对话」这一个会话（不是当前打开的这个对话），点下立即生效、不随底部「保存」提交。「压缩」固定走模型摘要压缩：把保留预算之外的历史交给模型压成一份摘要，摘要进对话区、原文永久保留可随时查回（不受上面的「模式」影响）；「清空」经二次确认后删除它的全部历史消息与摘要，会话设置保留，助理回到全新对话状态（不可恢复）。</p>
+            <p class="sf-desc" id="assistant-ops-state">两个按钮都作用于「跟数字经理对话」这一个会话（不是当前打开的这个对话），点下立即生效、不随底部「保存」提交。「压缩」点击后先确认，再把较早的历史整理成一份摘要放进对话，原始消息永久保留、可随时查回；「清空」要连过两道确认，然后删除它的全部历史消息与摘要，会话设置保留，助理回到全新对话状态（不可恢复）。</p>
           </div>
           <div class="gen-section">
             <h4>文件备份</h4>
@@ -988,7 +997,7 @@
 <div id="mode-pop" class="popover mode-pop hidden">
   <div class="pop-group">工作模式</div>
   <div id="mode-pop-list"></div>
-  <div class="mode-pop-note">模式决定系统提示词与能力倾向；数字助理主对话有专属模式，从左上角进入。</div>
+  <div class="mode-pop-note">模式决定系统提示词与能力倾向；跟数字经理对话有专属模式，从左上角进入。</div>
 </div>
 
 <!-- SSH 远程工作区（两步式：第一步连接配置→保存；第二步浏览远程目录→使用） -->
@@ -1075,13 +1084,21 @@
 <!-- 轻提示（toast）：静默组件更新完成等不打扰用户的通知，自动消失 -->
 <div id="app-toast" class="app-toast hidden"></div>
 
-<!-- 询问声光提醒层：提问久等未答时全屏淡压暗＋光晕呼吸（叮声与朗读在事件到达时触发）。
+<!-- 询问声光提醒层：提问久等未答时全屏淡压暗＋光晕呼吸。时序见 app-chat.js 的
+     showAskAlert——叮声在事件到达那一刻由后端系统音效立即响（前端不重复响）；
+     浮窗上走 15 秒可见倒计时，倒计时结束才开始朗读提醒内容；15 秒内用户关掉这层、
+     或从任何入口进去处理（计划页/浮窗，见 notePlanHandled），一律取消朗读。
      关闭永远一步到位：点背景＝只关闭不打扰当前操作，点中央卡片＝关闭并跳去回答，Esc 同效；
-     15 秒无操作或问题被解决后自动收起 -->
+     朗读结束后几秒收起，最迟 40 秒兜底 -->
 <div id="ask-alert" class="hidden" title="点击关闭提醒">
   <div class="aa-box">
     <b>⏰ 有个提问在等你确认</b>
     <p id="ask-alert-text"></p>
+    <div id="ask-alert-count" class="aa-count hidden">
+      <span class="aa-count-num" id="ask-alert-num">15</span>
+      <span class="aa-count-tip" id="ask-alert-tip">秒后朗读提醒</span>
+      <span class="aa-count-bar"><i id="ask-alert-bar"></i></span>
+    </div>
     <span>点这张卡片前往回答 · 点其他任意处或按 Esc 关闭</span>
   </div>
 </div>

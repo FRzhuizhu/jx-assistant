@@ -32,9 +32,23 @@ type ProviderCfg struct {
 	BaseURL string     `json:"baseURL"`
 	APIKey  string     `json:"apiKey,omitempty"`
 	Models  []ModelCfg `json:"models"`
+	// Enabled 手动启停开关：nil＝启用（旧配置没写过这一键），显式 false＝停用
+	//（不参与默认选择与会话解析；卡片置灰）。手动停用不会被自动恢复打开。
+	Enabled *bool `json:"enabled,omitempty"`
+	// AutoDisabled 公司通道专用（sync.go）：公司服务端内网/公网都连不上时自动
+	// 停用，恢复可达自动清除；手动开一下开关也能清掉。
+	AutoDisabled bool `json:"autoDisabled,omitempty"`
+	// PublicBaseURL 公司通道的外网地址（由服务端公告下发，服务端没配就为空）：
+	// 内网地址连不上时调用层自动改走这里（llm.go StreamChat 的故障转移）。
+	PublicBaseURL string `json:"publicBaseURL,omitempty"`
 	// Note 是预置提供方的备注（计费方式、Key 获取方式等），仅设置页展示，
 	// 不参与调用；已保存的提供方以预置模板为准实时取，不落盘。
 	Note string `json:"note,omitempty"`
+}
+
+// IsSelectable 该提供方当前是否参与选模型：手动启用且未被自动停用。
+func (p *ProviderCfg) IsSelectable() bool {
+	return (p.Enabled == nil || *p.Enabled) && !p.AutoDisabled
 }
 
 // DefaultContextWindow 是模型未声明上下文窗口时的保守默认值。
@@ -91,6 +105,12 @@ type LLMTarget struct {
 	Model          string
 	ContextWindow  int
 	SupportsImages bool // 该模型是否声明支持图片输入（决定 read_image 是否内联视觉内容）
+	// ProviderID 目标所属提供方 id（""=旧单模型配置）：调用层用它把连接类失败
+	// 归因到提供方（公司通道不可达时自动停用，见 sync.go noteProviderConnFail）。
+	ProviderID string
+	// AltBaseURL 外网备用地址（公司通道由公告下发）：内网地址连接失败时
+	// StreamChat 自动改走这里重试一次。
+	AltBaseURL string
 }
 
 func (a *App) providerByID(id string) *ProviderCfg {
@@ -102,29 +122,53 @@ func (a *App) providerByID(id string) *ProviderCfg {
 	return nil
 }
 
-// DefaultTarget 返回全局默认调用目标（第一个 provider 的默认模型）。
+// firstSelectableProvider 第一个可用（手动启用且未被自动停用）的提供方；
+// 全部停用时回落 providers[0]（返回 nil 当没有任何提供方）——全停是用户自己的
+// 选择，仍按原顺序解析，调用报错即可，不静默换通道。
+func (a *App) firstSelectableProvider() *ProviderCfg {
+	for i := range a.Cfg.Providers {
+		if a.Cfg.Providers[i].IsSelectable() {
+			return &a.Cfg.Providers[i]
+		}
+	}
+	if len(a.Cfg.Providers) > 0 {
+		return &a.Cfg.Providers[0]
+	}
+	return nil
+}
+
+// DefaultTarget 返回全局默认调用目标（第一个可用 provider 的默认模型）。
 func (a *App) DefaultTarget() LLMTarget {
 	if len(a.Cfg.Providers) == 0 {
 		return LLMTarget{BaseURL: a.Cfg.BaseURL, APIKey: a.Cfg.APIKey, Model: a.Cfg.Model, ContextWindow: DefaultContextWindow}
 	}
-	return a.targetOf(&a.Cfg.Providers[0], "", "")
+	return a.targetOf(a.firstSelectableProvider(), "", "")
 }
 
 // resolveTarget 按会话解析调用目标：会话指定了 provider/model 就用会话的，
-// 否则跟随全局默认（第一个 provider）。
+// 否则跟随全局默认（第一个可用 provider）；会话指定的 provider 已停用时也回落
+// 默认——否则出公司后旧会话仍钉死在已停用的公司通道上。
 func (a *App) resolveTarget(sess *SessionMeta) LLMTarget {
 	p := a.providerByID(sess.Provider)
-	if p == nil && len(a.Cfg.Providers) > 0 {
-		p = &a.Cfg.Providers[0]
+	if p != nil && !p.IsSelectable() {
+		p = nil // 停用（手动或自动）的提供方不接会话调用
 	}
 	if p == nil {
-		return LLMTarget{BaseURL: a.Cfg.BaseURL, APIKey: a.Cfg.APIKey, Model: sess.Model, ContextWindow: DefaultContextWindow}
+		p = a.firstSelectableProvider()
+		if p == nil {
+			return LLMTarget{BaseURL: a.Cfg.BaseURL, APIKey: a.Cfg.APIKey, Model: sess.Model, ContextWindow: DefaultContextWindow}
+		}
+		// 回落到了别的提供方：原会话模型不在它目录里就不带过去（换用其默认模型）
+		if sess.Provider != "" && p.ID != sess.Provider && !providerHasModel(p, sess.Model) {
+			return a.targetOf(p, "", "")
+		}
 	}
 	return a.targetOf(p, sess.Provider, sess.Model)
 }
 
 func (a *App) targetOf(p *ProviderCfg, _, modelID string) LLMTarget {
-	t := LLMTarget{BaseURL: p.BaseURL, APIKey: p.APIKey, ContextWindow: DefaultContextWindow}
+	t := LLMTarget{BaseURL: p.BaseURL, APIKey: p.APIKey, ContextWindow: DefaultContextWindow,
+		ProviderID: p.ID, AltBaseURL: p.PublicBaseURL}
 	t.Model = modelID
 	if t.Model == "" && len(p.Models) > 0 {
 		t.Model = p.Models[0].ID

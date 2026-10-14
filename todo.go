@@ -1090,20 +1090,24 @@ func (s *todoScheduler) handToAssistant(task *TaskItem, record *RunRecord) (stri
 	}
 	text := fmt.Sprintf("【待办任务派发｜%s】\n任务：%s\n\n%s", triggerLabel(record.Trigger), task.Title, task.Description)
 	// 待办转交与数字助理派发同一性质：AI 发出的用户消息（kind=aiuser）——
-	// 按用户消息同等对待，开新回合、后面跟时间提示词，前端右对齐偏白气泡
-	sm := s.app.appendRow(sess, StoredMessage{Message: TextMessage("user", text), Kind: kindAiUser, Origin: "todo", CreatedAt: now()})
-	s.app.broadcast(Event{Type: "message", Message: &sm.Message, Seq: sm.Seq, Kind: kindAiUser, Origin: "todo", SessionID: sess.ID})
-
-	// 主对话正忙就先只落消息（它会在下一轮自然读到）；空闲则立刻跑一轮。
-	if run, ok := s.app.beginRun(sess.ID); ok {
+	// 走与用户发消息同一套投递（deliverToSession）：主对话空闲就落库并起一轮，
+	// 正忙就进它的排队队列，等本轮结束**自动**发出（不再「只落消息、干等下一轮
+	// 用户开口」）。按用户消息同等对待：开新回合、后面跟时间提示词，前端右对齐
+	// 偏白气泡。
+	d := s.app.deliverToSession(sess, text, kindAiUser, "todo")
+	if d.Started {
+		run := d.Run
 		go func() {
 			defer s.app.finishRun(sess.ID)
 			// 转交即完成：任务记录不因这一轮的成败改写，失败只写日志（用户可在会话里看到原因）。
-			if err := s.app.runGoalRounds(run.ctx, sess, func(ev Event) {
+			err := s.app.runRoundsWithQueue(sess, run, func(ev Event) {
 				ev.SessionID = sess.ID
 				run.publish(ev)
-			}); err != nil {
+			}, true, s.app.queueAutoSendOn())
+			if err != nil {
 				log.Printf("[待办] 任务 %s 转交后数字助理（会话 %s）本轮执行失败: %v", task.ID, sess.ID, err)
+			} else {
+				run.markCleanEnd() // 正常收尾：收口时兜底续发窗口期内新挤进队列的消息
 			}
 			s.app.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 		}()

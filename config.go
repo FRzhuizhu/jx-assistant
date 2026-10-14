@@ -105,6 +105,7 @@ type Config struct {
 	RegistryURL    string `json:"registryURL"`
 	WizardCompany  string `json:"wizardCompany,omitempty"`
 	WizardServer   string `json:"wizardServer,omitempty"`
+	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用
 	WizardRev      string `json:"wizardRev,omitempty"`      // 最近应用的服务端公告哈希（仅记录）
 	CompanyLinkOff bool   `json:"companyLinkOff,omitempty"` // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
@@ -131,6 +132,11 @@ type Config struct {
 	// 停表）时声光提醒——系统叮一声 + 全屏颜色闪烁 + 语音组件朗读 Text
 	//（组件停用时只叮不读）。Enabled=nil 表示未写过该键＝默认开启。
 	AskAlert AskAlertCfg `json:"askAlert,omitempty"`
+	// 「执行结束后自动续发排队消息」（设置·常规）：本轮回复完成后，排队队列里
+	// 的待发消息——真人消息 / 派发回报 / 派发需求 / 系统注入，**不分来源**——
+	// 自动逐条作为独立一轮发出。nil 表示未写过该键＝默认开启；显式 false 才关闭：
+	// 关掉后本轮结束队列保留，排队坞给「继续发送」入口（点它照发）。
+	QueueAutoSend *bool `json:"queueAutoSend,omitempty"`
 }
 
 // AskAlertCfg 询问提醒配置段：Enabled=nil＝默认开启；AfterSec 触发秒数
@@ -183,6 +189,15 @@ func askAlertDurText(sec int) string {
 	return fmt.Sprintf("%d 秒", sec)
 }
 
+// queueAutoSendOn 执行结束后是否自动续发排队消息（nil 键＝默认开；nil 接收器
+// ＝开：测试里的裸 App 没有 Cfg）。
+func (c *Config) queueAutoSendOn() bool {
+	if c == nil {
+		return true
+	}
+	return c.QueueAutoSend == nil || *c.QueueAutoSend
+}
+
 // VoiceGlobalCfg 全局语音输入法配置段（Enabled=nil＝默认开启；Mode tap/hold；
 // Kbd＝页面同步来的键盘快捷键组合，nil＝默认独按 Alt——每个元素是一组组合键，
 // 组合内是组件 normKey 同款键名：ctrl/alt/shift/meta/space/单字母数字/F1..F12）。
@@ -205,12 +220,25 @@ type RemoteAccessCfg struct {
 
 // 步数上限（一条消息触发的任务里，模型调用＋工具执行的连续步数）的默认值：
 // 既是新装的默认，也是升级时「还是旧默认、没人手动改过」的配置被提到的新值。
-// 旧默认 30 太紧（稍复杂的任务跑满就自动停），故提到 100；手动设过其他值的
-// 配置一律保留原值（见 LoadConfig 的兼容分支）。
-const (
-	maxStepsDefault       = 100
-	maxStepsLegacyDefault = 30
-)
+// 旧默认 30（太紧）、100（稍复杂的任务仍常跑满）都提到过；本次提到 200——
+// 手动设过其他值的配置一律保留原值（见 LoadConfig 的兼容分支与
+// maxStepsLegacyDefaults）。
+const maxStepsDefault = 200
+
+// maxStepsLegacyDefaults 是历次旧默认值：配置里的值正好等于其中之一，说明用户
+// 从没手动改过（手动改过的不会是这些整数旧默认）——升级时随新默认一并提升，
+// 用户自己设的值（如 300）不受影响。30=首版默认，100=上一次提升后的默认。
+var maxStepsLegacyDefaults = []int{30, 100}
+
+// isLegacyMaxSteps 该值是不是历次旧默认之一（升级提值的判定，见上面注释）。
+func isLegacyMaxSteps(n int) bool {
+	for _, v := range maxStepsLegacyDefaults {
+		if n == v {
+			return true
+		}
+	}
+	return false
+}
 
 func DefaultConfig() *Config {
 	wd, _ := os.Getwd()
@@ -282,15 +310,13 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Workspace == "" {
 		cfg.Workspace = def.Workspace
 	}
-	// 步数上限：老配置里还是旧默认 30 的（说明没人手动改过）随新默认提到 100，
-	// 并在下面落盘；手动设过其他值的配置原样保留。缺这一项/写成 0 仍按默认补齐。
+	// 步数上限：老配置里还是旧默认（30 / 100）的（说明没人手动改过）随新默认
+	// 提到 200，并在下面落盘；手动设过其他值的配置原样保留。缺这一项/写成 0
+	// 仍按默认补齐。
 	maxStepsBumped := false
-	if cfg.MaxSteps == maxStepsLegacyDefault {
+	if isLegacyMaxSteps(cfg.MaxSteps) {
 		cfg.MaxSteps = maxStepsDefault
 		maxStepsBumped = true
-	}
-	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = def.MaxSteps
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = def.DataDir

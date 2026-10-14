@@ -820,6 +820,26 @@ func (t *toolContext) isObserved(p string) bool {
 	return ok
 }
 
+// inJxAITmp 报告路径是否位于工作区 .jxai/tmp/ 之下——观察策略对此豁免：
+// tmp 是模型专属暂存区，旧文件跨会话永久残留，而观察集每会话清零、目录
+// 检索又不扫 .jxai，模型无从得知旧文件存在，观察策略在这里只会卡住模型
+// 自己（实测撞过墙：覆盖 tmp 里的残留脚本被拒）。tmp 里没有用户文件，
+// 盲覆盖无风险。远程会话恒 false：.jxai 是本机系统目录，远程工作区没有。
+func (t *toolContext) inJxAITmp(p string) bool {
+	if t.isRemote() {
+		return false
+	}
+	fold := filepath.Clean
+	if isWindowsRuntime {
+		fold = func(s string) string { return strings.ToLower(filepath.Clean(s)) }
+	}
+	rel, err := filepath.Rel(fold(filepath.Join(t.workspace(), jxAIName, "tmp")), fold(p))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 // ---------- 策略评估入口 ----------
 
 // permAction 是一次待授权的动作。

@@ -794,7 +794,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 | 模式 | 说明 | 工具 |
 |---|---|---|
 | `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + 历史查询 |
-| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / **dispatch_sub（派子对话）** / send_to_session + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
+| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（补需求，可选 permission 只能同等或降权）+ deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
 | `skill-create` | 创建技能：把「怎么做」沉淀成给后续 AI 照做的 SKILL.md 教程——用户点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **register_skill（注册/覆盖技能）**；演示录制归用户直控（界面按钮经 `/api/demo-record/*`，材料以【演示记录】通知进对话） |
 
@@ -802,18 +802,19 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 技能清单经环境快照对**所有模式**注入——见下文「技能」节与启动自检
 `assertSkillVisibility`。）
 
-**派发关系**：数字助理有两个派发工具——`dispatch_task` 派出**顶层工作任务**
-（进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
-像用户发消息一样只给一段自足描述；`dispatch_sub` 派出**子对话**（挂在当前会话
-下、右栏抽屉可见，完成后回报并触发父会话继续），按专家预设选择是否继承上下文
-（`expert=名称`，默认标准子对话不带）。工作任务同样只有 `dispatch_sub`。右栏
-子对话因此可能来自 AI 派发或人工新建（专家的挂 `parent_id`、`origin=human`，统一带完整上下文；一级限制对所有子对话生效）。此外总控还有 `list_sessions`
-（找任务）、`read_session_summary`（看最终答复等摘要）、`read_session_messages` /
-`search_sessions`（翻查内容）、`send_to_session`（给已有任务发消息）与
-`deliver_result`（汇报派发成果时把文件登记成交付卡片展示在本对话——文件本身
-可能已被任务会话交付到位，总控只负责让用户在总控对话里看得见、拿得到，
-不重复搬运；路径填绝对值，登记失败多半是文件已被搬走，翻该会话的
-【交付完成】注记找新位置）。
+**派发关系**：数字助理（总控）只有一个派发工具——`dispatch_task` 派出**顶层工作
+任务**（进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
+像用户发消息一样只给一段自足描述；`send_to_session` 给已有会话补需求（可选
+`permission`，与派发同一套规则：只能同等或降权，且不得高于目标会话自己的档位——
+给已有会话提权会被拒绝，见 assistant.go 的 `runSendToSession`）。
+**子对话（`dispatch_sub`）不在总控手里**：它是任务会话的并行手段——挂在当前会话下、
+右栏抽屉可见，完成后回报并触发父会话继续，按专家预设决定是否继承上下文
+（`expert=名称`，默认标准子对话不带）；子对话只有一级，对所有子对话生效。此外总控
+还有 `list_sessions`（找任务）、`read_session_summary`（看最终答复等摘要）、
+`read_session_messages` / `search_sessions`（翻查内容）与 `deliver_result`（汇报派发
+成果时把文件登记成交付卡片展示在本对话——文件本身可能已被任务会话交付到位，总控只
+负责让用户在总控对话里看得见、拿得到，不重复搬运；路径填绝对值，登记失败多半是文件
+已被搬走，翻该会话的【交付完成】注记找新位置）。
 
 ## 执行的生死与对话中途发消息
 
@@ -1339,7 +1340,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装——发给模型的内容一律来自引擎 Assembly）；`envPrompt` 生成运行环境快照（不含时间——时间走 context.go 的 timeAfter 派生通道） |
 | `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截 |
 | `plans.go` | 计划读取端点：从会话日志里取回 exit_plan_mode 的正文（右栏「计划」视图的数据源） |
-| `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；ask 提问限时（timeout_sec 设秒数，默认 300、钳 30-600、显式 0=不限时；分档准则在系统提示词「提问的分寸」段，状态公告在环境快照「提问等待」行；界面倒计时、悬停/触碰/按钮停表转不限时，超时视为放行）；久等声光提醒（默认开、240 秒、设置·常规可调：MessageBeep 叮声 + ask_alert 全屏闪烁 + TTS 朗读，停表连提醒一并暂停）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/驳回/忽略 |
+| `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；ask 提问限时（timeout_sec 设秒数，默认 300、钳 30-600、显式 0=不限时；分档准则在系统提示词「提问的分寸」段，状态公告在环境快照「提问等待」行；界面倒计时、悬停/触碰/按钮停表转不限时，超时视为放行）；久等声光提醒（默认开、240 秒、设置·常规可调：MessageBeep 叮声 + ask_alert 全屏闪烁，浮窗上 15 秒倒计时走完才 TTS 朗读；悬停/触碰/停表、或从任何入口打开对应计划页/浮窗（holdQuestion 也受理无时限的计划审批）连提醒一并作废，见 askAlertDue）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/驳回/忽略 |
 | `interact_plan_test.go` | 计划审批的时限与持久化语义测试（跨重启挂待审批、批准/驳回/忽略三分支、plan 无 TTL、ask 的 timeout_sec 与停表） |
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
@@ -1425,7 +1426,8 @@ deadlineMs 倒计时截止——ask_user_question 可用 timeout_sec 设秒数�
 钳 30-600、显式 0=不限时；`question_deadline`（held）是停表广播：用户悬停/触碰
 卡片或点停止按钮即停表转不限时；`ask_alert` 是久等声光提醒——设置·常规的
 询问提醒（默认开、240 秒）到点未答且未停表时：后端 MessageBeep 叮一声 +
-广播此事件，前端全屏闪烁并按配置文案走语音组件 TTS 朗读，停表连提醒一并
-暂停）、`todos`（会话待办刷新）、
+广播此事件，前端全屏闪烁并在浮窗上走 15 秒可见倒计时、倒计时结束才按配置
+文案走语音组件 TTS 朗读（15 秒内关掉/从任何入口进去处理即取消朗读），停表
+与「已在处理」连提醒一并作废）、`todos`（会话待办刷新）、
 `todo_tasks`（待办/定时任务清单变化，组件 `todo-scheduler`）
 （均带 sessionId，前端按会话过滤渲染）。
