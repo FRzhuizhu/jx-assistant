@@ -4912,21 +4912,36 @@ function appendQuoteBodyText(b, text, quotes) {
   if (last < src.length) b.appendChild(document.createTextNode(src.slice(last)));
 }
 
-// 胶囊条渲染：有引用才出现（hidden 零占位）；1 条显示截断文，多条收成「引用了N条」
+// 胶囊条渲染：有引用才出现（hidden 零占位）；1 条显示截断文，多条收成「引用了N条」。
+// 悬停明细不用原生 title（浏览器黄色小框、触发慢、样式老）：胶囊条正上方挂一个同宽
+// 展开面板，逐条列「引用N + 全文」，纯 CSS :hover 即时展开（style.css .q-expand）
 function renderQuote(view) {
   view = view || mainView;
   const bar = viewEl(view, 'quote-bar');
   if (!bar) return;
   const qs = quotesOf(view);
   bar.classList.toggle('hidden', !qs.length);
-  if (!qs.length) { bar.title = ''; return; }
+  const ex = bar.querySelector('.q-expand');
+  if (!qs.length) { if (ex) ex.textContent = ''; return; }
   const tx = bar.querySelector('.q-text');
-  if (qs.length === 1) {
-    if (tx) tx.textContent = '\u201c' + quoteClip(qs[0]) + '\u201d';
-    bar.title = '引用的内容（随下一条消息发出）：\n' + qs[0];
-  } else {
-    if (tx) tx.textContent = '引用了 ' + qs.length + ' 条';
-    bar.title = qs.map((q, i) => quoteMark(i + 1) + ' ' + quoteClip(q)).join('\n');
+  if (tx) tx.textContent = qs.length === 1
+    ? '\u201c' + quoteClip(qs[0]) + '\u201d'
+    : '引用了 ' + qs.length + ' 条';
+  if (ex) {
+    ex.textContent = '';
+    qs.forEach((q, i) => {
+      const row = document.createElement('div');
+      row.className = 'qe-row';
+      const mark = document.createElement('span');
+      mark.className = 'qe-mark';
+      mark.textContent = quoteMark(i + 1);
+      const body = document.createElement('span');
+      body.className = 'qe-text';
+      body.textContent = q; // 面板里放全文（折行显示），看完整引用不必再点开别处
+      row.appendChild(mark);
+      row.appendChild(body);
+      ex.appendChild(row);
+    });
   }
 }
 

@@ -245,7 +245,7 @@ func (a *App) buildMarketView() marketView {
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
 	if raw == "" {
 		if a.Cfg.RemoteAccess.Host != "" && a.Cfg.RemoteAccess.Port > 0 {
-			v.Suggested = fmt.Sprintf("http://%s:%d/market/manifest.json",
+			v.Suggested = fmt.Sprintf("https://%s:%d/market/manifest.json",
 				a.Cfg.RemoteAccess.Host, a.Cfg.RemoteAccess.Port)
 		}
 		return v

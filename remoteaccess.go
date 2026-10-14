@@ -18,6 +18,7 @@
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"crypto/aes"
@@ -110,7 +111,8 @@ func remoteStatus(cfg RemoteAccessCfg) remoteHubStatus {
 		st.LastError = v
 	}
 	if cfg.MyID != "" {
-		st.Entry = fmt.Sprintf("http://%s:%d/a/%s#pk=%s", cfg.Host, cfg.Port, cfg.MyID, cfg.PairKey)
+		// 入口链接（二维码内容）：网关 2227 为明文/TLS 双协议口，默认按 https 生成
+		st.Entry = fmt.Sprintf("https://%s:%d/a/%s#pk=%s", cfg.Host, cfg.Port, cfg.MyID, cfg.PairKey)
 	}
 	return st
 }
@@ -228,8 +230,17 @@ func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCf
 
 // run 建立并守护一条 hub 连接，返回「本次连接是否成功注册过」。
 func (h *hubCtx) run() bool {
-	url := fmt.Sprintf("ws://%s:%d/hub", h.cfg.Host, h.cfg.Port)
-	conn, br, _, err := (&ws.Dialer{Timeout: 15 * time.Second}).Dial(context.Background(), url)
+	// wss 优先：网关有正规证书（Let's Encrypt）时引擎侧全程加密。
+	// TLS 失败再退回明文 ws——兼容自签/无证书的老网关与企业内网部署，日志留痕。
+	dial := func(scheme string) (net.Conn, *bufio.Reader, ws.Handshake, error) {
+		return (&ws.Dialer{Timeout: 15 * time.Second}).Dial(
+			context.Background(), fmt.Sprintf("%s://%s:%d/hub", scheme, h.cfg.Host, h.cfg.Port))
+	}
+	conn, br, _, err := dial("wss")
+	if err != nil {
+		log.Printf("[远程] wss 连接网关失败（%v），退回明文 ws 兼容旧网关", err)
+		conn, br, _, err = dial("ws")
+	}
 	if err != nil {
 		remoteLastError.Store(fmt.Sprintf("连接网关失败: %v", err))
 		return h.registered
@@ -359,7 +370,7 @@ func (h *hubCtx) run() bool {
 				relayRegLoggedAt.Store(time.Now().UnixMilli())
 				log.Printf("[远程] 中继通道已注册 %s:%d/hub id=%s（手机入口 %s）",
 					h.cfg.Host, h.cfg.Port, h.cfg.MyID,
-					fmt.Sprintf("http://%s:%d/a/%s", h.cfg.Host, h.cfg.Port, h.cfg.MyID))
+					fmt.Sprintf("https://%s:%d/a/%s", h.cfg.Host, h.cfg.Port, h.cfg.MyID))
 			}
 		case "relay":
 			if f.Rid != "" && f.Iv != "" && f.Ct != "" {

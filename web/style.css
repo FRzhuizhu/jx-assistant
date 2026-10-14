@@ -1234,14 +1234,16 @@ body.rp-open .w-handle { display: none; }
 }
 .composer-input::placeholder { color: var(--text-3); }
 /* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——多条累计，
-   灰底胶囊；1 条显示“某某某…”截断（悬停 title 看全文）、多条收成「引用了N条」、
-   ✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（纯文本）。发送时组装为
-   「用户引用：」块（逐条带编号全文）+ 正文完整发给模型（app-chat.js「引用胶囊」节） */
+   灰底胶囊；1 条显示“某某某…”截断、多条收成「引用了N条」（悬停展开面板看逐条
+   全文）、✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（纯文本）。发送时
+   组装为「用户引用：」块（逐条带编号全文）+ 正文完整发给模型（app-chat.js
+   「引用胶囊」节） */
 .quote-bar {
   display: flex; align-items: center; gap: 6px;
   margin: 0 0 6px; padding: 3px 6px 3px 8px;
   background: var(--chip); border-radius: 8px;
   color: var(--text-2); font-size: 12px; line-height: 1.6;
+  position: relative; /* 悬停展开面板（.q-expand）以此为锚 */
 }
 .quote-bar .q-ic { width: 12px; height: 12px; flex: none; color: var(--text-3); }
 .quote-bar .q-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1251,6 +1253,30 @@ body.rp-open .w-handle { display: none; }
   display: inline-flex; align-items: center; justify-content: center;
 }
 .quote-bar .q-x:hover { background: var(--hover); color: var(--danger); }
+/* 引用胶囊的悬停展开面板：胶囊条正上方、与输入框同宽（left/right 贴满输入卡内容
+   区），逐条列「“引用N”编号胶囊 + 全文折行」。不用原生 title——那个是浏览器黄色
+   小框、触发有延迟。纯 CSS :hover 即时展开，面板是胶囊条子元素，鼠标从条移到面板
+   上仍保持悬停不消失；淡入照 .ctx-tip 的浮层参数（同输入区既有悬停观感） */
+.quote-bar .q-expand {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(16, 20, 26, .14);
+  padding: 8px 10px; z-index: 40;
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 40vh; overflow-y: auto; /* 条数多/全文长：面板自身滚动，不顶出屏幕 */
+  opacity: 0; visibility: hidden; transform: translateY(3px);
+  transition: opacity .12s ease, transform .12s ease, visibility .12s;
+  pointer-events: none; cursor: default;
+}
+.quote-bar:hover .q-expand, .quote-bar:focus-within .q-expand {
+  opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto;
+}
+.quote-bar .q-expand .qe-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.6; }
+.quote-bar .q-expand .qe-mark {
+  flex: none; margin-top: 2px; padding: 0 8px; border-radius: 9px;
+  background: var(--chip); color: var(--text-2);
+}
+.quote-bar .q-expand .qe-text { min-width: 0; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 /* 用户气泡里的引用行：发出的消息开头「用户引用：”…“」段的展示形态（灰色、
    截断 + title 全文；模型收到的始终是完整文本，这里只是前端的视觉层） */
 .msg.user .bubble .msg-quote {

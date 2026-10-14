@@ -240,6 +240,9 @@
           <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
           <span class="q-text"></span>
           <button class="q-x" type="button" title="移除引用">✕</button>
+          <!-- 悬停展开面板：胶囊条正上方、与输入框同宽，逐条列「引用N + 全文」。
+               不用原生 title（黄色小框、触发慢）——纯 CSS :hover 即时展开（style.css .q-expand） -->
+          <div class="q-expand"></div>
         </div>
         <textarea id="input" class="composer-input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
         <div class="composer-bar">
@@ -323,6 +326,8 @@
                 <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
                 <span class="q-text"></span>
                 <button class="q-x" type="button" title="移除引用">✕</button>
+                <!-- 悬停展开面板：与主对话区同款（id 加 sub- 前缀） -->
+                <div class="q-expand"></div>
               </div>
               <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
