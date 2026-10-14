@@ -66,6 +66,7 @@
 /* ---------- 状态条（错误 / 提示 / 未连仓库） ---------- */
 .gitp-strip {
   flex-shrink: 0; padding: 6px 12px; font-size: 12.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; /* 报错原文与「ⓘ 报错说明」分多行显示 */
   border-bottom: 1px solid var(--border-2);
 }
 .gitp-strip.hidden { display: none; }

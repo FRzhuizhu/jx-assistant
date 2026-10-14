@@ -77,6 +77,40 @@
     return String(s).slice(0, 10);
   }
 
+  /* ---------- 常见 Git 报错的中文对照 ----------
+   * 后端把 git 的原始输出（英文）原样带回前端（如「推送失败：To https://…
+   * ! [remote rejected] …」），普通用户看不懂。这里按"具体在前、笼统在后"的
+   * 顺序匹配、命中第一条，在报错原文下方补一段中文说明（ⓘ 报错说明）；
+   * 不命中就原样显示、不加东西。只做展示层翻译，不动后端返回；
+   * suggestTask 弹卡与状态条 renderStrip 两处共用（带标记幂等，不会重复叠加）。 */
+  const GIT_HINT_MARK = 'ⓘ 报错说明：';
+  const GIT_ERROR_HINTS = [
+    { re: /pre-receive hook declined/i, zh: '远程服务器在接收推送前的检查（pre-receive 钩子）拒绝了这次推送。本地代码和账号都没问题；常见原因是服务器端（Gitea/GitLab 等）钩子程序自身出错、目标分支被设为保护分支禁止直接推送，或推送内容不满足服务器的检查规则——需要服务器管理员在服务端处理。' },
+    { re: /protected branch|protected hook|not allowed to push|cannot push to protected|branch protection/i, zh: '目标分支在服务器上是保护分支，不允许直接推送：请改走服务器要求的流程（如 Pull Request / 合并请求），或请管理员放开该分支的直推限制。' },
+    { re: /remote unpack failed|unpack failed/i, zh: '远程服务器接收数据包失败：常见于服务器磁盘空间不足或仓库数据损坏，需要在服务器端排查。' },
+    { re: /exceeds the file size limit|file too large|larger than the maximum/i, zh: '有文件超过了远程服务器的单文件大小限制：请压缩或拆分大文件后重新提交，或请管理员调大限制。' },
+    { re: /authentication failed|could not read username|terminal prompts disabled|publickey|authorization failed|access denied|\b403\b|invalid username or password|incorrect username or password/i, zh: '凭据或权限问题：账号密码不对、访问令牌过期失效，或当前账号没有这个仓库的推送权限。可回对话让数字助理检查远程地址与凭据。' },
+    { re: /could not resolve host|connection (timed out|refused|reset)|network is unreachable|failed to connect|unable to access|\bproxy\b|certificate|\btimeout\b/i, zh: '网络问题：连不上远程仓库服务器——网络断开、远程地址写错、服务器没开机，或 HTTPS 证书校验失败（自签名/过期）。检查网络后重试，或回对话让数字助理诊断远程地址。' },
+    { re: /non-fast-forward|fetch first|remote contains work that you do not have|stale info/i, zh: '远程仓库已有本地没有的新提交（两边历史不一致）：先点「拉取」合并远程更新，再推送即可。' },
+    { re: /divergent branches|diverged/i, zh: '本地与远程的历史分叉了：需要先拉取合并（有冲突要人工解决），之后再推送。' },
+    { re: /automatic merge failed|conflict/i, zh: '合并冲突：同一处内容本地和远程都改过，git 无法自动合并，需要人工选择保留哪边（面板不代做，可回对话让数字助理处理）。' },
+    { re: /would be overwritten by (merge|checkout)/i, zh: '本地有未提交的改动，与要执行的操作冲突：先提交（或暂存）本地改动再重试。' },
+    { re: /not a git repository|could not read from remote repository|repository not found|does not appear to be a git repository/i, zh: '找不到仓库：远程地址可能写错、仓库已删除或改名，或当前账号无权访问。' },
+    { re: /refusing to merge unrelated histories/i, zh: '两边仓库的提交历史完全无关，git 默认拒绝合并：先确认是不是推错了远程地址；确实要合并的话，回对话让数字助理显式合并无关历史。' },
+    { re: /detected dubious ownership|safe\.directory/i, zh: 'git 认为这个仓库目录的归属可疑（目录所有者与当前用户不同）：需要把仓库路径加入 git 的 safe.directory 配置后再操作。' },
+    { re: /another git process|index\.lock/i, zh: '仓库正被另一个 git 操作占用（或残留了 index.lock 锁文件）：等正在进行的操作结束再试；确认没有其它程序占用后可删除该锁文件。' },
+    { re: /tell me who you are|empty ident|user\.name|user\.email has not been/i, zh: 'git 还没配置提交者身份（user.name / user.email）：需要先设置姓名和邮箱才能提交。' },
+    { re: /\blfs\b|smudge|filter process/i, zh: 'Git LFS 大文件处理出错：确认本机已安装 git-lfs，或回对话让数字助理检查 LFS 配置。' },
+    { re: /failed to push some refs/i, zh: '有提交没能推送到远程——具体原因看上方更早出现的那行报错。' },
+  ];
+  function withGitHint(text) {
+    if (!text || text.includes(GIT_HINT_MARK)) return text || '';
+    for (const h of GIT_ERROR_HINTS) {
+      if (h.re.test(text)) return text + '\n\n' + GIT_HINT_MARK + h.zh;
+    }
+    return text;
+  }
+
   /* ---------- 状态 ---------- */
 
   const S = {
@@ -360,8 +394,8 @@
     // 操作类错误（点按钮失败）优先；它们只由下一次成功操作清除——轮询的 loadStatus
     // 成功时会把 S.error 清空（那是读取类错误的语义），不能让它顺手抹掉刚弹出的
     // 「生成摘要失败」提示，否则用户只看到按钮转一圈又复原、没有任何原因。
-    if (S.opError) show('err', S.opError);
-    else if (S.error) show('err', S.error);
+    if (S.opError) show('err', withGitHint(S.opError));
+    else if (S.error) show('err', withGitHint(S.error));
     else if (S.note) { show('note', S.note); }
     else if (S.reason) show('warn', S.reason);
     if (S.note) {
@@ -511,7 +545,7 @@
 
   /* 需要决策的 Git 操作：统一弹卡建议回对话新建工作任务，面板不代做 */
   async function suggestTask(reason) {
-    const tip = reason +
+    const tip = withGitHint(reason) +
       '\n\n面板只自动做能安全完成的部分，这一步需要人来决策。建议回到对话新建工作任务，例如对数字助理说：' +
       '\n「仓库 ' + (S.repo || '当前仓库') + ' 需要与远程同步：请拉取、合并并解决冲突（需要时再推送），完成后汇报。」';
     if (typeof confirmCenter === 'function') {
