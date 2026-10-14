@@ -1745,11 +1745,13 @@
     // 改动经 /api/config 热生效。浏览器/远程端不渲染这一组。
     if (desktopShell() && !window.JX_REMOTE) {
       group('全局语音输入法（桌面版）');
-      note('对话框之外的任意位置（本软件其他面板、以及全电脑任何程序的光标处）按'
-        + '鼠标侧键或独按 Alt 键：屏幕底部弹出胶囊浮窗听写，再按一次结束，文字自动'
-        + '粘贴进光标处；那里不可输入时留在剪贴板（浮窗提示「文字已复制」）。识别'
-        + '节奏与对话框内一致（停顿约 0.6 秒出草稿、3 秒定稿）。对话框内（主/子'
-        + '输入框）仍走上面的灰字听写，互不打扰。');
+      note('在本软件对话框之外的面板（git 面板、设置页等任意输入位置）按语音'
+        + '快捷键：屏幕底部弹出胶囊浮窗听写，再按一次结束，文字自动粘贴进光标处；'
+        + '不可输入时留在剪贴板（浮窗提示「文字已复制」）。识别节奏与对话框内'
+        + '一致（停顿约 0.6 秒出草稿、3 秒定稿）。对话框内（主/子输入框）仍走上面'
+        + '的灰字听写，互不打扰。【2026-10-14】接管其他软件按键的系统级钩子已停用'
+        + '（实机出现吞键/卡键问题），目前仅支持本软件内的位置；后续调研成熟方案'
+        + '再考虑恢复。');
       const vgToggle = document.createElement('input');
       vgToggle.type = 'checkbox';
       vgToggle.checked = true;
@@ -1774,7 +1776,7 @@
         vgModeSel.value = vg.mode === 'hold' ? 'hold' : 'tap';
         vgToggleLbl.textContent = '';
       }).catch(() => {});
-      row('任意位置听写', vgToggle).appendChild(vgToggleLbl);
+      row('软件内任意位置听写', vgToggle).appendChild(vgToggleLbl);
       row('触发方式', vgModeSel);
     }
   }

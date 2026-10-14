@@ -488,9 +488,8 @@ func voiceGlobalInstall() {
 	// 进了 for-range 阻塞，w.Run() 永远执行不到，桌面壳整个冻死（浏览器面板
 	// 创建排不上队只是最先暴露的症状）。
 	go vgWorkerOnce.Do(vgWorker)
-	log.Printf("[语音输入法] 已启用：鼠标侧键＋%s，%s（任意位置听写，结束自动粘贴/复制）",
-		vgKbd.Load().label,
-		map[bool]string{true: "长按", false: "点按"}[vgHoldMode.Load()])
+	// 2026-10-14 系统级钩子已停用（见 vgHookLoop 注释）：日志如实说明现状
+	log.Printf("[语音输入法] 已启用（系统级钩子已停用，仅本软件内快捷键弹浮窗；其他软件按键不再接管）")
 }
 
 func voiceGlobalUninstall() {
@@ -516,15 +515,26 @@ func voiceGlobalUninstall() {
 func vgHookLoop(ready chan<- uint32, errCh chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	hMouse, _, err := procSetWindowsHookEx.Call(whMouseLL, vgMouseHookCallback(), 0, 0)
-	if hMouse == 0 {
-		errCh <- err
-		return
-	}
-	hKbd, _, errKbd := procSetWindowsHookEx.Call(whKeyboardLL, vgKbdHookCallback(), 0, 0)
-	if hKbd == 0 { // 键盘钩子失败不致命：鼠标侧键（主快捷键）仍可用
-		log.Printf("[语音输入法] 键盘钩子安装失败（独按 Alt 副快捷键不可用）: %v", errKbd)
-	}
+	// 2026-10-14 停用系统级钩子（用户决定）：实机出现「其他软件里按键无响应、
+	// 全系统键鼠短暂锁死（关闭本软件后仍持续一会儿、狂点几次才恢复）」——
+	// 低级钩子坐在全系统输入路径上做判定，回调偶发超时（LowLevelHooksTimeout）
+	// 就会被系统拖慢整条输入链甚至静默移除，复杂度与收益不成比例。
+	// 停用后的行为：
+	//   · 其他软件里按键恢复原生行为（不再被吞、不再有锁死风险）；
+	//   · 本软件内各处（焦点不在主/子输入框）按快捷键仍弹胶囊浮窗——页面
+	//     转发路径（POST /api/voice/global/start）不经过系统钩子，照常可用；
+	//   · 吞键判定、键盘组合状态机、浮窗与粘贴注入全部原样保留。
+	// 恢复方法：取消下面两段注释（连同函数尾部的两行 Unhook）即可。
+	//
+	// hMouse, _, err := procSetWindowsHookEx.Call(whMouseLL, vgMouseHookCallback(), 0, 0)
+	// if hMouse == 0 {
+	// 	errCh <- err
+	// 	return
+	// }
+	// hKbd, _, errKbd := procSetWindowsHookEx.Call(whKeyboardLL, vgKbdHookCallback(), 0, 0)
+	// if hKbd == 0 { // 键盘钩子失败不致命：鼠标侧键（主快捷键）仍可用
+	// 	log.Printf("[语音输入法] 键盘钩子安装失败（独按 Alt 副快捷键不可用）: %v", errKbd)
+	// }
 	tid, _, _ := procGetCurrentThreadID.Call()
 	ready <- uint32(tid)
 	var msg recMsg
@@ -534,10 +544,10 @@ func vgHookLoop(ready chan<- uint32, errCh chan<- error) {
 			break
 		}
 	}
-	if hKbd != 0 {
-		procUnhookWindowsHookEx.Call(hKbd)
-	}
-	procUnhookWindowsHookEx.Call(hMouse)
+	// if hKbd != 0 {
+	// 	procUnhookWindowsHookEx.Call(hKbd)
+	// }
+	// procUnhookWindowsHookEx.Call(hMouse)
 }
 
 // ---------- 会话编排（worker goroutine） ----------
