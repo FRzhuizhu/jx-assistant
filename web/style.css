@@ -25,7 +25,8 @@
   --amber-bg: #fff3d6;
   --gray-bg: #eef0f2;
   --danger: #c0392b;
-  /* 对话内容列宽度（拖拽把手实时改写，localStorage 记忆偏好）与对话区基础字号（设置页按 px 调整） */
+  /* 对话内容列宽度（拖拽把手实时改写，localStorage 记忆偏好）与阅读字号基准
+     （设置页按 px 调整；对话区与计划显示区共用，见 .msg-col 处的落点规则） */
   --content-w: 860px;
   --chat-fs: 14px;
   /* 顶栏高度：进度面板浮层贴在它下面；窄屏左右栏浮层也用它（窄屏另覆盖为 66px） */
@@ -416,8 +417,13 @@ button:hover [data-da-face][data-state="done"] .da-eyes { animation: none; }
 #messages { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .msg-col {
   max-width: var(--content-w); margin: 0 auto; padding: 26px 24px 12px;
-  font-size: var(--chat-fs); /* 对话区基础字号：内部字号一律用 em 相对此值，设置页只影响对话区 */
 }
+/* 字号设置的落点（全项目唯一一处）：对话区与计划显示区共用同一个基准 --chat-fs，
+   两处内部字号一律用 em 相对它——设置里改「字体大小」，对话正文与计划正文/摘要
+   同步放大缩小。计划显示区＝右栏「计划」视图正文（.plan-doc）＋输入区上方的计划
+   浮窗（.q-card.plan，含跨对话角标堆里的同款卡）。其余区域（侧栏、设置页、输入区
+   控件）不跟随。 */
+.msg-col, .plan-doc, .q-card.plan { font-size: var(--chat-fs); }
 
 /* 对话区两侧拖拽把手：调宽对话内容列（左右对称，偏好记入 localStorage） */
 .w-handle {
@@ -2189,19 +2195,24 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }
 /* 计划卡（输入区上方那张摘要卡）：长文不在这里铺，只给标题 + 首段 + 去向提示；
-   全文在右栏「计划」视图里按 Markdown 渲染（见下方「右栏计划视图」一节）。 */
+   全文在右栏「计划」视图里按 Markdown 渲染（见下方「右栏计划视图」一节）。
+   字号同样跟随设置里的「字体大小」（.q-card.plan 的基准取自 --chat-fs），内部
+   正文一律 em 相对值；卡片标题行、反馈输入框与按钮属控件，保持固定字号。 */
 .q-card.plan .q-plan-title {
-  margin: 0; font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.5;
+  margin: 0; font-size: 1em; font-weight: 600; color: var(--text); line-height: 1.5;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .q-card.plan .q-plan-desc {
-  margin: 5px 0 0; font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+  margin: 5px 0 0; font-size: .96em; color: var(--text-2); line-height: 1.6;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.q-card.plan .q-plan-hint { margin: 6px 0 0; font-size: 11.5px; color: var(--text-3); }
+.q-card.plan .q-plan-hint { margin: 6px 0 0; font-size: .88em; color: var(--text-3); }
 .q-card.plan .ap-actions button.ghost { flex: 0 0 auto; }
 
-/* ---------- 右栏「计划」视图：提交过的计划（Markdown 全文，可反复打开） ---------- */
+/* ---------- 右栏「计划」视图：提交过的计划（Markdown 全文，可反复打开） ----------
+   正文与摘要的字号跟随设置里的「字体大小」（基准 --chat-fs，由 .msg-col 处的落点
+   规则给到 .plan-doc），内部字号一律 em 相对值；工具栏与底部操作按钮属控件、
+   保持固定字号（与对话区输入控件同一口径）。 */
 .plan-bar {
   flex-shrink: 0; display: flex; align-items: center; gap: 6px;
   padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--border-2);
@@ -2229,18 +2240,18 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .plan-note.hidden { display: none; }
 .plan-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plan-note.bad { color: #c0392b; }
-.plan-doc { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 16px; font-size: 13px; }
+.plan-doc { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 16px; } /* 基准字号见 .msg-col 处的落点规则 */
 .plan-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.plan-meta b { font-size: 13px; }
-.plan-meta span { font-size: 11.5px; color: var(--text-3); }
+.plan-meta b { font-size: 1em; }
+.plan-meta span { font-size: .88em; color: var(--text-3); }
 .plan-badge {
-  font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  font-size: .85em; padding: 1px 7px; border-radius: 999px;
   color: var(--amber); background: rgba(214, 158, 46, .12); border: 1px solid rgba(214, 158, 46, .35);
 }
 .plan-badge.gray { color: var(--text-3); background: var(--chip); border-color: var(--border); }
 .plan-md { line-height: 1.7; word-break: break-word; }
 .plan-md > :first-child { margin-top: 0; }
-.plan-empty { font-size: 12.5px; color: var(--text-3); line-height: 1.8; padding: 6px 2px; }
+.plan-empty { font-size: .96em; color: var(--text-3); line-height: 1.8; padding: 6px 2px; }
 /* 待审批操作区：钉在视图底部，全文再长也够得着 */
 .plan-act {
   flex-shrink: 0; padding: 10px 14px 12px; border-top: 1px solid var(--border-2);

@@ -178,7 +178,7 @@ async function openSettings(pane) {
   refreshUpdateBox();
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
-  selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
+  selRefs.fontsize.set(lsGet('jx.fontpx', String(FONT_PX_DEFAULT)));
   syncThemeCards();
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
   // 默认「等待排队」：未设置过（新装）时下拉选框显示等待，用户选过就按用户存的显示
@@ -950,15 +950,18 @@ async function saveSettings() {
 
 /* ---------- 常规页：本机浏览器偏好（语言/字体/发送行为，即时生效） ---------- */
 
-// 字号只作用于对话区（.msg-col 的 --chat-fs，内部字号均为 em 相对值），
-// 侧栏/设置/输入框不受影响；具体 px 值直接可调
+// 阅读字号：只写 :root 的 --chat-fs 一处，对话区（.msg-col）与计划显示区
+//（右栏「计划」视图正文 .plan-doc、计划浮窗 .q-card.plan）共用这个基准，两处内部
+// 字号均为 em 相对值——改字号这两块文字同步缩放；侧栏/设置/输入控件不跟随。
+const FONT_PX_DEFAULT = 14; // 默认档（「（默认）」标在它身上，档位增减量都以它为基准）
+
 function applyChatFont(px) {
   document.documentElement.style.setProperty('--chat-fs', px + 'px');
   lsSet('jx.fontpx', String(px));
 }
 
 function restoreChatFont() {
-  const px = parseFloat(lsGet('jx.fontpx', '14')) || 14;
+  const px = parseFloat(lsGet('jx.fontpx', String(FONT_PX_DEFAULT))) || FONT_PX_DEFAULT;
   document.documentElement.style.setProperty('--chat-fs', px + 'px');
 }
 /* ---------- 常规页：文件备份（服务端配置，改动即时保存） ---------- */
@@ -1528,16 +1531,16 @@ makeSelect('sel-lang', 'lang', [
   { v: 'zh', label: '简体中文' },
   { v: 'en', label: 'English（翻译逐步补齐）' },
 ], (v) => lsSet('jx.lang', v));
-makeSelect('sel-fontsize', 'fontsize', [
-  { v: '12', label: '12 px' },
-  { v: '13', label: '13 px' },
-  { v: '14', label: '14 px（默认）' },
-  { v: '15', label: '15 px' },
-  { v: '16', label: '16 px' },
-  { v: '17', label: '17 px' },
-  { v: '18', label: '18 px' },
-  { v: '20', label: '20 px' },
-], (v) => applyChatFont(parseFloat(v) || 14));
+// 档位清单与默认值只在这里一处维护：默认档标「14px（默认）」，其余档标相对默认的
+// 增减（15 (+1) / 13 (-1)）——一眼看出比默认大几号、小几号，增减量随 FONT_PX_DEFAULT 走。
+const FONT_PX_OPTS = [12, 13, 14, 15, 16, 17, 18, 20];
+makeSelect('sel-fontsize', 'fontsize', FONT_PX_OPTS.map((px) => {
+  const d = px - FONT_PX_DEFAULT;
+  return {
+    v: String(px),
+    label: d === 0 ? px + 'px（默认）' : px + ' (' + (d > 0 ? '+' + d : String(d)) + ')',
+  };
+}), (v) => applyChatFont(parseFloat(v) || FONT_PX_DEFAULT));
 // 背景色：白/黑/跟随系统的预览卡片，点选即时生效
 function syncThemeCards() {
   const cur = lsGet('jx.theme', 'light');

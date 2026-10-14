@@ -4,7 +4,7 @@
 /* ---------- 初始化 ---------- */
 
 restoreHomeDraftLS(); // 先恢复上次草稿（输入与全部选择），再渲染首页
-restoreChatFont();    // 恢复常规页选的对话区字号（px）
+restoreChatFont();    // 恢复常规页选的阅读字号（px；对话区与计划显示区共用）
 restoreContentWidth();// 恢复上次拖定的对话区宽度
 setupWidthHandles();  // 对话区两侧拖拽把手
 updateSendKeyHint();  // 输入框占位文案跟随发送快捷键设置（设置页更改时由其回调刷新）
