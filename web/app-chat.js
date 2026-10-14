@@ -560,20 +560,32 @@ function foldLabel(cnt) {
   return parts.join(' · ');
 }
 
-function secCount(items) {
+// seen：**回合级**共享去重集（由渲染层逐段传入）。锚点（长正文/收尾答案/计划卡/
+// 通知）会把同一助手行的条目切到前后两段，各段若各建一个 Set，这一次调用就被两段
+// 各计一遍（实测：主对话 seq 273 的回合折成两段，标签「调用 AI 1 次」+「调用 AI 2
+// 次」= 3，而该回合真实只有 2 次调用——seq 277 在两段里都被数了）。所以整个回合
+// 共用一个 Set，本段只报**本段新增**的步数，各段合计仍等于真实调用次数。
+function secCount(items, seen) {
   const cnt = { steps: 0, mat: 0, note: 0, rows: items.length };
-  const steps = new Set();
-  items.forEach((it, i) => {
+  const steps = seen instanceof Set ? seen : new Set();
+  let added = 0; // 本段新计入的步数（前面各段已计过的不再计）
+  items.forEach((it) => {
     if (it.k === 'think' || it.k === 'text' || it.k === 'tool' || it.k === 'subtask' || it.k === 'plancard') {
-      steps.add(it.seq != null ? it.seq : 'i' + i); // 旧数据缺 seq 时按条目位置退化计数
+      // 旧数据缺 seq（null）时用条目对象本身当键：同一回合的条目对象在各段间是同一份
+      // 引用，跨段照样认得出「这条已经计过」，比按段内下标（跨段会撞号）更准
+      const k = it.seq != null ? 's' + it.seq : it;
+      if (steps.has(k)) return;
+      steps.add(k);
+      added++;
     } else if (it.k === 'note') cnt.note++;
     else if (isMatItem(it)) cnt.mat++;
   });
-  cnt.steps = steps.size;
+  cnt.steps = added;
   return cnt;
 }
 
 // 折叠段 = 折叠条按钮 + until-found 隐藏容器；点击只切本段显隐，不触发整列重渲（滚动位置不跳）
+// opts.seen：同一回合各段共用的步数去重集（见 secCount），由渲染层逐段透传
 function foldSection(items, key, opts = {}) {
   const sec = document.createElement('div');
   sec.className = 'tf-sec';
@@ -583,7 +595,7 @@ function foldSection(items, key, opts = {}) {
   bar.className = 'turn-fold';
   const label = document.createElement('span');
   label.className = 'tf-label';
-  const cnt = secCount(items);
+  const cnt = secCount(items, opts.seen);
   label.textContent = opts.prefix
     ? opts.prefix(cnt)
     : foldLabel(cnt);
@@ -1095,8 +1107,9 @@ function subTaskCard(tc, result) {
   return d;
 }
 
-/* ---------- 长消息折叠（只作用于数字助理主对话里的用户位气泡：
-   用户气泡，以及 AI 发出的用户消息气泡（.msg.user.ai，偏白）。
+/* ---------- 长消息折叠（作用于**所有会话、所有视图**的用户位气泡：
+   主对话、工作任务会话、右栏子对话抽屉里的用户气泡，以及 AI 发出的用户消息
+   气泡（.msg.user.ai，偏白）与系统通知气泡——同一套 6 行规则、同一套交互。
    **数字助理的正文回复（.msg.assistant 的 .md）不在折叠目标里**——那是模型给出的
    正常回复，多长都完整展开显示，不裁剪、不出「展开 / 收起」控件（见 applyFolds）。 ----------
    需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
@@ -1109,8 +1122,10 @@ function subTaskCard(tc, result) {
      - 会话渲染完、对话区尺寸变化（拖宽/缩窗口）、字号变化时都重算（ResizeObserver +
        window resize，合到一帧）；所以不会出现「该折叠的没折叠」或「明明很短却折叠了」；
      - 用户手动展开过的（data-fold-open=1）重算后保持展开，只是按钮变成「收起」。
-   作用域：只在当前会话 mode=assistant（数字助理主对话）时生效；工作任务会话、
-   子对话（右栏抽屉）与流式输出中的那半句都不折叠。 */
+   作用域（2026-10-14 放开）：主对话与右栏子对话两个视图都生效，不再看会话
+   mode——按《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」，任务会话、
+   子对话与主对话一致；仍不折叠的只有流式输出中的那半句与编辑/排队/插话占位
+   （临时形态），它们不是定稿消息。 */
 const FOLD_LINES = 6;   // 折叠阈值（行）
 const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取整误差误判
 
@@ -1118,20 +1133,24 @@ let foldScheduled = false;
 let foldTimer = 0;
 let foldRetry = 0;      // 「当时还没排好版」的重试次数（最多 5 次）
 
-// 是否需要折叠（只在数字助理主对话里做）
+// 是否需要折叠：**所有会话、所有视图一律生效**（此前只做数字助理主对话
+// mode=assistant，与《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」不符；
+// 放开后工作任务会话、右栏子对话抽屉与主对话同一套规则，保留本函数作为唯一开关）
 function foldEnabled() {
-  return !!(state.cur && state.cur.mode === 'assistant');
+  return true;
 }
 
-// 折叠目标：主对话里已定稿的用户气泡与 AI 用户气泡（kind=aiuser，
-// 同样可能是长任务描述）。**数字助理的正文（.msg.assistant > .md）
-// 刻意不在目标里**：那是模型给出的正常回复，多长都完整显示，不裁剪、不出折叠
-// 控件（用户气泡的折叠效果保持不变）。跳过流式中的那块（边流边折叠会一直遮住
-// 最新输出）与编辑态/排队态占位气泡（临时形态，带虚线边框）。
-function foldTargets() {
-  const col = mainView.col;
+// 折叠目标（按视图取：主对话列与右栏子对话列各算各的）：该视图里已定稿的
+// 用户气泡与 AI 用户气泡（kind=aiuser，同样可能是长任务描述）、系统通知气泡。
+// **数字助理的正文（.msg.assistant > .md）刻意不在目标里**：那是模型给出的
+// 正常回复，多长都完整显示，不裁剪、不出折叠控件（用户气泡的折叠效果保持不变）。
+// 跳过流式中的那块（边流边折叠会一直遮住最新输出）与编辑态/排队态占位气泡
+//（临时形态，带虚线边框）。
+function foldTargets(view) {
+  view = view || mainView;
+  const col = view.col;
   if (!col) return [];
-  const live = mainView.liveId ? document.getElementById(mainView.liveId) : null;
+  const live = view.liveId ? document.getElementById(view.liveId) : null;
   const out = [];
   col.querySelectorAll('.msg.user > .bubble, .msg.sysnote > .bubble').forEach((el) => {
     const msg = el.parentElement;
@@ -1155,16 +1174,29 @@ function foldMeasure(el) {
   return { overflow: el.scrollHeight - pad > limit + FOLD_SLACK, maxH: pad + limit };
 }
 
+// 参与气泡折叠的视图：主对话列 + 右栏子对话列（两套视图共用同一套渲染函数，
+// 折叠规则也随之统一）
+function foldViews() { return [mainView, subView]; }
+
 // 重算并应用折叠状态（幂等：判定只看内容高度，不受自己上一次的裁剪影响，
-// 所以结果稳定、不会自激）
+// 所以结果稳定、不会自激）。逐视图各算一轮；任一视图有量不准的元素就统一重试。
 function applyFolds() {
-  const col = mainView.col;
-  if (!col) return;
-  const boxes = Array.from(col.querySelectorAll('.fold-box'));
   const enabled = foldEnabled();
+  let unmeasurable = false;
+  foldViews().forEach((view) => { if (applyFoldsIn(view, enabled)) unmeasurable = true; });
+  // 有元素当时还没排好版（含右栏收起时不参与布局）：稍后再算一次（最多 5 次）
+  if (unmeasurable && foldRetry < 5) { foldRetry++; setTimeout(scheduleFolds, 200); }
+  else if (!unmeasurable) foldRetry = 0;
+}
+
+// 单个视图的一轮重算；返回「本轮有没有还没排好版、量不准的元素」
+function applyFoldsIn(view, enabled) {
+  const col = view.col;
+  if (!col) return false;
+  const boxes = Array.from(col.querySelectorAll('.fold-box'));
   const seen = new Set();
   let unmeasurable = false; // 还没完成布局（高度 0）的元素：本轮跳过，稍后重算
-  foldTargets().forEach((el) => {
+  foldTargets(view).forEach((el) => {
     seen.add(el);
     const r = el.getBoundingClientRect();
     if (r.height === 0 || r.width === 0) {
@@ -1219,9 +1251,7 @@ function applyFolds() {
     el.removeAttribute('data-fold-open');
     el.querySelectorAll(':scope > .fold-fade, :scope > .fold-btn').forEach((n) => n.remove());
   });
-  // 有元素当时还没排好版：稍后再算一次（最多 5 次，避免空转）
-  if (unmeasurable && foldRetry < 5) { foldRetry++; setTimeout(scheduleFolds, 200); }
-  else if (!unmeasurable) foldRetry = 0;
+  return unmeasurable;
 }
 
 // 展开/收起：折叠态只放开高度上限（按钮留在底部），展开态按钮落到正文下方
@@ -1230,7 +1260,13 @@ function toggleFold(el, btn) {
   el.dataset.foldOpen = folded ? '0' : '1';
   btn.textContent = folded ? '展开' : '收起';
   btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
-  if (folded) followScroll(mainView, false);
+  if (folded) followScroll(foldViewOf(el), false); // 收起到 6 行后按所在视图重新贴底
+}
+
+// 气泡属于哪个视图：右栏子对话列里的归 subView，其余归主对话列
+function foldViewOf(el) {
+  const sc = subView.col;
+  return sc && sc.contains(el) ? subView : mainView;
 }
 
 // 一帧内合并多次请求（ResizeObserver 会在同一帧连发）
@@ -1250,13 +1286,19 @@ function scheduleFolds() {
 function setupFolds() {
   if (setupFolds.done) return;
   setupFolds.done = true;
-  if (typeof ResizeObserver === 'function' && mainView.col) {
-    new ResizeObserver(() => scheduleFolds()).observe(mainView.col);
-  }
-  if (typeof MutationObserver === 'function' && mainView.col) {
-    // 只算状态是否变，不变就不写 DOM（见 applyFolds），所以不会自激空转
-    new MutationObserver(() => scheduleFolds()).observe(mainView.col, { childList: true, subtree: true });
-  }
+  // 主对话列与右栏子对话列都观察：右栏收起/切到别的视图时它不参与布局（量不准的
+  // 由 applyFolds 的重试兜底），重新展开时尺寸变化会再触发一轮重算
+  foldViews().forEach((view) => {
+    const col = view.col;
+    if (!col) return;
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => scheduleFolds()).observe(col);
+    }
+    if (typeof MutationObserver === 'function') {
+      // 只算状态是否变，不变就不写 DOM（见 applyFolds），所以不会自激空转
+      new MutationObserver(() => scheduleFolds()).observe(col, { childList: true, subtree: true });
+    }
+  });
   try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => scheduleFolds()); } catch (e) {}
   window.addEventListener('resize', () => {
     clearTimeout(foldTimer);
@@ -1885,7 +1927,7 @@ function renderMessages(msgs, view, opts) {
   }
   box.appendChild(tail);
   followScroll(view, jump);
-  if (view === mainView) scheduleFolds(); // 长消息折叠：渲染完按实际高度重算（只主对话）
+  scheduleFolds(); // 气泡折叠：渲染完按实际高度重算（主对话与右栏子对话列都算）
 }
 
 // 已完成回合：**顶层大折叠全局统一**——回合内连续的可折叠项（思考/工具/子任务卡/
@@ -1926,9 +1968,12 @@ function renderFinishedTurn(box, turn, key, isLast) {
     if (tail || (!nb(i - 1) && !nb(i + 1))) anchor.add(i);
   });
   let seg = [];
+  // 步数去重集按**回合**共享：同一助手行的条目可能被锚点切到前后两段，
+  // 各段各建一个 Set 会把一次调用数两遍（见 secCount）
+  const seenSteps = new Set();
   const flushSeg = () => {
     if (!seg.length) return;
-    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true }));
+    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true, seen: seenSteps }));
     seg = [];
   };
   items.forEach((it, i) => {
@@ -1947,9 +1992,10 @@ function renderStreamingTurn(box, turn, key) {
   const mat = items.filter(isMatItem);
   const flow = items.filter((it) => !isMatItem(it));
   const open = turnOpen[key] === true;
+  const seenSteps = new Set(); // 步数去重集：本回合各段共享（见 secCount）
   if (flow.length <= TAIL_ROWS) {
     // 回合刚开头：材料行单独折成顶部一段，过程行照常显示
-    if (mat.length) box.appendChild(foldSection(mat, key, { open: open }));
+    if (mat.length) box.appendChild(foldSection(mat, key, { open: open, seen: seenSteps }));
     flow.forEach((it) => box.appendChild(renderItem(it)));
     return;
   }
@@ -1968,6 +2014,7 @@ function renderStreamingTurn(box, turn, key) {
     if (!seg.length) return;
     box.appendChild(foldSection(seg, key, {
       open: open,
+      seen: seenSteps,
       prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.steps || c.mat || c.note) ? ' · ' + foldLabel(c) : ''),
     }));
     seg = [];
