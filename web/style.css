@@ -367,6 +367,17 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .w-handle:hover::after, .w-handle.dragging::after {
   opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
 }
+/* 窗口宽度变化提示：缩放窗口时两侧亮线像悬停一样亮起、3s 淡出（app-chat.js
+   在 resize 时挂 .flash；拖动窗口期间 resize 连发、每帧重放，表现为常亮，
+   松手后才开始淡出计时）。淡尽后 JS 摘类——forwards 末帧会一直压住 :hover */
+.w-handle.flash::after {
+  opacity: 1; background: linear-gradient(180deg, transparent, var(--accent) 18%, var(--accent) 82%, transparent);
+  animation: w-handle-flash 3s ease forwards;
+}
+@keyframes w-handle-flash { 0%, 12% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .w-handle.flash::after { animation-duration: 0s; } /* 直接跳末帧＝不闪，动画结束照常摘类 */
+}
 
 /* 用户消息（自己发的）：右侧浅蓝气泡，参照微信「自己发的」观感。
    底色由主题色 --accent 调淡得出（设置里换主题色时自动跟随，不硬编码蓝）；
@@ -1199,6 +1210,18 @@ body.rp-open .w-handle { display: none; }
 
 /* 设置页：上下文压缩 */
 .compact-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* 设置 · 对话历史与压缩：数字助理主对话的两个动作按钮（清空＝破坏性，红字提示） */
+.cs-sub { font-size: 12px; color: var(--text-2); margin: 16px 0 8px; }
+.compact-actions { display: flex; gap: 8px; flex-wrap: wrap; max-width: 420px; }
+.compact-actions .set-act {
+  flex: 1 1 180px; padding: 8px 12px; border: 1px solid var(--border-2); border-radius: 8px;
+  background: none; color: var(--text); font-size: 13px; cursor: pointer;
+  transition: color .12s, border-color .12s;
+}
+.compact-actions .set-act:hover { color: var(--accent); border-color: var(--accent); }
+.compact-actions .set-act:disabled { opacity: .55; cursor: default; }
+.compact-actions .set-act.danger { color: var(--danger); }
+.compact-actions .set-act.danger:hover { border-color: var(--danger); background: rgba(192, 57, 43, .06); }
 .compact-row label { font-size: 12px; }
 .compact-row select, .compact-row input {
   font-size: 12px; padding: 4px 8px; margin-top: 3px; width: 100%;

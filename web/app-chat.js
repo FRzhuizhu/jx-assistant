@@ -6056,7 +6056,24 @@ function setupWidthHandles() {
       document.documentElement.style.removeProperty('--content-w');
       lsSet('jx.contentWidth', null);
     });
+    h.addEventListener('animationend', (e) => {
+      // 淡尽摘类：forwards 末帧（opacity:0）会一直压住 :hover 的亮起，必须摘掉
+      if (e.animationName === 'w-handle-flash') h.classList.remove('flash');
+    });
   }
+  // 窗口宽度变化 → 两侧亮线像悬停一样亮起、3s 淡出（提示这里能拖宽）。拖动窗口
+  // 期间 resize 连发，每帧摘类→回流→挂类重放，表现为常亮；松手后才开始淡出计时。
+  // 只认宽度真变化（纯调高度不闪）。
+  let flashWinW = window.innerWidth;
+  window.addEventListener('resize', () => {
+    if (window.innerWidth === flashWinW) return;
+    flashWinW = window.innerWidth;
+    for (const h of zone.querySelectorAll('.w-handle')) {
+      h.classList.remove('flash');
+      void h.offsetWidth; // 强制回流：打断未播完的淡出、从头重放
+      h.classList.add('flash');
+    }
+  });
 }
 
 /* ---------- 回到底部按钮 + 手机端输入区滚动收起（主/子对话按 view 装配） ---------- */
