@@ -469,7 +469,8 @@ button:hover [data-da-face][data-state="done"] .da-eyes { animation: none; }
    （--chip 中性灰 + 一圈细边框——微信是灰底页配白气泡，我们页面是白底，
    倒过来就是白页配灰气泡），尾巴朝左下；内边距/字号沿用用户气泡那套。
    操作行悬停显隐（与用户气泡同一交互）、靠左：时间 + 复制，没有编辑。
-   长文折叠与用户气泡同一套（applyFolds 的 .msg.user > .bubble 天然包含它）。 */
+   长文折叠与用户气泡同一套（applyFolds 的 .msg.user > .bubble 天然包含它，
+   且不分会话/视图——主对话、工作任务会话、右栏子对话一致）。 */
 .msg.user.ai { align-items: flex-start; }
 .msg.user.ai .bubble {
   background: var(--chip);
@@ -479,7 +480,7 @@ button:hover [data-da-face][data-state="done"] .da-eyes { animation: none; }
 }
 .msg.user.ai .msg-actions { justify-content: flex-start; }
 
-/* 长消息折叠（只作用于数字助理主对话里的用户位气泡：用户气泡，
+/* 长消息折叠（作用于所有会话与视图的用户位气泡：用户气泡，
    以及 AI 发出的用户消息气泡（.msg.user.ai），见 app-chat.js 的 applyFolds；数字助理的正文
    （.md）不折叠、多长都完整显示（foldTargets 的目标选择器里没有它）。判定用
    **实际渲染高度**（行高 × 6）而不是字符数——对话区宽度、字号一变每行能放多少
