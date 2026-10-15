@@ -175,13 +175,10 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 #da-face[data-state="done"] .da-smile { animation: da-pop 6s cubic-bezier(.5, 0, .5, 1) infinite; }
 @keyframes da-squish { 0%, 7% { transform: scaleY(1); } 12% { transform: scaleY(.06); } 86% { transform: scaleY(.06); } 91%, 100% { transform: scaleY(1); } }
 @keyframes da-pop { 0%, 11.5% { opacity: 0; } 15%, 85% { opacity: 1; } 88.5%, 100% { opacity: 0; } }
-/* 悬停眼晃（原版交互保留）：只在待机时生效——干活（is-stare/is-float 借 transform
-   过渡做低头/抬头）与微笑期间若叠加 animation 会盖掉 transform、让眼睛跳回中线 */
-[data-da-face][data-state="idle"]:hover .da-eyes,
-button:hover [data-da-face][data-state="idle"] .da-eyes { animation: da-hover 1s ease-in-out infinite; }
-[data-da-face][data-state="done"]:hover .da-eyes,
-button:hover [data-da-face][data-state="done"] .da-eyes { animation: none; }
-@keyframes da-hover { 0%, 100% { transform: translateX(0); } 22% { transform: translateX(3.2px); } 45% { transform: translateX(-0.6px); } 70% { transform: translateX(-3.2px); } 90% { transform: translateX(0.6px); } }
+/* 悬停反馈不在这里单独做：三个入口按钮共用上面那套 side-btn-wig 一次性轻扭
+   （mouseover 时朝随机一侧扭一下就回正，见 app-left.js bindSideBtnWiggle）。
+   曾经给眼睛加过的 da-hover 无限左右晃（1s 循环 ±3.2px）已删——连续摇头
+   像「拒绝」，观感差；悬停要的只是「晃一下表示放上去了」，wig 已覆盖。 */
 @media (prefers-reduced-motion: reduce) {
   #da-face .bob { animation: none; }
   #da-face .head, #da-face .da-eyes, #da-face .da-paper, #da-face .da-eye { transition: none; }
