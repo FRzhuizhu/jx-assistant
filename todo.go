@@ -1139,7 +1139,7 @@ func (s *todoScheduler) handToAssistant(task *TaskItem, record *RunRecord) (stri
 	if d.Started {
 		run := d.Run
 		go func() {
-			defer s.app.finishRun(sess.ID)
+			defer s.app.finishRunOf(sess.ID, run) // 按身份收口：硬终结后开的新一轮不会被迟到收口误摘
 			// 转交即完成：任务记录不因这一轮的成败改写，失败只写日志（用户可在会话里看到原因）。
 			err := s.app.runRoundsWithQueue(sess, run, func(ev Event) {
 				ev.SessionID = sess.ID

@@ -84,6 +84,9 @@ type App struct {
 	midrunPref      string                   // 执行中发消息的偏好（queue/steer）：前端设置项 jx.midrun 随消息上报，派发注入按它处理（见 runtime.go）
 	errMu           sync.Mutex
 	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
+	stopWatchdog    time.Duration     // 停止看门狗：协作取消后等多久仍未收口就强制终结（runtime.go watchStop）
+	streamKillMu    sync.Mutex
+	streamKills     map[string]func() // 会话 → 在跑模型流的强制断开器（llm.go 注册，停止看门狗硬终结时调用）
 	osOnce          sync.Once
 	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
 	selfOnce        sync.Once
@@ -252,7 +255,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "DELETE /api/sessions/{id}", a.handleDeleteSession, apiMeta{Summary: "删除会话（历史不可恢复）", Perm: permWorkspace, Danger: "删除会话及其全部历史，不可恢复"})
 	a.apiRoute(mux, "POST /api/sessions/{id}/chat", a.handleChat, apiMeta{Summary: "向会话发一条消息（异步执行）", Params: "content=正文", Perm: permWorkspace})
 	mux.HandleFunc("GET /api/sessions/{id}/stream", a.handleSessionStream)
-	a.apiRoute(mux, "POST /api/sessions/{id}/stop", a.handleStop, apiMeta{Summary: "停止会话当前执行（协作式）", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/sessions/{id}/stop", a.handleStop, apiMeta{Summary: "停止会话当前执行（先协作取消，3 秒未收口自动强制终结）", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/sessions/{id}/retry", a.handleRetry, apiMeta{Summary: "失败后带着上下文重试一轮", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/sessions/{id}/interject", a.handleInterject, apiMeta{Summary: "执行中发消息（插话/排队）", Params: "content、mode=steer|queue", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/sessions/{id}/pending", a.handlePending, apiMeta{Summary: "排队坞操作", Params: "action=remove|steer|move|pause|resume", Perm: permWorkspace})

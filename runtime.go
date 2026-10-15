@@ -32,6 +32,7 @@ type sessionRun struct {
 	partial  string // 当前步骤已流出的正文（重连时补发，避免丢半句）
 	thinking string // 当前步骤已流出的思考原文
 	stopped  bool   // 是否由用户显式停止
+	killed   bool   // 是否已被停止看门狗强制终结（执行体迟到醒来后据此跳过终态交代）
 	cleanEnd bool   // 本轮是否正常收尾（没出错、没被停止）：收口时据此决定要不要兜底续发队列
 }
 
@@ -66,6 +67,8 @@ func (a *App) initRuntime() {
 	a.pendingQueue = map[string][]*PendingMsg{}
 	a.queuePaused = map[string]bool{}
 	a.runErrors = map[string]string{}
+	a.stopWatchdog = stopWatchdogDefault // 停止看门狗：协作取消后 3 秒仍未收口就强制终结（测试可缩短）
+	a.streamKills = map[string]func(){}  // 在跑模型流的强断句柄登记（llm.go 注册，硬终结时调用）
 	// 受保护路径：助手配置文件本身与数据目录（含 API Key 与会话记录），
 	// 任何模式禁访问。注意只保护配置文件本身，不保护其所在目录——默认
 	// 工作区就是程序目录，整目录保护会让开箱即用的会话什么都写不了。
@@ -100,7 +103,8 @@ func (a *App) beginRun(id string) (*sessionRun, bool) {
 	return r, true
 }
 
-// finishRun 注销执行、关闭订阅者并置为空闲。
+// finishRun 注销执行、关闭订阅者并置为空闲：按 id 摘注册表里**当前**那一轮。
+// 看门狗硬终结（forceStopRun）与少数无执行体引用的调用点用这个入口。
 func (a *App) finishRun(id string) {
 	a.runMu.Lock()
 	r, ok := a.runners[id]
@@ -111,6 +115,30 @@ func (a *App) finishRun(id string) {
 	if !ok {
 		return
 	}
+	a.closeRun(id, r)
+}
+
+// finishRunOf 带执行体身份的收口：只有注册表里还是这一轮（指针相同）才动手。
+// 停止看门狗硬终结之后，用户可能立刻开新一轮；卡死的旧执行体迟到醒来再按 id
+// 盲摘会把新一轮误摘掉（状态被改回空闲、执行权凭空消失）。按身份对上才收口，
+// 对不上说明这一轮已被别人收掉（正常收口 / 硬终结都算），全部动作幂等跳过。
+// 执行体自己的 defer 一律走这个入口。
+func (a *App) finishRunOf(id string, r *sessionRun) {
+	a.runMu.Lock()
+	cur, ok := a.runners[id]
+	if !ok || cur != r {
+		a.runMu.Unlock()
+		return
+	}
+	delete(a.runners, id)
+	a.runMu.Unlock()
+	a.closeRun(id, r)
+}
+
+// closeRun 是 finishRun / finishRunOf 共用的收口体（调用时已从注册表摘下这一轮）：
+// 关闭订阅者与 done、取消残余 ctx、置空闲、清归属与停止待收标志、触发交付与
+// 兜底续发。
+func (a *App) closeRun(id string, r *sessionRun) {
 	r.mu.Lock()
 	for i, ch := range r.subs {
 		close(ch)
@@ -174,7 +202,8 @@ func stopTriggerNote(actor string) string {
 }
 
 // stopRun 请求停止会话执行（人工点「停止」按钮的入口：POST /api/sessions/{id}/stop
-// → handleStop）。协作式取消：模型流、工具、等待都会收到 ctx 取消；并连带终止该
+// → handleStop）。分级停止：先协作式取消（模型流、工具、等待都会收到 ctx 取消），
+// 3 秒仍未收口由停止看门狗强制终结（见 watchStop/forceStopRun）；并连带终止该
 // 会话全部后台作业——停止要彻底：作业的 ctx 独立挂 Background()（跨轮存活是它的
 // 常态），不在这里一并取消的话，停止后会话看着空闲、作业还在后台跑（见 jobs.go
 // 的 stopSessionJobs）。
@@ -213,7 +242,101 @@ func (a *App) stopRunBy(id, actor, note string) bool {
 		log.Printf("[停止] 会话 %s 由%s请求停止（停止原因已落库，重启后仍可查）", id, stopActorLabel(actor))
 	}
 	r.cancel()
+	// 停止看门狗：协作取消只是「请求」，不保证生效——模型流/工具卡死不响应
+	// ctx 时，会话会永远停在「停止中」。首次停止请求时挂一个兜底定时器，到点
+	// 仍未见收口就强制终结，保证停止请求最终必然生效（见 watchStop）。
+	if first {
+		go a.watchStop(id, r)
+	}
 	return true
+}
+
+// stopWatchdogDefault 停止看门狗的默认等待：协作取消发出后等这么久仍未收口，
+// 就升级为强制终结。取消传播到收口正常在亚秒级（模型流读被 transport 掐断、
+// 子进程被 Kill、等待走 ctx.Done），3 秒只兜「卡死不响应取消」的极端情况。
+const stopWatchdogDefault = 3 * time.Second
+
+// watchStop 是停止的看门狗（stopRunBy 在首次停止请求时启动）：先给协作取消
+// 一个收口的窗口——执行体正常收口会关闭 done，这里就地退出、什么都不做；
+// 到点仍在注册表里（且还是同一轮）说明取消没能让执行体停下来（模型流/工具
+// 卡死不响应 ctx），升级为强制终结（forceStopRun）。分级停止保证「点停止」
+// 最终必然生效，会话不会永远停在「停止中」。
+func (a *App) watchStop(id string, r *sessionRun) {
+	delay := a.stopWatchdog
+	if delay <= 0 {
+		delay = stopWatchdogDefault
+	}
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-r.done: // 协作取消已生效、执行体自行收口
+		return
+	case <-t.C:
+	}
+	// 只处理还是同一轮的情况：等待期间若已收口又开了新一轮（指针不同），
+	// 新一轮不是这次停止请求的对象，绝不动它。
+	if a.runOf(id) != r {
+		return
+	}
+	a.forceStopRun(id, r)
+}
+
+// forceStopRun 强制终结一轮对取消无响应的执行（分级停止的第二级）：
+//  1. 再发一次取消（幂等）；
+//  2. 强制断开该会话在跑的模型流连接（不依赖 ctx 的硬断，见 killSessionStreams）；
+//  3. 终止该会话仍在跑的后台作业与子进程（协作阶段已发过取消，这里对还没
+//     死的按 PID 补刀，见 killSessionChildren）；
+//  4. 强制收口（finishRun：摘注册表、关闭订阅者、置空闲、清归属）——之后
+//     执行体再醒来，finishRunOf 认出注册表里已不是自己，收口幂等空转，
+//     不会把状态改回去；终态交代被 wasKilled 拦住，不再写库发事件。
+// 只动这一个会话：其他正在执行的会话、发布流程（隔离目录构建）一概不碰。
+func (a *App) forceStopRun(id string, r *sessionRun) {
+	if !r.markKilled() {
+		return // 已被终结过（并发触发）
+	}
+	delay := a.stopWatchdog
+	if delay <= 0 {
+		delay = stopWatchdogDefault
+	}
+	log.Printf("[停止] 会话 %s 协作取消 %v 后仍未收口，强制终结：断模型流、终止子进程与后台作业、置为停止态", id, delay)
+	r.cancel()
+	a.killSessionStreams(id)
+	a.stopSessionJobs(id)
+	killSessionChildren(id)
+	a.finishRun(id) // 此刻注册表里还是这一轮，等价于按身份收口
+	// 执行体不会再来交代终态（wasKilled 拦住），由这里代发：前端立即见到
+	// 停止完成、会话回到可交互的空闲态
+	a.broadcast(Event{Type: "stopped", SessionID: id})
+	a.broadcast(Event{Type: "session_updated", SessionID: id})
+}
+
+// registerStreamKill 登记该会话当前模型流的强制断开器（agent.go 的流回调注册，
+// llm.go streamChatOnce 在拿到响应体时建立）。同一会话同一时刻只有一条在跑的
+// 模型流（主循环串行调用），后注册的覆盖先注册的。
+func (a *App) registerStreamKill(id string, abort func()) {
+	a.streamKillMu.Lock()
+	a.streamKills[id] = abort
+	a.streamKillMu.Unlock()
+}
+
+// clearStreamKill 注销该会话的模型流断开器（流正常结束时调用）。
+func (a *App) clearStreamKill(id string) {
+	a.streamKillMu.Lock()
+	delete(a.streamKills, id)
+	a.streamKillMu.Unlock()
+}
+
+// killSessionStreams 强制断开该会话在跑的模型流连接。ctx 取消本应让 HTTP 流
+// 中断（请求挂在 run.ctx 上），这里是硬终结的第二重保险：万一某条流不响应
+// 取消，直接关闭响应体，读流立刻以错误返回。
+func (a *App) killSessionStreams(id string) {
+	a.streamKillMu.Lock()
+	abort := a.streamKills[id]
+	delete(a.streamKills, id)
+	a.streamKillMu.Unlock()
+	if abort != nil {
+		abort()
+	}
 }
 
 // stopReportHead 组织「这一轮被停掉」的派发回报首句（见 runSubAgent 的 stopped
@@ -756,7 +879,7 @@ func itoa(n int) string {
 // 异常结束一律落一条可见记录并写日志——绝不出现「模型没输出、对话就停在
 // 半路」的静默停止。
 func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
-	defer a.finishRun(m.ID)
+	defer a.finishRunOf(m.ID, run)
 	emit := func(ev Event) {
 		ev.SessionID = m.ID
 		run.observe(ev)
@@ -791,6 +914,13 @@ func (a *App) executeRun(m *SessionMeta, run *sessionRun, opening []Event) {
 	err := a.runRoundsWithQueue(m, run, emit, len(opening) > 0, len(opening) > 0)
 	if err == nil {
 		run.markCleanEnd() // 正常收尾：收口时兜底续发窗口期内新挤进队列的消息
+	}
+	// 停止看门狗已强制终结过这一轮（执行体卡死、迟到才醒）：终态交代全部跳过
+	// ——看门狗已代为收口（置空闲、广播停止事件），这里再写库/发事件只会污染
+	// 可能已经开始的新一轮。留一行日志即可。
+	if run.wasKilled() {
+		log.Printf("[对话] 会话 %s 的执行体在硬终结后才醒来，终态交代由停止看门狗代完成，跳过", m.ID)
+		return
 	}
 
 	// 终态：正常完成与用户停止都不往界面塞话（对话里只有真实对话）；
@@ -868,6 +998,22 @@ func (a *App) isStopped(run *sessionRun) bool {
 	return run.stopped
 }
 
+// markKilled 标记这一轮已被停止看门狗强制终结（幂等，返回是否首次标记）。
+func (r *sessionRun) markKilled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	first := !r.killed
+	r.killed = true
+	return first
+}
+
+// wasKilled 判断这一轮是否已被看门狗强制终结（执行体据此跳过迟到的终态交代）。
+func (r *sessionRun) wasKilled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.killed
+}
+
 // dispatchOwner 取会话的派发方（先看派发链 dispatched_by，退回父会话）：被派发
 // 会话跑完要回报给它。重启恢复（runowner.go）与收口续发（server.go 的
 // serveQueue）共用这一处口径，不各写一份。
@@ -889,7 +1035,7 @@ func (a *App) dispatchOwner(s *SessionMeta) *SessionMeta {
 // runSubAgent 是派发子任务的后台执行体：执行 → 广播进度 → 回报主对话 →
 // 主对话空闲时自动跑一轮面向用户的汇报。run 由派发方通过 beginRun 登记后传入。
 func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun) {
-	defer a.finishRun(sub.ID)
+	defer a.finishRunOf(sub.ID, run)
 	a.broadcast(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
 	emit := func(ev Event) {
 		if ev.Type == "tool_start" || ev.Type == "tool_end" {
@@ -905,6 +1051,12 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	err := a.runRoundsWithQueue(sub, run, emit, true, a.queueAutoSendOn())
 	if err == nil {
 		run.markCleanEnd() // 正常收尾：收口时兜底续发窗口期内新挤进队列的消息
+	}
+	// 硬终结后迟到醒来：不做任何交代（interrupt 报告、派发回报、sub_end 广播都
+	// 不再发——那一刻可能已有新一轮在跑），收口已由停止看门狗代完成。
+	if run.wasKilled() {
+		log.Printf("[派发] 任务会话 %s 的执行体在硬终结后才醒来，跳过回报与交代", sub.ID)
+		return
 	}
 	// 用户手动停止（POST /stop → stopRun 取消 ctx）与真实的执行失败要分开交代：
 	// 停止不是异常——别把 "context canceled" 当错误抛给用户/模型，也别让数字助理
@@ -980,7 +1132,7 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	if d.Started {
 		go func() {
 			prun := d.Run
-			defer a.finishRun(parent.ID)
+			defer a.finishRunOf(parent.ID, prun)
 			prun.publish(Event{Type: "run_start"})
 			err := a.runRoundsWithQueue(parent, prun, func(ev Event) {
 				ev.SessionID = parent.ID

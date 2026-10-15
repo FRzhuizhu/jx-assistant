@@ -1125,6 +1125,15 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			usage = nil
 			callStart := time.Now()
 			err = StreamChat(ctx, target, req, StreamCallbacks{
+				// 模型流强断登记（停止看门狗硬终结用）：流建立时注册、结束时注销——
+				// 硬停止时直接断开底层连接，不依赖 ctx 取消生效
+				OnBody: func(abort func()) {
+					if abort != nil {
+						a.registerStreamKill(sess.ID, abort)
+					} else {
+						a.clearStreamKill(sess.ID)
+					}
+				},
 				// 请求发出前捕获全量请求体，经引擎缓存（环形保留最近三轮，「导出原始数据」数据源）
 				OnRequest: func(u string, body []byte) {
 					a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)

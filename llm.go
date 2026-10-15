@@ -128,6 +128,10 @@ type StreamCallbacks struct {
 	// 完全一致的请求体字节（含 model/stream/stream_options 等最终字段）。
 	// 「导出原始数据」靠它捕获最近一次发给模型的完整内容。
 	OnRequest func(url string, body []byte)
+	// OnBody 在模型流响应体建立后回调一次（abort=强制断开器，关响应体即断流），
+	// 流结束后再回调一次（abort=nil，注销）。停止看门狗的硬终结（runtime.go
+	// forceStopRun）靠它在流不响应 ctx 取消时直接断开底层连接。
+	OnBody func(abort func())
 }
 
 // Usage 是流尾统计块（OpenAI 兼容）。缓存命中量各端点字段名不一，取用一律
@@ -301,6 +305,13 @@ func streamChatOnce(ctx context.Context, baseURL, apiKey string, body []byte, cb
 			return err // 调用方取消：原样返回，不算连接故障
 		}
 		return &connFailure{err: fmt.Errorf("无法连接模型服务：%s", connErrText(err))}
+	}
+	// 登记强制断开器（停止看门狗用）：拿到响应体后交出一个可直接关闭它的
+	// abort；流结束（正常收尾/出错/ctx 取消）时回调 OnBody(nil) 注销，登记表
+	// 不留旧句柄。断开一个已关闭的 body 是安全的幂等操作。
+	if cb.OnBody != nil {
+		cb.OnBody(func() { _ = resp.Body.Close() })
+		defer cb.OnBody(nil)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

@@ -437,3 +437,25 @@ func childExitInfo(err error, ctx context.Context) string {
 	}
 	return "exit 0"
 }
+
+// killSessionChildren 强制终止该会话登记在册、仍在运行的子进程（停止看门狗
+// 硬终结的补刀，见 runtime.go 的 forceStopRun）：正常路径这些进程挂在
+// run.ctx / 后台作业的 ctx 上，取消即死（CommandContext Kill + Job Object
+// 整树终止 + WaitDelay 收口）；这里按 PID 补刀，兜的是「ctx 已取消、进程却
+// 还活着」的极端卡死。没登记 PID 的（同步前台命令、沙箱 helper）没有补刀
+// 句柄，仍靠那三层取消机制收场。返回补刀的进程数。
+func killSessionChildren(id string) int {
+	childRegMu.Lock()
+	mine := []*childRun{}
+	for _, c := range childReg {
+		if c.SessionID == id && c.Exit() == "" && c.PID > 0 {
+			mine = append(mine, c)
+		}
+	}
+	childRegMu.Unlock()
+	for _, c := range mine {
+		killChildTree(c.PID)
+		c.setExit("被硬终结（停止兜底）")
+	}
+	return len(mine)
+}
