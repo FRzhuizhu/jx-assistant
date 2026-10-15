@@ -170,6 +170,8 @@ async function openSettings(pane) {
   $('set-askalert-text').value = aa.text || '';
   // 常规页：任务最大步数（服务端配置，改动即时保存）
   $('set-maxsteps').value = c.maxSteps || 200;
+  // 常规页：关闭窗口驻留后台（服务端配置，改动即时保存，缺省＝开；仅桌面版显示）
+  $('set-tray-on').checked = c.closeToTray !== false;
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
   $('set-lan-on').checked = c.bindHost === '0.0.0.0' || c.bindHost === '::';
   syncLanState(c);
@@ -1077,6 +1079,22 @@ $('set-maxsteps').onchange = async () => {
   }
 };
 
+/* ---------- 常规页：关闭窗口驻留后台（服务端配置，改动即时保存） ----------
+   默认开：✕ / Alt+F4 只隐藏进托盘（会话与运行中的任务继续，双击托盘图标回
+   到界面）；关掉后关闭窗口即真正退出程序。区块仅桌面版显示（网页/手机端无
+   窗口关闭语义，见 initRenderMode 里的显示联动）。 */
+
+$('set-tray-on').onchange = async () => {
+  const on = $('set-tray-on').checked;
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ closeToTray: on }) });
+    $('set-tray-on').checked = c.closeToTray !== false; // 以服务端落库值为准回显
+  } catch (e) {
+    $('set-tray-on').checked = !on;
+    alert('保存失败：' + e.message);
+  }
+};
+
 /* ---------- 常规页：局域网访问（bindHost 127.0.0.1 ⇄ 0.0.0.0，重启生效） ---------- */
 
 function syncLanState(c) {
@@ -1617,6 +1635,9 @@ document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
   try { st = await api('/api/display-mode'); } catch (e) { return; }
   if (!st || !st.desktop) return;
   sec.style.display = '';
+  // 「关闭窗口驻留后台」区块同属桌面版专属：复用同一次 display-mode 判定
+  const traySec = document.getElementById('close-to-tray-section');
+  if (traySec) traySec.style.display = '';
   const cards = document.querySelectorAll('#render-cards .theme-card');
   const stateLine = document.getElementById('render-mode-state');
   const sync = () => {

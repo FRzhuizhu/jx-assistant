@@ -5,6 +5,8 @@ package main
 // 系统托盘（Windows）：桌面形态的常驻入口。用户关闭主窗口（✕ / Alt+F4 /
 // 任务栏右键关闭）不再退出进程——后端（HTTP 服务、会话、运行中任务）随托盘
 // 驻留；单击/双击图标恢复主窗口，右键菜单提供「打开主界面 / 刷新界面 / 退出」。
+// 「关闭窗口驻留后台」受配置 closeToTray 控制（设置·常规最底下，默认开；
+// 设置页可关）：关掉（或图标挂载失败）时关窗即真正退出，见 trayResidencyOn。
 //
 // 实现要点：
 // - 托盘回调窗口是隐藏的普通顶级窗口（不能是 message-only：TaskbarCreated
@@ -115,6 +117,7 @@ var (
 	trayApp            *App
 	trayHwnd           uintptr
 	trayIcon           uintptr
+	trayIconMounted    bool   // 图标是否挂载成功（仅 UI 线程读写：setup/重挂/teardown 与关窗分支同线程）
 	trayTaskbarCreated uint32 // RegisterWindowMessage("TaskbarCreated")
 	trayHiddenOnce     int32  // 首次进托盘的气泡只发一次
 	// frontendQuitReq 1 = 请求整体退出。托盘「退出」菜单与自动化冒烟
@@ -159,11 +162,13 @@ func traySetup(app *App) {
 		log.Printf("托盘图标挂载失败（窗口关闭将退化为直接退出）")
 		return
 	}
+	trayIconMounted = true
 	log.Printf("托盘图标已挂载：关闭主窗口将驻留后台，双击图标恢复界面")
 }
 
 // trayTeardown 摘托盘图标并拆回调窗口（进程整体退出前调用；幂等）。
 func trayTeardown() {
+	trayIconMounted = false
 	if trayHwnd == 0 {
 		return
 	}
@@ -214,8 +219,17 @@ func trayBalloon(title, text string) {
 	procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
 }
 
+// trayResidencyOn 关窗驻留是否生效：设置项 closeToTray（默认开，设置·常规
+// 「关闭窗口驻留后台」）与托盘图标实际挂载成功，两者都要满足——图标没挂上
+// 却隐藏窗口的话进程将没有任何入口（死驻留），此时退化为关窗直接退出。
+// 仅 UI 线程调用（关窗分支与挂载标志同线程）。
+func trayResidencyOn() bool {
+	return trayIconMounted && trayApp != nil && trayApp.Cfg.closeToTrayOn()
+}
+
 // hideMainWindowToTray 用户关闭主窗口（✕ / Alt+F4）：隐藏进托盘而非退出进程。
 // 首次给一次气泡引导（之后安静隐藏，不打扰）。
+// 是否走这里由 trayResidencyOn 决定（mainWndSubclassProc 的关窗分支）。
 func hideMainWindowToTray(hwnd uintptr) {
 	log.Printf("主窗口关闭 → 隐藏进托盘（后端与会话/任务继续；双击托盘图标恢复界面）")
 	procDesktopShowWindow.Call(hwnd, 0) // SW_HIDE
@@ -278,7 +292,7 @@ func trayWndProcEntry(hwnd, msg, wp, lp uintptr) uintptr {
 	}()
 	if trayTaskbarCreated != 0 && msg == uintptr(trayTaskbarCreated) {
 		// explorer 重启：图标随旧任务栏消失，重新挂上
-		trayNotify(nimAdd)
+		trayIconMounted = trayNotify(nimAdd)
 		return 0
 	}
 	if msg == trayCallbackMsg {

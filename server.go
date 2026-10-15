@@ -30,18 +30,18 @@ var appVersion = "20261013-1" // 版本号体系：日期-序号（同日发多�
 
 // App 持有配置与会话存储，是所有 HTTP 处理器的宿主。
 type App struct {
-	Cfg        *Config
-	CfgPath    string
-	Store      *Store
-	Ctx        *ContextEngine       // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
-	Plugins    *PluginRegistry      // DSH 插件兼容层实现（adapters.go：插件兼容层/ + adapter_*.go）
-	Layers     *PluginLayerRegistry // 插件兼容层注册表：主体发现的全部插件体系（pluginlayers.go）
-	Components *ComponentRegistry
-	CCPlugins  *CCPluginRegistry   // Claude Code 插件兼容层实现（ccplugin*.go）
-	MCPServers *MCPServersRegistry // 独立 MCP 服务器注册表（mcpservers*.go）：用户直连 MCP 服务
-	Todos      *todoScheduler      // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
-	Bridge     *bridgeManager      // 声明式组件桥（componentbridge.go）：manifest workers 的通用宿主
-	static     fs.FS                // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
+	Cfg              *Config
+	CfgPath          string
+	Store            *Store
+	Ctx              *ContextEngine       // 上下文引擎：组装请求材料 + 上下文事件总线（contextengine.go）
+	Plugins          *PluginRegistry      // DSH 插件兼容层实现（adapters.go：插件兼容层/ + adapter_*.go）
+	Layers           *PluginLayerRegistry // 插件兼容层注册表：主体发现的全部插件体系（pluginlayers.go）
+	Components       *ComponentRegistry
+	CCPlugins        *CCPluginRegistry   // Claude Code 插件兼容层实现（ccplugin*.go）
+	MCPServers       *MCPServersRegistry // 独立 MCP 服务器注册表（mcpservers*.go）：用户直连 MCP 服务
+	Todos            *todoScheduler      // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
+	Bridge           *bridgeManager      // 声明式组件桥（componentbridge.go）：manifest workers 的通用宿主
+	static           fs.FS               // 前端静态资源：发布用内嵌副本，开发（-webdir）指向磁盘目录
 	apiMux           *http.ServeMux      // call_api 进程内直调用的完整路由缓存（callapi.go，懒建）
 	apiMetas         []apiMeta           // 对 AI 开放的接口目录（注册顺序，callapi.go）
 	apiMetaByPattern map[string]apiMeta  // pattern→ 元数据（callapi.go，与 apiMetas 同源）
@@ -1143,7 +1143,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"snapshotEnabled":  a.snapshotsEnabled(),
 		"snapshotDays":     a.Cfg.SnapshotDays,
 		"compactThreshold": a.Cfg.CompactThreshold,
-		"accentColor": a.Cfg.AccentColor,
+		"accentColor":      a.Cfg.AccentColor,
 		// 询问提醒（设置·常规）：下发解析后的生效值（enabled 已按 nil=开解析）
 		"askAlert": map[string]any{
 			"enabled":  a.Cfg.askAlertOn(),
@@ -1152,6 +1152,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		// 排队消息自动续发（设置·常规）：下发解析后的生效值（nil=开）
 		"queueAutoSend": a.Cfg.queueAutoSendOn(),
+		// 关闭窗口驻留托盘（设置·常规，仅桌面版消费）：下发解析后的生效值（nil=开）
+		"closeToTray": a.Cfg.closeToTrayOn(),
 	})
 }
 
@@ -1190,7 +1192,8 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			Text     *string `json:"text"`     // 朗读文案（空串=恢复默认）
 		} `json:"askAlert"` // 询问提醒三键，嵌套部分合并：只传变的键
 		QueueAutoSend *bool `json:"queueAutoSend"` // 排队消息自动续发（nil=不改；false=本轮结束后不自动发队列，排队坞给「继续发送」）
-		Providers *[]struct {
+		CloseToTray   *bool `json:"closeToTray"`   // 关闭窗口驻留托盘（nil=不改；false=关窗即退出。仅桌面版消费，见 desktop_windows.go 关窗分支）
+		Providers     *[]struct {
 			ID      string     `json:"id"`
 			Name    string     `json:"name"`
 			BaseURL string     `json:"baseURL"`
@@ -1389,6 +1392,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if body.QueueAutoSend != nil {
 		v := *body.QueueAutoSend
 		a.Cfg.QueueAutoSend = &v
+	}
+	// 关闭窗口驻留托盘开关：原样存（读侧按「nil=默认开」解析，见 closeToTrayOn）。
+	// 关掉后桌面版关窗即真正退出；改动即时生效，无需重启。
+	if body.CloseToTray != nil {
+		v := *body.CloseToTray
+		a.Cfg.CloseToTray = &v
 	}
 	a.Cfg.syncLegacyFields()
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
@@ -2282,8 +2291,8 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content   string `json:"content"`
 		Mode      string `json:"mode"`
-		Midrun    string `json:"midrun"`     // 前端设置项 jx.midrun（queue/interject）的原值，记下来供派发注入按同一偏好处理
-		VoiceUsed bool   `json:"voiceUsed"`  // 本条消息含语音听写转写文字：置位会话粘性标记
+		Midrun    string `json:"midrun"`    // 前端设置项 jx.midrun（queue/interject）的原值，记下来供派发注入按同一偏好处理
+		VoiceUsed bool   `json:"voiceUsed"` // 本条消息含语音听写转写文字：置位会话粘性标记
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")

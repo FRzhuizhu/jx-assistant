@@ -304,8 +304,9 @@ func runDesktop(app *App, url string) error {
 		log.Printf("兼容显示模式已启用（软件合成，标记文件 %s 存在）", softwareCompatPath)
 	}
 	// 前端窗口循环：窗口的生死与进程的生死解耦——用户关窗（✕/Alt+F4）在
-	// subclass 里被拦截进托盘（hideMainWindowToTray），Run 不返回；只有退出
-	// 请求（托盘菜单「退出」/ autoclose 的 frontendQuitReq）才真正收尾退出。
+	// subclass 里按设置分流：closeToTray 开（默认）拦截进托盘
+	// （hideMainWindowToTray），Run 不返回；关则置 frontendQuitReq 放行销毁
+	// ＝真正退出。热重启/托盘退出/autoclose 的 frontendQuitReq 也走同一收尾。
 	// 设置页渲染切换与 WebView2 崩溃自愈（ProcessFailed）置 frontendRestartReq
 	// 关窗重建，窗口意外死亡也自动重建——
 	// 后端（HTTP 服务、会话、运行中任务）全在 Go 进程里，一个字节都不动。
@@ -365,7 +366,7 @@ func runDesktop(app *App, url string) error {
 			}()
 		}
 		w.Run()
-		recorderShutdown()    // 还在录演示就停录收尾（保 audio.wav、生成 INDEX.md）
+		recorderShutdown() // 还在录演示就停录收尾（保 audio.wav、生成 INDEX.md）
 		// 收尾在 UI 线程（Run 返回处即主线程）：关面板与主控的 COM Close，
 		// 让两棵浏览器进程树真正退场（GPU/句柄全释放），再拆窗口句柄。
 		// 收尾前反注册崩溃事件（每轮前端换新控件，旧 handler 不能留给已销毁的环境）
@@ -549,7 +550,7 @@ var (
 	// panelDragHoldHook 用户拖动/缩放主窗口时通知面板层让路（runDesktop 注入，
 	// 见 browserPanel.holdForWindowDrag）。存 func(bool)：true=进入拖动，
 	// false=拖动结束。与 panelReassertHook 同样的原子指针护栏。
-	panelDragHoldHook    atomic.Value
+	panelDragHoldHook     atomic.Value
 	procSetWindowLongPtrW = desktopUser32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW   = desktopUser32.NewProc("CallWindowProcW")
 	procDefWindowProcW    = desktopUser32.NewProc("DefWindowProcW")
@@ -591,14 +592,20 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 	}()
 	switch msg {
 	case wmSysCommand:
-		// 用户关闭窗口（✕ / Alt+F4 / 任务栏右键「关闭窗口」）：隐藏进托盘，
-		// 进程与后端（服务/会话/任务）驻留。SC_CLOSE 比较前先掩掉 wParam 低
-		// 4 位的系统内部标志；不传原 proc 就不会走到 WM_CLOSE 的销毁路径，
-		// 消息循环继续跑。程序化投递的 WM_CLOSE（热重启 / 托盘退出 / 冒烟
-		// autoclose）不经本分支，销毁语义不变。
+		// 用户关闭窗口（✕ / Alt+F4 / 任务栏右键「关闭窗口」）：设置「关闭窗口
+		// 驻留后台」（closeToTray，默认开）开着且托盘图标在位时隐藏进托盘，进程
+		// 与后端（服务/会话/任务）驻留；设置关掉（或图标挂载失败）则「关窗=退出」
+		// ——放行销毁前先置退出请求，否则窗口循环会把 Run 返回当成意外死亡自动
+		// 重建窗口，程序永远退不出去。SC_CLOSE 比较前先掩掉 wParam 低 4 位的
+		// 系统内部标志；拦截时不传原 proc 就不会走到 WM_CLOSE 的销毁路径，消息
+		// 循环继续跑。程序化投递的 WM_CLOSE（热重启 / 托盘退出 / 冒烟 autoclose）
+		// 不经本分支，销毁语义不变。
 		if wp&0xfff0 == scClose {
-			hideMainWindowToTray(hwnd)
-			return 0
+			if trayResidencyOn() {
+				hideMainWindowToTray(hwnd)
+				return 0
+			}
+			atomic.StoreInt32(&frontendQuitReq, 1)
 		}
 	case wmSize:
 		if wp == sizeMinimized {
@@ -657,7 +664,7 @@ var (
 	// webviewSoftwareRender 本次启动（或上次热重启后）前端是否软件合成。
 	// 设置页切换的 HTTP goroutine 写、UI 线程窗口循环读，一律走原子访问。
 	webviewSoftwareRender atomic.Bool
-	mainWndHwnd           atomic.Uintptr // 当前主窗口句柄（窗口循环每轮登记）
+	mainWndHwnd           atomic.Uintptr            // 当前主窗口句柄（窗口循环每轮登记）
 	frontendRestartReq    int32                     // 热重启请求（设置页渲染切换 / ProcessFailed 自愈）：窗口循环见位即按当前模式重建前端
 	restartWndRect        atomic.Pointer[panelRect] // 热重启时沿用旧窗口位置尺寸
 	procPostMessageW      = desktopUser32.NewProc("PostMessageW")

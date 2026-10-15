@@ -101,13 +101,13 @@ type Config struct {
 	// companyLinkOff=公司接入整体停用（设置·网络访问的开关）：永不在公司使用的
 	// 机器关掉后不再连服务端，首启向导也不弹；开启的一切（含已配好的内部模型
 	// 通道）原样保留，重新打开即恢复同步与向导。
-	WizardDone     bool   `json:"wizardDone"`
-	RegistryURL    string `json:"registryURL"`
-	WizardCompany  string `json:"wizardCompany,omitempty"`
-	WizardServer   string `json:"wizardServer,omitempty"`
+	WizardDone         bool   `json:"wizardDone"`
+	RegistryURL        string `json:"registryURL"`
+	WizardCompany      string `json:"wizardCompany,omitempty"`
+	WizardServer       string `json:"wizardServer,omitempty"`
 	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用
-	WizardRev      string `json:"wizardRev,omitempty"`      // 最近应用的服务端公告哈希（仅记录）
-	CompanyLinkOff bool   `json:"companyLinkOff,omitempty"` // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
+	WizardRev          string `json:"wizardRev,omitempty"`          // 最近应用的服务端公告哈希（仅记录）
+	CompanyLinkOff     bool   `json:"companyLinkOff,omitempty"`     // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`
@@ -132,6 +132,10 @@ type Config struct {
 	// 自动逐条作为独立一轮发出。nil 表示未写过该键＝默认开启；显式 false 才关闭：
 	// 关掉后本轮结束队列保留，排队坞给「继续发送」入口（点它照发）。
 	QueueAutoSend *bool `json:"queueAutoSend,omitempty"`
+	// 「关闭窗口驻留托盘」（设置·常规，仅桌面版）：✕ / Alt+F4 关窗时只隐藏窗口、
+	// 进程与后端（会话/任务）驻留，双击托盘图标回到界面。nil 表示未写过该键＝
+	// 默认开启；显式 false 才关闭：关窗即真正退出程序。网页/手机形态无此语义。
+	CloseToTray *bool `json:"closeToTray,omitempty"`
 }
 
 // AskAlertCfg 询问提醒配置段：Enabled=nil＝默认开启；AfterSec 触发秒数
@@ -191,6 +195,15 @@ func (c *Config) queueAutoSendOn() bool {
 		return true
 	}
 	return c.QueueAutoSend == nil || *c.QueueAutoSend
+}
+
+// closeToTrayOn 关闭窗口时是否驻留托盘（nil 键＝默认开；nil 接收器＝开：
+// 测试里的裸 App 没有 Cfg）。仅桌面形态消费；见 desktop_windows.go 关窗分支。
+func (c *Config) closeToTrayOn() bool {
+	if c == nil {
+		return true
+	}
+	return c.CloseToTray == nil || *c.CloseToTray
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的

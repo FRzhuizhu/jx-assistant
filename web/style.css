@@ -1435,8 +1435,13 @@ body.rp-open .w-handle { display: none; }
   font-size: 12px; padding: 4px 8px; margin-top: 3px; width: 100%;
   border: 1px solid var(--border-2); border-radius: 6px; background: var(--bg); color: var(--text);
 }
-/* 自动清理天数：与压缩行的输入同款外观（原为裸 number 输入 + 内联宽度） */
-#set-snapshot-days {
+/* 设置页数字小框统一外观（对话历史「自动清理（天）」/常规「最大步数」「触发
+   时长（秒）」）：紧凑圆角框，与语音设置里听写时长等数字框同款。原先各项是
+   裸 number 输入 + 各自内联宽度，宽窄不一、与页面控件不搭。flex-shrink:0
+   是统一宽度的关键——sf-inline 是 flex 行，旁边的长说明文字会把可收缩的
+   输入框挤窄（曾出现 77/83/96 三种宽度并存的「不一致」）。 */
+#set-snapshot-days, #set-maxsteps, #set-askalert-sec {
+  flex-shrink: 0;
   font-size: 12px; padding: 4px 8px; width: 96px;
   border: 1px solid var(--border-2); border-radius: 6px; background: var(--bg); color: var(--text);
 }
