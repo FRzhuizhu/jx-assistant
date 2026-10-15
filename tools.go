@@ -104,8 +104,9 @@ func (t *toolContext) resolve(p string) (string, error) {
 }
 
 // toolsFor 按会话模式返回可用工具。数字助理总控拥有编排类工具（不亲自读写
-// 文件、不执行命令）；任务会话拥有全部实操工具 + 子对话派发；辅助对话只有
-// 只读工具（定位是答疑，不修改任何东西）。
+// 文件、不执行命令；deliver_result 是唯一例外——只读核对路径并登记展示，
+// 让派发产出的成果文件能以交付卡片出现在总控对话里）；任务会话拥有全部
+// 实操工具 + 子对话派发；辅助对话只有只读工具（定位是答疑，不修改任何东西）。
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
 // （见 agent.go 的 suspendedInPlan）；enter/exit_plan_mode / update_goal 因此常驻。
@@ -124,7 +125,12 @@ func (a *App) toolsFor(mode string) []Tool {
 	gits := a.gitTools()
 	var tools []Tool
 	if mode == "assistant" {
-		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), a.dispatchSubTool(), a.listExpertsTool(), sendToSessionTool(),
+		// 数字助理总控只有「派发工作任务」这一条派发路径：dispatch_sub（派子对话）
+		// 与 list_experts（子对话专家名单）不在这里——子对话归任务会话（见 toolsFor
+		// 的另一个分支），总控的编排手段是 dispatch_task / send_to_session。
+		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool(),
+			stopSessionTool(), callAPITool(),
+			deliverResultTool(),
 			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	} else if mode == "aux" {
 		// enter_plan_mode 不配：aux 只读答疑，没有可暂停的执行动作，计划无意义
@@ -132,18 +138,21 @@ func (a *App) toolsFor(mode string) []Tool {
 		tools = append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
 			exitPlanModeTool(), updateGoalTool()}, history...)
 	} else {
-		// 创建技能模式专属工具（demo_record_* 演示记录器 + register_skill 注册闭环）
-		// 只挂在该模式——其他模式的工具目录保持原形状（缓存与提示词都不受影响）。
+		// 创建技能模式专属工具：register_skill 注册闭环只挂在该模式——其他模式的
+		// 工具目录保持原形状（缓存与提示词都不受影响）。演示记录器 demo_record_*
+		// 已从模型工具集摘除：录制归用户直控（界面按钮经 /api/demo-record/* 端点，
+		// 见 recorder.go / server.go），材料以【演示记录】系统通知进对话。
 		skillCreate := []Tool{}
 		if mode == "skill-create" {
-			skillCreate = append(demoRecordTools(), registerSkillTool())
+			skillCreate = append(skillCreate, registerSkillTool())
 		}
 		tools = append(append([]Tool{
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 			globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
-			askUserQuestionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
+			callAPITool(),
+			askUserQuestionTool(), requestPermissionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
 		}, skillCreate...), append(append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
 	}
@@ -456,7 +465,7 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 文本）。既有文件本会话 read 过才能覆盖（观察策略）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：工作区内读写档只允许写工作区与系统临时目录内，被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
+		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 无 BOM 文本）。既有文件本会话 read 过才能覆盖（观察策略；.jxai/tmp 下跨会话残留的旧文件除外）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：工作区内读写档只允许写工作区与系统临时目录内；只读档写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("目标文件路径（相对或绝对）"),
 				"content":             strProp("要写入的完整内容"),
@@ -483,8 +492,10 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	// 观察策略（对齐 DSH fs-observation-policy 的写意图）：既有文件本会话
 	// read 过才能整体覆盖——防基于臆测/过期记忆的盲覆盖；本会话刚创建或
-	// 刚 write/edit 过的文件视为已观察。新建文件不受限。
-	if _, _, serr := t.envStat(path); serr == nil && !t.isObserved(path) {
+	// 刚 write/edit 过的文件视为已观察。新建文件不受限。.jxai/tmp/ 下的
+	// 跨会话残留文件豁免（模型专属暂存区，模型无从得知它们存在，见
+	// inJxAITmp）。
+	if _, _, serr := t.envStat(path); serr == nil && !t.isObserved(path) && !t.inJxAITmp(path) {
 		return "", fmt.Errorf("%s 已存在但本会话尚未读取过（观察策略）：先用 read 读取该文件再重试覆盖，或改用 edit 做局部修改", filepath.ToSlash(path))
 	}
 	grant, err := t.authorize(permAction{Op: "write", Tool: "write", Path: path,
@@ -502,7 +513,7 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func editFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。被拒绝时可带 sandbox_permissions=full 与 justification 申请把会话提升为完全访问（弹审批）。",
+		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。只读档被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("文件路径"),
 				"old_string":          strProp("要被替换的原文（需保证唯一）"),
@@ -1292,31 +1303,56 @@ func progressWriteTool() Tool {
 	return Tool{
 		Spec: toolSpec("progress_write", "维护当前任务的会话进度清单（整体替换：每次提交完整列表）。用于多步骤任务：开始前把工作拆成进度项；开工一项置 in_progress（同时只能有一项）；做完置 completed 再开下一项。简单到一两步的事不必用。",
 			objSchema(map[string]any{
-				"progress": objSchema(map[string]any{
-					"content": strProp("进度项内容，一句话"),
-					"status":  strProp("pending | in_progress | completed"),
+				"progress": arrayProp("进度项数组（全量清单，整体替换提交）", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"content": strProp("进度项内容，一句话"),
+						"status":  strProp("pending | in_progress | completed"),
+					},
 				}),
 			}, "progress")),
 		Run: runProgressWrite,
 	}
 }
 
-func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
+// progressItemsFromArgs 解析 progress_write 的参数。progress 在 schema 里声明为
+// 数组，但单对象仍兼容：旧 schema 曾把它写成单个 {content,status} 对象，照旧
+// 说明书的形态发来的单进度项包成单项列表即可，不必让模型重来一轮。
+func progressItemsFromArgs(args json.RawMessage) ([]ProgressItem, error) {
 	var p struct {
-		Progress []ProgressItem `json:"progress"`
+		Progress json.RawMessage `json:"progress"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	raw := strings.TrimSpace(string(p.Progress))
+	if raw == "" {
+		return nil, nil
+	}
+	if raw[0] == '{' {
+		raw = "[" + raw + "]"
+	}
+	var items []ProgressItem
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, fmt.Errorf("progress 需为进度项数组 [{\"content\":\"…\",\"status\":\"…\"},…]：%v", err)
+	}
+	return items, nil
+}
+
+func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
+	items, err := progressItemsFromArgs(args)
+	if err != nil {
 		return "", err
 	}
-	if len(p.Progress) == 0 {
+	if len(items) == 0 {
 		// 空清单 = 清空（任务取消/不再需要时可用）
 		_ = t.app.Store.SetSessionData(t.sess.ID, "progress", "")
 		t.app.broadcast(Event{Type: "progress", SessionID: t.sess.ID})
 		return "进度清单已清空。", nil
 	}
 	inProgress := 0
-	for i := range p.Progress {
-		td := &p.Progress[i]
+	for i := range items {
+		td := &items[i]
 		td.Content = strings.TrimSpace(td.Content)
 		if td.Content == "" {
 			return "", fmt.Errorf("第 %d 项 content 为空", i+1)
@@ -1337,7 +1373,7 @@ func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
 	if inProgress > 1 {
 		return "", fmt.Errorf("同时只能有一项 in_progress（当前 %d 项），请把其余改为 pending", inProgress)
 	}
-	data, err := json.Marshal(p.Progress)
+	data, err := json.Marshal(items)
 	if err != nil {
 		return "", err
 	}
@@ -1346,12 +1382,12 @@ func runProgressWrite(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	t.app.broadcast(Event{Type: "progress", SessionID: t.sess.ID})
 	done := 0
-	for _, td := range p.Progress {
+	for _, td := range items {
 		if td.Status == "completed" {
 			done++
 		}
 	}
-	return fmt.Sprintf("进度清单已更新（%d 项，完成 %d）。", len(p.Progress), done), nil
+	return fmt.Sprintf("进度清单已更新（%d 项，完成 %d）。", len(items), done), nil
 }
 
 // progressListOf 读取会话的进度清单（前端 API 用）；空返回 nil。

@@ -1,5 +1,5 @@
 /* app-settings.js —— 设置弹窗：常规页/模型页/上下文页/组件/插件/技能、
-   主题色与自定义下拉。第五个加载。 */
+   背景色与自定义下拉。第五个加载。 */
 
 let provDraft = [];      // 模型页编辑中的提供方列表（不直接改全局配置）
 let presetsCache = [];   // 后端预置提供方模板 [{id,name,baseURL}]
@@ -117,6 +117,9 @@ function loadProvDraft(c) {
     name: p.name || '',
     baseURL: p.baseURL || '',
     key: '', keyMasked: p.apiKeyMasked || '',
+    enabled: p.enabled !== false,   // 手动启停开关（服务商卡片头）
+    autoDisabled: !!p.autoDisabled, // 公司通道自动停用（连不上服务端）
+    company: !!p.company,           // 公司内部通道（删除提示/状态文案用）
     models: (p.models || []).map((m) => ({
       id: m.id || '', name: m.name || '',
       contextWindow: m.contextWindow || 0, maxOutput: m.maxOutput || 0,
@@ -152,32 +155,39 @@ async function openSettings(pane) {
   resetProvDraft(c);
   renderProvCards();
   selRefs.compactMode.set(c.compactMode || 'rule');
-  $('set-keeprounds').value = c.keepRounds || 5;
-  $('set-ruleinterval').value = c.ruleInterval || 5;
+  $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
   selRefs.compactThreshold.set(String(c.compactThreshold || 0.8));
   // 常规页：文件备份（服务端配置，改动即时保存）
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
   $('set-snapshot-days').value = c.snapshotDays != null ? c.snapshotDays : 7;
+  // 常规页：询问提醒（服务端配置，改动即时保存；三键嵌套部分提交）
+  const aa = c.askAlert || {};
+  $('set-askalert-on').checked = aa.enabled !== false;
+  $('set-askalert-sec').value = aa.afterSec || 240;
+  // 发送页：排队消息自动续发（服务端配置，改动即时保存；缺省＝开）
+  $('set-queueauto-on').checked = c.queueAutoSend !== false;
+  $('set-askalert-text').value = aa.text || '';
   // 常规页：任务最大步数（服务端配置，改动即时保存）
-  $('set-maxsteps').value = c.maxSteps || 100;
+  $('set-maxsteps').value = c.maxSteps || 200;
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
   $('set-lan-on').checked = c.bindHost === '0.0.0.0' || c.bindHost === '::';
   syncLanState(c);
   // 常规页：远程接入（服务端配置，写 remoteAccess.enabled，即时生效）
   $('set-remote-on').checked = !!(c.remoteAccess && c.remoteAccess.enabled);
   syncRemoteState(c);
-  // 网络访问页：软件更新分区（版本/最近检查/就绪状态）
+  // 网络访问页：公司接入开关（服务端配置 companyLinkOff：关＝不弹向导、不连公司服务端）
+  $('set-company-on').checked = !c.companyLinkOff;
+  syncCompanyState(c);
+  // 关于页：软件更新分区（版本/最近检查/就绪状态；更新检查源仍在网络访问页）
   refreshUpdateBox();
   // 常规页：本机浏览器偏好（即时生效，打开时回显当前值）
   selRefs.lang.set(lsGet('jx.lang', 'zh'));
-  selRefs.fontsize.set(lsGet('jx.fontpx', '14'));
+  selRefs.fontsize.set(lsGet('jx.fontpx', String(FONT_PX_DEFAULT)));
   syncThemeCards();
   selRefs.sendkey.set(lsGet('jx.sendkey', 'enter'));
   // 默认「等待排队」：未设置过（新装）时下拉选框显示等待，用户选过就按用户存的显示
   selRefs.midrun.set(lsGet('jx.midrun', 'queue'));
-  // 交付文件打开方式（本机偏好，即时生效）
-  selRefs.fileopen.set(lsGet('jx.fileopen', 'panel'));
   renderPluginList();
   mountPluginSections();
   renderComponentList();
@@ -202,12 +212,11 @@ async function openSettings(pane) {
     renderNav();
   }
   bindFeedbackForm();
-  // 关于页信息
+  // 关于页信息：只显示版本号（模型名/连接状态等展示已按需求移除）
   try {
     const st = await api('/api/status');
-    $('about-version').textContent = '版本 ' + (st.version || '-') + ' · ' + (st.model || '');
-    $('about-status').textContent = st.hasKey ? '当前：已连接模型服务' : '当前：未配置 Key';
-  } catch (e) { $('about-status').textContent = '服务状态未知'; }
+    $('about-version').textContent = '版本 ' + (st.version || '-');
+    } catch (e) { /* 状态取不到时保留页面默认版本文本 */ }
   loadAboutShell();
 }
 
@@ -537,19 +546,49 @@ function buildProvCard(p, key) {
   const card = document.createElement('div');
   card.className = 'prov-card' + (open ? ' open' : '');
 
-  // 折叠头：状态点 + 名称 + 模型数 + 编辑/收起
+  // 折叠头：状态点 + 名称 + 模型数 + 启停开关 + 编辑/收起
   // 预置提供方的名称实时取预置模板（模板改名后已保存的卡片跟着更新，
   // 不用存量用户重存一遍）
   const tp = p.presetId ? presetOf(p.presetId) : null;
   const configured = !!(p.key || p.keyMasked);
+  const offTag = p.autoDisabled
+    ? '<span class="pv-off-tag" title="连不上公司服务端时自动停用，恢复可达自动启用">已自动停用 · 服务端不可达</span>'
+    : (p.enabled === false ? '<span class="pv-off-tag">已停用</span>' : '');
   const head = document.createElement('div');
-  head.className = 'pv-head';
+  head.className = 'pv-head' + (p.enabled === false || p.autoDisabled ? ' off' : '');
   head.innerHTML =
     `<span class="pv-dot ${configured ? 'ok' : 'no'}" title="${configured ? '密钥已配置' : '未配置密钥'}"></span>` +
     `<b class="pv-name">${esc((tp && tp.name) || p.name || '未命名提供方')}</b>` +
+    offTag +
     `<span class="pv-meta">${p.models.length} 个模型</span>` +
-    (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '') +
-    `<span class="pv-edit">${open ? '收起' : '编辑'}</span>`;
+    (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '');
+  // 启停开关：停用的提供方不参与默认选择与会话解析（出了公司自动切到可用服务商
+  // 就靠它）；公司通道另有「自动停用」，手动开启会一并清掉
+  if (key !== 'new') {
+    const tg = document.createElement('label');
+    tg.className = 'pr-toggle pv-toggle';
+    tg.title = p.autoDisabled ? '已因连不上公司服务端自动停用；手动开启立即生效（恢复可达也会自动启用）'
+      : (p.enabled === false ? '已手动停用：不参与模型选择' : '停用后该服务商不参与模型选择');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = p.enabled !== false && !p.autoDisabled;
+    cb.onclick = (e) => e.stopPropagation();
+    cb.onchange = async () => {
+      const on = cb.checked;
+      try {
+        await api('/api/providers/toggle', { method: 'POST', body: JSON.stringify({ id: p.id, enabled: on }) });
+        await reloadProviders();
+      } catch (e) { alert((on ? '启用' : '停用') + '失败：' + e.message); reloadProviders(); }
+    };
+    tg.appendChild(cb);
+    tg.appendChild(document.createElement('span'));
+    tg.onclick = (e) => e.stopPropagation();
+    head.appendChild(tg);
+  }
+  const edit = document.createElement('span');
+  edit.className = 'pv-edit';
+  edit.textContent = open ? '收起' : '编辑';
+  head.appendChild(edit);
   head.onclick = () => {
     // 收起/展开只切换视图，不重载服务器数据：已输入的密钥、模型修改都留在草稿里，
     // 只有「取消」「保存」才丢弃或提交（修复：随便点哪，输入的内容就消失）
@@ -834,7 +873,10 @@ function buildProvCard(p, key) {
     delBtn.className = 'pf-del';
     delBtn.textContent = '删除提供方';
     delBtn.onclick = async () => {
-      if (!confirm('删除提供方「' + (p.name || p.id) + '」？以后可重新添加。')) return;
+      const msg = p.company
+        ? '删除公司通道「' + (p.name || p.id) + '」？\n重新连上公司服务端后会按你的姓名自动重建（含密钥）；长期不用请改用卡片上的停用开关。'
+        : '删除提供方「' + (p.name || p.id) + '」？以后可重新添加。';
+      if (!confirm(msg)) return;
       try {
         await api('/api/providers/delete', { method: 'POST', body: JSON.stringify({ id: p.id }) });
         reloadProviders();
@@ -932,8 +974,7 @@ async function saveSettings() {
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
-      keepRounds: parseInt($('set-keeprounds').value, 10) || 5,
-      ruleInterval: parseInt($('set-ruleinterval').value, 10) || 5,
+      keepChars: parseInt($('set-keepchars').value, 10) || 100000,
       threshold: parseFloat(selRefs.compactThreshold.get()) || 0.8,
     },
   };
@@ -947,15 +988,18 @@ async function saveSettings() {
 
 /* ---------- 常规页：本机浏览器偏好（语言/字体/发送行为，即时生效） ---------- */
 
-// 字号只作用于对话区（.msg-col 的 --chat-fs，内部字号均为 em 相对值），
-// 侧栏/设置/输入框不受影响；具体 px 值直接可调
+// 阅读字号：只写 :root 的 --chat-fs 一处，对话区（.msg-col）与计划显示区
+//（右栏「计划」视图正文 .plan-doc、计划浮窗 .q-card.plan）共用这个基准，两处内部
+// 字号均为 em 相对值——改字号这两块文字同步缩放；侧栏/设置/输入控件不跟随。
+const FONT_PX_DEFAULT = 14; // 默认档（「（默认）」标在它身上，档位增减量都以它为基准）
+
 function applyChatFont(px) {
   document.documentElement.style.setProperty('--chat-fs', px + 'px');
   lsSet('jx.fontpx', String(px));
 }
 
 function restoreChatFont() {
-  const px = parseFloat(lsGet('jx.fontpx', '14')) || 14;
+  const px = parseFloat(lsGet('jx.fontpx', String(FONT_PX_DEFAULT))) || FONT_PX_DEFAULT;
   document.documentElement.style.setProperty('--chat-fs', px + 'px');
 }
 /* ---------- 常规页：文件备份（服务端配置，改动即时保存） ---------- */
@@ -980,6 +1024,44 @@ $('set-snapshot-days').onchange = () => {
   const v = parseInt($('set-snapshot-days').value, 10);
   if (isNaN(v) || (v < 1 && v !== -1)) { alert('天数需为 ≥1 的整数，或 -1（永不过期）'); return; }
   saveSnapshotCfg({ snapshotDays: v });
+};
+
+/* ---------- 常规页：询问提醒（服务端配置，改动即时保存；嵌套部分提交，
+   只传变的键，服务端按键合并并钳制 30-600） ---------- */
+async function saveAskAlertCfg(patch) {
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ askAlert: patch }) });
+    const aa = c.askAlert || {};
+    $('set-askalert-on').checked = aa.enabled !== false;
+    if (aa.afterSec) $('set-askalert-sec').value = aa.afterSec;
+    if (aa.text !== undefined) $('set-askalert-text').value = aa.text; // 空串=默认文案，回显留空
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  }
+}
+$('set-askalert-on').onchange = () => saveAskAlertCfg({ enabled: $('set-askalert-on').checked });
+$('set-askalert-sec').onchange = () => {
+  let v = parseInt($('set-askalert-sec').value, 10);
+  if (isNaN(v)) v = 240;
+  v = Math.min(600, Math.max(30, v));
+  $('set-askalert-sec').value = v;
+  saveAskAlertCfg({ afterSec: v });
+};
+$('set-askalert-text').onchange = () => saveAskAlertCfg({ text: $('set-askalert-text').value.trim() });
+
+/* ---------- 发送页：排队消息自动续发（服务端配置，改动即时保存） ----------
+   默认开：本轮回复完成后，队列里的待发消息（不分来源）自动逐条发出；关掉后
+   本轮结束队列保留，排队坞给「继续发送」入口（点它照发，不受开关限制）。 */
+
+$('set-queueauto-on').onchange = async () => {
+  const on = $('set-queueauto-on').checked;
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ queueAutoSend: on }) });
+    $('set-queueauto-on').checked = c.queueAutoSend !== false; // 以服务端落库值为准回显
+  } catch (e) {
+    $('set-queueauto-on').checked = !on;
+    alert('保存失败：' + e.message);
+  }
 };
 
 /* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ---------- */
@@ -1018,6 +1100,27 @@ $('set-lan-on').onchange = async () => {
   } catch (e) {
     alert('保存失败：' + e.message);
     $('set-lan-on').checked = !on;
+  }
+};
+
+/* ---------- 网络访问页：公司接入开关（关闭＝不弹向导、后端不连公司服务端） ---------- */
+
+function syncCompanyState(c) {
+  const on = !c.companyLinkOff;
+  $('set-company-state').textContent = on
+    ? '已开启（首启自动弹接入向导；接入后自动跟随服务端变化）'
+    : '已停用（不连接公司服务端，启动不再弹出向导）';
+  $('wizard-rerun-field').classList.toggle('hidden', !on); // 停用时藏起「重新运行接入向导」
+}
+
+$('set-company-on').onchange = async () => {
+  const on = $('set-company-on').checked;
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ companyLinkOff: !on }) });
+    syncCompanyState(c);
+  } catch (e) {
+    alert('保存失败：' + e.message);
+    $('set-company-on').checked = !on;
   }
 };
 
@@ -1121,9 +1224,22 @@ function bindRemoteInput(id, patchKey, parse) {
   };
 }
 bindRemoteInput('set-remote-id', 'remoteMyId');
-bindRemoteInput('set-remote-pk', 'remotePairKey');
 bindRemoteInput('set-remote-host', 'remoteHost');
 bindRemoteInput('set-remote-port', 'remotePort', (v) => parseInt(v, 10) || 0);
+// 配对密钥：只读展示 + 「自动生成」换新（不可手填）。换新会作废旧入口/二维码——
+// 已配对的手机要用新入口重连，先确认再生成；32 位十六进制与服务端 genSecret(32) 同规格。
+$('btn-remote-pk-new').onclick = async () => {
+  if (!await confirmCenter('换新配对密钥后，旧入口链接立即失效，已配对的手机要用新入口重新连接。确定换新吗？')) return;
+  const bytes = new Uint8Array(16); // 16 字节 → 32 位十六进制
+  crypto.getRandomValues(bytes);
+  const key = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ remotePairKey: key }) });
+    syncRemoteState(c); // 回显新密钥；入口链接与二维码随之更新
+  } catch (e) {
+    alert('换新失败：' + e.message);
+  }
+};
 // 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
 bindRemoteInput('set-market-url', 'marketURL');
 bindRemoteInput('set-publisher-name', 'publisherName');
@@ -1196,11 +1312,90 @@ $('btn-update-dl').onclick = async () => {
 // 设置页打开/配置刷新时同步一次更新状态（全局函数，app-chat.js 的事件处理也会调）
 window.refreshUpdateBox = refreshUpdateBox;
 
-// 重新运行接入向导（app-wizard.js 的 openWizard）
-$('btn-wizard-rerun').onclick = () => { if (typeof openWizard === 'function') openWizard(); };
+// 重新运行接入向导（app-wizard.js 的 openWizard）。向导弹层在 DOM 序上先于设置窗
+// （层级在其下），从设置里打开会被盖住——先收起设置页再弹，向导直接可见。
+$('btn-wizard-rerun').onclick = () => {
+  if (typeof openWizard !== 'function') return;
+  closeSettingsUI();
+  openWizard();
+};
 
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;
+
+/* ---------- 对话历史与压缩：数字助理主对话的两个动作按钮 ----------
+   两个按钮都作用于「数字助理主对话」这一个会话（服务端按 mode=assistant
+   解析会话，前端不必知道是哪个），不是当前打开的这个对话；点下立即生效、
+   不参与底部「保存」。压缩固定走模型摘要（后端 /api/assistant/compact
+   强制 llm 策略，忽略上面的「模式」）；清空走两级确认，后端真删
+   （消息 + 摘要 + 快照/交付/上传登记），会话设置保留。 */
+
+// confirmAboveSettings 在设置页里弹居中确认框：窄屏下 #settings 的层级
+// （230）高于确认框（60），不抬一下就会被设置页盖住——临时抬高，弹完还原。
+async function confirmAboveSettings(msg, up) {
+  const m = $('confirm-modal');
+  const saved = m.style.zIndex;
+  m.style.zIndex = '240';
+  try { return await confirmCenter(msg, false, !!up); }
+  finally { m.style.zIndex = saved; }
+}
+
+// refreshAssistantOps 动作后的界面定版：会话列表、正开着的主对话区、右栏子对话清单。
+async function refreshAssistantOps() {
+  try { await loadSessions(); } catch (e) { /* 列表拉取失败不影响操作结果 */ }
+  const m = (state.sessions || []).find((s) => s.mode === 'assistant' && !s.parentId && !s.archived);
+  if (!m) return;
+  if (state.cur && state.cur.id === m.id) { openSession(m.id); return; }
+  try { refreshDrawer(); } catch (e) { /* 右栏没开时跳过 */ }
+}
+
+// assistantOpsState 写按钮下方那行状态说明（操作结果回执）。
+function assistantOpsState(msg) {
+  const el = $('assistant-ops-state');
+  if (el) el.textContent = msg;
+}
+
+$('btn-assistant-compact').onclick = async () => {
+  if (!(await confirmAboveSettings('立即压缩「跟数字经理对话」？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
+  const btn = $('btn-assistant-compact');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '压缩中…（要几秒）';
+  try {
+    const r = await api('/api/assistant/compact', { method: 'POST' });
+    const sum = String(r.summary || '').replace(/\s+/g, ' ').trim();
+    assistantOpsState('已压缩跟数字经理对话。摘要开头：' +
+      (sum ? sum.slice(0, 80) + (sum.length > 80 ? '…' : '') : '（摘要为空）') +
+      '　原始历史仍可查回；对话区已翻新。');
+    await refreshAssistantOps();
+  } catch (e) {
+    alert('压缩失败：' + e.message);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+};
+
+$('btn-assistant-clear').onclick = async () => {
+  if (!(await confirmAboveSettings('清空「跟数字经理对话」的全部历史消息？\n' +
+      '将删除它的全部聊天记录、压缩摘要以及随消息产生的文件快照登记、交付登记、上传登记，' +
+      '并丢弃待发的插话/排队；会话设置（工作目录、权限、模型等）保留。\n此操作不可恢复。'))) return;
+  if (!(await confirmAboveSettings('再次确认：跟数字经理对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
+  const btn = $('btn-assistant-clear');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '清空中…';
+  try {
+    const r = await api('/api/assistant/clear', { method: 'POST' });
+    assistantOpsState('已清空跟数字经理对话（' + (r.cleared || 0) + ' 条消息），它现在是全新对话。');
+    await refreshAssistantOps();
+  } catch (e) {
+    alert('清空失败：' + e.message);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+};
 
 /* ---------- 设置导航：状态唯一、渲染集中 ----------
    心智模型两端同构：设置＝一级菜单＋二级分区页。桌面双栏并排框定（左一级
@@ -1371,7 +1566,7 @@ function makeSelect(hostId, key, options, onChange) {
   return ref;
 }
 
-/* ---------- 主题色：白 / 黑 / 跟随系统（CSS 变量整体换装） ---------- */
+/* ---------- 背景色：白 / 黑 / 跟随系统（CSS 变量整体换装） ---------- */
 
 const themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
@@ -1390,17 +1585,17 @@ makeSelect('sel-lang', 'lang', [
   { v: 'zh', label: '简体中文' },
   { v: 'en', label: 'English（翻译逐步补齐）' },
 ], (v) => lsSet('jx.lang', v));
-makeSelect('sel-fontsize', 'fontsize', [
-  { v: '12', label: '12 px' },
-  { v: '13', label: '13 px' },
-  { v: '14', label: '14 px（默认）' },
-  { v: '15', label: '15 px' },
-  { v: '16', label: '16 px' },
-  { v: '17', label: '17 px' },
-  { v: '18', label: '18 px' },
-  { v: '20', label: '20 px' },
-], (v) => applyChatFont(parseFloat(v) || 14));
-// 主题色：白/黑/跟随系统的预览卡片，点选即时生效
+// 档位清单与默认值只在这里一处维护：默认档标「14px（默认）」，其余档标相对默认的
+// 增减（15 (+1) / 13 (-1)）——一眼看出比默认大几号、小几号，增减量随 FONT_PX_DEFAULT 走。
+const FONT_PX_OPTS = [12, 13, 14, 15, 16, 17, 18, 20];
+makeSelect('sel-fontsize', 'fontsize', FONT_PX_OPTS.map((px) => {
+  const d = px - FONT_PX_DEFAULT;
+  return {
+    v: String(px),
+    label: d === 0 ? px + 'px（默认）' : px + ' (' + (d > 0 ? '+' + d : String(d)) + ')',
+  };
+}), (v) => applyChatFont(parseFloat(v) || FONT_PX_DEFAULT));
+// 背景色：白/黑/跟随系统的预览卡片，点选即时生效
 function syncThemeCards() {
   const cur = lsGet('jx.theme', 'light');
   document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
@@ -1449,7 +1644,7 @@ document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
   });
 })();
 
-// 点缀色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
+// 主题色：内置强调色板（原 accent-theme 组件并入，8 预设 + 自定义）
 const ACCENTS = [
   ['默认蓝', '#4d6bfe', '#3d5bef'],
   ['紫', '#8250df', '#6f42c1'],
@@ -1470,7 +1665,15 @@ function applyAccent(color, hover, save) {
     document.head.appendChild(accentStyleEl);
   }
   accentStyleEl.textContent = ':root{--accent:' + color + ';--accent-hover:' + hover + ';}';
-  if (save) lsSet('jx.accent', color + '|' + hover);
+  if (save) {
+    lsSet('jx.accent', color + '|' + hover);
+    // 同步写主程序配置：独立 WebView 环境读不到本页 localStorage，
+    // 从 /api/config 的 accentColor 取色（fire-and-forget）
+    fetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accentColor: color }),
+    }).catch(() => {});
+  }
 }
 
 function buildAccentRow() {
@@ -1522,12 +1725,6 @@ makeSelect('sel-midrun', 'midrun', [
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
   { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
 ], (v) => lsSet('jx.midrun', v));
-// 交付文件打开方式：默认「右侧浏览器优先」（可展示类型进右栏面板，其余系统
-// 应用）；makeSelect 以第一项为初始值，与 openSettings 里 lsGet 的兜底一致。
-makeSelect('sel-fileopen', 'fileopen', [
-  { v: 'panel', label: '右侧浏览器优先（默认）' },
-  { v: 'shell', label: '系统默认应用' },
-], (v) => lsSet('jx.fileopen', v));
 makeSelect('sel-compact-mode', 'compactMode', [
   { v: 'rule', label: '规则压缩（零成本，默认）' },
   { v: 'llm', label: '模型摘要（达阈值自动+手动）' },
@@ -1612,22 +1809,22 @@ async function renderSkillsPanel() {
   }
 
   if (!(data.user || []).length) {
-    uBox.innerHTML = '<div class="skill-empty">还没有用户技能。点上方「添加技能」选择文件夹或 ZIP 压缩包，或把 .zip / 技能文件夹直接拖进本页安装。</div>';
+    uBox.innerHTML = '<div class="skill-empty">还没有用户技能。点上方「添加技能」选择文件夹、ZIP 压缩包或 .md 文件，或把它们直接拖进本页安装。</div>';
   }
 }
 
 // 添加技能：弹操作系统原生选择框（后端代选，拿真实路径），文件夹整目录复制、
-// ZIP 解压安装；用户取消选择框时静默返回。
+// ZIP 解压安装、单个 .md 说明文件包装安装；用户取消选择框时静默返回。
 async function installSkillFromPicker(kind) {
   closePopovers();
   // 手机端（窄屏）：系统选择框由后端弹在宿主机屏幕上，点了只会白等或直接
   // 报错（安卓上「仅支持 Windows」）——与「添加工作目录」同款口径，指到电脑端
-  if (isNarrow()) { alert('手机端不支持选择技能文件夹/压缩包：请在电脑端（宽屏）的设置页添加技能。'); return; }
+  if (isNarrow()) { alert('手机端不支持选择技能文件/文件夹：请在电脑端（宽屏）的设置页添加技能。'); return; }
   const btn = $('skill-add-btn');
   let picked;
   try {
-    const url = (kind === 'zip' ? '/api/pick-file' : '/api/pick-folder') +
-      '?title=' + encodeURIComponent(kind === 'zip' ? '选择技能 ZIP 压缩包' : '选择技能文件夹');
+    const url = (kind === 'file' ? '/api/pick-file' : '/api/pick-folder') +
+      '?title=' + encodeURIComponent(kind === 'file' ? '选择技能文件（ZIP 压缩包 / MD 说明）' : '选择技能文件夹');
     picked = await api(url);
   } catch (e) { alert('无法打开选择框：' + e.message); return; }
   const p = (picked && picked.path) || '';
@@ -1644,13 +1841,14 @@ async function installSkillFromPicker(kind) {
 
 $('skill-add-btn').onclick = () => openPopover('skill-add-pop', $('skill-add-btn'));
 $('sa-folder').onclick = () => installSkillFromPicker('folder');
-$('sa-zip').onclick = () => installSkillFromPicker('zip');
+$('sa-zip').onclick = () => installSkillFromPicker('file');
 
-/* ---------- 技能拖拽安装（拖 .zip 或整个文件夹进技能页） ----------
-   .zip 走 POST /api/skills/upload（multipart 单文件）；文件夹走 webkitGetAsEntry
-   递归遍历 → POST /api/skills/install-files（multipart files+paths，后端组装成
-   技能目录再走同一条 addUserSkill）。两条路最终都落 addUserSkill。 */
-async function uploadSkillZip(file, note) {
+/* ---------- 技能拖拽安装（拖 .zip / .md 文件或整个文件夹进技能页） ----------
+   单文件（.zip 解压、.md 包装）走 POST /api/skills/upload（multipart 单文件）；
+   文件夹走 webkitGetAsEntry 递归遍历 → POST /api/skills/install-files
+   （multipart files+paths，后端组装成技能目录再走同一条 addUserSkill）。
+   两条路最终都落 addUserSkill。 */
+async function uploadSkillFile(file, note) {
   const fd = new FormData();
   fd.append('file', file, file.name);
   try {
@@ -1745,21 +1943,21 @@ function bindSkillDropZone() {
       renderSkillsPanel();
       return;
     }
-    // 散文件：只认 .zip（散的技能文件装不了，指路按钮）
+    // 散文件：只认 .zip / .md（其他散文件装不了，指路按钮）
     const files = [...(dt.files || [])];
-    const zips = files.filter((f) => /\.zip$/i.test(f.name));
-    if (!zips.length) {
+    const packs = files.filter((f) => /\.(zip|md)$/i.test(f.name));
+    if (!packs.length) {
       alert(files.length
-        ? '只支持拖入 .zip 压缩包或整个技能文件夹安装（散文件请先用「添加技能」按钮）'
+        ? '只支持拖入 .zip 压缩包、单个 .md 文件或整个技能文件夹安装（其他散文件请先用「添加技能」按钮）'
         : '拖入的内容不是文件（技能文件夹请用「添加技能」按钮选择）');
       return;
     }
-    note.textContent = `安装中（${zips.length} 个）…`;
+    note.textContent = `安装中（${packs.length} 个）…`;
     let ok = 0;
-    for (const f of zips) { if (await uploadSkillZip(f, note)) ok++; }
-    note.textContent = ok === zips.length
+    for (const f of packs) { if (await uploadSkillFile(f, note)) ok++; }
+    note.textContent = ok === packs.length
       ? `已安装 ${ok} 个技能${ok > 1 ? '包' : ''}，清单见下方`
-      : `完成：成功 ${ok} / ${zips.length}`;
+      : `完成：成功 ${ok} / ${packs.length}`;
     renderSkillsPanel();
   });
 }
@@ -1945,7 +2143,7 @@ function buildExpertCard(e) {
   grid.className = 'pf-two ex-form-grid';
   const inName = document.createElement('input');
   inName.className = 'pf-input';
-  inName.placeholder = '专家名称（主对话派发时填它）';
+  inName.placeholder = '专家名称';
   inName.value = e.name;
   inName.oninput = () => { e.name = inName.value; };
   grid.appendChild(mk('名称', inName));
@@ -1962,7 +2160,7 @@ function buildExpertCard(e) {
 
   const inDesc = document.createElement('input');
   inDesc.className = 'pf-input';
-  inDesc.placeholder = '给主对话看的选用依据（会列进 dispatch_sub 的工具说明）';
+  inDesc.placeholder = '给主对话看的选用依据';
   inDesc.value = e.description;
   inDesc.oninput = () => { e.description = inDesc.value; };
   form.appendChild(mk('描述', inDesc, true));

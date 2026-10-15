@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -110,41 +111,20 @@ func dirWritable(p string) bool {
 }
 
 // materializeSkills 把内嵌的技能母本写到目标目录。
+// materializeSkills 把内嵌技能母本释放到磁盘（exe 旁没有 技能/ 目录时的
+// 兜底，如裸 exe 形态）。fs.WalkDir 全量递归——手写的两层循环只认
+// 「技能/<名>/scripts/」布局，技能/user/<名>/ 这类分组子目录会把目录当
+// 文件读而整体失败（实测：释放 技能/user/com-probe 时报「is a directory」）。
 func materializeSkills(dest string) error {
-	entries, err := skillsFS.ReadDir("技能")
-	if err != nil {
-		return err
-	}
-	for _, skill := range entries {
-		if !skill.IsDir() {
-			continue
-		}
-		files, err := skillsFS.ReadDir("技能/" + skill.Name())
+	return fs.WalkDir(skillsFS, "技能", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		for _, f := range files {
-			if f.IsDir() {
-				// scripts/ 子目录
-				sub, err := skillsFS.ReadDir("技能/" + skill.Name() + "/" + f.Name())
-				if err != nil {
-					return err
-				}
-				for _, sf := range sub {
-					if err := writeEmbeddedFile(filepath.Join(dest, skill.Name(), f.Name(), sf.Name()),
-						"技能/"+skill.Name()+"/"+f.Name()+"/"+sf.Name()); err != nil {
-						return err
-					}
-				}
-				continue
-			}
-			if err := writeEmbeddedFile(filepath.Join(dest, skill.Name(), f.Name()),
-				"技能/"+skill.Name()+"/"+f.Name()); err != nil {
-				return err
-			}
+		if d.IsDir() {
+			return nil
 		}
-	}
-	return nil
+		return writeEmbeddedFile(filepath.Join(dest, filepath.FromSlash(strings.TrimPrefix(p, "技能/"))), p)
+	})
 }
 
 func writeEmbeddedFile(dest, embeddedPath string) error {

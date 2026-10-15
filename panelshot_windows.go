@@ -6,8 +6,8 @@ package main
 // （CSS px）并 POST /api/shell/panel-view 回传；Go 侧换算成屏幕物理坐标
 // （客户区原点 + CSS×dpr），GDI 截屏（DIB Section，procs 复用电脑操作组件
 // 的 tool_computer_windows.go）。截屏幕像素的好处：右栏里无论是原生
-// WebView2 面板（浏览器页）还是主界面里的 iframe（文件查看页）都一样成立，
-// 不需要按内容类型分路。
+// WebView2 面板（浏览器页）还是任何 HTML 视图都一样成立，不需要按内容
+// 类型分路。
 
 import (
 	"bytes"

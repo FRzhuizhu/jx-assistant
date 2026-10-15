@@ -9,14 +9,19 @@ package main
 //   慢活（PNG 编码、写盘、窗口标题轮询）全部丢给 worker goroutine，避免
 //   回调超时被系统摘钩。自家 computer_* 注入的事件带 LLMHF_INJECTED 标记，
 //   刻意过滤（AI 的点击不该混进用户的演示）。
-//   录音：winmm MCI waveaudio（open new type waveaudio）采 16kHz 单声道
-//   16bit WAV，无 cgo、无第三方库；没有麦克风时降级为纯键鼠+截图记录。
+//   录音：winmm waveIn 缓冲采集 16kHz 单声道 16bit PCM（一次采集两用：
+//   全量落 audio.wav + 喂 VAD 停顿分段），无 cgo、无第三方库；没有麦克风时
+//   降级为纯键鼠+截图记录。随录随转：VAD 段定稿（3 秒尾静音）经 recorderASR
+//   （voiceasr.go → 语音组件本地模型）识别，逐段落 讲解.srt。
 
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,8 +41,42 @@ var (
 	procPostThreadMessageW  = compUser32.NewProc("PostThreadMessageW")
 	procGetForegroundWindow = compUser32.NewProc("GetForegroundWindow")
 	procGetCurrentThreadID  = syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
-	procMciSendStringW      = syscall.NewLazyDLL("winmm.dll").NewProc("mciSendStringW")
 )
+
+// waveIn 缓冲采集（winmm）：录 16kHz/单声道/16bit PCM 喂 VAD 与 audio.wav。
+var (
+	winmmDLL                  = syscall.NewLazyDLL("winmm.dll")
+	procWaveInOpen            = winmmDLL.NewProc("waveInOpen")
+	procWaveInStart           = winmmDLL.NewProc("waveInStart")
+	procWaveInReset           = winmmDLL.NewProc("waveInReset")
+	procWaveInClose           = winmmDLL.NewProc("waveInClose")
+	procWaveInPrepareHeader   = winmmDLL.NewProc("waveInPrepareHeader")
+	procWaveInUnprepareHeader = winmmDLL.NewProc("waveInUnprepareHeader")
+	procWaveInAddBuffer       = winmmDLL.NewProc("waveInAddBuffer")
+)
+
+const whdrDone = 0x00000001 // WAVEHDR.dwFlags：缓冲已录满归还
+
+type tWAVEFORMATEX struct {
+	FormatTag      uint16
+	Channels       uint16
+	SamplesPerSec  uint32
+	AvgBytesPerSec uint32
+	BlockAlign     uint16
+	BitsPerSample  uint16
+	CbSize         uint16
+}
+
+type tWAVEHDR struct {
+	LpData        uintptr
+	BufferLength  uint32
+	BytesRecorded uint32
+	User          uintptr
+	Flags         uint32
+	Loops         uint32
+	Next          uintptr
+	Reserved      uintptr
+}
 
 const (
 	whMouseLL     = 14
@@ -99,6 +138,7 @@ type demoRec struct {
 	hooksDone chan struct{} // 钩子线程退出
 	hookTID   uint32
 	audioOK   bool
+	audio     *recAudioSession // 录音+VAD+随录随转会话（audioOK=true 时非 nil）
 
 	eventsPath string
 	evCount    atomic.Int64
@@ -219,40 +259,277 @@ func recHookLoop(ready chan<- uint32, errCh chan<- error) {
 	procUnhookWindowsHookEx.Call(hMouse)
 }
 
-// ---------- 录音（MCI waveaudio，16kHz 单声道） ----------
+// ---------- 录音（waveIn 缓冲采集，16kHz 单声道 16bit） ----------
+//
+// 一次采集两用：PCM 全量累积（停录写 audio.wav）＋ 喂 VAD 停顿分段。VAD 分段
+// 语义与语音组件的听写线（组件/voice/client.js 的 makeLocalRec）逐常量对齐：
+// 350ms 起效 / 3s 尾静音定稿 / 18s 强制切段 / 静音垫 1.5s 上限，能量判据
+// rms > max(0.008, 底噪×3.5)、底噪自适应（0.98/0.02，上限 0.02）。定稿段经
+// recorderASR（voiceasr.go → 语音组件本地模型）识别成文字，逐段落 讲解.srt
+//（时间轴与事件/截图同源：都取 time.Since(r.start)）。
 
-const recAudioAlias = "jxrec"
+const (
+	recFrameBytes   = 3200            // 100ms @ 16kHz/16bit/单声道 —— VAD 帧长=缓冲长
+	recAudioBuffers = 6               // 在途缓冲数（≈600ms 队列深度）
+	recASRTailWait  = 8 * time.Second // 停录等在途识别的上限（同悬浮窗 TAIL_WAIT_MS）
+	recSpeechMinMs  = 350             // 短于此视为噪声毛刺，丢弃
+	recFinalPauseMs = 3000            // 尾随静音满 3 秒才定稿（真停顿，非说话时长）
+	recSegMaxMs     = 18000           // 连续不停顿超 18 秒强制定稿
+	recPadMaxMs     = 1500            // 段内静音垫上限（间隙+尾部，近似停顿中点切分）
+)
 
-func mciSend(cmd string) error {
-	p, err := syscall.UTF16PtrFromString(cmd)
-	if err != nil {
-		return err
-	}
-	r, _, _ := procMciSendStringW.Call(uintptr(unsafe.Pointer(p)), 0, 0, 0)
-	if r != 0 {
-		return fmt.Errorf("MCI 命令失败(%d): %s", r, cmd)
-	}
-	return nil
+// recASRJob 一段待识别的定稿音频（cue 时间在入队时就定好——识别只回文本）。
+type recASRJob struct {
+	wav     []byte
+	startMs int
+	endMs   int
 }
 
-// recAudioStart 开麦录音：格式设置尽力而为（个别驱动只认默认格式），
-// record 起不来才判失败（无麦克风/设备被占）——录音失败不拦记录本身。
-func recAudioStart() bool {
-	_ = mciSend("close " + recAudioAlias) // 上一次异常残留的别名先关掉
-	if mciSend("open new type waveaudio alias "+recAudioAlias) != nil {
-		return false
-	}
-	_ = mciSend("set " + recAudioAlias + " time format ms bitspersample 16 channels 1 samplespersec 16000 bytespersec 32000 alignment 2")
-	return mciSend("record "+recAudioAlias) == nil
+// recAudioSession 一次录制的音频会话：采集循环、VAD 状态、识别队列与字幕段。
+// 字幕段（cues）由识别 worker 写、停录收尾读，用 cueMu 串行；VAD 状态与 pcm
+// 只归采集循环访问（停录后循环已退出）。
+type recAudioSession struct {
+	r     *demoRec
+	hWave uintptr
+	hdrs  []tWAVEHDR
+	bufs  [][]byte
+	pcm   bytes.Buffer // 全量 PCM（audio.wav 本体）
+
+	loopDone chan struct{}
+	stopFlag atomic.Bool
+	asrCh    chan recASRJob
+	asrDone  chan struct{}
+	pending  atomic.Int32
+	cueMu    sync.Mutex
+	cues     []srtCue
+
+	// VAD 状态（仅采集循环内访问）
+	noiseFloor     float64
+	sinceFinal     []byte // 定稿段音频（语音帧 + 限量静音垫）
+	sinceFinalMs   int    // 段内语音时长
+	finalSilenceMs int    // 尾随静音计时
+	padMs          int    // 段内已收录的静音垫
+	lastSpeech     time.Time
+	prevEndMs      int // 上一段 cue 结束（下一段的起点）
 }
 
-// recAudioStop 停录并落盘 audio.wav（在钩子停掉之后调用，尾部与事件轴对齐）。
-func recAudioStop(dir string) bool {
-	defer func() { _ = mciSend("close " + recAudioAlias) }()
-	if mciSend("stop "+recAudioAlias) != nil {
+// recAudioStart 开麦采集：设备打不开（无麦克风/驱动拒绝）返回 false——录音
+// 失败不拦记录本身（照旧降级为键鼠+截图）。WAVE_MAPPER（-1）取默认设备，
+// CALLBACK_NULL 轮询取缓冲（低频 15ms，省一层事件句柄）。
+func recAudioStart(r *demoRec) bool {
+	s := &recAudioSession{
+		r: r, noiseFloor: 0.004,
+		loopDone: make(chan struct{}),
+		asrCh:    make(chan recASRJob, 16),
+		asrDone:  make(chan struct{}),
+	}
+	fmtEx := tWAVEFORMATEX{FormatTag: 1, Channels: 1, SamplesPerSec: 16000,
+		AvgBytesPerSec: 32000, BlockAlign: 2, BitsPerSample: 16}
+	var h uintptr
+	if ret, _, _ := procWaveInOpen.Call(uintptr(unsafe.Pointer(&h)), ^uintptr(0),
+		uintptr(unsafe.Pointer(&fmtEx)), 0, 0, 0); ret != 0 || h == 0 {
 		return false
 	}
-	return mciSend(`save `+recAudioAlias+` "`+filepath.Join(dir, recorderAudioFn)+`"`) == nil
+	s.hWave = h
+	s.hdrs = make([]tWAVEHDR, recAudioBuffers)
+	s.bufs = make([][]byte, recAudioBuffers)
+	sz := unsafe.Sizeof(s.hdrs[0])
+	for i := range s.hdrs {
+		s.bufs[i] = make([]byte, recFrameBytes)
+		s.hdrs[i].LpData = uintptr(unsafe.Pointer(&s.bufs[i][0]))
+		s.hdrs[i].BufferLength = recFrameBytes
+		if ret, _, _ := procWaveInPrepareHeader.Call(h, uintptr(unsafe.Pointer(&s.hdrs[i])), sz); ret != 0 {
+			s.abort()
+			return false
+		}
+	}
+	for i := range s.hdrs {
+		if ret, _, _ := procWaveInAddBuffer.Call(h, uintptr(unsafe.Pointer(&s.hdrs[i])), sz); ret != 0 {
+			s.abort()
+			return false
+		}
+	}
+	if ret, _, _ := procWaveInStart.Call(h); ret != 0 {
+		s.abort()
+		return false
+	}
+	r.audio = s
+	go s.loop()
+	go s.asrWorker()
+	return true
+}
+
+// abort 采集启动失败的回滚：停循环与识别队列（stopFlag/关队列），归还全部
+// 在途缓冲后关设备——不留孤儿 goroutine。
+func (s *recAudioSession) abort() {
+	if s.hWave == 0 {
+		return
+	}
+	s.stopFlag.Store(true)
+	procWaveInReset.Call(s.hWave)
+	sz := unsafe.Sizeof(s.hdrs[0])
+	for i := range s.hdrs {
+		procWaveInUnprepareHeader.Call(s.hWave, uintptr(unsafe.Pointer(&s.hdrs[i])), sz)
+	}
+	procWaveInClose.Call(s.hWave)
+	s.hWave = 0
+	close(s.asrCh) // 队列里不会有任务（识别尚未排队）：worker 随即退出
+	select {
+	case <-s.loopDone:
+	case <-time.After(2 * time.Second):
+	}
+	select {
+	case <-s.asrDone:
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// loop 采集循环：轮询取回录满的缓冲（100ms 一帧），喂 VAD 后立即回队列；
+// stopFlag 置位且 waveInReset 已把余下缓冲标 DONE——全部吃掉后退出。
+func (s *recAudioSession) loop() {
+	defer close(s.loopDone)
+	sz := unsafe.Sizeof(s.hdrs[0])
+	for {
+		progressed := false
+		for i := range s.hdrs {
+			if s.hdrs[i].Flags&whdrDone == 0 {
+				continue
+			}
+			s.handleFrame(s.bufs[i][:s.hdrs[i].BytesRecorded], time.Now())
+			s.hdrs[i].Flags = 0
+			s.hdrs[i].BytesRecorded = 0
+			if !s.stopFlag.Load() {
+				procWaveInAddBuffer.Call(s.hWave, uintptr(unsafe.Pointer(&s.hdrs[i])), sz)
+			}
+			progressed = true
+		}
+		if s.stopFlag.Load() && !progressed {
+			return
+		}
+		if !progressed {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+}
+
+// handleFrame 一个 100ms 缓冲：落全量 PCM + 喂 VAD（语义见节首注释）。
+func (s *recAudioSession) handleFrame(data []byte, now time.Time) {
+	s.pcm.Write(data)
+	rms := recRMS(data)
+	const frameMs = 100
+	isSpeech := rms > math.Max(0.008, s.noiseFloor*3.5)
+	if !isSpeech {
+		s.noiseFloor = math.Min(0.02, s.noiseFloor*0.98+rms*0.02)
+	}
+	if isSpeech {
+		s.sinceFinal = append(s.sinceFinal, data...)
+		s.sinceFinalMs += frameMs
+		s.finalSilenceMs = 0
+		s.lastSpeech = now
+	} else if s.sinceFinalMs > 0 {
+		s.finalSilenceMs += frameMs
+		if s.padMs < recPadMaxMs { // 间隙/尾部静音限量入段
+			s.sinceFinal = append(s.sinceFinal, data...)
+			s.padMs += frameMs
+		}
+	}
+	if s.sinceFinalMs >= recSegMaxMs || (s.sinceFinalMs >= recSpeechMinMs && s.finalSilenceMs >= recFinalPauseMs) {
+		s.finalize()
+	}
+}
+
+// finalize 定稿一段：打包 WAV 交识别队列。cue 终点取本段最后一帧语音+300ms
+//（尾静音不计入），起点接上一段结束——与 events/截图同一条时间轴。
+func (s *recAudioSession) finalize() {
+	frames, spoken := s.sinceFinal, s.sinceFinalMs
+	endMs := 300
+	if !s.lastSpeech.IsZero() {
+		endMs = int(s.lastSpeech.Sub(s.r.start).Milliseconds()) + 300
+	}
+	startMs := s.prevEndMs
+	s.sinceFinal, s.sinceFinalMs, s.finalSilenceMs, s.padMs = nil, 0, 0, 0
+	s.prevEndMs = endMs
+	if spoken < recSpeechMinMs || len(frames) < recFrameBytes { // 噪声毛刺/音频不足 100ms：丢弃
+		return
+	}
+	if recorderASR == nil {
+		return
+	}
+	s.pending.Add(1)
+	select {
+	case s.asrCh <- recASRJob{wav: recPcmToWav(frames), startMs: startMs, endMs: endMs}:
+	default:
+		s.pending.Add(-1) // 队列满（识别严重滞后）：丢段保录制
+	}
+}
+
+// asrWorker 串行消费识别队列（worker 进程本身也是串行的）：文本到手即追加
+// 字幕段并整文件重写 讲解.srt。识别失败/空文本只丢该段，不影响录制。
+func (s *recAudioSession) asrWorker() {
+	defer close(s.asrDone)
+	for job := range s.asrCh {
+		text, err := recorderASR(job.wav)
+		s.pending.Add(-1)
+		if err != nil {
+			log.Printf("演示记录语音识别失败（%d-%dms 段丢弃）：%v", job.startMs, job.endMs, err)
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		s.cueMu.Lock()
+		s.cues = append(s.cues, srtCue{StartMs: job.startMs, EndMs: job.endMs, Text: strings.TrimSpace(text)})
+		cues := append([]srtCue(nil), s.cues...)
+		s.cueMu.Unlock()
+		if err := writeSRTFile(filepath.Join(s.r.dir, recorderSrtFn), cues); err != nil {
+			log.Printf("演示记录字幕落盘失败：%v", err)
+		}
+	}
+}
+
+// recAudioFinish 停录收尾：停采集 → VAD 尾段定稿（不足 3s 静音的余段照转）
+// → 等在途识别（≤8s，卡死不拖死停录）→ 写 audio.wav。返回音频是否落盘。
+func recAudioFinish(r *demoRec) bool {
+	s := r.audio
+	if s == nil {
+		return false
+	}
+	s.stopFlag.Store(true)
+	procWaveInReset.Call(s.hWave) // 停采并把全部在途缓冲标 DONE（由循环吃掉）
+	select {
+	case <-s.loopDone:
+	case <-time.After(3 * time.Second):
+	}
+	sz := unsafe.Sizeof(s.hdrs[0])
+	for i := range s.hdrs {
+		procWaveInUnprepareHeader.Call(s.hWave, uintptr(unsafe.Pointer(&s.hdrs[i])), sz)
+	}
+	procWaveInClose.Call(s.hWave)
+	s.hWave = 0
+	s.finalize() // 尾段兜底：余下语音没有 3s 静音也照转
+	close(s.asrCh)
+	select {
+	case <-s.asrDone:
+	case <-time.After(recASRTailWait):
+	}
+	if s.pcm.Len() == 0 {
+		return false
+	}
+	return os.WriteFile(filepath.Join(r.dir, recorderAudioFn), recPcmToWav(s.pcm.Bytes()), 0644) == nil
+}
+
+// recRMS 归一化均方根（int16 LE → [0,1)），VAD 能量判据的输入。
+func recRMS(b []byte) float64 {
+	n := len(b) / 2
+	if n == 0 {
+		return 0
+	}
+	var sum float64
+	for i := 0; i+1 < len(b); i += 2 {
+		v := float64(int16(binary.LittleEndian.Uint16(b[i:])))
+		sum += v * v
+	}
+	return math.Sqrt(sum/float64(n)) / 32768
 }
 
 // ---------- 启停 ----------
@@ -261,7 +538,7 @@ func recorderStart(dir string) error {
 	recMu.Lock()
 	defer recMu.Unlock()
 	if loadActiveRec() != nil {
-		return fmt.Errorf("已有在录的演示记录（%s），先 demo_record_stop 收录后再开新的", loadActiveRec().dir)
+		return fmt.Errorf("已有在录的演示记录（%s），先点停止按钮收录后再开新的", loadActiveRec().dir)
 	}
 	f, err := os.Create(filepath.Join(dir, recorderEventsFn))
 	if err != nil {
@@ -273,26 +550,33 @@ func recorderStart(dir string) error {
 		doneCh:    make(chan struct{}),
 		hooksDone: make(chan struct{}),
 	}
-	if recAudioStart() {
+	// start 先置位再开音频：音频/VAD/cue 时间轴全以它为原点，采集协程与
+	// 这里不构成数据竞争。
+	r.start = time.Now()
+	if recAudioStart(r) {
 		r.audioOK = true
 	}
-	r.start = time.Now()
 	ready := make(chan uint32, 1)
 	errCh := make(chan error, 1)
 	go func() {
 		defer close(r.hooksDone)
 		recHookLoop(ready, errCh)
 	}()
+	abortAudio := func() {
+		if r.audio != nil {
+			r.audio.abort()
+			r.audio, r.audioOK = nil, false
+		}
+	}
 	select {
 	case r.hookTID = <-ready:
 	case err := <-errCh:
 		f.Close()
-		if r.audioOK {
-			_ = mciSend("close " + recAudioAlias)
-		}
+		abortAudio()
 		return fmt.Errorf("演示记录器启动失败: %w", err)
 	case <-time.After(3 * time.Second):
 		f.Close()
+		abortAudio()
 		return fmt.Errorf("演示记录器启动超时（钩子线程未就绪）")
 	}
 	activeRecP.Store(r)
@@ -314,8 +598,8 @@ func recorderStop() (*recorderStats, error) {
 	case <-time.After(3 * time.Second):
 	}
 	audioOK := false
-	if r.audioOK {
-		audioOK = recAudioStop(r.dir)
+	if r.audio != nil {
+		audioOK = recAudioFinish(r) // 停采→尾段定稿→等在途识别→写 audio.wav
 	}
 	close(r.evCh)
 	select {
@@ -336,6 +620,14 @@ func recorderStatusText() string {
 	return fmt.Sprintf("记录中：%s（已 %s；事件 %d 条，截图 %d 张，音频%s）",
 		filepath.ToSlash(r.dir), time.Since(r.start).Round(time.Second),
 		r.evCount.Load(), r.shots.Load(), map[bool]string{true: "在录", false: "未开启"}[r.audioOK])
+}
+
+// recorderActiveInfo 结构化状态（/api/demo-record/status 用）：是否在录 + 材料目录。
+func recorderActiveInfo() (bool, string) {
+	if r := loadActiveRec(); r != nil {
+		return true, filepath.ToSlash(r.dir)
+	}
+	return false, ""
 }
 
 // ---------- worker：慢活全在这（写盘 / 截图 / 打字聚合 / 窗口轮询） ----------
@@ -368,6 +660,19 @@ func init() {
 	for i := 0; i < 12; i++ {
 		vkName[uint32(0x70+i)] = fmt.Sprintf("F%d", i+1)
 	}
+	// 小键盘数字（NumLock 开时的 0x60-0x69；关时发的是导航键，已在 vkName）
+	for i := 0; i < 10; i++ {
+		vkChar[uint32(0x60+i)] = string(rune('0' + i))
+	}
+}
+
+// recComboUpper 组合键里的单字母统一大写（记成 Ctrl+S 而非 Ctrl+s，符合
+// 快捷键书写习惯；多字符键名如 F5、Tab 不动）。
+func recComboUpper(s string) string {
+	if len(s) == 1 && s[0] >= 'a' && s[0] <= 'z' {
+		return string(s[0] - 32)
+	}
+	return s
 }
 
 func (r *demoRec) append(ev recEvent) {
@@ -413,11 +718,25 @@ func (r *demoRec) work() {
 		close(r.doneCh)
 	}()
 
-	shift, ctrl, alt := false, false, false
+	// 修饰键状态：Shift/Ctrl 认主码与左右码；Alt 认 0x12 与左右 0xA4/0xA5（低级
+	// 钩子实际报的是左右码，只认 0x12 会把 Alt 组合整个丢掉）；Win 认左右 0x5B/0x5C。
+	shift, ctrl, alt, win := false, false, false, false
 	var typing strings.Builder
 	typingT := 0
 	lastKeyAt := time.Time{}
 	lastWin := ""
+	// key 事件的自动重复合并：按住不放会每 ~30ms 重发一次 keydown，同名组合
+	// 400ms 内只记一条（持续按住则窗口随最后一条滚动，不会中途漏记松开前的
+	// 长按；真正的连续两次快捷键间隔通常大于此窗）。
+	lastKeyName, lastKeyT := "", -1<<30
+	appendKey := func(ev recEvent) {
+		if ev.Key == lastKeyName && ev.T-lastKeyT < 400 {
+			lastKeyT = ev.T
+			return
+		}
+		lastKeyName, lastKeyT = ev.Key, ev.T
+		r.append(ev)
+	}
 
 	flushTyping := func() {
 		if typing.Len() > 0 {
@@ -456,15 +775,17 @@ func (r *demoRec) work() {
 					shift = !ev.Up
 				case 0x11, 0xA2, 0xA3: // Ctrl
 					ctrl = !ev.Up
-				case 0x12: // Alt
+				case 0x12, 0xA4, 0xA5: // Alt（低级钩子报左右码 0xA4/0xA5）
 					alt = !ev.Up
+				case 0x5B, 0x5C: // Win（左/右）
+					win = !ev.Up
 				default:
 					if ev.Up {
 						continue
 					}
 					lastKeyAt = time.Now()
-					if ctrl || alt {
-						// 组合键：具名整键记录（如 Ctrl+S）
+					if ctrl || alt || win {
+						// 组合键：具名整键记录（如 Ctrl+S、Alt+F4、Win+E）
 						if name := keyDisplayName(vk, shift); name != "" {
 							flushTyping()
 							m := ""
@@ -477,7 +798,10 @@ func (r *demoRec) work() {
 							if shift {
 								m += "Shift+"
 							}
-							r.append(recEvent{T: ev.T, Type: "key", Key: m + name})
+							if win {
+								m += "Win+"
+							}
+							appendKey(recEvent{T: ev.T, Type: "key", Key: recComboUpper(m + name)})
 						}
 						continue
 					}
@@ -490,7 +814,13 @@ func (r *demoRec) work() {
 					}
 					if name := keyDisplayName(vk, shift); name != "" {
 						flushTyping()
-						r.append(recEvent{T: ev.T, Type: "key", Key: name})
+						// Shift+非打印键是常用操作（Shift+Tab 换栏、Shift+Enter 换行）：
+						// 带 Shift 前缀记；Shift+可打印键＝大写字符，走打字聚合不算组合。
+						k := name
+						if shift {
+							k = "Shift+" + name
+						}
+						appendKey(recEvent{T: ev.T, Type: "key", Key: k})
 						if vk == 0x0D || vk == 0x09 { // Enter / Tab 常意味着提交或换栏：补一张截图
 							r.shoot(ev.T)
 						}

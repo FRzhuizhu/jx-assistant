@@ -4,7 +4,9 @@ package main
 // 技能的定义（SKILL.md / manifest.json / scripts）都在 技能/<技能名>/ 目录，
 // 本文件只做三件事：解析技能清单 → 保证便携运行时就绪（随包分发，缺时
 // 自动装配）→ 执行技能脚本并把结果摘要回给模型。
-// 技能自身的用法说明存放在各 SKILL.md，office_skill 工具负责把它带给模型。
+// 技能自身的用法说明存放在各 SKILL.md：office_skill 工具按分册返回；
+// pdf 工具的技能入口是它自己，SKILL.md 经 appendSkillGuide 随会话内
+// 首次调用附带——纪律类提示跟着技能「加载」进上下文，不常驻工具描述。
 
 import (
 	"encoding/json"
@@ -30,6 +32,25 @@ func docsJSONDigest(report string, hint string) string {
 	}
 	cut := string([]rune(report)[:digestMaxRunes])
 	return cut + "\n…（结果过长已截断）" + hint
+}
+
+// appendSkillGuide 把技能 SKILL.md 正文附带在工具结果末尾，每会话只随
+// 首次调用出现一次（key 记在 App.skillGuideOnce）。用法与流程纪律跟着
+// 技能「加载」进入上下文，而不是常驻工具描述——office_skill 的分册指南
+// 就是这一模式；pdf 工具的技能入口是工具本身，由这里补上。SKILL.md 读
+// 不出来时静默跳过，不阻断工具结果。
+func (t *toolContext) appendSkillGuide(out, skillID string) string {
+	if t.sess == nil {
+		return out
+	}
+	if _, dup := t.app.skillGuideOnce.LoadOrStore(t.sess.ID+"\x00"+skillID, struct{}{}); dup {
+		return out
+	}
+	guide, err := t.app.readSkillGuide(skillID)
+	if err != nil {
+		return out
+	}
+	return out + "\n\n# " + skillID + " 技能指南（SKILL.md，随本会话首次调用附带一次）\n" + stripFrontmatter(guide)
 }
 
 // runSkillEntry 运行某技能 manifest 里声明的入口脚本：
@@ -145,7 +166,7 @@ func runPdfTool(t *toolContext, args json.RawMessage) (string, error) {
 	if p.Mode == "diagnose" {
 		hint = "；按 verdict 选择下一步通路"
 	}
-	return docsJSONDigest(out, hint), nil
+	return t.appendSkillGuide(docsJSONDigest(out, hint), "pdf"), nil
 }
 
 // attachReportImages 扫描脚本输出目录里的图片，入库为附件并返回信封段。
@@ -250,7 +271,7 @@ func runOcrTool(t *toolContext, args json.RawMessage) (string, error) {
 func officeSkillTool() Tool {
 	return Tool{
 		Spec: toolSpec("office_skill",
-			"获取 Word/Excel/PowerPoint 文档技能的操作指南（docx/xlsx/pptx 分册）：库的选择、关键 API 模式、中文字体陷阱与生成后的结构校验命令。拿到指南后，用 run_command 执行 Python 实际创建或修改文档。",
+			"获取 Word/Excel/PowerPoint 文档技能的操作指南（docx/xlsx/pptx 分册）：库的选择、关键 API 模式、中文字体陷阱与生成后的结构校验命令。拿到指南后，用 run_command 执行 Python 实际创建或修改文档（Python 运行时随软件内置，无需用户安装环境；解释器绝对路径见运行环境快照与调用结果）。",
 			objSchema(map[string]any{
 				"kind": map[string]any{"type": "string", "enum": []string{"docx", "xlsx", "pptx"}, "description": "文档类型"},
 			}, "kind"),
@@ -283,7 +304,10 @@ func runOfficeSkill(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	py, err := t.app.ensureSkillRuntime(variant.Modules, variant.Wheels)
 	if err != nil {
-		return section + "\n\n# 运行环境\n" + err.Error(), nil
+		// 不当 error 返回（指南正文仍有用），但文案必须是明确的指令——
+		// 裸错误文本容易被当成「环境没装」而放弃或转投系统 python。
+		return section + "\n\n# 运行环境\n内置 Python 运行时装配失败：" + err.Error() +
+			"\n装配需联网（首次下载约数分钟）：向用户说明需联网后重试本工具即可；不要改用系统的 python/py（与本软件无关，多半也没有）。", nil
 	}
 	checker := filepath.Join(skillDir, filepath.FromSlash(manifest.Entry))
 	prefix := strings.Join(py.Prefix, " ")

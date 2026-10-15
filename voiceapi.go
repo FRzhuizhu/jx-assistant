@@ -70,12 +70,23 @@ const (
 	edgeTTSClause = "audio-24khz-48kbitrate-mono-mp3" // speech.config 指定的输出格式
 )
 
-// 端点可注入（测试里换成 httptest 服务器）。
+// 2026-10-10 起微软把朗读服务从 speech.platform.bing.com 迁到
+// api.msedgeservices.com（分区域灰度，旧域名握手开始 403，见
+// github.com/rany2/edge-tts issue #490）：域名与密钥参数名变了
+//（TrustedClientToken → Ocp-Apim-Subscription-Key），Sec-MS-GEC 令牌
+// 算法未变（v1 同款照用，实测 2026-10-13）。主走新域名、旧域名后备
+//（灰度未完成的区域旧域名仍可用）。端点可注入（测试换 httptest 服务器）。
 var (
 	edgeTTSBase = func() string {
-		return "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+		return "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
 	}
 	edgeVoicesBase = func() string {
+		return "https://api.msedgeservices.com/tts/cognitiveservices/voices/list"
+	}
+	edgeTTSBaseFallback = func() string {
+		return "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+	}
+	edgeVoicesBaseFallback = func() string {
 		return "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list"
 	}
 )
@@ -115,12 +126,40 @@ func edgeHandshakeHeader() http.Header {
 }
 
 // synthesizeEdge 连接 Edge 朗读通道合成一段文本：每收到一块 MP3 就经 onAudio
-// 下发（边合成边流），收到 turn.end 返回 nil。
+// 下发（边合成边流），收到 turn.end 返回 nil。新域名优先、旧域名后备——握手
+// 失败（403 等）自动换下一个；已出过音频后的中断不再换道（音频已在路上）。
 func synthesizeEdge(ctx context.Context, text, voice, rateAttr string, onAudio func([]byte) error) error {
-	connURL := edgeTTSBase() + "?TrustedClientToken=" + edgeToken +
-		"&Sec-MS-GEC=" + edgeGecToken() + "&Sec-MS-GEC-Version=1-" + edgeChromium +
-		"&ConnectionId=" + randHex(32)
-	dialer := ws.Dialer{Timeout: 15 * time.Second, Header: ws.HandshakeHeaderHTTP(edgeHandshakeHeader())}
+	gec := edgeGecToken()
+	var lastErr error
+	for _, at := range []struct{ name, url string }{
+		{
+			name: "新域名",
+			url: edgeTTSBase() + "?Ocp-Apim-Subscription-Key=" + edgeToken +
+				"&Sec-MS-GEC=" + gec + "&Sec-MS-GEC-Version=1-" + edgeChromium +
+				"&ConnectionId=" + randHex(32),
+		},
+		{
+			name: "旧域名",
+			url: edgeTTSBaseFallback() + "?TrustedClientToken=" + edgeToken +
+				"&Sec-MS-GEC=" + gec + "&Sec-MS-GEC-Version=1-" + edgeChromium +
+				"&ConnectionId=" + randHex(32),
+		},
+	} {
+		err := synthesizeEdgeOnce(ctx, at.url, edgeHandshakeHeader(), text, voice, rateAttr, onAudio)
+		if err == nil {
+			return nil
+		}
+		log.Printf("[语音] 朗读通道 %s 失败: %v", at.name, err)
+		lastErr = err
+	}
+	return lastErr
+}
+
+// synthesizeEdgeOnce 单通道一次完整合成（协议两代同构：上行 speech.config +
+// SSML 两条文本帧，下行二进制帧剥头即 MP3，turn.end 收尾）。
+func synthesizeEdgeOnce(ctx context.Context, connURL string, header http.Header,
+	text, voice, rateAttr string, onAudio func([]byte) error) error {
+	dialer := ws.Dialer{Timeout: 15 * time.Second, Header: ws.HandshakeHeaderHTTP(header)}
 	conn, _, _, err := dialer.Dial(ctx, connURL)
 	if err != nil {
 		return fmt.Errorf("连接朗读服务失败: %w", err)
@@ -351,13 +390,31 @@ func (a *App) handleVoiceVoices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"voices": voices})
 }
 
-// fetchEdgeVoices 拉取并过滤 Edge 音色清单（GA 神经音色、中文排前的排序在调用处）。
+// fetchEdgeVoices 拉取并过滤 Edge 音色清单（GA 神经音色；新域名优先、旧域名后备）。
 func fetchEdgeVoices(ctx context.Context) ([]voiceView, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		edgeVoicesBase()+"?TrustedClientToken="+edgeToken+
-			"&Sec-MS-GEC="+edgeGecToken()+"&Sec-MS-GEC-Version=1-"+edgeChromium, nil)
+	gec := edgeGecToken()
+	var lastErr error
+	for _, at := range []struct{ name, url string }{
+		{"新域名", edgeVoicesBase() + "?Ocp-Apim-Subscription-Key=" + edgeToken +
+			"&Sec-MS-GEC=" + gec + "&Sec-MS-GEC-Version=1-" + edgeChromium},
+		{"旧域名", edgeVoicesBaseFallback() + "?TrustedClientToken=" + edgeToken +
+			"&Sec-MS-GEC=" + gec + "&Sec-MS-GEC-Version=1-" + edgeChromium},
+	} {
+		voices, err := fetchEdgeVoicesOnce(ctx, at.url)
+		if err == nil {
+			return voices, nil
+		}
+		log.Printf("[语音] 音色清单通道 %s 失败: %v", at.name, err)
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// fetchEdgeVoicesOnce 单通道拉取并解析音色清单。
+func fetchEdgeVoicesOnce(ctx context.Context, listURL string) ([]voiceView, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("构造音色清单请求失败: %w", err)
 	}

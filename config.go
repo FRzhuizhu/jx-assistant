@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"math/big"
 	"os"
+	"strings"
 )
 
 // genDeviceID 生成远程接入设备号：jx- + 6 位易抄写的字符（去掉 0/o/1/i
@@ -65,9 +67,8 @@ type Config struct {
 	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
 	// 上下文压缩设置
 	CompactMode      string  `json:"compactMode"`      // rule=规则压缩(默认) llm=模型摘要 off=关闭
-	KeepRounds       int     `json:"keepRounds"`       // 保留最近 N 轮不压缩
-	RuleInterval     int     `json:"ruleInterval"`     // 规则压缩的间隔轮数
-	CompactThreshold float64 `json:"compactThreshold"` // 模型摘要自动触发阈值（0.8/0.9）
+	KeepChars        int     `json:"keepChars"`        // 自动压缩的保留预算（字）：从最新一轮往前累计模型可见字数，装得下的整轮保留——轮是原子单位，至少保 1 轮
+	CompactThreshold float64 `json:"compactThreshold"` // 自动压缩触发阈值（估算 token 占窗口比例，0.8/0.9）
 	// 文件快照保留策略：按天超龄清理是主力（旧配置缺省回落默认值；-1 = 该项关闭）。
 	// 自动池管 write/edit 的小快照；手动池（snapshot_file，往往是
 	// Office 文档等大文件）默认不限量——清理靠 7 天过期；确有磁盘压力时再配
@@ -97,11 +98,16 @@ type Config struct {
 	// wizardCompany/wizardServer 留给自动同步器（sync.go）：定期拉服务端 /announce
 	// 跟随变化（模型清单/元数据、公司名、市场/更新/服务端地址），失联时按公司名
 	// 重新局域网发现自动迁移（服务端换端口/换机器）。
-	WizardDone    bool   `json:"wizardDone"`
-	RegistryURL   string `json:"registryURL"`
-	WizardCompany string `json:"wizardCompany,omitempty"`
-	WizardServer  string `json:"wizardServer,omitempty"`
-	WizardRev     string `json:"wizardRev,omitempty"` // 最近应用的服务端公告哈希（仅记录）
+	// companyLinkOff=公司接入整体停用（设置·网络访问的开关）：永不在公司使用的
+	// 机器关掉后不再连服务端，首启向导也不弹；开启的一切（含已配好的内部模型
+	// 通道）原样保留，重新打开即恢复同步与向导。
+	WizardDone     bool   `json:"wizardDone"`
+	RegistryURL    string `json:"registryURL"`
+	WizardCompany  string `json:"wizardCompany,omitempty"`
+	WizardServer   string `json:"wizardServer,omitempty"`
+	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用
+	WizardRev      string `json:"wizardRev,omitempty"`      // 最近应用的服务端公告哈希（仅记录）
+	CompanyLinkOff bool   `json:"companyLinkOff,omitempty"` // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`
@@ -114,6 +120,77 @@ type Config struct {
 	// SpeechRecognition，都不读这份配置）；接入后 recorder.go 的
 	// activeSpeechTranscriber 读这里。
 	SpeechAPI map[string]string `json:"speechApi,omitempty"`
+	// 主题色（#rrggbb）：设置页换点缀色时同步写进来，独立 WebView 环境
+	//（读不到主界面 localStorage）可从 /api/config 取它上色。
+	AccentColor string `json:"accentColor,omitempty"`
+	// 询问提醒（设置·常规）：提问/审批卡等待达到 AfterSec 仍未答（且用户未
+	// 停表）时声光提醒——系统叮一声 + 全屏颜色闪烁 + 语音组件朗读 Text
+	//（组件停用时只叮不读）。Enabled=nil 表示未写过该键＝默认开启。
+	AskAlert AskAlertCfg `json:"askAlert,omitempty"`
+	// 「执行结束后自动续发排队消息」（设置·常规）：本轮回复完成后，排队队列里
+	// 的待发消息——真人消息 / 派发回报 / 派发需求 / 系统注入，**不分来源**——
+	// 自动逐条作为独立一轮发出。nil 表示未写过该键＝默认开启；显式 false 才关闭：
+	// 关掉后本轮结束队列保留，排队坞给「继续发送」入口（点它照发）。
+	QueueAutoSend *bool `json:"queueAutoSend,omitempty"`
+}
+
+// AskAlertCfg 询问提醒配置段：Enabled=nil＝默认开启；AfterSec 触发秒数
+//（默认 240=4 分钟，钳 30-600）；Text 朗读文案（空＝默认那句）。
+type AskAlertCfg struct {
+	Enabled  *bool  `json:"enabled,omitempty"`
+	AfterSec int    `json:"afterSec,omitempty"`
+	Text     string `json:"text,omitempty"`
+}
+
+// 询问提醒的默认朗读文案与触发秒数（含访问器的兜底，测试里 Cfg 为 nil 也安全）。
+const (
+	askAlertDefaultSec  = 240
+	askAlertDefaultText = "领导，在吗？有个问题需要您审批确认一下。"
+)
+
+// askAlertOn 询问提醒是否开启（nil 接收器＝关：测试的裸 App 没有 Cfg）。
+func (c *Config) askAlertOn() bool {
+	if c == nil {
+		return false
+	}
+	return c.AskAlert.Enabled == nil || *c.AskAlert.Enabled
+}
+
+// askAlertAfterSec 触发秒数（解析后的生效值，30-600）。
+func (c *Config) askAlertAfterSec() int {
+	v := askAlertDefaultSec
+	if c != nil && c.AskAlert.AfterSec >= 30 && c.AskAlert.AfterSec <= 600 {
+		v = c.AskAlert.AfterSec
+	}
+	return v
+}
+
+// askAlertText 朗读文案（空回填默认）。
+func (c *Config) askAlertText() string {
+	if c != nil {
+		if s := strings.TrimSpace(c.AskAlert.Text); s != "" {
+			return s
+		}
+	}
+	return askAlertDefaultText
+}
+
+// askAlertDurText 提醒秒数的人类读法（240 →「4 分钟」、90 →「90 秒」），
+// envPrompt 的提问等待公告用。
+func askAlertDurText(sec int) string {
+	if sec%60 == 0 {
+		return fmt.Sprintf("%d 分钟", sec/60)
+	}
+	return fmt.Sprintf("%d 秒", sec)
+}
+
+// queueAutoSendOn 执行结束后是否自动续发排队消息（nil 键＝默认开；nil 接收器
+// ＝开：测试里的裸 App 没有 Cfg）。
+func (c *Config) queueAutoSendOn() bool {
+	if c == nil {
+		return true
+	}
+	return c.QueueAutoSend == nil || *c.QueueAutoSend
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的
@@ -129,12 +206,25 @@ type RemoteAccessCfg struct {
 
 // 步数上限（一条消息触发的任务里，模型调用＋工具执行的连续步数）的默认值：
 // 既是新装的默认，也是升级时「还是旧默认、没人手动改过」的配置被提到的新值。
-// 旧默认 30 太紧（稍复杂的任务跑满就自动停），故提到 100；手动设过其他值的
-// 配置一律保留原值（见 LoadConfig 的兼容分支）。
-const (
-	maxStepsDefault       = 100
-	maxStepsLegacyDefault = 30
-)
+// 旧默认 30（太紧）、100（稍复杂的任务仍常跑满）都提到过；本次提到 200——
+// 手动设过其他值的配置一律保留原值（见 LoadConfig 的兼容分支与
+// maxStepsLegacyDefaults）。
+const maxStepsDefault = 200
+
+// maxStepsLegacyDefaults 是历次旧默认值：配置里的值正好等于其中之一，说明用户
+// 从没手动改过（手动改过的不会是这些整数旧默认）——升级时随新默认一并提升，
+// 用户自己设的值（如 300）不受影响。30=首版默认，100=上一次提升后的默认。
+var maxStepsLegacyDefaults = []int{30, 100}
+
+// isLegacyMaxSteps 该值是不是历次旧默认之一（升级提值的判定，见上面注释）。
+func isLegacyMaxSteps(n int) bool {
+	for _, v := range maxStepsLegacyDefaults {
+		if n == v {
+			return true
+		}
+	}
+	return false
+}
 
 func DefaultConfig() *Config {
 	wd, _ := os.Getwd()
@@ -156,8 +246,7 @@ func DefaultConfig() *Config {
 		AllowShell:          true,
 		DataDir:             "data",
 		CompactMode:         "rule",
-		KeepRounds:          5,
-		RuleInterval:        5,
+		KeepChars:           100000, // 10 万字 ≈ 7.5 万 token 的近期原文（各工具压缩后常见余量）
 		CompactThreshold:    0.8,
 		SnapshotDays:        7,
 		SnapshotMaxMB:       32,
@@ -171,8 +260,9 @@ func DefaultConfig() *Config {
 			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
 			RegKey:  "chat_p2p_v1",
 		},
-		UpdateURL:  "http://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
+		UpdateURL:  "https://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
 		UpdateMode: "auto",
+		AskAlert:   AskAlertCfg{AfterSec: askAlertDefaultSec, Text: askAlertDefaultText},
 	}
 }
 
@@ -206,15 +296,13 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Workspace == "" {
 		cfg.Workspace = def.Workspace
 	}
-	// 步数上限：老配置里还是旧默认 30 的（说明没人手动改过）随新默认提到 100，
-	// 并在下面落盘；手动设过其他值的配置原样保留。缺这一项/写成 0 仍按默认补齐。
+	// 步数上限：老配置里还是旧默认（30 / 100）的（说明没人手动改过）随新默认
+	// 提到 200，并在下面落盘；手动设过其他值的配置原样保留。缺这一项/写成 0
+	// 仍按默认补齐。
 	maxStepsBumped := false
-	if cfg.MaxSteps == maxStepsLegacyDefault {
+	if isLegacyMaxSteps(cfg.MaxSteps) {
 		cfg.MaxSteps = maxStepsDefault
 		maxStepsBumped = true
-	}
-	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = def.MaxSteps
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = def.DataDir
@@ -234,11 +322,8 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.CompactMode != "rule" && cfg.CompactMode != "llm" && cfg.CompactMode != "off" {
 		cfg.CompactMode = def.CompactMode
 	}
-	if cfg.KeepRounds <= 0 {
-		cfg.KeepRounds = def.KeepRounds
-	}
-	if cfg.RuleInterval <= 0 {
-		cfg.RuleInterval = def.RuleInterval
+	if cfg.KeepChars <= 0 {
+		cfg.KeepChars = def.KeepChars
 	}
 	if cfg.CompactThreshold <= 0.5 || cfg.CompactThreshold >= 1 {
 		cfg.CompactThreshold = def.CompactThreshold
@@ -264,6 +349,20 @@ func LoadConfig(path string) (*Config, error) {
 	// 更新方式：老配置没有这一键时补默认 auto
 	if cfg.UpdateMode == "" {
 		cfg.UpdateMode = def.UpdateMode
+	}
+	// 询问提醒：老配置没有这一键时补默认（触发秒数与朗读文案）；AfterSec
+	// 越界的也拉回范围（保存侧已钳，这里兜升级前手改配置文件的情况）。
+	if cfg.AskAlert.AfterSec <= 0 {
+		cfg.AskAlert.AfterSec = askAlertDefaultSec
+	}
+	if cfg.AskAlert.AfterSec < 30 {
+		cfg.AskAlert.AfterSec = 30
+	}
+	if cfg.AskAlert.AfterSec > 600 {
+		cfg.AskAlert.AfterSec = 600
+	}
+	if strings.TrimSpace(cfg.AskAlert.Text) == "" {
+		cfg.AskAlert.Text = askAlertDefaultText
 	}
 	// 敏感字段透明解密（dpapi:v1: 密文 → 明文；旧版明文原样）。
 	// 首启迁移：明文照常读入，下一次 Save 自动转密文。

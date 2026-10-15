@@ -3,6 +3,13 @@ config.json
 *.exe
 # jx-assistant.exe 是引擎编译产物，不再入库：发行走安装包，开发自行 go build
 !md-viewer/*.exe
+# 共享便携 Python 运行时入库（全部内置技能与语音组件共用，全新克隆零装配即用）：
+# 放在 *.exe 规则之后放行运行时内全部文件（含 python.exe、Scripts\*.exe）
+!技能/_runtime/**
+技能/_runtime/**/__pycache__/
+技能/_runtime/**/*.pyc
+# pip 卸载半途的残渣目录（~ 包名-版本.dist-info），入库只会带来警告
+技能/_runtime/**/~*/
 *.exe~
 .zcode/
 node_modules/
@@ -10,7 +17,6 @@ __pycache__/
 data-tamper-test/
 _dsh_session1.jsonl
 server-run.log
-技能/_runtime/
 config-uitest.json
 data-uitest/
 mock-演示.txt
@@ -33,3 +39,10 @@ ppt合并/
 *.apk
 android-poc/
 技能/user/
+打包/清理清单.iss
+# 本地运行残留与构建/发布产物（不入库）：jx.db=实例运行数据库；*.exe.old/.new=静默更新换装接力残留
+jx.db
+*.exe.old
+*.exe.new
+打包/输出服务端/
+打包/静默更新/

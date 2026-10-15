@@ -99,8 +99,8 @@ func pickFolderNative(startDir, title string) (string, error) {
 }
 
 // pickFileNative 同款 IFileOpenDialog，但选择文件而非文件夹。
-// allFilter=false 时限定 ZIP 压缩包（技能安装场景，附「所有文件」兜底）；
-// allFilter=true 时不设过滤器（任意文件，聊天上传场景）。
+// allFilter=false 时限定技能安装文件（.zip 压缩包与 .md 说明文件，附「所有
+// 文件」兜底）；allFilter=true 时不设过滤器（任意文件，聊天上传场景）。
 // multi=true 的多选走 pickFilesComDlg（见其头注：IFileOpenDialog 的多选提取
 // 链 GetResults→GetCount 在真机上原生层空指针写，进程级硬死拦不住）。
 func pickFileNative(startDir, title string, allFilter, multi bool) ([]string, error) {
@@ -134,7 +134,7 @@ func pickDialogComDlg(startDir, title string, allFilter bool) ([]string, error) 
 	// 过滤器串：目标段 + 「所有文件」兜底段，每段 名\0模式\0，整体双 NUL 收尾
 	name1, spec1 := "所有文件", "*.*"
 	if !allFilter {
-		name1, spec1 = "ZIP 压缩包", "*.zip"
+		name1, spec1 = "技能文件", "*.zip;*.md"
 	}
 	var flt []uint16
 	for _, s := range []string{name1, spec1, "所有文件", "*.*"} {
@@ -289,19 +289,20 @@ func pickDialogSTA(startDir, title string, pickFolder, allFilter, multi bool) ([
 		return nil, fmt.Errorf("SetOptions 失败 (0x%x)", hr)
 	}
 	if !pickFolder && !allFilter {
-		// COMDLG_FILTERSPEC{lpwcsName, lpwcsSpec}；默认扩展名兜 .zip
-		nameZip, _ := syscall.UTF16PtrFromString("ZIP 压缩包 (*.zip)")
+		// COMDLG_FILTERSPEC{lpwcsName, lpwcsSpec}；默认过滤器兜技能安装包
+		// （.zip 压缩包与单个 .md 说明文件，见设置页「添加技能」）
+		nameSkill, _ := syscall.UTF16PtrFromString("技能文件 (*.zip;*.md)")
 		nameAll, _ := syscall.UTF16PtrFromString("所有文件 (*.*)")
-		specZip, _ := syscall.UTF16PtrFromString("*.zip")
+		specSkill, _ := syscall.UTF16PtrFromString("*.zip;*.md")
 		specAll, _ := syscall.UTF16PtrFromString("*.*")
 		specs := []comdlgFilterSpec{
-			{unsafe.Pointer(nameZip), unsafe.Pointer(specZip)},
+			{unsafe.Pointer(nameSkill), unsafe.Pointer(specSkill)},
 			{unsafe.Pointer(nameAll), unsafe.Pointer(specAll)},
 		}
 		if hr, _, _ = syscall.SyscallN(vt[vtSetFileTypes], uintptr(dlg), 2, uintptr(unsafe.Pointer(&specs[0]))); hr != 0 {
 			return nil, fmt.Errorf("SetFileTypes 失败 (0x%x)", hr)
 		}
-		syscall.SyscallN(vt[vtSetDefaultExtension], uintptr(dlg), uintptr(unsafe.Pointer(specZip)))
+		syscall.SyscallN(vt[vtSetDefaultExtension], uintptr(dlg), uintptr(unsafe.Pointer(specSkill)))
 	}
 	if t, e := syscall.UTF16PtrFromString(title); e == nil {
 		syscall.SyscallN(vt[vtSetTitle], uintptr(dlg), uintptr(unsafe.Pointer(t)))

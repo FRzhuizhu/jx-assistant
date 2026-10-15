@@ -40,6 +40,28 @@ import (
 // 计划审批（kind=plan）刻意不适用：它不设时限，见 requestUserAnswer。
 const questionTTL = 5 * time.Minute
 
+// questionTTLLabel 把 questionTTL 换算成给模型看的中文时长（环境快照的
+// 「提问等待」公告用）——改档只动 questionTTL 常量，公告随之更新。
+func questionTTLLabel() string {
+	if m := int(questionTTL.Minutes()); m >= 1 && questionTTL == time.Duration(m)*time.Minute {
+		return fmt.Sprintf("%d 分钟", m)
+	}
+	return questionTTL.String()
+}
+
+// clampAskTimeoutSec 钳制提问等待秒数（ask_user_question 的 timeout_sec）：
+// 太短用户来不及看（也来不及被声光提醒），太长一轮干等（用户停表入口本就
+// 能转无限等待，必须确认的问题直接传 0 不限时，时长不必给大）。
+func clampAskTimeoutSec(sec int) int {
+	if sec < 30 {
+		return 30
+	}
+	if sec > 600 {
+		return 600
+	}
+	return sec
+}
+
 // 提问/审批的种类（UserQuestion.Kind）：前端按它分卡渲染，后端按它决定
 // 等待时限与是否落库（计划审批无时限、且要跨进程重启存活）。
 const (
@@ -60,10 +82,20 @@ type UserQuestion struct {
 	Plan         string   `json:"plan,omitempty"` // kind=plan 时的计划正文
 	Options      []string `json:"options,omitempty"`
 	AllowFree    bool     `json:"allowFree"`
-	CreatedAt    string   `json:"createdAt"`
-	expiresAt    time.Time
-	decided      bool
-	ch           chan string
+	// 倒计时（仅 kind=ask）：TimeoutSec 是本次等待秒数（0=默认 300）；
+	// NoTimeout=true 表示模型显式要求不限时（timeout_sec=0，无推荐方案或必须
+	// 确认的问题）——同样没有倒计时与截止时刻，一直等用户作答。
+	// DeadlineMs 是截止的绝对毫秒时间戳（前端据此跳倒计时）；TimerHeld=true
+	// 表示用户已停表（悬停/触碰卡片或点停止按钮）——无限等待直到作答。
+	TimeoutSec int    `json:"timeoutSec,omitempty"`
+	NoTimeout  bool   `json:"noTimeout,omitempty"`
+	DeadlineMs int64  `json:"deadlineMs,omitempty"`
+	TimerHeld  bool   `json:"timerHeld,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+	expiresAt  time.Time
+	decided    bool
+	ch         chan string
+	timer      *time.Timer // 停表入口（holdQuestion）用它掐掉超时；permMu 保护
 }
 
 // requestUserAnswer 广播提问并阻塞等待用户回答；返回用户的回答文本，
@@ -75,7 +107,8 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 	q.CreatedAt = now()
 	// 计划审批不设时限：提交那一刻就落库，等待一直有效。进程重启后内存里的
 	// 等待者没了，但库里的计划还在——前端照样看到待审批卡，用户批准/驳回走
-	// resolvePersistedPlan（恢复执行）。其余提问/确认照旧走 questionTTL。
+	// resolvePersistedPlan（恢复执行）。其余提问按 timeout_sec（缺省 300 秒）
+	// 限时，用户悬停/触碰卡片可停表（holdQuestion）转为无限等待。
 	ttl := questionTTL
 	if q.Kind == askKindPlan {
 		ttl = 0
@@ -84,18 +117,48 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		}); err != nil {
 			log.Printf("[对话] 会话 %s 的待审批计划落库失败（重启后这张卡会丢）: %v", sess.ID, err)
 		}
+	} else if q.NoTimeout {
+		ttl = 0 // 模型显式不限时（timeout_sec=0）：无推荐方案/必须确认的问题
+	} else if q.TimeoutSec > 0 {
+		ttl = time.Duration(q.TimeoutSec) * time.Second
 	}
 	if ttl > 0 {
 		q.expiresAt = time.Now().Add(ttl)
+		q.DeadlineMs = q.expiresAt.UnixMilli()
 	}
 	q.ch = make(chan string, 1)
+	var timer *time.Timer
+	if ttl > 0 {
+		timer = time.NewTimer(ttl) // 先建表后登记：登记瞬间就可能有人停表
+		q.timer = timer
+	}
 	a.permMu.Lock()
 	a.questions[q.ID] = q
 	a.permMu.Unlock()
 	ev := Event{Type: "question_required", QuestionID: q.ID, SessionID: sess.ID, Title: sess.Title,
-		Kind: q.Kind, Summary: q.Question, Plan: q.Plan, Options: q.Options, Reason: q.Question}
+		Kind: q.Kind, Summary: q.Question, Plan: q.Plan, Options: q.Options, Reason: q.Question,
+		DeadlineMs: q.DeadlineMs}
 	a.broadcast(ev)
+	// 声光提醒（设置·常规，默认开）：等待达到设定时长仍未答且未停表时，系统
+	// 叮一声（MessageBeep，不走语音组件）+ 广播 ask_alert（前端全屏闪烁，并在
+	// 浮窗上走完 15 秒倒计时后才朗读配置文案）。作答/超时/停表/停止都会被下面
+	// 的 defer 掐掉；触发那一刻已停表的直接不响——停表=用户碰到过卡片，或已从
+	// 任何入口打开对应的计划页/浮窗在看（在场），连提醒一起暂停。
+	var alertTimer *time.Timer
+	if a.Cfg.askAlertOn() {
+		alertTimer = time.AfterFunc(time.Duration(a.Cfg.askAlertAfterSec())*time.Second, func() {
+			if !a.askAlertDue(q.ID) {
+				return
+			}
+			systemBeep()
+			a.broadcast(Event{Type: "ask_alert", QuestionID: q.ID, SessionID: q.SessionID,
+				Title: q.SessionTitle, Summary: q.Question, Output: a.Cfg.askAlertText()})
+		})
+	}
 	defer func() {
+		if alertTimer != nil {
+			alertTimer.Stop()
+		}
 		a.permMu.Lock()
 		delete(a.questions, q.ID)
 		a.permMu.Unlock()
@@ -109,19 +172,28 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		a.broadcast(Event{Type: "question_resolved", QuestionID: q.ID, SessionID: sess.ID})
 	}()
 	// 无时限的卡（计划审批）让 timeout 永远为 nil：超时分支永不触发，
-	// 只有用户批准/驳回或本轮被停止（ctx 取消）才会结束等待。
+	// 只有用户批准/驳回或本轮被停止（ctx 取消）才会结束等待。带时限的提问
+	// 用可掐的 timer：holdQuestion 停表后，Stop 前已发出的那次触发按持有标记
+	// 丢弃（时间差内到点的误报），此后无限等待。
 	var timeout <-chan time.Time
-	if ttl > 0 {
-		timeout = time.After(ttl)
+	if timer != nil {
+		timeout = timer.C
 	}
-
-	select {
-	case ans := <-q.ch:
-		return ans, true
-	case <-timeout:
-		return "", false
-	case <-ctx.Done():
-		return "", false
+	for {
+		select {
+		case ans := <-q.ch:
+			return ans, true
+		case <-timeout:
+			a.permMu.Lock()
+			held := q.TimerHeld
+			a.permMu.Unlock()
+			if held {
+				continue // 已停表：丢弃误触的超时，转无限等待
+			}
+			return "", false
+		case <-ctx.Done():
+			return "", false
+		}
 	}
 }
 
@@ -141,6 +213,44 @@ func (a *App) resolveQuestion(id, answer string) error {
 		return a.resolvePersistedPlan(id, answer)
 	}
 	return nil
+}
+
+// holdQuestion 标记「用户已经碰到/已经在看着这条请求」，并停掉它的计时：
+//   - 悬停/触碰卡片或点停止按钮（前端 askHoldTimer）：带时限的提问停表转不限时；
+//   - 从任何入口打开这条请求对应的页面（前端 notePlanHandled：右下角角标堆、
+//     输入区上方的浮窗、消息流里的计划卡、右栏「计划」页签）：计划审批这类
+//     本来就没有时限（timer == nil），没有表可停，但同样要置位 TimerHeld——
+//     久等声光提醒（askAlertDue）与后端那次已排定的触发据此判定「已在处理」，
+//     不再叮、前端也不朗读。
+//
+// 单向操作：置位后一直有效，直到作答或本轮被停止。停表即广播
+// question_deadline，所有端的倒计时统一换成「已停止计时」。
+func (a *App) holdQuestion(id string) {
+	a.permMu.Lock()
+	q, ok := a.questions[id]
+	held := false
+	if ok && !q.TimerHeld {
+		q.TimerHeld = true
+		if q.timer != nil { // 有时限的提问：停表转不限时（无时限的没有表可停）
+			q.DeadlineMs = 0
+			q.timer.Stop()
+		}
+		held = true
+	}
+	a.permMu.Unlock()
+	if held {
+		a.broadcast(Event{Type: "question_deadline", QuestionID: id, SessionID: q.SessionID, Held: true})
+	}
+}
+
+// askAlertDue 询问提醒（久等声光提醒）到点那一刻是否还该响：这条请求还在等、
+// 用户没作答、也没停表（悬停/触碰/点了停止，或从任何入口打开对应页面进入处理）。
+// 单独拆出来是为了可测——Timer 到点时的判定条件只有这一处。
+func (a *App) askAlertDue(id string) bool {
+	a.permMu.Lock()
+	defer a.permMu.Unlock()
+	q, pending := a.questions[id]
+	return pending && !q.decided && !q.TimerHeld
 }
 
 // resolvePersistedPlan 处理「库里那份待审批计划」的用户决定（批准/驳回）。
@@ -247,11 +357,12 @@ func (a *App) pendingPlanQuestions() []*UserQuestion {
 
 func askUserQuestionTool() Tool {
 	return Tool{
-		Spec: toolSpec("ask_user_question", "向用户提出一个需要其决定的问题并等待回答。用于：方案二选一、确认破坏性操作、缺失的关键信息。可带 2-6 个选项（用户也可自行输入）。不要用提问代替能自己查到的事实。",
+		Spec: toolSpec("ask_user_question", "向用户提出一个需要其决定的问题并等待回答。用于：方案二选一、确认破坏性操作、缺失的关键信息。可带 2-6 个选项（用户也可自行输入），有推荐方案就写进选项。不要用提问代替能自己查到的事实。timeout_sec 分档见系统提示词「提问的分寸」；界面显示倒计时，用户悬停/触碰卡片可停表转不限时，到点未答视为放行——按你的默认方案继续执行。",
 			objSchema(map[string]any{
-				"question":   strProp("问题本身，一句话说清楚要用户决定什么"),
-				"options":    strProp("可选：以换行分隔的 2-6 个选项，每个一行"),
-				"allow_free": boolProp("是否允许用户自由输入（默认 true）"),
+				"question":    strProp("问题本身，一句话说清楚要用户决定什么"),
+				"options":     strProp("可选：以换行分隔的 2-6 个选项，每个一行，推荐方案放第一个"),
+				"allow_free":  boolProp("是否允许用户自由输入（默认 true）"),
+				"timeout_sec": intProp("可选：等待秒数。非必要提问 30；一般缺省 300；无推荐方案或必须确认传 0=不限时。到点未答视为放行，按默认方案继续"),
 			}, "question")),
 		Run: runAskUserQuestion,
 	}
@@ -259,9 +370,10 @@ func askUserQuestionTool() Tool {
 
 func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Question  string   `json:"question"`
-		Options   []string `json:"options"`
-		AllowFree *bool    `json:"allow_free"`
+		Question   string          `json:"question"`
+		Options    json.RawMessage `json:"options"` // schema 声明为字符串，但数组也是合理给法：两种都收
+		AllowFree  *bool           `json:"allow_free"`
+		TimeoutSec *int            `json:"timeout_sec"` // 指针区分「没传」（默认 300）与「显式传 0」（不限时）
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -270,10 +382,30 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	if q == "" {
 		return "", fmt.Errorf("question 不能为空")
 	}
+	noTimeout := false
+	timeoutSec := 0
+	if p.TimeoutSec != nil {
+		if *p.TimeoutSec == 0 {
+			noTimeout = true // 显式不限时：无推荐方案/必须确认的问题
+		} else {
+			timeoutSec = clampAskTimeoutSec(*p.TimeoutSec)
+		}
+	}
 	options := []string{}
-	for _, o := range p.Options {
-		if s := strings.TrimSpace(o); s != "" {
-			options = append(options, s)
+	if len(p.Options) > 0 {
+		var arr []string
+		var one string
+		switch {
+		case json.Unmarshal(p.Options, &arr) == nil:
+		case json.Unmarshal(p.Options, &one) == nil:
+			arr = strings.Split(one, "\n")
+		default:
+			return "", fmt.Errorf("options 应为字符串数组或换行分隔的字符串")
+		}
+		for _, o := range arr {
+			if s := strings.TrimSpace(o); s != "" {
+				options = append(options, s)
+			}
 		}
 	}
 	if len(options) > 6 {
@@ -289,16 +421,79 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	if t.emit != nil {
 		t.emit(Event{Type: "tool_wait", Name: "ask_user_question", Output: "等待用户回答…"})
 	}
-	uq := &UserQuestion{Kind: askKindAsk, Question: q, Options: options, AllowFree: allowFree}
+	uq := &UserQuestion{Kind: askKindAsk, Question: q, Options: options, AllowFree: allowFree, TimeoutSec: timeoutSec, NoTimeout: noTimeout}
 	ans, ok := t.app.requestUserAnswer(t.ctx, t.sess, uq)
 	if !ok {
-		return "（用户未在时限内回答，视为暂缓。继续做不依赖该决定的部分，或稍后再问。）", nil
+		return "（用户未在时限内回答——视为放行：按你的默认方案继续执行，做完在汇报里说明这点。）", nil
 	}
 	ans = strings.TrimSpace(ans)
 	if ans == "" {
 		return "（用户跳过了这个问题。）", nil
 	}
 	return "用户回答：" + ans, nil
+}
+
+// requestPermissionTool 是通用的「提权申请」入口：模型把「把会话切到更宽
+// 权限档」作为一次显式请求交给用户决定（弹审批卡），批准后立即切档并随
+// 环境快照公告、权限芯片同步刷新。它补拒绝驱动的盲区：git_sync、MCP
+// 连接器、register_skill 这类只读档整体不可用的通道，以及可预判要连续
+// 多个写动作的场景——一次申请整档畅通，比逐个动作撞墙申请高效。
+func requestPermissionTool() Tool {
+	return Tool{
+		Spec: toolSpec("request_permission",
+			"申请把当前会话的权限档位调宽（只读 → 工作区内读写 → 完全访问），弹审批卡由用户决定，批准后立即生效（权限芯片同步刷新）。适用于：任务确需写入而当前只读（git_sync、MCP 连接器、register_skill 等通道在只读档整体不可用），或可预判要连续多个写动作（一次申请比逐个撞墙申请高效）。仅在被真实拦住或明确预判做不了时使用，不要为省事预防性申请；用户拒绝或超时后本轮终局：如实说明并停止，不要绕过。",
+			objSchema(map[string]any{
+				"target": map[string]any{
+					"type":        "string",
+					"enum":        []string{permWorkspace, permFull, "danger-full-access"},
+					"description": "申请切到的权限档：workspace-write（工作区内读写）或 full / danger-full-access（完全访问），必须比当前档宽",
+				},
+				"justification": strProp("一句话向用户说明为什么要调宽权限（展示在审批卡上）"),
+			}, "target", "justification")),
+		Run: runRequestPermission,
+	}
+}
+
+func runRequestPermission(t *toolContext, args json.RawMessage) (string, error) {
+	var p struct {
+		Target        string `json:"target"`
+		Justification string `json:"justification"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	target := strings.TrimSpace(p.Target)
+	if target == "danger-full-access" {
+		target = permFull // 官方词汇表的 full 档别名
+	}
+	cur := permModeOf(t.sess)
+	if target != permWorkspace && target != permFull {
+		return "", fmt.Errorf("target 仅支持 %s / %s / danger-full-access，收到 %q", permWorkspace, permFull, p.Target)
+	}
+	if sandboxPolicyRank(target) <= sandboxPolicyRank(cur) {
+		return "", fmt.Errorf("当前会话已是「%s」，target=%s 不比它宽，无需申请；更宽才值得申请，或直接执行", permModeLabel(cur), target)
+	}
+	just := strings.TrimSpace(p.Justification)
+	if just == "" {
+		return "", fmt.Errorf("justification 不能为空：一句话说明为什么要调宽权限（给用户看的理由）")
+	}
+	summary := fmt.Sprintf("把会话权限从「%s」调宽到「%s」｜理由：%s", permModeLabel(cur), permModeLabel(target), truncateRunes(just, 120))
+	if t.emit != nil {
+		t.emit(Event{Type: "tool_wait", Name: t.toolName, Output: "等待用户审批（申请调整会话权限）…"})
+	}
+	approved, _, timedOut := t.app.requestApproval(t.ctx, t.sess, t.toolName, summary,
+		fmt.Sprintf("当前会话为「%s」，模型申请切到「%s」（批准后立即生效，本会话后续动作按新档执行）", permModeLabel(cur), permModeLabel(target)))
+	if !approved {
+		if timedOut {
+			return "", fmt.Errorf("等待审批超时（上限 %s），按拒绝处理：会话保持「%s」。可请用户直接在权限芯片上调档，或稍后重新发起", approvalTTL, permModeLabel(cur))
+		}
+		return "", fmt.Errorf("用户未批准调整权限，会话保持「%s」。本轮终局：如实说明并停止，不要换法绕过", permModeLabel(cur))
+	}
+	wasMode, wasTools := permModeOf(t.sess), t.sess.Tools
+	t.app.switchSessionPerm(t.sess, target)
+	// 「权限变更」即时落地：注记随新环境快照落库（env 通道），权限芯片同步刷新
+	t.app.landPermChange(t.sess, permSrcApproval, wasMode, wasTools, t.emit)
+	return fmt.Sprintf("已批准：会话权限已从「%s」切换为「%s」，后续动作按新档执行，不再逐次申请", permModeLabel(wasMode), permModeLabel(target)), nil
 }
 
 func enterPlanModeTool() Tool {
@@ -386,12 +581,12 @@ func runExitPlanMode(t *toolContext, args json.RawMessage) (string, error) {
 	ans = strings.TrimSpace(ans)
 	if ans == "__approve__" {
 		if ans == "__ignore__" {
-		// 「忽略计划」= 搁置这一轮：把本轮停下来（等同点「停止」），计划本身不撤销
-		// ——它仍留在对话里（也留在库里继续等处置），用户之后随时能再批准或驳回。
-		t.app.stopRun(t.sess.ID)
-		return "（用户先搁置了这份计划：本轮到此结束。计划仍留在对话里等待处置，用户之后可以再批准或驳回。）", nil
-	}
-	// 用户批了：撤掉库里那份待审批记录（内存等待者的收尾由 requestUserAnswer 做）
+			// 「忽略计划」= 搁置这一轮：把本轮停下来（等同点「停止」），计划本身不撤销
+			// ——它仍留在对话里（也留在库里继续等处置），用户之后随时能再批准或驳回。
+			t.app.stopRun(t.sess.ID)
+			return "（用户先搁置了这份计划：本轮到此结束。计划仍留在对话里等待处置，用户之后可以再批准或驳回。）", nil
+		}
+		// 用户批了：撤掉库里那份待审批记录（内存等待者的收尾由 requestUserAnswer 做）
 		_ = t.app.Store.ClearPendingPlan(t.sess.ID)
 		t.sess.PlanMode = false
 		// 步数重算：计划获批是新工作段的起点，主循环检测到信号就把 step 从头计

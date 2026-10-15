@@ -17,6 +17,27 @@
   2026-10-12 改造，此前注入网页顶栏的方案在编程模式下会把右侧栏按钮挤到第二行），
   点击回首页；从屏幕**顶缘下滑 / 底缘上滑**
   也回首页（仅认从边缘起手的滑动，中间滑对话不受影响，参数对齐电脑端左右栏手势）。
+- **浏览器配套（2026-10-13 补齐）**：权限清单对齐浏览器类应用——
+  RECORD_AUDIO + MODIFY_AUDIO_SETTINGS（缺后者报 Could not start audio source）、
+  ACCESS_NETWORK_STATE（navigator.onLine 等网络感知）、POST_NOTIFICATIONS
+  （Android 13+，下载完成通知；拒绝仅少通知）。文件上传走系统 SAF 选择器
+  （content:// 授权回传，**应用自身零存储权限**）；文件下载挂 DownloadManager
+  落公共 Downloads（WebView 默认点下载链接无响应，必须实现 DownloadListener）；
+  网页全屏视频实现 onShowCustomView/onHideCustomView（默认也是无响应）。
+  上传与麦克风已在模拟器（带音频）实测：picker 选图回传 File（名/大小/MIME 全对）、
+  getUserMedia OK。
+- **HTTPS 优先（2026-10-12）**：语音输入需要安全上下文（getUserMedia 仅 HTTPS）。
+  壳子把 http 入口自动升级为 https 同端口加载，配对网关的自签证书自动「继续访问」
+  （白名单只放行已配对 host，陌生站点照旧拒绝）；网关不支持 https 时自动回落
+  http，一切如旧——浏览器扫码访问仍是 http，只有壳子享受 https。麦克风经
+  `onPermissionRequest` 对配对 host 放行（首次弹系统权限框）。
+  **麦克风权限清单是两个**：RECORD_AUDIO（运行时）+ **MODIFY_AUDIO_SETTINGS**
+  （普通权限）——缺后者时 getUserMedia 报 `NotReadableError: Could not start
+  audio source`（真机与模拟器都复现，2026-10-13 修复）。origin 匹配兼容
+  `blob:https://host:port/...`（P2P 直连模式的远程外壳挂在 blob origin 上）。
+- **返回键（2026-10-12）**：第一次交给网页的返回键守卫——对话页→呼出左栏、
+  左栏→收回对话页、弹窗/设置页逐层收敛（设置页走它自己的两级 popstate 返回）；
+  **3 秒内第二次返回 = 回壳首页**（不拦用户退出）。
 - **记忆位置**：退出应用时停在哪台电脑里，下次冷启动直接进那台；回到首页后再退出
   则下次从首页开始。
 - **缓存管理**：
@@ -60,8 +81,11 @@ app/src/main/java/com/jianxiang/link/
 ## 已在模拟器（AVD jx-test，Android 15 / WebView 124）点验
 
 首页两行按钮与设备列表（在线/离线灰字）、点击进电脑页（经真实 210 网关中继拉起
-完整远程外壳）、顶栏注入「首页 · jx-go」按钮（位于两开合按钮之间、自适应中间宽度）、
-顶缘下滑/底缘上滑回首页（中部滑动不误触）、长按菜单与两处二次确认、清空缓存
+完整远程外壳）、应用级「⌂ 设备名」浮条（水平绝对居中、网页顶栏一行不被挤）、
+HTTPS 升级 + 自签白名单（本机自签 https 服务器实测：http 入口自动升 https 加载、
+无证书告警；网关仅 http 时自动回落）、麦克风权限链（getUserMedia → 系统权限框 →
+grant 回传；模拟器无麦克风硬件止于 NotReadableError，真机即通）、返回键（对话页
+呼出左栏 / 左栏收回对话页 / 3 秒双击回首页）、顶缘下滑/底缘上滑回首页（中部滑动不误触）、长按菜单与两处二次确认、清空缓存
 （storage 清空 + deleteProfile 尽力）、删除设备、设置页两区域、反馈意见（真实发送
 经中继落库电脑端 feedback 表，diagnostics 带 src=jx-link）、扫码页相机权限流程、
 冷启动记忆直达（退出时在哪台电脑里，下次直接进哪台）。

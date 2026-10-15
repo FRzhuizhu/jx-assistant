@@ -80,6 +80,26 @@ const JX = {
     if (i >= 0) this._msgActions.splice(i, 1);
   },
   registerSettingsSection(sec) { this._settingsSections.push(sec); },
+  // 组件右键菜单贡献（app-ctxmenu 组装菜单时调用）：fn(ctx) 返回 [{label, fn,
+  // disabled?}]，ctx = {kind:'selection'|'bubble', text, msgEl}。贡献项排在
+  // 内置项之后，链路实现完全归组件——组件关掉必须 unregister，条目随组件消失。
+  _ctxMenu: [],
+  registerCtxMenu(fn) { this._ctxMenu.push(fn); },
+  unregisterCtxMenu(fn) {
+    const i = this._ctxMenu.indexOf(fn);
+    if (i >= 0) this._ctxMenu.splice(i, 1);
+  },
+  // 汇总全部组件贡献的右键菜单项（单个组件出错只告警，不拦菜单）
+  ctxMenuItems(ctx) {
+    const out = [];
+    for (const f of this._ctxMenu.slice()) {
+      try {
+        const items = f(ctx);
+        if (Array.isArray(items)) out.push(...items.filter(Boolean));
+      } catch (e) { console.warn('[JX] ctxmenu', e); }
+    }
+    return out;
+  },
   // 插件向输入区左侧挂控件（按钮等），注册即生效；右栏子对话输入区镜像一份
   // （点击转发给原件执行，原件的 class 变化同步过来，两边外观/行为一致）
   addComposerControl(el) {
@@ -532,16 +552,108 @@ function slidePane(el, from, to, onEnd) {
   setTimeout(fin, 460); // 兜底：transitionend 不来（嵌入浏览器节流）也定版
 }
 
-/* ---------- 数字助理按钮的脸部动画 ---------- */
+/* ---------- 数字助理按钮的小人动画（方案三：双循环随机轮播） ----------
+   data-state 仍由 setFace 驱动（idle/thinking/done），触发点与旧版完全一致；
+   这里在状态切换上挂一套动作调度（节奏照搬《干活小人方案三预览.html》）：
+   - thinking（干活中）：循环一「低头读纸」/ 循环二「拿纸核对」随机轮播，
+     循环间随机歇 1.2–2.8 秒；眨眼独立随机 2.6–6.8 秒；
+   - idle（待机）：只眨眼；
+   - done（完成微笑，约 4 秒后回 idle）：不跑循环，微笑交给 CSS（da-squish/da-pop）。
+   动作通过给 #da-face 挂 is-* class 驱动（样式见 style.css 同名注释块）。 */
 
 let faceTimer = null;
+let dollGen = 0;      // 动画代际：setFace 换状态时自增，旧异步循环发现代际不符即退场
+let dollState = null; // 已启动的状态。幂等：delta/reasoning 事件会高频调
+                      // setFace('thinking')，状态没变就不重启循环——否则第一循环
+                      // 永远被顶掉，动画僵在开头
+
+const daRand = (a, b) => a + Math.random() * (b - a);
+const daWait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 完成未读徽章（方案 C）：常驻 done（没看着对话）每来一次 +1；任何非 done 状态清零。
+// 计数放 setFace（dollStart 有幂等，连续多次完成时数字要继续涨、弹跳重播）。
+let daDoneUnread = 0;
+function daBadgeSet(n) {
+  const b = document.getElementById('da-badge');
+  if (!b) return;
+  if (n > 0) {
+    b.textContent = n > 1 ? String(n) : '1';
+    b.classList.remove('hidden', 'pop'); void b.offsetWidth;
+    b.classList.add('pop');
+  } else {
+    daDoneUnread = 0;
+    b.classList.add('hidden'); b.classList.remove('pop');
+  }
+}
+
+// 循环一：低头读纸——纸在正中出现，眼睛慢慢转下去盯着它（盯久一点），再慢慢抬回，纸收起
+async function daLoopStare(face, gen) {
+  face.classList.add('is-read', 'is-stare');
+  await daWait(900); if (gen !== dollGen) return;   // 慢慢转下去
+  await daWait(2600); if (gen !== dollGen) return;  // 低头盯着中间那张纸，盯久一点
+  face.classList.remove('is-stare');
+  await daWait(900); if (gen !== dollGen) return;   // 慢慢抬回来
+  face.classList.remove('is-read');
+}
+// 循环二：拿纸核对——纸出现随 1.1s 赶工起伏，中途飘起对一对，再落回收个尾
+async function daLoopWork(face, gen) {
+  face.classList.add('is-work');
+  await daWait(800); if (gen !== dollGen) return;
+  face.classList.add('is-float');
+  await daWait(1400); if (gen !== dollGen) return;
+  face.classList.remove('is-float');
+  await daWait(700); if (gen !== dollGen) return;
+  face.classList.remove('is-work');
+  await daWait(1000);
+}
+// 干活主循环：每回掷硬币选循环一/二，循环间随机歇一口气
+async function daWorkLoop(face, gen) {
+  while (gen === dollGen) {
+    if (Math.random() < 0.5) await daLoopStare(face, gen);
+    else await daLoopWork(face, gen);
+    await daWait(daRand(1200, 2800));
+  }
+}
+// 眨眼独立随机：待机/干活都眨（随机 2.6–6.8 秒一次，一次 130ms）
+async function daBlinkLoop(face, gen) {
+  while (gen === dollGen) {
+    await daWait(daRand(2600, 6800)); if (gen !== dollGen) return;
+    face.classList.add('is-blink');
+    setTimeout(() => { if (gen === dollGen) face.classList.remove('is-blink'); }, 130);
+  }
+}
+
+// 状态切换：清场（代际自增让旧循环退场）后按新状态起新循环
+function dollStart(st) {
+  if (dollState === st) return;
+  dollState = st;
+  dollGen++;
+  const face = document.getElementById('da-face');
+  if (!face) return;
+  ['is-read', 'is-stare', 'is-work', 'is-float', 'is-blink', 'is-cheer'].forEach((c) => face.classList.remove(c));
+  if (st === 'thinking') { daWorkLoop(face, dollGen); daBlinkLoop(face, dollGen); daBadgeSet(0); }
+  else if (st === 'idle') { daBlinkLoop(face, dollGen); daBadgeSet(0); }
+  // 'done'（方案 C）：先把手里那张纸举过头顶晃两下（1.3s 后摘 class），随后微笑交给
+  // CSS 常驻，不跑循环（眨眼也停——挤眼动画期间别再插一眨）；徽章计数在 setFace 里做
+  else if (st === 'done') {
+    face.classList.add('is-cheer');
+    setTimeout(() => { if (dollState === 'done') face.classList.remove('is-cheer'); }, 1300);
+  }
+}
+
 function setFace(st, revertMs) {
   const f = document.getElementById('da-face');
   if (!f) return;
   f.setAttribute('data-state', st);
+  if (st === 'done' && !revertMs) daBadgeSet(++daDoneUnread); // 无回退＝常驻提醒（没看着对话）：算一条未读
+  dollStart(st);
   if (faceTimer) { clearTimeout(faceTimer); faceTimer = null; }
-  if (revertMs) faceTimer = setTimeout(() => f.setAttribute('data-state', 'idle'), revertMs);
+  if (revertMs) faceTimer = setTimeout(() => {
+    f.setAttribute('data-state', 'idle');
+    dollStart('idle');
+  }, revertMs);
 }
+dollStart('idle'); // 脚本在 body 末尾加载、da-face 已就绪：直接进待机眨眼
 
 /* ---------- 子对话视图（右侧边栏首个视图：顶上下拉选/新建，下方内嵌完整对话） ---------- */
 
@@ -678,6 +790,7 @@ function removeSessionLocalData(id) {
     localStorage.removeItem('jx.q.' + id); // 会话删除：引用草稿的本地痕迹一并清掉
     localStorage.removeItem('jx.subq.' + id);
   } catch (e) {}
+  delete rpSess[id]; // 右栏的会话作用域状态（app-right.js）：会话没了，状态跟着作废
   delete subActs[id];
   delete subDone[id];
   delete dotDone[id];
@@ -705,7 +818,7 @@ function restoreHomeDraftLS() {
     if (homeDraft.planMode && homeDraft.goalMode) homeDraft.goalMode = false;
     homeDraft.remote = (d.remote && d.remote.host) ? d.remote : null;
     homeDraft.text = typeof d.text === 'string' ? d.text : '';
-    homeDraft.quote = typeof d.quote === 'string' ? d.quote : ''; // 引用胶囊的暂存文本
+    homeDraft.quote = d.quote || ''; // 引用暂存：新版字符串数组（多条）/ 旧版单条字符串，用前经 parseQuotesLS 归一
   } catch (e) {}
 }
 
@@ -803,8 +916,17 @@ function sendKeyHint() {
 function updateSendKeyHint() {
   const el = $('input');
   if (!el) return;
+  // 执行中占位符带着插话/排队提示段（setStreamUI 追加的）：这里只更新存货，
+  // 流结束由 setStreamUI 拼上新文案还原，别把执行中的提示段顶掉
+  if (el.dataset.runPh) { el.dataset.idlePh = sendKeyHint(); return; }
   el.placeholder = sendKeyHint();
 }
+
+// 执行中追加在输入框占位符末尾的插话/排队提示段（灰字）。完整占位符＝
+// 发送快捷键提示 ＋ 语音组件的语音提示（window.JXVoiceHint）＋ 本段（仅执行中）。
+// setStreamUI（app-chat.js）负责换上/还原；语音组件刷新子输入框占位时也带上它
+// （组件/voice/client.js 的 refreshShortcutPlaceholders）。
+const RUN_HINT_SEGMENT = '；执行中：输入内容可插话或排队发送';
 
 /* ---------- 轻提示（toast） ---------- */
 // toast：右下角短暂浮出的非阻塞通知（静默组件更新完成等「不打扰但留痕」的

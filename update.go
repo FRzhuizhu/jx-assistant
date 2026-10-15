@@ -98,8 +98,8 @@ func versionCompare(a, b string) int {
 	return 0
 }
 
-// parseDateVersion 解析「日期+V序号」版本号（20261008V10 → 20261008, 10）。
-var dateVersionRe = regexp.MustCompile(`^(\d{8})[Vv](\d+)$`)
+// parseDateVersion 解析「日期-序号」版本号（20261013-1 → 20261013, 1）；旧写法「日期+V序号」（20261008V10 → 20261008, 10）一并识别——存量已装版本报 V 格式，混比时仍走精确的日期+序号比较。
+var dateVersionRe = regexp.MustCompile(`^(\d{8})(?:[Vv]|-)(\d+)$`)
 
 func parseDateVersion(s string) (date, serial int64, ok bool) {
 	m := dateVersionRe.FindStringSubmatch(strings.TrimSpace(s))

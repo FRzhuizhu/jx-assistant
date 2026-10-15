@@ -33,6 +33,8 @@ func modeLabelOf(mode string) string {
 		return "标准办公"
 	case "coding":
 		return "编程"
+	case "beginner-coding":
+		return "新手编程"
 	case "skill-create":
 		return "创建技能"
 	}
@@ -384,7 +386,7 @@ func (st *timelineState) renderAudit(b *strings.Builder, m *StoredMessage) {
 			b.WriteString(fmt.Sprintf("  返回：正文 %d 字（网关未返回 usage）· 耗时 %d ms\n\n", ar.Text, ar.Ms))
 		}
 		if ar.SysHash != "" || ar.EnvHash != "" {
-			b.WriteString(fmt.Sprintf("  前缀指纹：sys %s · env %s（与上一次不同 = 前缀缓存必不命中）\n\n", ar.SysHash, ar.EnvHash))
+			b.WriteString(fmt.Sprintf("  前缀指纹：sys %s · env %s（若与上一次不同，则前缀缓存必不命中）\n\n", ar.SysHash, ar.EnvHash))
 		}
 	case "error":
 		tlLine(b, m.CreatedAt, "报错（未发给模型）："+expText(ar.Error))

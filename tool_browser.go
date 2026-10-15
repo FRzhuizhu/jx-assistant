@@ -17,12 +17,22 @@ import (
 	"strings"
 )
 
-// activeHost 取工具作用目标（最近一次 browser_open 选定的实例，另一形态关闭时
-// 自动回退到仍在运行的实例）；浏览器从未打开时给出与旧版一致的提示。
+// sessionBrowserKey 当前会话在浏览器记账（active/有头实例）里的键：会话 id；
+// 无会话上下文的调用空串=共享实例。
+func sessionBrowserKey(t *toolContext) string {
+	if t.sess != nil {
+		return t.sess.ID
+	}
+	return ""
+}
+
+// activeHost 取工具作用目标（本会话最近一次 browser_open 选定的实例，另一
+// 形态关闭时自动回退到仍在运行的实例）；实例被用户关掉窗口或从未打开时
+// 返回 nil，由这里的报错把「已被用户关闭」说清楚。
 func activeHost(t *toolContext) (browserTarget, error) {
-	h := t.app.activeBrowser()
+	h := t.app.activeBrowser(sessionBrowserKey(t))
 	if h == nil {
-		return nil, fmt.Errorf("浏览器尚未打开：先调用 browser_open")
+		return nil, fmt.Errorf("浏览器未在运行（可能已被用户关闭窗口，或尚未打开）：请调用 browser_open（重新）打开")
 	}
 	return h, nil
 }
@@ -35,7 +45,7 @@ func browserOpenTool() Tool {
 		Spec: toolSpec("browser_open",
 			"打开或导航到指定网页（各实例各自保留地址与登录态，重开会回到之前的页面）。mode 选打开方式："+
 				"headless（默认）在内嵌浏览器打开——桌面版显示在右栏「浏览器」面板（原生 Edge 网页，用户可旁观并随时直接操作），网页版在后台运行；"+
-				"headed 弹一个独立的浏览器窗口，用户在真实窗口里查看和操作，适合演示给用户、需要用户配合填写的场景。"+
+				"headed 弹一个独立的浏览器窗口，用户在真实窗口里查看和操作，适合演示给用户、需要用户配合填写的场景（各会话独立窗口与登录态、互不干扰；窗口被手动关闭后再次 open 会自动重开新窗口）。"+
 				"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。只接受 http/https 地址。返回页面标题与最终地址。"+capNoteBrowser,
 			objSchema(withCapRequest(map[string]any{
 				"url":  strProp("完整网址，http 或 https"),
@@ -52,12 +62,18 @@ func browserOpenTool() Tool {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
 			}
-			h := t.app.browserFor(p.Mode)
+			h := t.app.browserFor(sessionBrowserKey(t), p.Mode)
 			url, title, err := h.Navigate(p.URL)
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("已打开：%s（标题：%s；%s）", url, title, h.Where()), nil
+			where := h.Where()
+			if bh, ok := h.(*BrowserHost); ok {
+				if note := bh.ReopenNote(); note != "" {
+					where += "；" + note
+				}
+			}
+			return fmt.Sprintf("已打开：%s（标题：%s；%s）", url, title, where), nil
 		},
 	}
 }
@@ -311,7 +327,7 @@ func browserCloseTool() Tool {
 				return "浏览器未在运行", nil
 			}
 			h.Close()
-			if repl := t.app.activeBrowser(); repl != nil {
+			if repl := t.app.activeBrowser(sessionBrowserKey(t)); repl != nil {
 				return "已关闭当前浏览器实例；另一实例仍在运行，后续工具作用于它", nil
 			}
 			return "浏览器已关闭", nil

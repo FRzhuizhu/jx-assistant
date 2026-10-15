@@ -204,8 +204,8 @@ func (e *ContextEngine) CallSummarizer(sess *SessionMeta, input string) (string,
 		"msgs": len(msgs), "est": estimateTokens(msgs),
 		"ms": time.Since(start).Milliseconds(), "text": len([]rune(sb.String()))}
 	if usage != nil {
-		p["usage"] = auditUsage{Prompt: usage.PromptTokens, Hit: usage.PromptCacheHit,
-			Miss: usage.PromptCacheMiss, Completion: usage.CompletionTokens}
+		p["usage"] = auditUsage{Prompt: usage.PromptTokens, Hit: usage.CacheHit(),
+			Miss: usage.CacheMiss(), Completion: usage.CompletionTokens}
 	}
 	if err != nil {
 		p["error"] = err.Error()
@@ -358,8 +358,8 @@ func (e *ContextEngine) RecordCall(sess *SessionMeta, step, msgs, est int, sysHa
 		p["tools"] = toolNames
 	}
 	if usage != nil {
-		p["usage"] = auditUsage{Prompt: usage.PromptTokens, Hit: usage.PromptCacheHit,
-			Miss: usage.PromptCacheMiss, Completion: usage.CompletionTokens}
+		p["usage"] = auditUsage{Prompt: usage.PromptTokens, Hit: usage.CacheHit(),
+			Miss: usage.CacheMiss(), Completion: usage.CompletionTokens}
 	}
 	if callErr != nil {
 		p["error"] = callErr.Error()

@@ -4,6 +4,16 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 语音听写：网页 getUserMedia 需要应用持麦克风权限（仅放行已配对网关） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- WebView getUserMedia 的音频链还需要它（缺了报 NotReadableError:
+         Could not start audio source——经典坑，普通权限，安装即生效） -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 浏览器常规配套（普通权限，安装即生效）：Chromium 网络状态感知 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 13+：下载完成通知（DownloadManager 进度/完成提示要它；
+         危险权限，运行时随进设备页预申请，用户拒绝仅少通知、下载不受阻） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 

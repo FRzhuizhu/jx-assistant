@@ -130,9 +130,12 @@ func requireCapability(t *toolContext, capID, title string, args json.RawMessage
 		if t.emit != nil {
 			t.emit(Event{Type: "tool_wait", Name: t.toolName, Output: "等待用户审批（申请开启「" + title + "」能力）…"})
 		}
-		approved, always := t.app.requestApproval(t.ctx, t.sess, t.toolName, summary,
+		approved, always, timedOut := t.app.requestApproval(t.ctx, t.sess, t.toolName, summary,
 			fmt.Sprintf("当前会话未开启「%s」能力，%s 已被能力门控拦下。「允许」=本次放行这一次调用；「始终允许」=在权限芯片点亮「允许%s」（常设授权，之后不再逐次审批）", title, t.toolName, title))
 		if !approved {
+			if timedOut {
+				return fmt.Errorf("等待审批超时（上限 %s），按拒绝处理：「%s」能力未开启。可请用户在权限芯片勾选「允许%s」，下次被拦时再重新申请", approvalTTL, title, title)
+			}
 			return fmt.Errorf("用户未批准开启「%s」能力，本次未执行。本轮终局：停止并如实说明，不要换法绕过；命令行替代不了这条能力", title)
 		}
 		if always {
@@ -153,6 +156,18 @@ func requireCapability(t *toolContext, capID, title string, args json.RawMessage
 		road = "不要改用 adb_* 或 shell 命令绕行：它们同属这条能力，关着时一律被拦。"
 	}
 	return fmt.Errorf("需要「%s」能力：本会话未开启，该工具已被能力门控拦下。%s如果确实需要，可在重试时带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡由用户决定），或请用户点权限芯片 → 勾选「允许%s」。", title, road, title)
+}
+
+// requireNotReadOnly 是只读档的统一门：MCP 连接器调用（mcp_call_tool /
+// mcp_read_connector / 插件 mcp__*）、register_skill 这类「宿主直连」通道
+// 既不经命令沙箱、也不走 write/exec 的路径围栏，只读档一律拒绝——只读的
+// 语义是「不做任何写入/执行」，不能留绕开沙箱的旁门。报错统一指路：
+// request_permission 申请切档（弹审批），或用户手动切权限芯片。
+func requireNotReadOnly(t *toolContext, what string) error {
+	if permModeOf(t.sess) != permReadOnly {
+		return nil
+	}
+	return fmt.Errorf("只读模式下 %s 不可用：本会话禁止一切写入/执行通道。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档（弹审批卡，批准后立即生效）；或请用户把权限芯片切到「工作区内读写」后再试", what)
 }
 
 // bundleFullAccessCaps 把完全访问捆绑的能力并入 tools（纯内存合并，不落库；
@@ -191,15 +206,15 @@ func stripFullAccessCaps(tools []string) []string {
 // 前端 web/app-chat.js 的 applyCapDefaults 与它同一策略）。现行策略只有一条：
 // 「工作区内读写」默认开启「操作浏览器」——模型看网页是常态动作，默认给上；
 // 用户随时可在权限芯片里取消，显式取消不被覆盖（见各调用点的 tools 是否为 nil）。
-// 只对真会注册 browser_* 的四种模式生效（toolsFor：task/office/coding/
-// skill-create）；只读、完全访问、aux/assistant 不在默认之列——完全访问走
-// bundleFullAccessCaps 捆绑点亮，语义不同。
+// 只对真会注册 browser_* 的模式生效（toolsFor：task/office/coding/
+// beginner-coding/skill-create）；只读、完全访问、aux/assistant 不在默认之列——
+// 完全访问走 bundleFullAccessCaps 捆绑点亮，语义不同。
 func capDefaultsForMode(mode, perm string) []string {
 	if perm != permWorkspace {
 		return nil
 	}
 	switch mode {
-	case "task", "office", "coding", "skill-create":
+	case "task", "office", "coding", "beginner-coding", "skill-create":
 		return []string{capBrowser}
 	}
 	return nil
@@ -242,8 +257,17 @@ func (a *App) syncRunPerms(sess *SessionMeta) {
 // switchToFullAccess 把会话权限切到完全访问并点亮捆绑能力（工作区外写入
 // 「始终允许」用）：持久化并广播，前端权限面板随之刷新。
 func (a *App) switchToFullAccess(s *SessionMeta) {
-	s.Permission = permFull
-	s.Tools = bundleFullAccessCaps(s.Tools)
+	a.switchSessionPerm(s, permFull)
+}
+
+// switchSessionPerm 把会话切到指定权限档并广播（request_permission 审批
+// 「允许」、写升级「始终允许」到 workspace-write 用）：切到完全访问照点
+// 捆绑能力；切到其他档不动能力开关（用户显式勾选的不撤）。
+func (a *App) switchSessionPerm(s *SessionMeta, mode string) {
+	s.Permission = mode
+	if mode == permFull {
+		s.Tools = bundleFullAccessCaps(s.Tools)
+	}
 	_ = a.Store.SaveMeta(s)
 	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
 }
@@ -537,7 +561,9 @@ type Approval struct {
 }
 
 // requestApproval 广播审批请求并阻塞等待用户决定（超时/取消视为拒绝）。
-func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summary, reason string) (approved, always bool) {
+// 第三个返回值 timedOut 区分「等到超时都没人点」与「用户明确点了拒绝」：
+// 都按拒绝处理，但报错文案分开——模型能向用户如实转述是错过还是拒绝。
+func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summary, reason string) (approved, always, timedOut bool) {
 	ap := &Approval{
 		ID: "ap-" + newID(), SessionID: sess.ID, Tool: tool,
 		Summary: summary, Reason: reason, CreatedAt: now(),
@@ -559,11 +585,11 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 	defer timer.Stop()
 	select {
 	case r := <-ap.ch:
-		return r.approved, r.always
+		return r.approved, r.always, false
 	case <-timer.C:
-		return false, false
+		return false, false, true
 	case <-ctx.Done():
-		return false, false
+		return false, false, false
 	}
 }
 
@@ -794,6 +820,26 @@ func (t *toolContext) isObserved(p string) bool {
 	return ok
 }
 
+// inJxAITmp 报告路径是否位于工作区 .jxai/tmp/ 之下——观察策略对此豁免：
+// tmp 是模型专属暂存区，旧文件跨会话永久残留，而观察集每会话清零、目录
+// 检索又不扫 .jxai，模型无从得知旧文件存在，观察策略在这里只会卡住模型
+// 自己（实测撞过墙：覆盖 tmp 里的残留脚本被拒）。tmp 里没有用户文件，
+// 盲覆盖无风险。远程会话恒 false：.jxai 是本机系统目录，远程工作区没有。
+func (t *toolContext) inJxAITmp(p string) bool {
+	if t.isRemote() {
+		return false
+	}
+	fold := filepath.Clean
+	if isWindowsRuntime {
+		fold = func(s string) string { return strings.ToLower(filepath.Clean(s)) }
+	}
+	rel, err := filepath.Rel(fold(filepath.Join(t.workspace(), jxAIName, "tmp")), fold(p))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 // ---------- 策略评估入口 ----------
 
 // permAction 是一次待授权的动作。
@@ -867,38 +913,62 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		if blocked == "" {
 			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, sandboxPolicyForMode(mode)), nil
 		}
-		// 升级申请：模型带 sandbox_permissions=full + justification → 弹审批，
-		// 权限申请是「把会话提升为完全访问」。「允许」= 本次以完全访问执行；
-		// 「始终允许」= 会话切到完全访问（捆绑能力一并点亮），此后不再逐次审批。
+		// 升级申请（拒绝驱动）：只读档按目标给「够用的最宽档」——写围栏内的
+		// 目标申请 workspace-write 就够（「始终允许」= 会话切到工作区内读写，
+		// 不再一跳到顶）；围栏外目标才要 full。「允许」= 本次按申请档执行。
+		needFull := blocked == "workspace-write" || (blocked == "read-only" && !t.writeFenceAllows(act.Path))
 		req := strings.TrimSpace(act.EscalateTo)
-		if req == permFull || req == "danger-full-access" {
+		if req == "danger-full-access" {
+			req = permFull // 官方词汇表的 full 档别名
+		}
+		want := ""
+		switch req {
+		case permFull:
+			want = permFull
+		case permWorkspace:
+			if !needFull {
+				want = permWorkspace
+			}
+		}
+		if want != "" {
 			just := strings.TrimSpace(act.Justification)
 			if just == "" {
 				return nil, fmt.Errorf("sandbox_permissions 必须搭配一句 justification（给用户看的理由），本次缺少")
 			}
-			summary := fmt.Sprintf("提升为完全访问以写入工作区外：%s｜理由：%s", truncateRunes(act.Path, 160), truncateRunes(just, 120))
-			if t.emit != nil {
-				t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批（提升为完全访问）…"})
+			scope := "写入工作区外"
+			if want == permWorkspace {
+				scope = "写入（当前会话为只读）"
 			}
-			approved, always := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
-				fmt.Sprintf("当前会话为「%s」，模型请求写入工作区之外（%s）。「允许」=本次放行；「始终允许」=把会话切到「完全访问」", permModeLabel(mode), act.Path))
+			summary := fmt.Sprintf("提升为「%s」以%s：%s｜理由：%s", permModeLabel(want), scope, truncateRunes(act.Path, 160), truncateRunes(just, 120))
+			if t.emit != nil {
+				t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批（提升为「" + permModeLabel(want) + "」）…"})
+			}
+			approved, always, timedOut := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
+				fmt.Sprintf("当前会话为「%s」，模型请求%s（%s）。「允许」=本次放行；「始终允许」=把会话切到「%s」（此后该档内不再逐次审批）", permModeLabel(mode), scope, act.Path, permModeLabel(want)))
 			if !approved {
+				if timedOut {
+					return nil, fmt.Errorf("等待审批超时（上限 %s），按拒绝处理：该写入未执行。可请用户把权限芯片切档，或稍后重新发起（再次被拒后可重新申请）", approvalTTL)
+				}
 				return nil, fmt.Errorf("用户未批准该写入，未执行。请停止并如实说明，不要绕过")
 			}
 			if always {
 				wasMode, wasTools := permModeOf(t.sess), t.sess.Tools
-				t.app.switchToFullAccess(t.sess)
+				t.app.switchSessionPerm(t.sess, want)
 				// 「权限变更」即时落地：注记随新环境快照落库（env 通道），
 				// 下一步组装的差分自然带上
 				t.app.landPermChange(t.sess, permSrcApproval, wasMode, wasTools, t.emit)
 			}
-			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, permFull), nil
+			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, want), nil
 		}
-		hint := "可在重试时带 sandbox_permissions=full 与一句 justification 申请把会话提升为完全访问（弹审批由用户决定）"
+		// 未带/带错升级参数：按目标给「够用的最宽档」提示
 		if blocked == "read-only" {
-			return nil, fmt.Errorf("[sandbox: file access denied under read-only mode]\n目标 %s（当前会话为只读）。%s；或让用户把权限芯片切到「工作区内读写」", act.Path, hint)
+			wider := permFull
+			if !needFull {
+				wider = permWorkspace
+			}
+			return nil, fmt.Errorf("[sandbox: file access denied under read-only mode]\n目标 %s（当前会话为只读）。可在重试时带 sandbox_permissions=%s 与一句 justification 申请放行（弹审批由用户决定）；也可用 request_permission 直接申请切档，或让用户把权限芯片切到「工作区内读写」", act.Path, wider)
 		}
-		return nil, fmt.Errorf("[sandbox: file access denied under workspace-write mode]\n目标 %s 不在工作区 %s 与系统临时目录内。%s", act.Path, t.workspace(), hint)
+		return nil, fmt.Errorf("[sandbox: file access denied under workspace-write mode]\n目标 %s 不在工作区 %s 与系统临时目录内。可在重试时带 sandbox_permissions=full 与一句 justification 申请把会话提升为完全访问（弹审批由用户决定）", act.Path, t.workspace())
 
 	case "exec":
 		if !t.app.Cfg.AllowShell {
@@ -936,9 +1006,12 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 				if t.emit != nil {
 					t.emit(Event{Type: "tool_wait", Name: act.Tool, Output: "等待用户审批沙箱升级…"})
 				}
-				approved, always := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
+				approved, always, timedOut := t.app.requestApproval(t.ctx, t.sess, act.Tool, summary,
 					fmt.Sprintf("模型请求把沙箱档位从 %s 升级到 %s 来重跑被拒绝的命令", policy, req))
 				if !approved {
+					if timedOut {
+						return nil, fmt.Errorf("等待审批超时（上限 %s），按拒绝处理：沙箱升级（%s）未获批，该命令本轮终局。可请用户留意待审批卡片并稍后重试", approvalTTL, req)
+					}
 					return nil, fmt.Errorf("用户未批准沙箱升级（%s），该命令本轮终局：停止并如实说明，不要换着法绕过；其他命令仍可正常执行", req)
 				}
 				if always {

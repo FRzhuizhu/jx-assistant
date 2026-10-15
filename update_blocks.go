@@ -321,6 +321,20 @@ func (a *App) FinalizeEngineSwap() {
 	}
 	if exePath != "" {
 		_ = os.Remove(exePath + ".old") // 旧进程已不在，此刻删得动
+		// .old-<unix> 是交换时 .old 被仍在运行的旧实例占着、换名让路产生的
+		// 残留（连发两版静默更新必产生一个），此前自清只认精确的 .old，
+		// 带时间戳的一直没人清（实测 20261014-1 换 -2 后留下 .old-1791972527）。
+		// 按前缀一并扫掉；仍被古董实例占用的删不动就留着，下次启动再试。
+		if dir := filepath.Dir(exePath); dir != "" {
+			prefix := filepath.Base(exePath) + ".old"
+			if entries, err := os.ReadDir(dir); err == nil {
+				for _, e := range entries {
+					if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+						_ = os.Remove(filepath.Join(dir, e.Name()))
+					}
+				}
+			}
+		}
 	}
 	a.syncPendingToState()
 }

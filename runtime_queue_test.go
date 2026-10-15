@@ -1,0 +1,255 @@
+package main
+
+// 排队消息自动续发（统一规则）的最小测试。
+//
+// 规则：消息**不分来源**——真人消息（chat）、派发回报/AI 用户消息（aiuser）、
+// 系统注入（report）——进的是同一个排队队列；本轮回复完成后一律自动逐条发出，
+// 不再有「卡在继续发送按钮」这一说。派发回报原来那条独立落库/拉起路径已删除，
+// 回报的唯一投递口就是 deliverToSession（见 runtime.go runSubAgent）。
+//
+// 覆盖：
+//  1. 真人消息排队 → 本轮结束自动续发（不回归）
+//  2. 派发回报排队 → 同样自动续发（新行为），且与真人消息同一条队列
+//  3. 开关（queueAutoSend）关闭 → 本轮结束不自动发；点「继续发送」仍照发
+//  4. 收口兜底：续发循环走完之后才挤进队列的消息，由 finishRun 再拉一轮发出
+//  5. 派发回报的唯一投递路径：runSubAgent 在父会话正忙时把回报放进父会话的
+//     排队队列（不是另写一条旁路），父会话本轮结束即自动发出
+//
+// 模型走内置 mock（BaseURL=mock），工具落在临时工作区，不联网、不碰真实工作区。
+
+import (
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// newQueueTestApp 建一个「带临时库 + 临时工作区 + 离线 mock 模型」的 App，
+// 并给一个通用工作任务会话（mock 会依次发起 write / run_command /
+// deliver_result 三个工具调用后收尾，足以证明「这一轮真的跑了」）。
+func newQueueTestApp(t *testing.T) (*App, *SessionMeta) {
+	t.Helper()
+	a := newCompactTestApp(t)
+	a.initRuntime()
+	a.sessLocks = map[string]*sync.Mutex{}
+	a.Cfg.Workspace = t.TempDir()
+	a.Cfg.Providers = []ProviderCfg{{
+		ID: "mock", Name: "离线演示", BaseURL: "mock",
+		Models: []ModelCfg{{ID: "mock-1", Name: "演示模型"}},
+	}}
+	// 执行体收尾会向声明式组件广播 run.end：测试里给一个空注册表（真进程由
+	// NewApp 建好），免得 nil 指针在收尾路径上打日志
+	a.Components = &ComponentRegistry{}
+	m := &SessionMeta{ID: "main", Title: "排队测试会话", Mode: "task",
+		Workspace: a.Cfg.Workspace, CreatedAt: now(), UpdatedAt: now()}
+	if err := a.Store.Create(m); err != nil {
+		t.Fatalf("建会话失败: %v", err)
+	}
+	return a, m
+}
+
+// rowsOf 取会话历史里的用户侧行（role=user）的「正文 + kind + origin」三元组，
+// 用来核对排队消息最终以什么身份落库。
+func rowsOf(t *testing.T, a *App, sid string) []string {
+	t.Helper()
+	all, err := a.Store.RawMessagesAll(sid)
+	if err != nil {
+		t.Fatalf("读历史失败: %v", err)
+	}
+	out := []string{}
+	for _, m := range all {
+		if m.Role != "user" {
+			continue
+		}
+		txt, _ := m.Content.(string)
+		out = append(out, m.Kind+"|"+m.Origin+"|"+txt)
+	}
+	return out
+}
+
+// hasPrefixRow 历史里是否存在「kind|origin|正文以 text 开头」的用户侧行。
+func hasPrefixRow(t *testing.T, a *App, sid, kind, origin, text string) bool {
+	t.Helper()
+	for _, r := range rowsOf(t, a, sid) {
+		if strings.HasPrefix(r, kind+"|"+origin+"|"+text) {
+			return true
+		}
+	}
+	return false
+}
+
+// waitIdle 等会话跑完（自动续发是后台执行的，测试要等它落地）。
+func waitIdle(t *testing.T, a *App, sid string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if !a.IsRunning(sid) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("会话 %s 在 60 秒内没有跑完", sid)
+}
+
+// assistantRows 数一数助手侧行：自动续发真的跑了轮次时它会增长。
+func assistantRows(t *testing.T, a *App, sid string) int {
+	t.Helper()
+	all, err := a.Store.RawMessagesAll(sid)
+	if err != nil {
+		t.Fatalf("读历史失败: %v", err)
+	}
+	n := 0
+	for _, m := range all {
+		if m.Role == "assistant" {
+			n++
+		}
+	}
+	return n
+}
+
+// 1+2：真人消息与派发回报排在同一条队列里，本轮结束一律自动续发。
+func TestQueueDrainSendsAllSources(t *testing.T) {
+	a, main := newQueueTestApp(t)
+	// 占住执行权＝「助手正在回话」，随后进来的消息只能排队
+	run, ok := a.beginRun(main.ID)
+	if !ok {
+		t.Fatal("应能占住执行权")
+	}
+	before := assistantRows(t, a, main.ID)
+
+	// 真人补充要求（chat，与用户在输入框发完全同路）
+	if d := a.deliverToSession(main, "真人的补充要求", kindChat, ""); d.Started || d.Mode != "queue" {
+		t.Fatalf("执行中应排队，got %+v", d)
+	}
+	// 派发回报（aiuser/dispatch）：与真人消息共用同一条队列
+	if d := a.deliverToSession(main, "【派发回报】任务会话「X」本轮结束。", kindAiUser, "dispatch"); d.Started || d.Mode != "queue" {
+		t.Fatalf("执行中应排队，got %+v", d)
+	}
+	q := a.pendingOf(main.ID).Queue
+	if len(q) != 2 {
+		t.Fatalf("两条消息应排在同一队列里，got %d", len(q))
+	}
+	if q[0].Kind != kindChat || q[1].Kind != kindAiUser || q[1].Origin != "dispatch" {
+		t.Fatalf("排队项身份应原样保留：%+v / %+v", q[0], q[1])
+	}
+
+	// 本轮收尾：不再空跑一轮（队列里的就是要发的东西），直接逐条自动发出
+	err := a.runRoundsWithQueue(main, run, func(Event) {}, false, true)
+	a.finishRun(main.ID)
+	if err != nil {
+		t.Fatalf("本轮 + 续发应无错误: %v", err)
+	}
+	if n := len(a.pendingOf(main.ID).Queue); n != 0 {
+		t.Fatalf("续发后队列应清空，剩 %d 条（否则界面上会卡「继续发送」）", n)
+	}
+	if !hasPrefixRow(t, a, main.ID, kindChat, "", "真人的补充要求") {
+		t.Fatal("真人消息未按 chat 身份落库")
+	}
+	if !hasPrefixRow(t, a, main.ID, kindAiUser, "dispatch", "【派发回报】") {
+		t.Fatal("派发回报未按 aiuser/dispatch 身份落库")
+	}
+	if got := assistantRows(t, a, main.ID); got <= before {
+		t.Fatalf("排队消息应各自开出独立一轮（助手行 %d → %d）", before, got)
+	}
+}
+
+// 3：开关关闭＝本轮结束不自动发（留「继续发送」）；显式拉起（点它）仍照发。
+func TestQueueAutoSendSwitchOff(t *testing.T) {
+	a, main := newQueueTestApp(t)
+	off := false
+	a.Cfg.QueueAutoSend = &off
+	if a.queueAutoSendOn() {
+		t.Fatal("关掉后 queueAutoSendOn 应为 false")
+	}
+	run, _ := a.beginRun(main.ID)
+	a.deliverToSession(main, "排队的消息", kindChat, "")
+	a.deliverToSession(main, "【派发回报】回报", kindAiUser, "dispatch")
+
+	if err := a.runRoundsWithQueue(main, run, func(Event) {}, false, true); err != nil {
+		t.Fatalf("收尾不应报错: %v", err)
+	}
+	a.finishRun(main.ID)
+	if n := len(a.pendingOf(main.ID).Queue); n != 2 {
+		t.Fatalf("开关关闭时队列应原样保留 2 条，got %d", n)
+	}
+	if hasPrefixRow(t, a, main.ID, kindChat, "", "排队的消息") {
+		t.Fatal("开关关闭时不该自动发出")
+	}
+
+	// 用户点「继续发送」：显式拉起（不受开关约束）
+	a.kickQueue(main)
+	waitIdle(t, a, main.ID)
+	if n := len(a.pendingOf(main.ID).Queue); n != 0 {
+		t.Fatalf("显式拉起后队列应发完，剩 %d 条", n)
+	}
+	if !hasPrefixRow(t, a, main.ID, kindAiUser, "dispatch", "【派发回报】回报") {
+		t.Fatal("显式拉起后回报也未落库")
+	}
+}
+
+// 4：收口兜底——续发循环走完之后才挤进队列的消息，由 finishRun 再拉一轮。
+func TestFinishRunResumesLeftoverQueue(t *testing.T) {
+	a, main := newQueueTestApp(t)
+	run, _ := a.beginRun(main.ID)
+	run.markCleanEnd()
+	// 续发循环已经走完（队列那一刻是空的），消息此刻才到：执行权还在，只能排队
+	if d := a.deliverToSession(main, "窗口期挤进来的消息", kindChat, ""); d.Started {
+		t.Fatal("执行权还在时应排队")
+	}
+	a.finishRun(main.ID) // 收口：应自动再拉一轮把队列发出去
+	waitIdle(t, a, main.ID)
+	if n := len(a.pendingOf(main.ID).Queue); n != 0 {
+		t.Fatalf("收口兜底应把队列发完，剩 %d 条", n)
+	}
+	if !hasPrefixRow(t, a, main.ID, kindChat, "", "窗口期挤进来的消息") {
+		t.Fatal("窗口期挤进来的消息没有被续发")
+	}
+}
+
+// 5：派发回报的唯一投递路径——runSubAgent 把回报投给派发方（父会话正忙就进
+// 它的排队队列），父会话本轮结束即自动发出。
+func TestSubAgentReportGoesThroughQueue(t *testing.T) {
+	a, main := newQueueTestApp(t)
+	sub := &SessionMeta{ID: "sub", Title: "被派发的任务", Mode: "task",
+		Workspace: t.TempDir(), DispatchedBy: main.ID, CreatedAt: now(), UpdatedAt: now()}
+	if err := a.Store.Create(sub); err != nil {
+		t.Fatalf("建任务会话失败: %v", err)
+	}
+	// 派发：目标会话空闲＝落库并起 runSubAgent（与数字助理派发同一条投递）
+	d := a.deliverToSession(sub, "【数字助理派发】\n\n做一件小事", kindAiUser, "task")
+	if !d.Started {
+		t.Fatalf("空闲会话应立刻起执行: %+v", d)
+	}
+	// 父会话（数字助理）此刻正忙着和用户对话
+	mrun, ok := a.beginRun(main.ID)
+	if !ok {
+		t.Fatal("应能占住父会话执行权")
+	}
+	go a.runSubAgent(main, sub, d.Run)
+	waitIdle(t, a, sub.ID)
+
+	// 回报没有走旁路：它进了父会话的排队队列，身份照旧 aiuser/dispatch
+	q := a.pendingOf(main.ID).Queue
+	if len(q) != 1 {
+		t.Fatalf("父会话忙时回报应进它的排队队列（1 条），got %d", len(q))
+	}
+	if q[0].Kind != kindAiUser || q[0].Origin != "dispatch" || !strings.HasPrefix(q[0].Content, "【派发回报】") {
+		head := q[0].Content
+		if len(head) > 20 {
+			head = head[:20]
+		}
+		t.Fatalf("回报身份不对: kind=%q origin=%q content=%q", q[0].Kind, q[0].Origin, head)
+	}
+
+	// 父会话本轮收尾：回报自动发出（统一规则，与真人消息同一套）
+	if err := a.runRoundsWithQueue(main, mrun, func(Event) {}, false, true); err != nil {
+		t.Fatalf("父会话收尾不应报错: %v", err)
+	}
+	a.finishRun(main.ID)
+	if n := len(a.pendingOf(main.ID).Queue); n != 0 {
+		t.Fatalf("回报应被自动发出，队列剩 %d 条", n)
+	}
+	if !hasPrefixRow(t, a, main.ID, kindAiUser, "dispatch", "【派发回报】") {
+		t.Fatal("回报未落到父会话历史")
+	}
+}

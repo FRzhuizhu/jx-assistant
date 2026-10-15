@@ -131,15 +131,15 @@ func (m *bridgeManager) resolveCommand(def ComponentWorkerDef, dir string) ([]st
 }
 
 // pythonExe 共享便携运行时（技能/_runtime——运行时共享原则，组件不自带）。
-// 新机自愈：运行时还没装配过（全新克隆、没用过任何技能）时，借技能装配机制
-// 现场装一份并顺带装上 sherpa-onnx 轮子——远端拉下来直接点听写即可用，
-// 首次会有装配等待（走引擎日志）。运行时已在但缺 sherpa 的场景由 worker
-// 自身的 pip 自愈兜底（asr_worker.ensure_sherpa）。
+// 运行时已随仓库分发（全新克隆即有）；异常缺失时（老克隆/被误删）借技能装配
+// 机制现场装一份，并顺带装上语音 worker 需要的 sherpa-onnx 与 numpy 轮子——
+// asr_worker 的 transcribe 依赖 numpy，只装 sherpa 会在转写时报缺模块。
+// 运行时已在但缺轮子的场景由 worker 自身的 pip 自愈兜底（ensure_deps）。
 func (m *bridgeManager) pythonExe() (string, error) {
 	if py, err := m.sharedPythonPath(); err == nil {
 		return py, nil
 	}
-	if _, perr := m.app.ensureSkillRuntime([]string{"sherpa_onnx"}, []string{"sherpa-onnx"}); perr == nil {
+	if _, perr := m.app.ensureSkillRuntime([]string{"sherpa_onnx", "numpy"}, []string{"sherpa-onnx", "numpy"}); perr == nil {
 		if py, err := m.sharedPythonPath(); err == nil {
 			return py, nil
 		}

@@ -24,7 +24,7 @@ const (
 
 // 系统注入与审计工件
 const (
-	kindReport  = "report"  // 系统注入的用户侧通知（发给模型）：回报/中断/上传/回退/目标续跑/派发指令/待办派发；origin 记子类（规范 §1.4）
+	kindReport  = "report"  // 系统注入的用户侧通知（发给模型）：回报/中断/上传/回退/目标续跑/派发指令/待办派发/演示记录（origin=demo）；origin 记子类（规范 §1.4）
 	kindInherit = "inherit" // 子对话继承标记 {parent,count}：不进上下文，前端折成「来自主对话」段
 	kindRequest = "request" // 最近一次发给模型的完整请求体（审计工件，每会话只留最新；「导出原始数据」数据源）
 	kindAudit   = "audit"   // 运行事件审计行：调用量与缓存命中/报错/停止/压缩/超限（「导出日志」数据源）

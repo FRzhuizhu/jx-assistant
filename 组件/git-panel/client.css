@@ -30,16 +30,15 @@
 .gitp-icon-btn.busy { animation: gitp-spin 1s linear infinite; }
 @keyframes gitp-spin { to { transform: rotate(360deg); } }
 
-/* 「?」帮助：悬停向下展开的功能清单（纯提示，不响应功能点击） */
-.gitp-helpwrap { position: relative; flex-shrink: 0; }
+/* 「使用教程」下拉（同步按钮旁 ▾）：fixed 挂 body，位置由 JS 定位 */
 .gitp-helpdrop {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 80;
+  position: fixed; z-index: 90;
   width: 330px; max-width: calc(100vw - 24px); padding: 10px 12px;
   background: var(--bg); border: 1px solid var(--border-2); border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .16);
 }
-.gitp-helpdrop.hidden { display: none; }
-.gitp-helpdrop-title { font-weight: 600; font-size: 12.5px; color: var(--text-2); margin-bottom: 7px; line-height: 1.5; }
+.gitp-helpdrop-title { font-weight: 600; font-size: 12.5px; color: var(--text); margin-bottom: 4px; line-height: 1.5; }
+.gitp-helpdrop-sub { font-size: 12px; color: var(--text-2); line-height: 1.55; margin-bottom: 7px; }
 .gitp-helpdrop-item { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 3.5px 0; }
 .gitp-helpdrop-name { font-size: 12.5px; color: var(--text); }
 .gitp-helpdrop-cmd {
@@ -66,6 +65,7 @@
 /* ---------- 状态条（错误 / 提示 / 未连仓库） ---------- */
 .gitp-strip {
   flex-shrink: 0; padding: 6px 12px; font-size: 12.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; /* 报错原文与「ⓘ 报错说明」分多行显示 */
   border-bottom: 1px solid var(--border-2);
 }
 .gitp-strip.hidden { display: none; }
@@ -142,6 +142,7 @@
 .gitp-btn:disabled { opacity: .55; cursor: default; }
 /* 提交栏的拉取/推送按钮靠左（AI 摘要、提交靠右） */
 .gitp-commit-btns .gitp-remote { margin-right: auto; }
+.gitp-commit-btns .gitp-tut-btn { min-width: 34px; padding: 4px 8px; }
 
 /* ---------- 更改区：文件分组 ---------- */
 .gitp-groups { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }

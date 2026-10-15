@@ -3,7 +3,7 @@
 # 用法（在仓库根目录）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File 打包\打包安装包.ps1
 # 可选参数：
-#   -Version     版本号（默认=今天日期+V1，如 20261008V1；同日重出多版手动传 V2 V3）
+#   -Version     版本号（默认=今天日期-1，如 20261008-1；同日重出多版手动传 -2 -3），同时注入程序内 appVersion
 #   -ExeSource   使用已构建好的发行 exe（默认现场 go build；
 #                需要排除工作区未完成改动时，先在干净 worktree 里构建再传入）
 #   -SkillsSource 技能目录来源（默认仓库根的 技能\，含 _runtime 便携运行时）
@@ -16,7 +16,7 @@ param(
   [string]$ExeSource = "",
   [string]$SkillsSource = ""
 )
-if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "V1" }
+if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "-1" }
 
 $ErrorActionPreference = "Stop"
 $packDir = $PSScriptRoot
@@ -36,9 +36,7 @@ $modules = @{}
 # ★ 2026-10-12：递归扫描（含 user\ 子目录的用户技能，跳过 _runtime）——非递归会漏掉用户技能的依赖声明、校验假通过（实测曾漏 pywin32 全家；微信操作就在 user\ 下）
 Get-ChildItem $SkillsSource -Recurse -Depth 2 -Directory | Where-Object {
   $_.FullName -notmatch '\\_runtime(\\|$)' -and
-  Test-Path (Join-Path $_.FullName "manifest.json")
-} | ForEach-Object {
-  Test-Path (Join-Path $_.FullName "manifest.json")
+  (Test-Path (Join-Path $_.FullName "manifest.json"))
 } | ForEach-Object {
   # manifest 是 UTF-8：PS5.1 的 Get-Content 默认按 GBK 读会把中文读成
   # 乱码导致 JSON 解析失败、模块清单漏收（校验假通过），必须显式指定
@@ -73,7 +71,7 @@ if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
   Write-Host "== 编译主程序（注入桌面模式默认值）"
-  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1" -o $exe $root
+  go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1 -X main.appVersion=$Version" -o $exe $root
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }
 
@@ -93,15 +91,14 @@ if ($compCount -eq 0) { throw "组件目录里没有任何带 manifest.json 的�
 Copy-Item $compDir (Join-Path $stage "组件") -Recurse -Force
 Write-Host "== 内置组件 $compCount 个已暂存"
 
-# 本地语音识别的 Python worker（asr/asr_worker.py，跑在 技能\_runtime 的便携运行时上）：
-# 与 技能/、组件/ 同口径随包——缺它时语音组件的「本地语音识别模型」档一按听写就报
-# 「未找到 asr/asr_worker.py」（听写默认走云端，本地档可选，但缺文件仍要出包前拦住）。
-Write-Host "== 暂存本地语音识别 worker（asr/）"
-$asrDir = Join-Path $root "asr"
-if (-not (Test-Path (Join-Path $asrDir "asr_worker.py"))) {
-  throw "asr\asr_worker.py 缺失：$asrDir（本地语音识别通道的 worker，必须随包）"
+# 本地语音识别 worker 已随「组件/voice」自包含（worker 与模型迁入组件本体，
+# 见提交 623f93cb77），上方「暂存内置组件」已把它整体带入 stage\组件\voice；
+# 这里只做防呆校验：组件里缺 worker 同样拒绝出包（缺文件时语音组件的
+# 「本地语音识别模型」档一按听写就报「未找到 asr_worker.py」）。
+$asrWorker = Join-Path $compDir "voice\asr_worker.py"
+if (-not (Test-Path $asrWorker)) {
+  throw "组件\voice\asr_worker.py 缺失：$asrWorker（本地语音识别 worker 随组件分发，必须存在）"
 }
-Copy-Item $asrDir (Join-Path $stage "asr") -Recurse -Force
 
 # MD 查看器（装完即有）：单文件 exe 全自包含（WebView2 托管程序集与查看器
 # 模板均已内嵌），随包只带 exe + 使用说明两个文件；.md 关联由安装器装完时
@@ -116,6 +113,32 @@ Copy-Item (Join-Path $mdvDir "MD查看器.exe") (Join-Path $stage "md-viewer") -
 Copy-Item (Join-Path $mdvDir "使用说明.txt") (Join-Path $stage "md-viewer") -Force
 
 Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
+
+# ---- 安装期清理清单（清理清单.iss，被 安装包.iss 的 [InstallDelete] 段包含）----
+# 随包目录在升级安装时整目录重装（先删后装），包内已移除的文件不再残留——
+# 旧组件文件混进新版本是真会出错的（v1.0.2 的 asr\ 残留案例）。
+# 只列「随包发的」目录：技能\_runtime、内置技能、内置组件、md-viewer；
+# 技能\user（用户技能）与市场装的组件（id 不在 stage\组件 清单里）天然保留，
+# data\、config.json、默认工作区\、插件\ 不经此清单，永不触碰。
+$cleanLines = New-Object System.Collections.Generic.List[string]
+$cleanLines.Add('Type: filesandordirs; Name: "{app}\技能\_runtime"')
+Get-ChildItem (Join-Path $stage "技能") -Directory | Where-Object {
+  $_.Name -ne "_runtime" -and $_.Name -ne "user"
+} | ForEach-Object {
+  $cleanLines.Add('Type: filesandordirs; Name: "{app}\技能\' + $_.Name + '"')
+}
+if (Test-Path (Join-Path $stage "组件")) {
+  Get-ChildItem (Join-Path $stage "组件") -Directory | ForEach-Object {
+    $cleanLines.Add('Type: filesandordirs; Name: "{app}\组件\' + $_.Name + '"')
+  }
+}
+if (Test-Path (Join-Path $stage "md-viewer")) {
+  $cleanLines.Add('Type: filesandordirs; Name: "{app}\md-viewer"')
+}
+# PS5.1 的 utf8 带 BOM——ISCC 认 BOM 才能正确读中文路径（无 BOM 会被当
+# ANSI 码页读成乱码，清单失配只是清不掉，不会误删，但仍要写对）
+$cleanLines | Out-File (Join-Path $packDir "清理清单.iss") -Encoding utf8
+Write-Host "== 安装期清理清单：$($cleanLines.Count) 个随包目录升级时整目录重装（用户数据/用户装的组件插件技能不受影响）"
 
 Write-Host "== Inno Setup 编译安装包（LZMA2 压缩，耐心等待）"
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"

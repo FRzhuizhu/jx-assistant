@@ -38,6 +38,7 @@ func newCapTestApp(t *testing.T, dir string) *App {
 	t.Helper()
 	a := newPermTestApp(t, dir)
 	a.approvals = map[string]*Approval{}
+	a.grants = map[string]*Grant{}
 	return a
 }
 

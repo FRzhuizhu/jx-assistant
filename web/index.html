@@ -22,38 +22,13 @@
     <div class="actions">
       <button id="btn-new-task" class="side-btn" data-short="新任务">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        <span class="sb-label">新工作任务</span>
+        <span class="sb-label">派任务给新助理</span>
       </button>
       <button id="btn-new-assistant" class="side-btn" data-short="数据助理">
-        <svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M3.00,0.00L2.93,2.44L2.73,3.78L2.38,4.76L1.89,5.45L1.22,5.86L0.00,6.00L-1.22,5.86L-1.89,5.45L-2.38,4.76L-2.73,3.78L-2.93,2.44L-3.00,0.00L-2.93,-2.44L-2.73,-3.78L-2.38,-4.76L-1.89,-5.45L-1.22,-5.86L0.00,-6.00L1.22,-5.86L1.89,-5.45L2.38,-4.76L2.73,-3.78L2.93,-2.44L3.00,0.00Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g><style>
-[data-state] .da-eye,[data-state] .da-eyes{transform-box:fill-box;transform-origin:center}
-.da-smile{opacity:0}
-[data-state="idle"] .da-eye{animation:da-blink 4.5s ease-in-out infinite}
-[data-state="thinking"] .da-eyes{animation:da-scan 2.2s ease-in-out infinite}
-[data-state="thinking"] .da-eye{transform:scaleY(.55)}
-[data-state="done"] .da-eye{animation:da-squish 6s cubic-bezier(.5,0,.5,1) infinite}
-[data-state="done"] .da-smile{animation:da-pop 6s cubic-bezier(.5,0,.5,1) infinite}
-@keyframes da-blink{0%,86%,100%{transform:scaleY(1)}90%,92%{transform:scaleY(.1)}}
-@keyframes da-scan{0%,100%{transform:translateX(0)}30%{transform:translateX(1.8px)}50%{transform:translateX(0)}80%{transform:translateX(-1.8px)}}
-@keyframes da-squish{0%,7%{transform:scaleY(1)}12%{transform:scaleY(.06)}86%{transform:scaleY(.06)}91%,100%{transform:scaleY(1)}}
-@keyframes da-pop{0%,11.5%{opacity:0}15%,85%{opacity:1}88.5%,100%{opacity:0}}
-/* 原设计的悬停效果保留，只去掉了「脸固定朝右扭」那一条：
-   - 已去掉：原 `[data-da-face]:hover,button:hover [data-da-face]{transform:rotate(11deg)}`
-     （悬停时头固定朝右转 11° 并保持）→ 改由三个入口按钮共用的随机左右轻扭取代
-     （style.css 的 side-btn-wig + app-left.js 的 bindSideBtnWiggle）。
-   - 原样保留：眼睛的左右晃动 da-hover（下面两条 + keyframes），以及各状态自带的眼睛
-     动画（idle 眨眼 da-blink / thinking 扫视 da-scan / done 挤压 da-squish、微笑 da-pop）。
-   两者作用在不同元素上、可同时发生：轻扭转的是整个 svg 元素，晃动转的是里面的 .da-eyes 分组，
-   互不覆盖。另：viewBox 已收紧为「4 4 40 40」（同一个 16px 盒子里人脸由 ~11.2px 放大到
-   ~13.4px），viewBox 仍以 24,24 为中心，居中与旋转轴心不变。
-   注意：本段注释里不要出现尖括号字面量（HTML 解析器会把 svg 内联样式块里的尖括号当标签），否则整块规则会被丢掉。 */
-[data-da-face]{transform-box:fill-box;transform-origin:center;transition:transform .22s ease}
-[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:da-hover 1s ease-in-out infinite}
-[data-da-face][data-state="done"]:hover .da-eyes,button:hover [data-da-face][data-state="done"] .da-eyes{animation:none}
-@keyframes da-hover{0%,100%{transform:translateX(0)}22%{transform:translateX(3.2px)}45%{transform:translateX(-.6px)}70%{transform:translateX(-3.2px)}90%{transform:translateX(.6px)}}
-@media (prefers-reduced-motion:reduce){[data-state] .da-eye,[data-state] .da-eyes,.da-smile{animation:none!important}[data-state="done"] .da-smile{opacity:1}[data-da-face],[data-da-face]:hover,button:hover [data-da-face]{transform:none;transition:none}[data-da-face]:hover .da-eyes,button:hover [data-da-face] .da-eyes{animation:none!important}}
-</style></svg>
-        <span class="sb-label">数字助理主对话</span>
+        <span class="doll-wrap"><svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><g class="bob"><g class="head"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g></g><g class="da-paper"><rect x="26.5" y="28.5" width="12" height="14" rx="1.6"></rect><line x1="29" y1="32.5" x2="36" y2="32.5"></line><line x1="29" y1="35.5" x2="36" y2="35.5"></line><line x1="29" y1="38.5" x2="33.5" y2="38.5"></line></g></g></svg><span id="da-badge" class="da-badge hidden">1</span></span>
+        <!-- 显示名「跟数字经理对话」：「经理」两字加粗（b 只承担字重，不加任何样式类，
+             按钮的图标/尺寸/动画/布局一律不动） -->
+        <span class="sb-label">跟数字<b>经理</b>对话</span>
       </button>
     </div>
 
@@ -110,6 +85,10 @@
         设置
         <!-- 反馈胶囊：紧挨手机图标左侧，点击直达设置面板的「问题反馈」页
              （不冒泡到外层设置按钮，见 app-left.js；用 role=button 避免按钮套按钮） -->
+        <!-- 更新胶囊：反馈胶囊左侧，仅在有更新时出现——新版本可用（available）
+             或已静默换装待重启（pendingRestart），与置顶更新横幅同源同机制（app-chat.js
+             syncUpdatePill）。点击唤起更新横幅（完整动作在横幅里：立即重启/稍后/确认更新）。 -->
+        <span id="btn-update" class="foot-update hidden" role="button" tabindex="0" title="软件更新">更新</span>
         <span id="btn-feedback" class="foot-feedback" role="button" tabindex="0" title="问题反馈：直达设置 · 问题反馈">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.7 8.7 0 0 1-3.9-.92L3 21l1.95-5.29A8.5 8.5 0 1 1 21 11.5z"/><path d="M12 8.5v3M12 14.5h.01"/></svg>
           反馈
@@ -171,7 +150,7 @@
     <div id="mk-upload-modal" class="modal hidden">
       <div class="modal-card mku-card">
         <h3>上传技能到市场</h3>
-        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip 或文件夹）。</p>
+        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip、.md 文件或文件夹）。</p>
         <div id="mku-skills" class="mku-skills"></div>
         <div class="mku-meta">
           <label>技能 ID <span class="mku-req">必填</span>
@@ -215,7 +194,7 @@
              重绘只重建内容变了的卡，不会打断输入。渲染见 app-chat.js 的「待用户决定的浮窗」 -->
         <div id="ask-bar" class="ask-bar hidden"></div>
         <div id="draft-chips">
-          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；数字助理主对话有专属模式，不在此选择）">
+          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；跟数字经理对话有专属模式，不在此选择）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>
             <b id="mode-row-name">标准办公</b>
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
@@ -232,13 +211,18 @@
              与下方输入区连为一体（同底色同圆角，一条细分隔线），不是浮在卡外的第二层；
              没有附件时带 hidden，整块不参与布局（零占位、不留白边）；渲染见 app-chat.js 的 renderAttachments -->
         <div id="attachments" class="attach-rail hidden"></div>
-        <!-- 引用胶囊：对话区选文「引用到输入框」挂在这里（灰底胶囊、双引号包裹、
-             截断显示、✕ 移除）；发送时组装为「用户引用：”…“」+ 正文完整发给模型。
-             没有引用时带 hidden 零占位；状态与渲染见 app-chat.js 的「引用胶囊」节 -->
+        <!-- 引用胶囊：对话区选文「引用到输入框」挂在这里（多条累计；灰底胶囊、
+             1 条显示“某某某…”截断、多条收成「引用了N条」、✕ 清空），每次引用还会
+             在输入框光标处插入“引用N”标记占位；发送时组装为「用户引用：」块
+             （逐条带编号全文）+ 正文完整发给模型。没有引用时带 hidden 零占位；
+             状态与渲染见 app-chat.js 的「引用胶囊」节 -->
         <div id="quote-bar" class="quote-bar hidden">
           <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
           <span class="q-text"></span>
           <button class="q-x" type="button" title="移除引用">✕</button>
+          <!-- 悬停展开面板：胶囊条正上方、与输入框同宽，逐条列「引用N + 全文」。
+               不用原生 title（黄色小框、触发慢）——纯 CSS :hover 即时展开（style.css .q-expand） -->
+          <div class="q-expand"></div>
         </div>
         <textarea id="input" class="composer-input" rows="3" placeholder="描述你想要构建的内容…"></textarea>
         <div class="composer-bar">
@@ -317,11 +301,13 @@
             <div id="sub-composer" class="sub-composer-card composer-card">
               <!-- 附件区：与主对话区同款——输入卡内部第一层（id 加 sub- 前缀，由同一批函数按视图渲染） -->
               <div id="sub-attachments" class="attach-rail hidden"></div>
-              <!-- 引用胶囊：与主对话区同款（id 加 sub- 前缀，由同一批函数按视图渲染） -->
+              <!-- 引用胶囊：与主对话区同款（多条累计 + 光标处“引用N”标记；id 加 sub- 前缀） -->
               <div id="sub-quote-bar" class="quote-bar hidden">
                 <svg class="q-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/><path d="M19 11h-4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3v4a5 5 0 0 1-5 5"/></svg>
                 <span class="q-text"></span>
                 <button class="q-x" type="button" title="移除引用">✕</button>
+                <!-- 悬停展开面板：与主对话区同款（id 加 sub- 前缀） -->
+                <div class="q-expand"></div>
               </div>
               <textarea id="sub-input" class="composer-input" rows="3" placeholder="向子对话发消息…"></textarea>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
@@ -519,7 +505,7 @@
           <div class="gen-section">
             <h4>外观</h4>
             <div class="set-field">
-              <div class="sf-label">主题色</div>
+              <div class="sf-label">背景色</div>
               <div class="theme-cards" id="theme-cards">
                 <button type="button" class="theme-card" data-v="light">
                   <span class="tc-prev light"><i class="tc-side"></i><i class="tc-main"><b></b></i></span>
@@ -536,7 +522,7 @@
               </div>
             </div>
             <div class="set-field">
-              <div class="sf-label">点缀色</div>
+              <div class="sf-label">主题色</div>
               <div id="accent-row"></div>
             </div>
           </div>
@@ -549,15 +535,14 @@
             <div class="set-field">
               <div class="sf-label">对话中途发送行为</div>
               <div id="sel-midrun"></div>
-              <p class="sf-desc">插话不打断执行：消息在模型下一次调用前注入本轮；等待则排入队列，本轮彻底结束后逐条发送。</p>
+              <p class="sf-desc">插话不打断执行：下一步调用模型时插话进去；等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
-          </div>
-          <div class="gen-section">
-            <h4>文件</h4>
             <div class="set-field">
-              <div class="sf-label">交付文件打开方式</div>
-              <div id="sel-fileopen"></div>
-              <p class="sf-desc">点交付成果里的「打开」时：右侧浏览器优先＝代码、文本、图片、PDF 开在右侧「文件」查看页（带行号的代码样式，桌面/网页/手机端一致），网页文件开在右侧「浏览器」面板，Word、Excel 等其余文件自动用系统默认应用打开；系统默认应用＝一律用双击它时的程序打开。远程工作区（SSH）的文件始终在右侧查看。</p>
+              <div class="sf-label">排队消息自动续发</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-queueauto-on"><span></span></label>
+                <span class="sf-desc">本轮回复完成后，队列里的待发消息（真人消息、派发回报、AI 用户消息，不分来源）自动逐条发出；关掉后队列保留，排队坞给「继续发送」入口</span>
+              </div>
             </div>
           </div>
           <div class="gen-section">
@@ -567,6 +552,30 @@
               <div class="sf-inline">
                 <input id="set-maxsteps" type="number" min="1" max="1000">
                 <span class="sf-desc">单条消息触发的任务里，模型可连续执行的步数（模型调用＋工具执行）上限；连续跑满这个数仍未完成会自动停止</span>
+              </div>
+            </div>
+          </div>
+          <div class="gen-section">
+            <h4>询问提醒</h4>
+            <div class="set-field">
+              <div class="sf-label">声音和灯光提醒</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-askalert-on"><span></span></label>
+                <span class="sf-desc">提问久等未答时：叮一声＋全屏闪烁＋语音朗读（语音组件启用时才朗读）</span>
+              </div>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">触发时长（秒）</div>
+              <div class="sf-inline">
+                <input id="set-askalert-sec" type="number" min="30" max="600">
+                <span class="sf-desc">提问等待达到该秒数仍未回答（且没碰过提问卡）时提醒，30–600，默认 240（4 分钟）</span>
+              </div>
+            </div>
+            <div class="set-field">
+              <div class="sf-label">朗读文案</div>
+              <div class="sf-inline">
+                <input id="set-askalert-text" class="pf-input" placeholder="领导，在吗？有个问题需要您审批确认一下。" autocomplete="off" spellcheck="false">
+                <span class="sf-desc">提醒触发时朗读这句话；留空用默认文案</span>
               </div>
             </div>
           </div>
@@ -623,8 +632,11 @@
             </div>
             <div class="set-field">
               <div class="sf-label">配对密钥</div>
-              <input id="set-remote-pk" class="pf-input" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">端到端加密密钥的种子，同时是接入凭证；每台安装默认自动生成独立的随机密钥（8~64 位）。换新密钥后，旧入口链接立即失效。</p>
+              <div class="sf-inline">
+                <input id="set-remote-pk" class="pf-input" style="flex:1" autocomplete="off" spellcheck="false" readonly title="自动生成的随机密钥（可选中复制）；点右侧「自动生成」换新">
+                <button id="btn-remote-pk-new" class="pf-add" type="button" style="width:90px;margin-top:0;padding:7px 0;flex-shrink:0">自动生成</button>
+              </div>
+              <p class="sf-desc">端到端加密密钥的种子，同时是接入凭证：32 位随机字符，只能点「自动生成」换新、不可手填；换新后旧入口链接立即失效，已配对的手机要扫新二维码或收藏新入口。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">网关地址 / 端口</div>
@@ -632,7 +644,7 @@
                 <input id="set-remote-host" class="pf-input" style="flex:1" autocomplete="off" spellcheck="false">
                 <input id="set-remote-port" class="pf-input" type="number" min="1" max="65535" style="width:90px">
               </div>
-              <p class="sf-desc">中继网关（210 网关 server.js）的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
+              <p class="sf-desc">中继网关的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
             </div>
           </div>
           <div class="gen-section">
@@ -640,7 +652,7 @@
             <div class="set-field">
               <div class="sf-label">市场服务器</div>
               <input id="set-market-url" class="pf-input" placeholder="http://网关地址:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">jxai-server 市场的清单地址（同一台服务器上与中继网关共用端口）；填好即用，改动即时生效。留空则市场页显示未配置。</p>
+              <p class="sf-desc">市场的清单地址；填好即用，改动即时生效。留空则市场页显示未配置。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">发布者姓名</div>
@@ -651,6 +663,14 @@
           <div class="gen-section">
             <h4>公司接入与更新</h4>
             <div class="set-field">
+              <div class="sf-label">公司接入</div>
+              <div class="sf-inline">
+                <label class="pr-toggle"><input type="checkbox" id="set-company-on"><span></span></label>
+                <span class="sf-desc" id="set-company-state"></span>
+              </div>
+              <p class="sf-desc">永不在公司使用、连不上公司服务端时可关闭：启动不再弹出接入向导，也不在后台连接公司服务端；已配好的模型通道不受影响，重新打开即恢复。</p>
+            </div>
+            <div class="set-field" id="wizard-rerun-field">
               <div class="sf-label">接入向导</div>
               <div class="sf-inline">
                 <button id="btn-wizard-rerun" class="pf-add" type="button">重新运行接入向导</button>
@@ -665,20 +685,7 @@
             <div class="set-field">
               <div class="sf-label">更新检查源</div>
               <input id="set-update-url" class="pf-input" placeholder="http://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">软件更新检查地址（jxai-server 的 /updates/latest，或 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。</p>
-            </div>
-            <div class="set-field">
-              <div class="sf-label">软件更新</div>
-              <p class="sf-desc" id="update-man-state">当前版本 -</p>
-              <div class="update-man-actions">
-                <button id="btn-update-check" class="pf-add" type="button">立即检查更新</button>
-                <button id="btn-update-dl" class="pf-add" type="button">下载完整安装包</button>
-              </div>
-              <p class="sf-desc">「立即检查」当场拉一次发布源并静默应用分块更新（发布源支持时：主程序重启软件后生效，组件即刻生效）；「下载完整安装包」走完整安装，与静默更新两条路并存、互为兜底。</p>
-              <select id="set-update-mode" class="pf-input" style="width:auto" title="更新方式">
-                <option value="auto">更新方式：自动静默更新（推荐）</option>
-                <option value="manual">更新方式：仅提醒，手动完整安装</option>
-              </select>
+              <p class="sf-desc">软件更新检查地址（填 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。检查与安装操作在 设置 · 关于 · 软件更新。</p>
             </div>
           </div>
           <p class="tip">网络访问设置保存在服务端；远程接入改动即时生效，局域网绑定改动重启程序后生效。</p>
@@ -692,21 +699,26 @@
         <div class="set-pane" id="set-pane-context">
           <h3>对话历史与压缩</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留，压缩只影响发给模型的内容</div>
+            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留、可随时查回，压缩只影响发给模型的内容。规则压缩：折叠的回合保留用户输入与正文、工具调用名与参数；丢弃思考过程、工具结果与环境快照。达到阈值自动压缩（按保留字数预算保留最近的完整轮），消息上的「压缩」按钮则按该回合位置向上折叠</div>
             <div class="compact-row">
               <label>模式
                 <div id="sel-compact-mode"></div>
               </label>
-              <label>保留最近轮数
-                <input id="set-keeprounds" type="number" min="1">
+              <label>保留字数（自动压缩）
+                <input id="set-keepchars" type="number" min="10000" step="5000">
               </label>
-              <label>规则压缩间隔（轮）
-                <input id="set-ruleinterval" type="number" min="1">
-              </label>
-              <label>摘要触发阈值
+              <label>自动压缩阈值
                 <div id="sel-compact-threshold"></div>
               </label>
             </div>
+          </div>
+          <div class="gen-section">
+            <h4>跟数字经理对话</h4>
+            <div class="compact-actions">
+              <button id="btn-assistant-compact" class="set-act" type="button" title="立即对跟数字经理对话执行一次压缩：点击后先确认，再把较早的历史整理成一份摘要">压缩跟数字经理对话</button>
+              <button id="btn-assistant-clear" class="set-act danger" type="button" title="清空跟数字经理对话的全部历史消息（需要二次确认，不可恢复）">清空跟数字经理对话</button>
+            </div>
+            <p class="sf-desc" id="assistant-ops-state">两个按钮都作用于「跟数字经理对话」这一个会话（不是当前打开的这个对话），点下立即生效、不随底部「保存」提交。「压缩」点击后先确认，再把较早的历史整理成一份摘要放进对话，原始消息永久保留、可随时查回；「清空」要连过两道确认，然后删除它的全部历史消息与摘要，会话设置保留，助理回到全新对话状态（不可恢复）。</p>
           </div>
           <div class="gen-section">
             <h4>文件备份</h4>
@@ -716,7 +728,6 @@
                 <label class="pr-toggle"><input type="checkbox" id="set-snapshot-on"><span></span></label>
                 <span class="sf-desc" id="set-snapshot-state"></span>
               </div>
-              <p class="sf-desc">write_file / edit_file 与 snapshot_file 的改动前内容会存进工作区的 .jxai/snapshots，供编辑历史消息或按轮撤销时回退文件；关闭后不再记录新快照。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">自动清理（天）</div>
@@ -731,7 +742,7 @@
         <div class="set-pane" id="set-pane-experts">
           <h3>子对话专家</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">名称即调用参数：主对话派发子对话时填 expert=名称，追加提示词、默认模型与上下文继承完全按该专家的预设生效（换模型可用 model 参数）。下方每个名称与后端可调用的专家清单同源一致；停用的专家对主对话不可见；名称要保持唯一。</div>
+            <div class="tip-inline" style="margin:0 0 10px">停用的专家对主对话不可见；名称要保持唯一。</div>
             <button id="expert-add-btn" class="pf-add">＋ 添加专家</button>
           </div>
           <div class="gen-section">
@@ -755,7 +766,7 @@
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
           <div class="prov-section skill-drop-zone">
-            <div class="tip-inline" style="margin:0 0 10px">技能 = 带 SKILL.md 说明与脚本的能力包。用户技能装在 技能/user/（手动拖入目录同样有效）；开启后只把显示名称与描述列入技能清单，模型使用时先 read_skill 读完整说明。<b>支持把 .zip 压缩包或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
+            <div class="tip-inline" style="margin:0 0 10px">技能 = 带说明与脚本的能力包。<b>支持把 .zip 压缩包、单个 .md 说明文件或整个技能文件夹直接拖进本页安装</b>，免开文件选择框。</div>
             <button id="skill-add-btn" class="pf-add">＋ 添加技能</button>
           </div>
           <div class="gen-section">
@@ -793,7 +804,7 @@
         <div class="set-pane" id="set-pane-plugins">
           <h3>插件</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">统一插件页：主体发现各「插件兼容层」，各层发现自己生态的插件，下方按来源体系分组。支持安装的体系在此提供安装入口（当前：Claude Code 格式）；hooks / mods / MCP 属执行型组件，默认关闭、需逐个显式开启。输入框输入 / 可触发插件命令。独立 MCP 服务在「MCP」分区管理。</div>
+            <div class="tip-inline" style="margin:0 0 10px">当前支持 Claude Code 格式的插件安装；输入框输入 / 可触发插件命令。独立 MCP 服务在「MCP」分区管理。</div>
             <div class="ccp-install-row">
               <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL（Claude Code 格式）" />
               <button id="ccp-install-btn" class="pf-add">安装</button>
@@ -817,7 +828,21 @@
                 <div class="tip-inline" id="about-version" style="margin:0">版本 0.1.0</div>
               </div>
             </div>
-            <p class="tip" id="about-status" style="margin-top:14px"></p>
+          </div>
+          <div class="gen-section">
+            <h4>软件更新</h4>
+            <div class="set-field">
+              <p class="sf-desc" id="update-man-state">当前版本 -</p>
+              <div class="update-man-actions">
+                <button id="btn-update-check" class="pf-add" type="button">立即检查更新</button>
+                <button id="btn-update-dl" class="pf-add" type="button">下载完整安装包</button>
+              </div>
+              <p class="sf-desc">「立即检查」当场拉一次发布源并静默应用分块更新（发布源支持时：主程序重启软件后生效，组件即刻生效）；「下载完整安装包」走完整安装，与静默更新两条路并存、互为兜底。检查地址（更新检查源）在 设置 · 网络访问。</p>
+              <select id="set-update-mode" class="pf-input" style="width:auto" title="更新方式">
+                <option value="auto">更新方式：自动静默更新（推荐）</option>
+                <option value="manual">更新方式：仅提醒，手动完整安装</option>
+              </select>
+            </div>
           </div>
           <div class="gen-section">
             <h4>远程外壳 <span class="sec-sub">远程端（手机）经中继加载的单文件页面</span></h4>
@@ -888,7 +913,7 @@
   </button>
 </div>
 
-<!-- 技能添加方式：选文件夹 / 选 ZIP 压缩包（都弹操作系统原生选择框，后端代选并拿真实路径） -->
+<!-- 技能添加方式：选文件夹 / 选 ZIP·MD 文件（都弹操作系统原生选择框，后端代选并拿真实路径） -->
 <div id="skill-add-pop" class="popover hidden">
   <button class="pop-item" id="sa-folder">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -896,7 +921,7 @@
   </button>
   <button class="pop-item" id="sa-zip">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
-    从 ZIP 压缩包添加…
+    从 ZIP / MD 文件添加…
   </button>
 </div>
 
@@ -973,7 +998,7 @@
 <div id="mode-pop" class="popover mode-pop hidden">
   <div class="pop-group">工作模式</div>
   <div id="mode-pop-list"></div>
-  <div class="mode-pop-note">模式决定系统提示词与能力倾向；数字助理主对话有专属模式，从左上角进入。</div>
+  <div class="mode-pop-note">模式决定系统提示词与能力倾向；跟数字经理对话有专属模式，从左上角进入。</div>
 </div>
 
 <!-- SSH 远程工作区（两步式：第一步连接配置→保存；第二步浏览远程目录→使用） -->
@@ -1059,6 +1084,25 @@
 
 <!-- 轻提示（toast）：静默组件更新完成等不打扰用户的通知，自动消失 -->
 <div id="app-toast" class="app-toast hidden"></div>
+
+<!-- 询问声光提醒层：提问久等未答时全屏淡压暗＋光晕呼吸。时序见 app-chat.js 的
+     showAskAlert——叮声在事件到达那一刻由后端系统音效立即响（前端不重复响）；
+     浮窗上走 15 秒可见倒计时，倒计时结束才开始朗读提醒内容；15 秒内用户关掉这层、
+     或从任何入口进去处理（计划页/浮窗，见 notePlanHandled），一律取消朗读。
+     关闭永远一步到位：点背景＝只关闭不打扰当前操作，点中央卡片＝关闭并跳去回答，Esc 同效；
+     朗读结束后几秒收起，最迟 40 秒兜底 -->
+<div id="ask-alert" class="hidden" title="点击关闭提醒">
+  <div class="aa-box">
+    <b>⏰ 有个提问在等你确认</b>
+    <p id="ask-alert-text"></p>
+    <div id="ask-alert-count" class="aa-count hidden">
+      <span class="aa-count-num" id="ask-alert-num">15</span>
+      <span class="aa-count-tip" id="ask-alert-tip">秒后朗读提醒</span>
+      <span class="aa-count-bar"><i id="ask-alert-bar"></i></span>
+    </div>
+    <span>点这张卡片前往回答 · 点其他任意处或按 Esc 关闭</span>
+  </div>
+</div>
 
 <!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → ctxmenu（桌面壳右键菜单）→ settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
 <script src="/qrcode.lib.js"></script>

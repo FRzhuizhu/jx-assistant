@@ -226,8 +226,9 @@ func (a *App) listSkills() (*SkillLists, error) {
 }
 
 // addUserSkill 安装一个用户技能到 技能/user/<id>/：srcPath 是本机技能目录
-// （整目录复制）或 ZIP 压缩包（解压后安装）。安装器本质只是帮用户把文件
-// 挪到位——手动把目录拖进/拖出 技能/user/，清单扫描同样能发现。
+// （整目录复制）、ZIP 压缩包（解压后安装）或单个 .md 说明文件（包装成
+// <文件名>/SKILL.md 再安装）。安装器本质只是帮用户把文件挪到位——手动把
+// 目录拖进/拖出 技能/user/，清单扫描同样能发现。
 func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 	src := strings.TrimSpace(srcPath)
 	if src == "" {
@@ -244,17 +245,23 @@ func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 		}
 		root, idSrc = src, filepath.Base(src)
 	} else {
-		if !strings.EqualFold(filepath.Ext(src), ".zip") {
-			return nil, fmt.Errorf("只支持技能文件夹或 .zip 压缩包: %s", src)
+		isZip := strings.EqualFold(filepath.Ext(src), ".zip")
+		isMD := strings.EqualFold(filepath.Ext(src), ".md")
+		if !isZip && !isMD {
+			return nil, fmt.Errorf("只支持技能文件夹、.zip 压缩包或单个 .md 说明文件: %s", src)
 		}
 		var tmp string
-		root, tmp, err = extractSkillZip(src)
+		if isMD {
+			root, tmp, err = wrapSkillMD(src)
+		} else {
+			root, tmp, err = extractSkillZip(src)
+		}
 		if err != nil {
 			return nil, err
 		}
 		defer os.RemoveAll(tmp)
-		if root == tmp {
-			// SKILL.md 在压缩包根部：id 用压缩包文件名（临时目录名不能当 id）
+		if isMD || root == tmp {
+			// 单 .md 包装 / SKILL.md 在压缩包根部：id 用文件名（临时目录名不能当 id）
 			idSrc = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 		} else {
 			idSrc = filepath.Base(root) // 只包了一层目录：id 用内层目录名
@@ -262,7 +269,7 @@ func (a *App) addUserSkill(srcPath string) (*userSkillEntry, error) {
 	}
 	id := sanitizeSkillID(idSrc)
 	if id == "" {
-		return nil, fmt.Errorf("无法从名字推导技能 id，请用纯字母数字或中文命名文件夹/压缩包")
+		return nil, fmt.Errorf("无法从名字推导技能 id，请用纯字母数字或中文命名文件夹/压缩包/.md 文件")
 	}
 	if builtinSkillIDs[id] {
 		return nil, fmt.Errorf("%s 是自带技能，不能重名", id)
@@ -326,6 +333,26 @@ func extractSkillZip(zipPath string) (root, tmp string, err error) {
 	}
 	os.RemoveAll(tmp)
 	return "", "", fmt.Errorf("压缩包里找不到 SKILL.md（技能必须自带说明文件；SKILL.md 需在压缩包根部或其唯一子目录里）")
+}
+
+// wrapSkillMD 把单个 .md 说明文件包装成临时技能目录（内容落为目录根部的
+// SKILL.md），返回 (技能根, 临时目录, 错误)；技能 id 由调用方从原文件名推导。
+// 临时目录用完由调用方清理。
+func wrapSkillMD(mdPath string) (root, tmp string, err error) {
+	tmp, err = os.MkdirTemp("", "jxskmd-")
+	if err != nil {
+		return "", "", fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		os.RemoveAll(tmp)
+		return "", "", fmt.Errorf("读取 %s 失败: %w", filepath.Base(mdPath), err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "SKILL.md"), data, 0644); err != nil {
+		os.RemoveAll(tmp)
+		return "", "", err
+	}
+	return tmp, tmp, nil
 }
 
 // toggleUserSkill 开关用户技能；自带技能不允许关闭。
@@ -524,9 +551,9 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 func registerSkillTool() Tool {
 	return Tool{
 		Spec: toolSpec("register_skill",
-			"把一个技能目录注册进用户技能库（目录必须含 SKILL.md）。注册后技能进入各任务会话的环境快照技能清单，可用 read_skill 读回验证。技能已注册过、要更新时带 update=true（用当前目录内容覆盖旧版）。",
+			"把一个技能注册进用户技能库：路径可以是含 SKILL.md 的目录，或单个 .md 说明文件（自动包装成技能）。注册后技能进入各任务会话的环境快照技能清单，可用 read_skill 读回验证。技能已注册过、要更新时带 update=true（用当前路径内容覆盖旧版）。只读模式下不可用（会写用户技能库）：被拒后可用 request_permission 申请切档。",
 			objSchema(map[string]any{
-				"path":   strProp("技能目录路径（相对或绝对；目录里需有 SKILL.md）"),
+				"path":   strProp("技能路径：含 SKILL.md 的目录，或单个 .md 说明文件"),
 				"update": boolProp("技能已存在时先删旧版再装（默认 false）"),
 			}, "path")),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
@@ -537,15 +564,23 @@ func registerSkillTool() Tool {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
 			}
+			if err := requireNotReadOnly(t, "注册技能（会写入用户技能库）"); err != nil {
+				return "", err
+			}
 			abs, err := t.resolve(p.Path)
 			if err != nil {
 				return "", err
 			}
-			if isDir, _, serr := t.envStat(abs); serr != nil || !isDir {
-				return "", fmt.Errorf("目录不存在: %s（%s）", abs, p.Path)
+			isDir, _, serr := t.envStat(abs)
+			if serr != nil {
+				return "", fmt.Errorf("路径不存在: %s（%s）", abs, p.Path)
 			}
-			if _, _, serr := t.envStat(filepath.Join(abs, "SKILL.md")); serr != nil {
-				return "", fmt.Errorf("目录里缺少 SKILL.md（技能必须自带说明文件）：%s", abs)
+			if isDir {
+				if _, _, serr := t.envStat(filepath.Join(abs, "SKILL.md")); serr != nil {
+					return "", fmt.Errorf("目录里缺少 SKILL.md（技能必须自带说明文件）：%s", abs)
+				}
+			} else if !strings.EqualFold(filepath.Ext(abs), ".md") {
+				return "", fmt.Errorf("技能路径须是含 SKILL.md 的目录或单个 .md 说明文件: %s", abs)
 			}
 			entry, err := t.app.addUserSkill(abs)
 			if err != nil {
@@ -631,8 +666,8 @@ func (a *App) handleAddSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, entry)
 }
 
-// handleUploadSkill 技能压缩包直传（设置页拖拽安装）：multipart 的 file
-// 字段落临时文件后走与 /api/skills/add 同一条 addUserSkill 路径（解压装
+// handleUploadSkill 技能包直传（设置页拖拽安装）：multipart 的 file 字段
+// 落临时文件后走与 /api/skills/add 同一条 addUserSkill 路径（解压/包装装
 // 进 技能/user/）。浏览器拖拽拿不到本地路径，上传是唯一通道。
 func (a *App) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(256 << 20); err != nil {
@@ -645,17 +680,26 @@ func (a *App) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	if !strings.EqualFold(filepath.Ext(header.Filename), ".zip") {
-		writeErr(w, 400, "只支持 .zip 压缩包（技能文件夹请用「添加技能」按钮选择）")
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext != ".zip" && ext != ".md" {
+		writeErr(w, 400, "只支持 .zip 压缩包或单个 .md 说明文件（技能文件夹请用「添加技能」按钮选择）")
 		return
 	}
-	tmp, err := os.CreateTemp("", "jxskill-*.zip")
+	// 临时文件保留原始文件名（放进专用临时目录）：addUserSkill 用文件名推导
+	// 技能 id（.md 包装安装与根级 SKILL.md 的 zip 都靠它），随机临时名会把
+	// id 变成 jxskill-xxxx；目录隔离同时避免重名冲突。
+	tmpDir, err := os.MkdirTemp("", "jxskill-")
+	if err != nil {
+		writeErr(w, 500, "临时目录创建失败: "+err.Error())
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpPath := filepath.Join(tmpDir, filepath.Base(header.Filename))
+	tmp, err := os.Create(tmpPath)
 	if err != nil {
 		writeErr(w, 500, "临时文件创建失败: "+err.Error())
 		return
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
 	if _, err := io.Copy(tmp, file); err != nil {
 		tmp.Close()
 		writeErr(w, 500, "上传写入失败: "+err.Error())

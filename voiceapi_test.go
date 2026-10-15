@@ -49,13 +49,15 @@ func doJSON(t *testing.T, h http.HandlerFunc, method, target string, body io.Rea
 }
 
 // newEdgeTTSMock 起一个假 Edge 朗读 WebSocket 服务器：记录上行文本帧，
-// 回两块二进制音频 + turn.end。返回服务器与取帧函数。
+// 回两块二进制音频 + turn.end。返回服务器与取帧函数。鉴权参数兼容两代协议
+//（v1 TrustedClientToken / v2 Ocp-Apim-Subscription-Key）。
 func newEdgeTTSMock(t *testing.T) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	frames := []string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("TrustedClientToken") != edgeToken {
+		if r.URL.Query().Get("TrustedClientToken") != edgeToken &&
+			r.URL.Query().Get("Ocp-Apim-Subscription-Key") != edgeToken {
 			w.WriteHeader(403)
 			return
 		}
@@ -102,9 +104,10 @@ func newEdgeTTSMock(t *testing.T) (*httptest.Server, func() []string) {
 func TestVoiceTTS(t *testing.T) {
 	srv, getFrames := newEdgeTTSMock(t)
 	defer srv.Close()
-	old := edgeTTSBase
-	edgeTTSBase = func() string { return "ws://" + srv.Listener.Addr().String() + "/edge/v1" }
-	defer func() { edgeTTSBase = old }()
+	mock := func() string { return "ws://" + srv.Listener.Addr().String() + "/edge/v1" }
+	oldFB, old := edgeTTSBaseFallback, edgeTTSBase
+	edgeTTSBaseFallback, edgeTTSBase = mock, mock // 主/后备都指向 mock：任一通道命中
+	defer func() { edgeTTSBaseFallback, edgeTTSBase = oldFB, old }()
 
 	a := newVoiceTestApp(t) // 无需任何配置
 	w := doJSON(t, a.handleVoiceTTS, "POST", "/api/voice/tts",
@@ -162,14 +165,15 @@ func TestVoiceTTSErrors(t *testing.T) {
 	if w := doJSON(t, a.handleVoiceTTS, "POST", "/api/voice/tts", strings.NewReader("xx")); w.Code != 400 {
 		t.Fatalf("非法 JSON 应 400，得 %d", w.Code)
 	}
-	// 端点不可达：头已定，合成失败走断流（不出 5xx，也不 panic）
+	// 端点不可达：头已定，合成失败走断流（不出 5xx，也不 panic）——两代通道全挂
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403)
 	}))
 	defer srv.Close()
-	old := edgeTTSBase
-	edgeTTSBase = func() string { return "ws://" + srv.Listener.Addr().String() + "/edge/v1" }
-	defer func() { edgeTTSBase = old }()
+	mock := func() string { return "ws://" + srv.Listener.Addr().String() + "/edge/v1" }
+	oldFB, old := edgeTTSBaseFallback, edgeTTSBase
+	edgeTTSBaseFallback, edgeTTSBase = mock, mock
+	defer func() { edgeTTSBaseFallback, edgeTTSBase = oldFB, old }()
 	w := doJSON(t, a.handleVoiceTTS, "POST", "/api/voice/tts", strings.NewReader(`{"text":"hi"}`))
 	if w.Code != 200 || w.Body.Len() != 0 {
 		t.Fatalf("失败应断流（200/空体），得 %d / %d 字节", w.Code, w.Body.Len())
@@ -198,9 +202,10 @@ func TestVoiceVoices(t *testing.T) {
 		]`))
 	}))
 	defer srv.Close()
-	old := edgeVoicesBase
-	edgeVoicesBase = func() string { return srv.URL + "/voices/list" }
-	defer func() { edgeVoicesBase = old }()
+	mock := func() string { return srv.URL + "/voices/list" }
+	oldFB, old := edgeVoicesBaseFallback, edgeVoicesBase
+	edgeVoicesBaseFallback, edgeVoicesBase = mock, mock
+	defer func() { edgeVoicesBaseFallback, edgeVoicesBase = oldFB, old }()
 
 	a := newVoiceTestApp(t)
 	w := doJSON(t, a.handleVoiceVoices, "GET", "/api/voice/voices", nil)

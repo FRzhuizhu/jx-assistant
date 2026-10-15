@@ -51,7 +51,7 @@ const (
 
 func gitSyncTool() Tool {
 	return Tool{
-		Spec: toolSpec("git_sync", "与远程仓库同步（op：push=把当前分支新提交推送到上游，缺省；pull=拉取远程更新并合并（快进优先，分叉自动合并，有冲突立即中止恢复原状）；sync=拉取+合并+推送一键；fetch=只更新远程跟踪状态、不动任何东西）。经 Git 面板组件的宿主通道执行，**不经命令沙箱**——命令沙箱内 git 的远程操作（fetch/pull/push/clone）会因受限令牌失败（本地操作 status/add/commit/log 等不受影响，直接用 run_command）。凭据走系统 git 的正常配置（凭据助手可用）。需要决策的情形（当前分支无上游、分叉有冲突、推送被拒）本工具不动手，原样报告 git 信息。仅工作区内读写及以上权限可用，只读模式调用会被拒绝。若本会话已是完全访问权限、或已开启「允许工作区外执行命令」能力，则不必用本工具：直接用 run_command 执行 git 命令行（fetch/pull/push 均可，凭据可用）。",
+		Spec: toolSpec("git_sync", "与远程仓库同步（op：push=把当前分支新提交推送到上游，缺省；pull=拉取远程更新并合并（快进优先，分叉自动合并，有冲突立即中止恢复原状）；sync=拉取+合并+推送一键；fetch=只更新远程跟踪状态、不动任何东西）。经 Git 面板组件的宿主通道执行，**不经命令沙箱**——命令沙箱内 git 的远程操作（fetch/pull/push/clone）会因受限令牌失败（本地操作 status/add/commit/log 等不受影响，直接用 run_command）。凭据走系统 git 的正常配置（凭据助手可用）。需要决策的情形（当前分支无上游、分叉有冲突、推送被拒）本工具不动手，原样报告 git 信息。只读模式调用会被拒绝（可用 request_permission 申请切档）。若本会话已是完全访问权限、或已开启「允许工作区外执行命令」能力，则不必用本工具：直接用 run_command 执行 git 命令行（fetch/pull/push 均可，凭据可用）。",
 			objSchema(map[string]any{
 				"op": map[string]any{
 					"type":        "string",
@@ -82,7 +82,7 @@ func runGitSync(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	// 只读档：fetch/pull/push 都会写（远程跟踪分支/合并/推送），属于写操作
 	if permModeOf(t.sess) == permReadOnly {
-		return "", errors.New("只读模式下 git_sync 不可用：本工具会更新远程仓库与本地远程跟踪分支，属于写操作。请用户把权限切到工作区内读写后再试")
+		return "", errors.New("只读模式下 git_sync 不可用：本工具会更新远程仓库与本地远程跟踪分支，属于写操作。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档（弹审批卡，批准后立即生效）；或请用户把权限切到工作区内读写后再试")
 	}
 	// 模型词汇归一到 gitSync 的 op（整套同步在 gitSync 里是空串）
 	op := strings.TrimSpace(p.Op)

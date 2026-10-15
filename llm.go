@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -115,7 +118,7 @@ func (r *ChatRequest) ApplyThinking(level string) {
 
 // StreamCallbacks 把流式输出回调给调用方：思考增量、正文增量、完整的工具调用
 // 与流尾的用量统计（DeepSeek/GLM 等兼容网关在最后一个 chunk 附带 usage，
-// 含 prompt_cache_hit_tokens 前缀缓存命中量）。
+// 含各形态的前缀缓存命中量，见 Usage.CacheHit）。
 type StreamCallbacks struct {
 	OnText      func(string)
 	OnReasoning func(string)
@@ -125,19 +128,105 @@ type StreamCallbacks struct {
 	// 完全一致的请求体字节（含 model/stream/stream_options 等最终字段）。
 	// 「导出原始数据」靠它捕获最近一次发给模型的完整内容。
 	OnRequest func(url string, body []byte)
+	// OnBody 在模型流响应体建立后回调一次（abort=强制断开器，关响应体即断流），
+	// 流结束后再回调一次（abort=nil，注销）。停止看门狗的硬终结（runtime.go
+	// forceStopRun）靠它在流不响应 ctx 取消时直接断开底层连接。
+	OnBody func(abort func())
 }
 
-// Usage 是流尾统计块（OpenAI 兼容 + DeepSeek 缓存命中扩展）。
+// Usage 是流尾统计块（OpenAI 兼容）。缓存命中量各端点字段名不一，取用一律
+// 走 CacheHit/CacheMiss，别直接读字段：
+//   - OpenAI/智谱 GLM：prompt_tokens_details.cached_tokens（OpenAI 标准口径；
+//     智谱 coding 端点实测只报这个——只认 DeepSeek 字段会让面板把明明命中的
+//     调用记成 0%）
+//   - DeepSeek：prompt_cache_hit_tokens / prompt_cache_miss_tokens（旧口径）
+//   - 部分网关的 Anthropic 兼容层：cache_read_input_tokens
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	PromptCacheHit   int `json:"prompt_cache_hit_tokens"`
 	PromptCacheMiss  int `json:"prompt_cache_miss_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// OpenAI 标准形态：{"prompt_tokens_details":{"cached_tokens":N}}
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// Anthropic 兼容层形态：usage 里的缓存读取量
+	CacheReadTokens int `json:"cache_read_input_tokens,omitempty"`
 }
+
+// PromptTokensDetails 是 OpenAI 标准 usage 明细块（cached_tokens=命中前缀量）。
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CacheHit 取本次调用命中的前缀缓存 token 数：各端点字段名归一（取最大非零）。
+func (u Usage) CacheHit() int {
+	hit := u.PromptCacheHit
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > hit {
+		hit = u.PromptTokensDetails.CachedTokens
+	}
+	if u.CacheReadTokens > hit {
+		hit = u.CacheReadTokens
+	}
+	return hit
+}
+
+// ReportsCache 报告本次 usage 是否带缓存统计：端点完全不报时用它区分
+// 「没命中」与「没统计」（前者由 CacheMiss 推出未命中量，后者两者皆 0）。
+func (u Usage) ReportsCache() bool {
+	return u.PromptCacheHit > 0 || u.PromptCacheMiss > 0 ||
+		u.PromptTokensDetails != nil || u.CacheReadTokens > 0
+}
+
+// CacheMiss 取未命中部分：端点明报 miss 就照用；只报命中量的端点（OpenAI
+// 口径）按 prompt-hit 推出；端点压根没报缓存统计则返回 0。
+func (u Usage) CacheMiss() int {
+	if u.PromptCacheMiss > 0 {
+		return u.PromptCacheMiss
+	}
+	if !u.ReportsCache() {
+		return 0
+	}
+	if hit := u.CacheHit(); u.PromptTokens > hit {
+		return u.PromptTokens - hit
+	}
+	return 0
+}
+
+// connFailure 连接层面的失败（拨号失败/超时/拒连，区别于模型服务返回的业务
+// 错误）。调用层拿它判断要不要走备用地址（公司通道外网故障转移）以及要不要
+// 触发公司通道自动停用（sync.go noteProviderConnFail）。
+type connFailure struct{ err error }
+
+func (e *connFailure) Error() string { return e.err.Error() }
+func (e *connFailure) Unwrap() error { return e.err }
+
+func isConnFailure(err error) bool {
+	var cf *connFailure
+	return errors.As(err, &cf)
+}
+
+// streamHTTP 流式对话专用客户端：只限拨号阶段（8 秒），不限总时长——流式响应
+// 可以合法地跑很久。公司内网地址出了公司往往不可路由，靠它快速失败转外网，
+// 不然每次调用都要白等系统默认的 TCP 重试超时。
+var streamHTTP = &http.Client{
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+	},
+}
+
+// altPreferred 按提供方记住「上次是靠外网地址成功的」（出公司期间每通电话先走
+// 外网，免得次次先等内网拨号超时）；内网恢复后外网先失败即自动切回。
+var altPreferred sync.Map // providerID → bool（true=优先外网）
 
 // StreamChat 向解析后的 LLM 目标发起一轮流式对话。
 // target.BaseURL 配为 "mock" 时走内置演示模型，便于离线验证整条链路。
+// 配了外网备用地址（AltBaseURL，公司通道由公告下发）且主地址连接失败时，自动
+// 改走备用地址重试一次，成功后粘住备用地址直到它再失败。
 func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb StreamCallbacks) error {
 	if target.BaseURL == "mock" {
 		return mockStream(req, cb)
@@ -149,7 +238,53 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 	if err != nil {
 		return err
 	}
-	url := strings.TrimRight(target.BaseURL, "/") + "/chat/completions"
+	primary := strings.TrimRight(target.BaseURL, "/")
+	alt := strings.TrimRight(target.AltBaseURL, "/")
+	first, second := primary, alt
+	altFirst := false
+	if alt != "" && target.ProviderID != "" {
+		if v, ok := altPreferred.Load(target.ProviderID); ok {
+			altFirst, _ = v.(bool)
+		}
+	}
+	if altFirst {
+		first, second = alt, primary
+	}
+	err = streamChatOnce(ctx, first, target.APIKey, body, cb)
+	if err == nil {
+		markAltPreferred(target, first == alt && alt != "")
+		return nil
+	}
+	if second == "" || !isConnFailure(err) || ctx.Err() != nil {
+		return err
+	}
+	log.Printf("[模型] %s 连接失败，改走备用地址 %s", first, second)
+	err2 := streamChatOnce(ctx, second, target.APIKey, body, cb)
+	if err2 == nil {
+		markAltPreferred(target, second == alt && alt != "")
+		return nil
+	}
+	return err2
+}
+
+// markAltPreferred 记住本次成功的地址形态；没有备用地址的提供方不参与。
+func markAltPreferred(target LLMTarget, preferAlt bool) {
+	if target.AltBaseURL == "" || target.ProviderID == "" {
+		return
+	}
+	if v, ok := altPreferred.Load(target.ProviderID); ok && v.(bool) == preferAlt {
+		return
+	}
+	if preferAlt {
+		altPreferred.Store(target.ProviderID, true)
+	} else {
+		altPreferred.Store(target.ProviderID, false)
+	}
+}
+
+// streamChatOnce 向单个地址发一轮流式请求（StreamChat 的主/备用共用体）。
+func streamChatOnce(ctx context.Context, baseURL, apiKey string, body []byte, cb StreamCallbacks) error {
+	url := baseURL + "/chat/completions"
 	if cb.OnRequest != nil {
 		cb.OnRequest(url, body)
 	}
@@ -158,15 +293,25 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if target.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+target.APIKey)
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := streamHTTP.Do(httpReq)
 	if err != nil {
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
-		return fmt.Errorf("无法连接模型服务：%s", connErrText(err))
+		if ctx.Err() != nil {
+			return err // 调用方取消：原样返回，不算连接故障
+		}
+		return &connFailure{err: fmt.Errorf("无法连接模型服务：%s", connErrText(err))}
+	}
+	// 登记强制断开器（停止看门狗用）：拿到响应体后交出一个可直接关闭它的
+	// abort；流结束（正常收尾/出错/ctx 取消）时回调 OnBody(nil) 注销，登记表
+	// 不留旧句柄。断开一个已关闭的 body 是安全的幂等操作。
+	if cb.OnBody != nil {
+		cb.OnBody(func() { _ = resp.Body.Close() })
+		defer cb.OnBody(nil)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

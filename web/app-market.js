@@ -380,7 +380,7 @@ function mkuRenderSkills() {
   if (!box) return;
   if (!mkuSkills.length) {
     box.innerHTML = '<div class="mku-skill-empty">本机还没有安装用户技能。<br>' +
-      '先去 设置 · 技能 安装（支持拖入 zip 或技能文件夹），装好、试过能用再回来发布。</div>';
+      '先去 设置 · 技能 安装（支持拖入 zip、.md 文件或技能文件夹），装好、试过能用再回来发布。</div>';
     return;
   }
   box.innerHTML = '';

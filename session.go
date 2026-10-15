@@ -11,6 +11,8 @@ import (
 // SessionMeta 是一个会话的元信息；消息正文存于 messages 表。
 // mode: task=普通任务会话 assistant=数字助理总控 aux=辅助答疑对话
 //      office=标准办公模式 coding=编程模式（扩展模式样板：设计人员等未来模式照此新增）
+//      beginner-coding=新手编程模式（工具与界面同编程模式，提示词面向不懂编程的
+//      用户：先确认需求再动手、全程大白话讲解）
 //      skill-create=创建技能模式（用户演示操作→沉淀 SKILL.md 技能；默认完全访问，
 //      配套演示记录器 demo_record_* 与 register_skill，见 recorder.go / agent.go）
 // permission: workspace-write=工作区内读写 full=完全访问 read-only=只读
@@ -44,9 +46,13 @@ type SessionMeta struct {
 	// 数字助理派发的工作任务是顶层会话（左侧任务列表可见）；dispatched_by 记
 	// 派发它的助理会话 id，作为回报链（服务重启的中断回报 / list_sessions 标记）。
 	DispatchedBy string `json:"dispatchedBy,omitempty"`
-	Archived   bool             `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
-	Unread     bool             `json:"unread,omitempty"`   // 标为未读：侧栏红点
-	Status     string           `json:"status,omitempty"`   // idle | running
+	// 本对话内用户用过语音听写（消息含转写文字）：置位后永久保持、不再撤下
+	//（后续轮次改打字也不清——环境快照据此稳定注入同音错字提示）。
+	// 消息级来源是前端随 chat 请求上报的 voiceUsed（组件听写落框时打标记）。
+	VoiceUsed bool `json:"voiceUsed,omitempty"`
+	Archived     bool   `json:"archived,omitempty"` // 归档：不进侧栏列表，记录保留
+	Unread       bool   `json:"unread,omitempty"`   // 标为未读：侧栏红点
+	Status       string `json:"status,omitempty"`   // idle | running
 	// 最近一轮异常中断的类型（step=达到步数上限 / error=执行失败 / restart=服务在
 	// 执行期间重启，空=正常收口）：左侧栏把时间位换成「⚠ 已中断」提醒，与
 	// 「⟳ 运行中」同槽、天然互斥。值存在 meta 表（Store.SetLastStop），只由会话
@@ -54,12 +60,12 @@ type SessionMeta struct {
 	LastStop string `json:"lastStop,omitempty"`
 	// 累计用量（来自每次模型调用的流尾 usage，按 token 累加而非按次平均，
 	// 供上下文面板「Token 用量」分组：缓存命中% = hit/prompt）
-	UsagePrompt   int64 `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和（输入）
-	UsageCacheHit int64 `json:"usageCacheHit,omitempty"` // 历次调用 prompt_cache_hit_tokens 总和（缓存读取）
-	UsageOutput   int64 `json:"usageOutput,omitempty"`   // 历次调用 completion_tokens 总和（输出）
-	UsageCalls    int64 `json:"usageCalls,omitempty"`    // 模型调用次数
-	CreatedAt  string           `json:"createdAt"`
-	UpdatedAt  string           `json:"updatedAt"`
+	UsagePrompt   int64  `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和（输入）
+	UsageCacheHit int64  `json:"usageCacheHit,omitempty"` // 历次调用命中的缓存读取 token 总和（各端点字段名已归一）
+	UsageOutput   int64  `json:"usageOutput,omitempty"`   // 历次调用 completion_tokens 总和（输出）
+	UsageCalls    int64  `json:"usageCalls,omitempty"`    // 模型调用次数
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 func newID() string {

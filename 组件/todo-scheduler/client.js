@@ -4,7 +4,8 @@
  * 点击后把待办页渲染进主列（#msg-col）——就是对话页的同一个容器，等同级页面而非
  * 浮窗：顶栏标题改成本页名字、底部输入区收起，内容随 #messages 自然滚动。
  *   - 一条持久化的任务清单：新建 / 编辑 / 删除（两段确认）/ 启用停用 / 立即执行；
- *   - 两类任务：AI 任务（到点把描述转交数字助理）与程序任务（到点运行命令）；
+ *   - 两类任务：AI 任务（到点按执行目标把描述发给数字经理或一个新的工作任务）
+ *     与程序任务（到点运行命令）；
  *   - 执行记录（时间、触发方式、成败、摘要、「查看会话」跳转）；
  *   - 程序没开着时错过的执行不自动补跑，页面顶部提示「补跑 / 忽略」。
  *
@@ -92,7 +93,7 @@
       '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M5 3L2 6M19 3l3 3"/></svg>' +
       '<span class="sb-label">待办与定时任务</span>';
     btn.onclick = () => { if (st.page) closePage(); else openPage(); };
-    // 位置：紧跟「数字助理主对话」，在工作区段头之上
+    // 位置：紧跟「跟数字经理对话」入口，在工作区段头之上
     const anchor = document.getElementById('btn-new-assistant');
     if (anchor && anchor.parentElement === actions) anchor.insertAdjacentElement('afterend', btn);
     else actions.appendChild(btn);
@@ -108,7 +109,7 @@
         '<div class="td-head">' +
           '<div>' +
             '<h2 class="td-title">待办事项与定时任务</h2>' +
-            '<p class="td-intro">一条一条记下要做的工作。AI 任务到点转交给数字助理执行，程序任务到点直接运行命令；结果和会话入口都在这里看。</p>' +
+            '<p class="td-intro">一条一条记下要做的工作。AI 任务到点交给数字经理或一个新的工作任务执行，程序任务到点直接运行命令；结果和会话入口都在这里看。</p>' +
           '</div>' +
           '<div class="td-head-actions">' +
             '<button type="button" id="td-new" class="primary">＋ 新建任务</button>' +
@@ -267,6 +268,7 @@
     const open = !!st.open[t.id];
     const badges =
       '<span class="td-badge kind">' + (cmd ? '程序任务' : 'AI 任务') + '</span>' +
+      (!cmd && t.target === 'task' ? '<span class="td-badge kind">新的工作任务</span>' : '') +
       '<span class="td-badge' + (t.enabled ? '' : ' off') + '">' + esc(scheduleText(t.schedule)) + '</span>' +
       (t.enabled ? '' : '<span class="td-badge off">已停用</span>') +
       (cmd && t.permission === 'full' ? '<span class="td-badge warn">不受限</span>' : '');
@@ -286,8 +288,8 @@
     if (cmd && t.command) html += '<p class="td-cmd">$ ' + esc(t.command) + '</p>';
 
     html += '<div class="td-meta">';
-    html += '<span><b>' + (cmd ? '工作目录' : '执行者') + '</b>：' +
-      (cmd ? esc(t.dir || '未指定（编辑里选一个）') : '数字助理主对话') + '</span>';
+    html += '<span><b>' + (cmd ? '工作目录' : '执行目标') + '</b>：' +
+      (cmd ? esc(t.dir || '未指定（编辑里选一个）') : esc(t.target === 'task' ? '新的工作任务' : '数字经理')) + '</span>';
     if (t.enabled && t.schedule.kind === 'manual') html += '<span>不定时 · 手动执行</span>';
     if (t.enabled && t.nextRunAt) html += '<span><b>下次执行</b>：' + fmt(t.nextRunAt) + '</span>';
     html += '<span><b>上次执行</b>：' + fmt(t.lastRunAt) + '</span>';
@@ -384,7 +386,9 @@
   async function runNow(id, task) {
     const r = await api('/api/todos/run', { method: 'POST', body: JSON.stringify({ id }) });
     if (r.ok && r.sessionId && !isCmd(task || {})) {
-      notice('已转交数字助理（会话 ' + r.sessionId + '）。');
+      notice(task && task.target === 'task'
+        ? '已新建工作任务会话（' + r.sessionId + '）并投递执行。'
+        : '已转交数字经理（会话 ' + r.sessionId + '）。');
     }
     return r;
   }
@@ -393,7 +397,7 @@
 
   function blankForm() {
     return {
-      editingId: '', title: '', description: '', executor: 'assistant', kind: 'manual',
+      editingId: '', title: '', description: '', executor: 'assistant', target: 'manager', kind: 'manual',
       onceAt: '', time: '09:00', days: [false, true, true, true, true, true, false],
       everyMinutes: '30', dir: '', command: '', shell: 'powershell', permission: 'workspace-write',
       enabled: true,
@@ -406,6 +410,7 @@
     f.title = t.title;
     f.description = t.description;
     f.executor = isCmd(t) ? 'command' : 'assistant';
+    f.target = t.target === 'task' ? 'task' : 'manager';
     f.kind = t.schedule.kind;
     if (t.schedule.kind === 'once') f.onceAt = toLocalInput(t.schedule.at);
     if (t.schedule.time) f.time = t.schedule.time;
@@ -428,7 +433,7 @@
     else schedule = { kind: f.kind, time: f.time };
     return {
       id: f.editingId, title: f.title.trim(), description: f.description.trim(),
-      executor: f.executor, schedule,
+      executor: f.executor, target: f.executor === 'assistant' ? f.target : '', schedule,
       dir: f.executor === 'command' ? f.dir : '',
       command: f.executor === 'command' ? f.command.trim() : '',
       shell: f.shell, permission: f.permission, enabled: f.enabled,
@@ -496,7 +501,17 @@
           '</div>' +
           '<p class="td-hint">' + (cmd
             ? '到点在工作目录直接运行命令（不经过模型），退出码和输出记进执行记录。'
-            : '到点把描述转交给数字助理主对话，由它安排执行（派子会话、选工作区、汇报结果）。') + '</p>', true) +
+            : '到点把描述交给「执行目标」处理：数字经理由它安排执行并汇报；新的工作任务则开一个独立会话直接执行。') + '</p>', true) +
+        (!cmd
+          ? field('执行目标',
+              '<div class="td-seg">' +
+                '<button type="button" class="' + (f.target === 'task' ? '' : 'primary') + '" data-f="target" data-v="manager">数字经理</button>' +
+                '<button type="button" class="' + (f.target === 'task' ? 'primary' : '') + '" data-f="target" data-v="task">新的工作任务</button>' +
+              '</div>' +
+              '<p class="td-hint">' + (f.target === 'task'
+                ? '到点自动创建一个新的工作任务会话，任务描述直接发给它执行；数字经理不被打扰，结果在工作任务会话和这里的执行记录里看。'
+                : '到点把任务描述转交给数字经理（数字助理主对话），由它安排执行并在完成后汇报结果。') + '</p>', true)
+          : '') +
         field('标题',
           '<input id="td-f-title" type="text" placeholder="例如：每周整理一次周报" value="' + esc(f.title) + '">', true) +
         field('详细描述 / 要求',
@@ -545,6 +560,9 @@
     });
     card.querySelectorAll('button[data-f=executor]').forEach((el) => {
       el.onclick = () => { readForm(); st.editing.executor = el.dataset.v; renderForm(); };
+    });
+    card.querySelectorAll('button[data-f=target]').forEach((el) => {
+      el.onclick = () => { readForm(); st.editing.target = el.dataset.v; renderForm(); };
     });
     const pick = card.querySelector('#td-f-pick');
     if (pick) {

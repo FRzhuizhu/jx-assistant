@@ -44,6 +44,7 @@
 
   let active = false;    // 组件是否激活：dispose 后立刻失效，兜住还在飞的异步回调
   let msgAction = null;  // 已注册的消息操作行钩子（注销用）
+  let ctxMenuFn = null;  // 已注册的右键菜单贡献项（注销用）
   const busHooks = [];   // 已挂的事件总线回调 [{ev, fn}]（注销用）
   let sendHook = null;   // 已注册的发送前钩子（可等待；注销用）
 
@@ -120,8 +121,9 @@
     if (Array.isArray(v)) return v.length ? v : [];
     return which === 'main' ? ['mouse-side'] : ['alt'];
   }
-  function setShortcutSlot(which, v) { pref.set(which === 'main' ? 'scMain' : 'scSub', v); }
-
+  function setShortcutSlot(which, v) {
+    pref.set(which === 'main' ? 'scMain' : 'scSub', v);
+  }
   // 触发备选＝两个槽里没被停用的那些
   function shortcutAlternatives() {
     return [shortcutSlot('main'), shortcutSlot('sub')].filter((a) => a.length > 0);
@@ -255,11 +257,16 @@
 
   function shortcutFire(action, key) { // action: 'press' | 'release'；key＝本次按下的那个键
     if (!active || captureMode || !document.hasFocus()) return;
-    const ctl = activeVoiceCtl();
-    if (!ctl) return;
     lastInputAt = Date.now(); // 刷新"最近一次真实输入"时刻（残留清理心跳用）
     const alts = shortcutAlternatives();
     const mode = voiceShortcutMode();
+    const fire = (what) => { // what: 'toggle' | 'start' | 'stop'
+      const ctl = activeVoiceCtl();
+      if (!ctl) return;
+      if (what === 'toggle') ctl.toggle();
+      else if (what === 'start') { if (!ctl.active()) ctl.start(); }
+      else if (ctl.active()) ctl.stop();
+    };
 
     if (action === 'press') {
       // 1) 非独按修饰键的备选：完整按住即触发
@@ -273,10 +280,13 @@
         // 语音误触发排查（点上传文件启动听写）2026-10-10.md。
         if (key && !alt.includes(key)) continue;
         if (mode === 'hold') {
-          if (!holdSession && !ctl.active()) { holdSession = true; ctl.start(); }
+          if (holdSession) return;
+          const c0 = activeVoiceCtl(); if (c0 && c0.active()) return;
+          holdSession = true;
+          fire('start');
         } else if (!firedLatch) {
           firedLatch = true; // 一次完整按下只触发一回，全松开后复位
-          ctl.toggle();
+          fire('toggle');
         }
         return;
       }
@@ -286,10 +296,11 @@
         if (alt.length === 1 && isModKey(alt[0]) && altHeld(alt) && alt[0] === key) {
           if (!armedSolo) {
             armedSolo = { key: alt[0], started: false };
-            if (mode === 'hold' && !ctl.active()) {
+            if (mode === 'hold') {
+              const c0 = activeVoiceCtl(); if (c0 && c0.active()) return;
               holdSession = true;
               armedSolo.started = true;
-              ctl.start();
+              fire('start');
             }
           }
           return;
@@ -304,9 +315,9 @@
       if (!heldKey.has(k) && !heldMouse.has(k)) { // 独按松开
         if (armedSolo.started) {
           holdSession = false;
-          if (ctl.active()) ctl.stop();
+          fire('stop');
         } else if (mode === 'tap') {
-          ctl.toggle();
+          fire('toggle');
         }
         armedSolo = null;
         firedLatch = false;
@@ -317,7 +328,7 @@
       const anyHeld = alts.some((a) => altHeld(a)) || (armedSolo && armedSolo.started);
       if (!anyHeld) {
         holdSession = false;
-        if (ctl.active()) ctl.stop();
+        fire('stop');
       }
     }
     if (!alts.some((a) => altHeld(a)) && !armedSolo) firedLatch = false;
@@ -370,7 +381,12 @@
     scKeyUp = (e) => {
       if (!active) return;
       const k = normKey(e);
-      if (k) heldKey.delete(k);
+      if (k) {
+        // keyup 也拦一道（keydown 已拦）：Windows 上 Alt 松开会触发系统菜单/工具栏
+        // 焦点转移等默认行为，防焦点被带离输入框（2026-10-12）
+        if (shortcutAlternatives().some((a) => a.includes(k))) e.preventDefault();
+        heldKey.delete(k);
+      }
       shortcutFire('release');
     };
     scMouseDown = (e) => {
@@ -456,8 +472,11 @@
     if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
     const sub = document.getElementById('sub-input');
     if (sub) {
-      if (subBasePH === null) subBasePH = sub.placeholder || '向子对话发消息…';
-      sub.placeholder = subBasePH + voiceHintText();
+      // 取原始文案：组件激活若发生在执行中（setStreamUI 已追加插话/排队段），
+      // 从存货 dataset.idlePh 取，别把执行段错记成原始文案导致还原后多出一段
+      if (subBasePH === null) subBasePH = (sub.dataset.runPh && sub.dataset.idlePh) || sub.placeholder || '向子对话发消息…';
+      // 执行中（runPh 标记）占位符带着插话/排队段：刷新快捷键提示时同样带上
+      sub.placeholder = subBasePH + voiceHintText() + (sub.dataset.runPh ? RUN_HINT_SEGMENT : '');
     }
   }
   function restoreSubPlaceholder() {
@@ -614,6 +633,17 @@
     speakTextBackend(text, btn);
   }
 
+  /** 朗读任意文本（无按钮态；右键菜单等外部入口）：与消息按钮同一条链路
+   *（同分块播放器、同音色语速），失败走组件 toast。 */
+  async function speakPlain(text) {
+    playingBtn = null;
+    try {
+      await ttsPlay(text);
+    } catch (e) {
+      voiceToast('朗读失败：' + (e && e.message ? e.message : e));
+    }
+  }
+
   // 消息操作行钩子：给每条助手消息挂「朗读」（钩子可注销，热关闭后新渲染的行不会再有）
   function onMessageAction(row, m) {
     if (!active || m.role !== 'assistant') return;
@@ -756,11 +786,15 @@
     }, 6000);
   }
 
-  /** 把一段文字落进输入框正文（程序化写入不触发 input 事件：手动落草稿）。 */
+  /** 把一段文字落进输入框正文（程序化写入不触发 input 事件：手动落草稿）。
+   *  落框顺带打 jxVoice 标记：发送时 app-chat.js 读它随消息上报 voiceUsed，
+   *  后端置位会话粘性标记——用过一次语音，环境快照从此每轮带同音错字提示。
+   *  输入框被清空（发送清框 / 用户手动删光）时标记随之撤销（见 init 的监听）。 */
   function commitText(view, text) {
     if (!text) return;
     const inp = view.input;
     inp.value = voiceJoin(inp.value, text);
+    inp.dataset.jxVoice = '1';
     autoGrow(inp);
     if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
   }
@@ -887,6 +921,17 @@
       // 不消失（用户报过：整段说完、消息都发出去了还显示「已出 N 句」）
       if (msg) setHint(msg, 4000); else setHint('');
       if (toast) voiceToast(toast);
+      // 焦点归还（2026-10-12 修）：点按钮开启听写后焦点一直挂在麦克风按钮上，
+      // 按 Alt 停止后按回车，激活的是按钮（反复开关语音）而不是发送。收尾时
+      // 若焦点还停在本按钮或游离在 body 上（开启语音前没点过输入框），把光标
+      // 还给输入框并放到末尾——回车即可发送。焦点在别处（如设置页）时不打扰。
+      const ae = document.activeElement;
+      if (ae === btn || ae === document.body) {
+        try {
+          view.input.focus();
+          view.input.setSelectionRange(view.input.value.length, view.input.value.length);
+        } catch (e) { /* 非 text 控件忽略 */ }
+      }
     };
     // 用户按停（含时长到顶）：给引擎一点时间把最后一句吐完，1.2 秒兜底收尾；
     // 等待期按钮转圈 +「正在识别…」，让用户知道识别还在跑（这一秒原先没有任何反馈）。
@@ -973,6 +1018,8 @@
       let padMs = 0;                // 定稿段内已收录的静音垫（间隙+尾部，上限 1.5 秒）
       let ended = false, segCount = 0, failCount = 0;
       let draftEpoch = 0;          // 草稿代际：定稿时 +1，在途草稿的迟到应答按过期丢弃
+      let level = 0;               // 实时音量 0..1（驱动按钮内波形条）
+      let bars = null, barRaf = 0, barVol = 0; // B 款动效：按钮内波形（demo 选型）
                                    // （防「定稿已在路上、旧草稿又把重复文字塞回灰字层」的竞态）
       let pendingPost = 0;          // 在途识别（草稿+定稿）：按停收尾要等它清零
       const draftSlots = [];        // 灰字层里草稿占用的槽位号（定稿时撤下）
@@ -981,7 +1028,34 @@
         ended = true;
         try { node.disconnect(); } catch (e) { /* 已断 */ }
         try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* 已停 */ }
+        removeBars();
         return false;
+      };
+      // B 款动效：录音态把图标位换成 5 根白色音量条（真音量驱动，demo 选型；
+      // 蓝底白条为显式配色，不依赖 svg 的 currentColor——老内核浏览器的
+      // 「纯蓝无白线」渲染怪癖对录音态天然免疫）
+      const mountBars = () => {
+        if (bars) return;
+        bars = document.createElement('span');
+        bars.className = 'voice-bars';
+        for (let i = 0; i < 5; i++) bars.appendChild(document.createElement('i'));
+        btn.appendChild(bars);
+        btn.classList.add('bars-on');
+        const tick = () => {
+          if (!bars) return;
+          barVol += (level - barVol) * 0.25; // 平滑，同 demo
+          for (let i = 0; i < 5; i++) {
+            const w = Math.sin(Date.now() * 0.012 + i * 1.7) * 0.5 + 0.5;
+            bars.children[i].style.height = (3 + barVol * 11 * (0.35 + w * 0.65)) + 'px';
+          }
+          barRaf = requestAnimationFrame(tick);
+        };
+        barRaf = requestAnimationFrame(tick);
+      };
+      const removeBars = () => {
+        if (barRaf) { cancelAnimationFrame(barRaf); barRaf = 0; }
+        if (bars) { bars.remove(); bars = null; }
+        btn.classList.remove('bars-on');
       };
       const joinFrames = (frames) => {
         const total = frames.reduce((n, c) => n + c.length, 0);
@@ -1052,6 +1126,7 @@
         let sum = 0;
         for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
         const rms = Math.sqrt(sum / f.length);
+        level = Math.min(1, rms * 7); // 波形条驱动（demo 同标定）
         const frameMs = (f.length / ctx.sampleRate) * 1000;
         const isSpeech = rms > Math.max(0.008, noiseFloor * 3.5);
         if (!isSpeech) noiseFloor = Math.min(0.02, noiseFloor * 0.98 + rms * 0.02);
@@ -1095,6 +1170,7 @@
       };
       const api = {
         isLocal: true,
+        mountBars,
         // 正常按停：尾段定稿（等在途识别回来）再收尾
         stop() {
           if (stopAll() === 'ended') return;
@@ -1128,6 +1204,7 @@
         clearT('connectTimer');
         setSpin(false);
         btn.classList.add('on');
+        sess.rec.mountBars();
         setHint(wsHint(), 0);
       }).catch((e) => {
         const denied = e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError');
@@ -1241,6 +1318,13 @@
       setProgressHint(dictationIsLocal() ? '正在打开麦克风…' : '正在连接语音服务…');
       if (sess.sweepTimer) clearInterval(sess.sweepTimer);
       sess.sweepTimer = setInterval(sweep, VOICE_SWEEP_MS);
+      // 开启听写即把光标交给输入框（2026-10-12 修）：点按钮开启时焦点此刻正落在
+      // 按钮上，不交走的话之后按回车会反复触发本按钮（开关语音）而不是发送；
+      // 语音文字的落点本来就是输入框，光标放末尾，说完/打字无缝衔接。
+      try {
+        view.input.focus();
+        view.input.setSelectionRange(view.input.value.length, view.input.value.length);
+      } catch (e) { /* 非 text 控件忽略 */ }
       startOnce();
     };
 
@@ -1575,11 +1659,12 @@
     subWrap.appendChild(resetBtn);
     subWrap.appendChild(clearBtn);
     row('副快捷键', subWrap);
-    note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
-      + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键）。'
-      + '「清空」＝停用全部快捷键（只点按钮听写）；「恢复默认」＝主侧键、副 Alt。'
-      + '仅在本窗口聚焦时生效，失焦自动松手。纯字母/数字单键在输入框里打字时不会'
-      + '触发，加修饰键或换功能键即可。');
+      note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
+        + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键）。'
+        + '「清空」＝停用全部快捷键（只点按钮听写）；「恢复默认」＝主侧键、副 Alt。'
+        + '桌面版里录的键盘/侧键快捷键在**全电脑任何程序**里都有效（全局浮窗听写；'
+        + '组合键须完整按下才触发）。纯字母/数字单键在本窗口输入框里打字时不会'
+        + '触发，加修饰键或换功能键即可。');
 
     resetBtn.onclick = () => {
       if (captureCtl) captureCtl.cancel();
@@ -1620,6 +1705,16 @@
         b.classList.remove('hidden');
       }
 
+      // 语音标记生命周期：输入框被清空时撤销 jxVoice（发送清框在 send 链路里
+      // 已删；这里兜用户手动删光的场景）——之后纯打字的消息不会被误标为语音。
+      // jxVoiceBound 防重挂（组件关开重载 init 会再跑一遍）。
+      for (const view of [mainView, subView]) {
+        const inp = view.input;
+        if (!inp || inp.dataset.jxVoiceBound) continue;
+        inp.dataset.jxVoiceBound = '1';
+        inp.addEventListener('input', () => { if (!inp.value) delete inp.dataset.jxVoice; });
+      }
+
       // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）
       msgAction = onMessageAction;
       JX.registerMessageAction(msgAction);
@@ -1645,6 +1740,26 @@
       };
       if (JX.hook) JX.hook('send', sendHook);
 
+      // 右键菜单「朗读」条目（JX.registerCtxMenu 组件桥，app-ctxmenu 汇总）：
+      // 消息气泡与文字选区菜单各贡献一项，与消息按钮、设置页试听同一条链路
+      //（同分块播放、同音色语速、同单飞停播）。应用本体不带朗读实现——组件
+      // 关掉即注销，菜单项随组件消失。
+      ctxMenuFn = (ctx) => {
+        if (!active || !ctx || !ctx.text) return [];
+        return [(!!playingBtn || !!ttsStopChain)
+          ? { label: '停止朗读', fn: () => stopSpeak() }
+          : {
+              label: '朗读',
+              fn: () => {
+                const t = cleanForSpeech(ctx.text);
+                if (!t) return;
+                stopSpeak(); // 单飞：顶掉进行中的朗读（含消息按钮发起的）
+                speakPlain(t);
+              },
+            }];
+      };
+      JX.registerCtxMenu(ctxMenuFn);
+
       // 设置区以独立分区页呈现（设置 → 语音，位于「内置组件」之后）：
       // pane 字段交给 app-settings.js 动态挂导航项与页面容器，组件关掉即撤
       CX.registerSettings({
@@ -1665,6 +1780,8 @@
       removeShortcutEngine();
       if (sendHook && JX.unhook) JX.unhook('send', sendHook);
       sendHook = null;
+      if (ctxMenuFn && JX.unregisterCtxMenu) JX.unregisterCtxMenu(ctxMenuFn);
+      ctxMenuFn = null;
       window.JXVoiceHint = '';
       if (typeof updateSendKeyHint === 'function') updateSendKeyHint();
       restoreSubPlaceholder();

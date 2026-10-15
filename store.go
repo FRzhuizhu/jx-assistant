@@ -31,7 +31,7 @@ type StoredMessage struct {
 	Seq        int64  `json:"seq"`
 	Kind       string `json:"kind"`
 	Origin     string `json:"origin,omitempty"` // summary 来源：auto | manual
-	Compact    string `json:"-"`
+	Compact    string `json:"compact,omitempty"` // 规则压缩标记：非空=已折叠（"omit"=整行丢弃）；前端据此显示「已折叠」行，原文照常完整展示
 	CoversUpTo int64  `json:"coversUpTo,omitempty"`
 	Superseded bool   `json:"superseded,omitempty"`
 	CreatedAt  string `json:"createdAt,omitempty"`
@@ -320,6 +320,16 @@ var storeMigrations = []migration{
 				executed_at TEXT NOT NULL DEFAULT ''
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_delivery_jobs_session ON delivery_jobs(session_id, status)`,
+		},
+	},
+	{
+		// 会话内用过语音听写（粘性标记）：前端随 chat 请求上报 voiceUsed
+		//（组件听写落框时打标记），置位后永久保持——环境快照据此稳定注入
+		// 同音错字提示（agent.go），不因后续轮次改打字而撤下。
+		id:       "0015_session_voice_used",
+		tolerant: true,
+		sql: []string{
+			`ALTER TABLE sessions ADD COLUMN voice_used INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
 }
@@ -668,14 +678,16 @@ func (s *Store) ClearStopPending(id string) error {
 
 // ---------- 会话 ----------
 
-const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert`
+const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert, voice_used`
 
 func (s *Store) Create(m *SessionMeta) error { return s.SaveMeta(m) }
 
 func (s *Store) SaveMeta(m *SessionMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 注意：下面的 UPDATE 刻意不写 status——它只由 UpdateStatus 维护（执行中/空闲）。
+	// 注意：下面的 UPDATE 刻意不写 status——它只由 UpdateStatus 维护（执行中/空闲）；
+	// 同理不写 voice_used——它只由 MarkVoiceUsed 单调置位（chat 上报路径），陈旧
+	// 内存对象全列回写不得把它冲回去。
 	// 否则 appendMessage 之类拿着陈旧内存对象回写，会把 running 冲成 idle，
 	// 导致「正在执行」在侧栏与重启恢复里都不生效。
 	tools := ""
@@ -697,7 +709,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 			remote = string(b)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, mode=excluded.mode,
 		workspace=excluded.workspace, parent_id=excluded.parent_id, provider=excluded.provider,
 		model=excluded.model, permission=excluded.permission, plan_mode=excluded.plan_mode,
@@ -712,7 +724,7 @@ func (s *Store) SaveMeta(m *SessionMeta) error {
 		permOf(m), boolInt(m.PlanMode), boolInt(m.GoalMode), tools, remote,
 		boolInt(m.Archived), boolInt(m.Unread), m.Status, m.CreatedAt, m.UpdatedAt, m.Thinking,
 		m.GoalText, m.GoalStatus, m.GoalRounds, m.UsagePrompt, m.UsageCacheHit, m.UsageOutput, m.UsageCalls,
-		m.Origin, m.DispatchedBy, m.Expert)
+		m.Origin, m.DispatchedBy, m.Expert, boolInt(m.VoiceUsed))
 	return err
 }
 
@@ -736,15 +748,25 @@ func (s *Store) TouchRunMeta(m *SessionMeta) error {
 	return err
 }
 
+// MarkVoiceUsed 置位会话的语音听写粘性标记（用过一次即永久保持）。列所有权
+// 归本函数独占：SaveMeta 的 UPDATE 不回写该列（同 status 之于 UpdateStatus 的
+// 先例），陈旧内存对象的全列回写不会把已置位的标记冲掉。
+func (s *Store) MarkVoiceUsed(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE sessions SET voice_used=1 WHERE id=?`, id)
+	return err
+}
+
 func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) {
 	m := &SessionMeta{}
 	var perm, tools, remote string
-	var plan, goal, arch, unread int
+	var plan, goal, arch, unread, vu int
 	err := sc.Scan(&m.ID, &m.Title, &m.Mode, &m.Workspace, &m.ParentID,
 		&m.Provider, &m.Model, &perm, &plan, &goal, &tools, &remote,
 		&arch, &unread, &m.Status, &m.CreatedAt, &m.UpdatedAt, &m.Thinking,
 		&m.GoalText, &m.GoalStatus, &m.GoalRounds, &m.UsagePrompt, &m.UsageCacheHit, &m.UsageOutput, &m.UsageCalls,
-		&m.Origin, &m.DispatchedBy, &m.Expert)
+		&m.Origin, &m.DispatchedBy, &m.Expert, &vu)
 	if err != nil {
 		return nil, err
 	}
@@ -753,6 +775,7 @@ func scanSession(sc interface{ Scan(dest ...any) error }) (*SessionMeta, error) 
 	m.GoalMode = goal == 1
 	m.Archived = arch == 1
 	m.Unread = unread == 1
+	m.VoiceUsed = vu == 1
 	if tools != "" {
 		_ = json.Unmarshal([]byte(tools), &m.Tools)
 	}
@@ -820,6 +843,61 @@ func (s *Store) Delete(id string) error {
 	_, _ = s.db.Exec(`DELETE FROM meta WHERE k=?`, "laststop:"+id) // 顺带清掉异常中断标记
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
 	return err
+}
+
+// ClearSession 清空一个会话的全部历史：消息表整表清掉（含摘要、环境快照、
+// 请求环形缓存、审计行），随消息产生的工件（文件快照、交付登记、上传登记、
+// 待执行交付作业）一并清掉，会话附属 meta（laststop / sessdata:*）也删掉；
+// 会话自身运行态计数归零（status=idle、未读=0、用量=0）。
+// 会话本体保留（id、标题、工作目录、权限、模型、thinking、工具开关都不动），
+// 因此清完就是一个「全新的同一个对话」——子会话（parent_id 指向它）与
+// 待办/定时任务记录不在此列，清空只作用于这个会话自己的历史。
+// 返回删掉的消息条数（供前端显示「已清空 N 条」）。供设置页
+// 「对话历史与压缩 · 清空数字助理主对话」使用；会话正在执行时由调用方拒绝。
+func (s *Store) ClearSession(id string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	var msgs int64
+	// 带 session_id 的表：消息与本会话的全部工件登记
+	for _, q := range []string{
+		`DELETE FROM messages WHERE session_id=?`,
+		`DELETE FROM checkpoints WHERE session_id=?`,
+		`DELETE FROM deliveries WHERE session_id=?`,
+		`DELETE FROM uploads WHERE session_id=?`,
+		`DELETE FROM delivery_jobs WHERE session_id=?`,
+	} {
+		res, err := tx.Exec(q, id)
+		if err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+		if strings.HasSuffix(q, "FROM messages WHERE session_id=?") {
+			msgs, _ = res.RowsAffected()
+		}
+	}
+	// 会话附属 meta：异常中断标记、待审批计划、运行属主、停止记录
+	keys := []string{"laststop:" + id, "sessdata:pendingplan:" + id,
+		"sessdata:" + runOwnerKey + ":" + id, "sessdata:" + stopRecordKey + ":" + id}
+	for _, k := range keys {
+		if _, err := tx.Exec(`DELETE FROM meta WHERE k=?`, k); err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET status='idle', unread=0,
+			usage_prompt=0, usage_cache_hit=0, usage_calls=0, usage_output=0, updated_at=?
+		WHERE id=?`, now(), id); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return msgs, nil
 }
 
 func (s *Store) UpdateStatus(id, status string) error {
@@ -1764,18 +1842,24 @@ func (s *Store) DeletePendingJobsForSession(sessionID string) error {
 }
 
 // SearchMessages 跨会话全文搜索（当前 LIKE 实现；个人规模数据足够，量大后可升 FTS）。
-func (s *Store) SearchMessages(query string, limit int) ([]SearchHit, error) {
+// 搜索范围覆盖三列：消息正文（含工具结果行）、工具调用参数（tool_calls JSON）、
+// 思考过程（thinking）。ctxRadius 是命中片段的半径（<=0 时取默认短片段 90 字）。
+func (s *Store) SearchMessages(query string, limit, ctxRadius int) ([]SearchHit, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("query 不能为空")
 	}
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
+	if ctxRadius <= 0 {
+		ctxRadius = 90
+	}
 	rows, err := s.db.Query(`
-		SELECT m.session_id, s.title, s.mode, m.seq, m.role, m.content
+		SELECT m.session_id, s.title, s.mode, m.seq, m.role, m.content, m.tool_calls, m.thinking
 		FROM messages m JOIN sessions s ON s.id = m.session_id
-		WHERE m.kind IN ('chat','report') AND m.content LIKE '%' || ? || '%'
-		ORDER BY m.id DESC LIMIT ?`, query, limit*3)
+		WHERE m.kind IN ('chat','report')
+		  AND (m.content LIKE '%' || ? || '%' OR m.tool_calls LIKE '%' || ? || '%' OR m.thinking LIKE '%' || ? || '%')
+		ORDER BY m.id DESC LIMIT ?`, query, query, query, limit*3)
 	if err != nil {
 		return nil, err
 	}
@@ -1783,11 +1867,17 @@ func (s *Store) SearchMessages(query string, limit int) ([]SearchHit, error) {
 	hits := []SearchHit{}
 	for rows.Next() {
 		var h SearchHit
-		var content sql.NullString
-		if err := rows.Scan(&h.SessionID, &h.Title, &h.Mode, &h.Seq, &h.Role, &content); err != nil {
+		var content, toolCalls, thinking sql.NullString
+		if err := rows.Scan(&h.SessionID, &h.Title, &h.Mode, &h.Seq, &h.Role, &content, &toolCalls, &thinking); err != nil {
 			continue
 		}
-		h.Snippet = snippetAround(content.String, query, 90)
+		// 片段取自第一个命中的列（按优先级：正文 > 调用参数 > 思考）
+		for _, src := range []string{content.String, toolCalls.String, thinking.String} {
+			if strings.Contains(src, query) {
+				h.Snippet = snippetAround(src, query, ctxRadius)
+				break
+			}
+		}
 		hits = append(hits, h)
 	}
 	// 同一会话只留一条最佳命中（最新的），避免刷屏

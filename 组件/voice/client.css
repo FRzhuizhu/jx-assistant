@@ -12,6 +12,16 @@
 /* 录音态（.cbtn.on）：原先作为 .cbtn 通用激活态写在 style.css，实际只有语音按钮
    用得到——随语音一起迁来 */
 .cbtn.on { color: #fff; background: var(--accent); border-color: var(--accent); animation: voice-pulse 1.4s ease-in-out infinite; }
+/* 录音态外观锁定：hover／触屏粘滞聚焦不再改色——此前 :hover 的 color 覆盖
+   会让蓝底上的图标变成「蓝上加蓝」看不见（触屏点按后 hover 粘滞，手机上
+   常态化复现；桌面按住录音时鼠标仍在按钮上也触发）*/
+.cbtn.on:hover, .cbtn.on:focus, .cbtn.on:focus-visible {
+  color: #fff; background: var(--accent); border-color: var(--accent);
+}
+/* 录音态动效（B 款，语音按钮动效 demo 选型）：图标位换成 5 根白色音量条 */
+.cbtn.on.bars-on svg { display: none; }
+.voice-bars { display: flex; align-items: center; gap: 2px; height: 14px; }
+.voice-bars i { display: block; width: 2.5px; border-radius: 1px; background: #fff; height: 3px; }
 
 /* ---------- 语音输入：灰字暂定层 / 倒计时徽标 / 一次性轻提示 ----------
    灰字层叠在输入框之上：已定稿正文用透明占位参与排版（保证换行位置一致），

@@ -2,7 +2,9 @@
 //
 // 服务端（jxaiserver announce.go）两级通知：
 //  1. GET /announce 公告（公司名、模型清单含能力元数据、市场/更新地址、内容哈希
-//     rev）——本文件每 5 分钟拉一次（启动 20 秒后首轮），差异驱动应用；
+//     rev、可选的公网服务端地址 publicServer 与外网模型通道 publicBaseURL）——
+//     本文件每 5 分钟拉一次（启动 20 秒后首轮，带 ?user= 按人取模型清单），
+//     差异驱动应用；
 //  2. 配置一变就向局域网 UDP 2230 广播——客户端开着一个 UDP 监听（端口被占则
 //     静默退化为纯轮询），收到本公司名的广播立即触发一轮同步（秒级跟上）。
 //
@@ -10,9 +12,20 @@
 // 局域网发现（discovery 应答自带新地址）自动迁移；广播消息里的 server 地址也作为
 // 迁移候选优先一试（旧地址已死、新地址广播可达的场景）。
 //
+// 公网兜底与公司通道的自动停用/恢复：内网全源失联时改拉服务端公网地址
+//（wizardPublicServer，仅由服务端下发）上的公告——公网可达就不算失联（模型调用
+// 走外网通道故障转移，见 llm.go StreamChat）。内网公网都失联连续 2 轮（约 10 分钟）
+// 自动停用公司通道（AutoDisabled，选模型自动落到私人通道）；实际调用连接失败也
+// 立即触发（agent.go 的 noteProviderConnFail）。任一来源恢复可达即自动重新启用
+//（手动停用 Enabled=false 不受影响）。
+//
+// 公司通道被删后的自动重建：公告拉取成功但本地没有 company-internal 时，按原
+// 姓名自动 POST /provision 重新领一份配置包（公告里没有 key，必须走 provision），
+// 通道置顶重建——员工删掉公司通道，回到公司连上局域网几分钟内自动恢复。
+//
 // 应用范围：公司名（内部提供方改名）、模型清单与元数据（增删/上下文/图片能力）、
-// new-api 地址（baseURL）、市场/更新地址、服务端地址本身。API key 不在此轮换
-// （key 由 provision 按人发放；失效重跑向导即可）。
+// new-api 地址（baseURL）、外网通道地址（publicBaseURL）、市场/更新地址、服务端
+// 地址本身。API key 不在此轮换（key 由 provision 按人发放；失效重跑向导即可）。
 package main
 
 import (
@@ -22,6 +35,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +46,7 @@ const (
 	syncFirstDelay  = 20 * time.Second // 启动后首轮
 	syncUDPDebounce = 15 * time.Second // 广播触发的去抖窗口
 	syncAnnounceUDP = 2230             // 服务端变更广播端口（jxaiserver announce.go）
+	syncFailLimit   = 2                // 连续失联多少轮后自动停用公司通道（2×5min≈10min）
 )
 
 // udpDiscoverFn 发现函数的可测试替换点。
@@ -45,20 +60,24 @@ type announcePayload struct {
 	Rev       string `json:"rev"`
 	MarketURL string `json:"marketURL"`
 	UpdateURL string `json:"updateURL"`
-	API       *struct {
-		BaseURL      string            `json:"baseURL"`
-		Models       []wizardModelInfo `json:"models"`
-		DefaultModel string            `json:"defaultModel"`
+	// PublicServer 服务端公网地址（管理页配置，空=未启用）：存 WizardPublicServer。
+	PublicServer string `json:"publicServer,omitempty"`
+	API          *struct {
+		BaseURL       string            `json:"baseURL"`
+		PublicBaseURL string            `json:"publicBaseURL,omitempty"` // 外网模型通道（对所有人开放或该用户被授权才下发）
+		Models        []wizardModelInfo `json:"models"`
+		DefaultModel  string            `json:"defaultModel"`
 	} `json:"api"`
 }
 
 // startCompanySyncer 后台同步循环 + UDP 广播监听（NewApp 起一次）。
-// 向导完成前（WizardServer 空）各轮空转，接入完成后无需重启即开始同步。
+// 向导完成前（WizardServer 空）各轮空转，接入完成后无需重启即开始同步；
+// 公司接入被停用（设置·网络访问的开关，CompanyLinkOff）时整体不连服务端。
 func startCompanySyncer(a *App) {
 	go func() {
 		time.Sleep(syncFirstDelay)
 		for {
-			if a.Cfg.WizardServer != "" {
+			if a.Cfg.WizardServer != "" && !a.Cfg.CompanyLinkOff {
 				companySyncOnce(a, "")
 			}
 			time.Sleep(syncInterval)
@@ -68,12 +87,17 @@ func startCompanySyncer(a *App) {
 }
 
 // companySyncOnce 一轮同步：hint 非空时优先试广播带来的地址（服务端搬家、旧地址
-// 已死）；全部失联再按公司名重新局域网发现。拿到公告后差异驱动应用。
+// 已死）；全部失联再按公司名重新局域网发现；仍失联改拉服务端公网地址兜底
+//（出公司场景：公网可达就不算失联）。拿到公告后差异驱动应用。
 func companySyncOnce(a *App, hintServer string) {
+	if a.Cfg.CompanyLinkOff { // 接入停用：同步器与广播触发的入口都收在这
+		return
+	}
 	server := strings.TrimRight(a.Cfg.WizardServer, "/")
 	if server == "" {
 		return
 	}
+	user := strings.TrimSpace(a.Cfg.PublisherName) // 按人身份：服务端用它给该人返回模型子集/外网授权
 	candidates := []string{}
 	if h := strings.TrimRight(strings.TrimSpace(hintServer), "/"); h != "" && h != server {
 		candidates = append(candidates, h)
@@ -82,7 +106,7 @@ func companySyncOnce(a *App, hintServer string) {
 
 	var ann *announcePayload
 	for _, c := range candidates {
-		if p := fetchAnnounce(c); p != nil {
+		if p := fetchAnnounce(c, user); p != nil {
 			ann = p
 			if c != server { // 广播地址即是新家：市场/更新/服务端地址整体迁移
 				migrateServerBase(a, server, c)
@@ -95,7 +119,7 @@ func companySyncOnce(a *App, hintServer string) {
 	if ann == nil && a.Cfg.WizardCompany != "" { // 失联：按公司名重新发现（换端口/换机器）
 		for _, ws := range udpDiscoverFn(a.Cfg.WizardCompany) {
 			if c := strings.TrimRight(ws.Server, "/"); c != "" && c != server {
-				if p := fetchAnnounce(c); p != nil {
+				if p := fetchAnnounce(c, user); p != nil {
 					ann = p
 					migrateServerBase(a, server, c)
 					log.Printf("[公司同步] 失联后重新发现，服务端迁移：%s → %s", server, c)
@@ -105,16 +129,43 @@ func companySyncOnce(a *App, hintServer string) {
 			}
 		}
 	}
+	// 公网兜底：内网全源失联时改拉服务端公网地址（仅由服务端下发，本地不写死）。
+	// 公网公告只更新公司通道/模型/外网地址，不迁移内网服务端与市场/更新地址——
+	// 回到公司内网候选恢复可达，一切自动切回。
+	public := strings.TrimRight(a.Cfg.WizardPublicServer, "/")
+	fromPublic := false
+	if ann == nil && public != "" && public != server {
+		if p := fetchAnnounce(public, user); p != nil {
+			ann = p
+			fromPublic = true
+		}
+	}
 	if ann == nil {
+		noteCompanySyncFailed(a)
 		return
 	}
-	applyAnnounce(a, ann, server)
+	noteCompanySyncOK(a)
+	// 公司通道被删：按原姓名重新领配置包重建（公告里没有 key，必须走 provision）
+	if wizardProvider(a) == nil {
+		src := server
+		if fromPublic {
+			src = public
+		}
+		reprovisionCompany(a, src, user)
+		return
+	}
+	applyAnnounce(a, ann, server, fromPublic)
 }
 
-// fetchAnnounce 拉一份公告；任何失败都返回 nil（同步器把 nil 当失联处理）。
-func fetchAnnounce(server string) *announcePayload {
+// fetchAnnounce 拉一份公告；user 非空时带 ?user=（服务端按人返回模型子集与外网
+// 通道授权）。任何失败都返回 nil（同步器把 nil 当失联处理）。
+func fetchAnnounce(server, user string) *announcePayload {
+	u := strings.TrimRight(server, "/") + "/announce"
+	if user != "" {
+		u += "?user=" + url.QueryEscape(user)
+	}
 	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(strings.TrimRight(server, "/") + "/announce")
+	resp, err := client.Get(u)
 	if err != nil {
 		return nil
 	}
@@ -146,19 +197,28 @@ func migrateServerBase(a *App, oldBase, newBase string) {
 }
 
 // applyAnnounce 差异驱动应用公告：有变化才写盘；空模型清单不应用（服务端拉取失败
-// 的防御，避免误清员工模型）。
-func applyAnnounce(a *App, ann *announcePayload, server string) {
+// 的防御，避免误清员工模型）。fromPublic=本份公告来自公网兜底：只更新公司通道/
+// 模型/外网地址与公司名，不动内网服务端与市场/更新地址（回公司内网候选恢复可达
+// 后整体切回，公网期间公司通道的 baseURL 仍是内网地址，靠 llm.go 的外网故障转移）。
+func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool) {
 	changed := []string{}
 	if ann.Company != "" && ann.Company != a.Cfg.WizardCompany {
 		a.Cfg.WizardCompany = ann.Company
 		changed = append(changed, "公司名→"+ann.Company)
 	}
+	if ann.PublicServer != "" && ann.PublicServer != a.Cfg.WizardPublicServer {
+		a.Cfg.WizardPublicServer = strings.TrimRight(ann.PublicServer, "/")
+		changed = append(changed, "公网服务端→"+a.Cfg.WizardPublicServer)
+	}
 	if p := wizardProvider(a); p != nil {
 		if ann.Company != "" {
 			p.Name = ann.Company + "·内部通道"
 		}
-		if ann.API != nil && ann.API.BaseURL != "" && len(ann.API.Models) > 0 {
-			p.BaseURL = ann.API.BaseURL
+		if ann.API != nil && len(ann.API.Models) > 0 {
+			if ann.API.BaseURL != "" && !fromPublic {
+				p.BaseURL = ann.API.BaseURL // 公网公告的 baseURL 按公网推导，不覆盖内网地址
+			}
+			p.PublicBaseURL = strings.TrimRight(ann.API.PublicBaseURL, "/") // 空=未授权/关闭：同步清除
 			p.Models = buildWizardModels(ann.API.Models)
 			changed = append(changed, fmt.Sprintf("模型×%d", len(ann.API.Models)))
 			if m := a.Cfg.Model; m != "" && !providerHasModel(p, m) { // 已选模型被下线：回默认
@@ -166,20 +226,22 @@ func applyAnnounce(a *App, ann *announcePayload, server string) {
 			}
 		}
 	}
-	if ann.MarketURL != "" && ann.MarketURL != a.Cfg.MarketURL {
-		a.Cfg.MarketURL = ann.MarketURL
-		a.marketMu.Lock()
-		a.marketCache = marketCacheEntry{} // 市场缓存作废
-		a.marketMu.Unlock()
-		changed = append(changed, "市场地址")
-	}
-	if ann.UpdateURL != "" && ann.UpdateURL != a.Cfg.UpdateURL {
-		a.Cfg.UpdateURL = ann.UpdateURL
-		changed = append(changed, "更新源")
-	}
-	if server != "" && server != a.Cfg.WizardServer {
-		a.Cfg.WizardServer = server
-		changed = append(changed, "服务端→"+server)
+	if !fromPublic {
+		if ann.MarketURL != "" && ann.MarketURL != a.Cfg.MarketURL {
+			a.Cfg.MarketURL = ann.MarketURL
+			a.marketMu.Lock()
+			a.marketCache = marketCacheEntry{} // 市场缓存作废
+			a.marketMu.Unlock()
+			changed = append(changed, "市场地址")
+		}
+		if ann.UpdateURL != "" && ann.UpdateURL != a.Cfg.UpdateURL {
+			a.Cfg.UpdateURL = ann.UpdateURL
+			changed = append(changed, "更新源")
+		}
+		if server != "" && server != a.Cfg.WizardServer {
+			a.Cfg.WizardServer = server
+			changed = append(changed, "服务端→"+server)
+		}
 	}
 	if len(changed) == 0 {
 		return
@@ -191,6 +253,92 @@ func applyAnnounce(a *App, ann *announcePayload, server string) {
 		return
 	}
 	log.Printf("[公司同步] 已跟随服务端变化：%s", strings.Join(changed, "、"))
+	a.broadcast(Event{Type: "providers"}) // 模型清单变了：前端刷新模型菜单
+}
+
+/* ---------- 公司通道的自动停用/恢复与自动重建 ---------- */
+
+// noteCompanySyncOK 一轮同步拿到公告：清零失联计数；公司通道曾被自动停用的恢复。
+func noteCompanySyncOK(a *App) {
+	a.syncFailMu.Lock()
+	a.syncFails = 0
+	a.syncFailMu.Unlock()
+	if p := wizardProvider(a); p != nil && p.AutoDisabled {
+		setCompanyAutoDisabled(a, false, "")
+	}
+}
+
+// noteCompanySyncFailed 一轮同步全源失联：累计计数，达到 syncFailLimit 轮自动
+// 停用公司通道（约 10 分钟，防瞬时网络抖动误停）。
+func noteCompanySyncFailed(a *App) {
+	a.syncFailMu.Lock()
+	a.syncFails++
+	n := a.syncFails
+	a.syncFailMu.Unlock()
+	if n < syncFailLimit {
+		return
+	}
+	if p := wizardProvider(a); p != nil && p.IsSelectable() {
+		setCompanyAutoDisabled(a, true, "公司服务端连续 "+strconv.Itoa(n)+" 轮不可达")
+	}
+}
+
+// noteProviderConnFail 实际调用中连接失败（StreamChat 内外网都试过仍连不上）且
+// 目标是公司通道：立即自动停用，不等 5 分钟轮询——出公司的第一条消息就能切到
+// 私人通道。返回是否本次真的执行了停用（调用方据此决定要不要切换重试）。
+func (a *App) noteProviderConnFail(target LLMTarget) bool {
+	if target.ProviderID != wizardProviderID {
+		return false
+	}
+	p := wizardProvider(a)
+	if p == nil || p.AutoDisabled || !p.IsSelectable() {
+		return false
+	}
+	setCompanyAutoDisabled(a, true, "模型调用连接失败")
+	return true
+}
+
+// setCompanyAutoDisabled 切换公司通道的自动停用状态并落盘广播（手动停用
+// Enabled=false 不受影响：自动恢复只清 AutoDisabled，不动 Enabled）。
+func setCompanyAutoDisabled(a *App, disabled bool, reason string) {
+	p := wizardProvider(a)
+	if p == nil || p.AutoDisabled == disabled {
+		return
+	}
+	p.AutoDisabled = disabled
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		log.Printf("[公司同步] 保存配置失败：%v", err)
+	}
+	if disabled {
+		log.Printf("[公司同步] 公司通道已自动停用（%s）；恢复可达后自动启用", reason)
+	} else {
+		log.Printf("[公司同步] 公司服务端恢复可达，公司通道已自动启用")
+	}
+	a.broadcast(Event{Type: "providers"})
+}
+
+// reprovisionCompany 公司通道被删后的自动重建：按原姓名重新领一份配置包整体应用
+//（含 key 与模型清单）。失败静默返回，下一轮同步再试。
+func reprovisionCompany(a *App, server, user string) {
+	if user == "" {
+		return
+	}
+	payload, err := fetchProvision(server, user)
+	if err != nil {
+		log.Printf("[公司同步] 公司通道缺失，自动重建失败：%v", err)
+		return
+	}
+	if a.applyProvisionPayload(&payload) == nil {
+		return // 服务端未配模型通道：等管理员配置，下一轮再来
+	}
+	a.Cfg.WizardPublicServer = strings.TrimRight(payload.PublicServer, "/")
+	a.Cfg.syncLegacyFields()
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		log.Printf("[公司同步] 自动重建保存失败：%v", err)
+		return
+	}
+	log.Printf("[公司同步] 公司通道已自动重建（用户「%s」，模型×%d）", user, len(wizardProvider(a).Models))
+	a.broadcast(Event{Type: "providers"})
 }
 
 func wizardProvider(a *App) *ProviderCfg {
