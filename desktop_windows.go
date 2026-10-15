@@ -295,9 +295,9 @@ func runDesktop(app *App, url string) error {
 		activateExistingWindow()
 		return nil
 	}
-	// 冷启动直达兼容模式：黑屏自检曾落过标记文件（data/webview-compat.flag）
-	// 就不再先走硬件渲染吃一次黑屏，直接软件合成进来。参数合并与麦克风
-	// 权限说明见 newDesktopFrontend（每轮前端创建时都会做）。
+	// 冷启动直达兼容模式：设置页手动开启落过标记文件（data/webview-compat.flag）
+	// 就直接软件合成进来。参数合并与麦克风权限说明见 newDesktopFrontend
+	// （每轮前端创建时都会做）。
 	softwareCompatPath = filepath.Join("data", "webview-compat.flag")
 	if _, err := os.Stat(softwareCompatPath); err == nil {
 		webviewSoftwareRender.Store(true)
@@ -306,8 +306,8 @@ func runDesktop(app *App, url string) error {
 	// 前端窗口循环：窗口的生死与进程的生死解耦——用户关窗（✕/Alt+F4）在
 	// subclass 里被拦截进托盘（hideMainWindowToTray），Run 不返回；只有退出
 	// 请求（托盘菜单「退出」/ autoclose 的 frontendQuitReq）才真正收尾退出。
-	// 黑屏自检升级（selfCheckEscalate）与设置页渲染切换置 frontendRestartReq
-	// 关窗重建；WebView2 崩溃（ProcessFailed）或窗口意外死亡走自愈/重建——
+	// 设置页渲染切换与 WebView2 崩溃自愈（ProcessFailed）置 frontendRestartReq
+	// 关窗重建，窗口意外死亡也自动重建——
 	// 后端（HTTP 服务、会话、运行中任务）全在 Go 进程里，一个字节都不动。
 	// 旧前端的 WebView2 控制器在收尾时 Close（浏览器进程树与 GPU 占用一并
 	// 释放），新旧环境用不同数据目录（webview / webview-compat），互不抢
@@ -325,9 +325,6 @@ func runDesktop(app *App, url string) error {
 		// 当前主窗口登记（原子）：restartFrontendNow 从任意 goroutine 取
 		// 「此刻活着的那扇窗」投递关窗，热重启的重建间隙里重试等待新句柄。
 		mainWndHwnd.Store(uintptr(w.Window()))
-		// 黑屏自检的 UI 线程通道：检测 goroutine 里要动窗口（1px resize）时经
-		// Dispatch 投递（COM/窗口操作必须在 UI 线程，与浏览器面板同一纪律）。
-		mainWndDispatch = w.Dispatch
 		// 右栏原生浏览器面板：COM 调用一律经 Dispatch 投递到本窗口的 UI 线程
 		app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
 		if bp, ok := app.nativePanel.(*browserPanel); ok {
@@ -385,7 +382,7 @@ func runDesktop(app *App, url string) error {
 			log.Printf("退出请求（托盘/自动冒烟）：桌面壳退出")
 			return nil
 		case atomic.LoadInt32(&frontendRestartReq) == 1:
-			// 热重启（黑屏自检降级 / 设置页渲染模式切换）：按当前显示模式重建
+			// 热重启（设置页渲染模式切换 / ProcessFailed 崩溃自愈）：按当前显示模式重建
 			atomic.StoreInt32(&frontendRestartReq, 0)
 			prevRect = restartWndRect.Load()
 			log.Printf("前端热重启：重建界面（后端与任务不受影响）")
@@ -419,12 +416,13 @@ func newDesktopFrontend(prev *panelRect) webview2.WebView {
 	// 的任意网站自动放行麦克风）；系统层面的麦克风开关（Windows 设置 → 隐私 →
 	// 麦克风）仍照旧生效，是唯一的最终闸门。
 	const autoGrantMic = "--use-fake-ui-for-media-stream"
-	// 黑屏修复的一半：关掉 Chromium 的原生窗口遮挡判定。电脑操作技能执行时
+	// 防遮挡停帧：关掉 Chromium 的原生窗口遮挡判定。电脑操作技能执行时
 	// 主窗口长时间被目标程序盖住，Chromium 判定「已遮挡」停止合成，解除后
 	// 偶发不再续帧＝整个客户区黑屏、执行不受影响（部分机型才复现，
-	// WebView2Feedback #5171 同类）。新版运行时或已忽略该开关（无害），
-	// 保底唤醒在 subclassMainWindow 的 1px 位移。已带 --disable-features 的
-	// 环境把本特性并进去，避免出现第二个同名开关把用户的值顶掉。
+	// WebView2Feedback #5171 同类）。新版运行时或已忽略该开关（无害）。
+	// 防黑屏目前只靠此开关；真死了由 ProcessFailed 自愈刷新/重建兜底。
+	// 已带 --disable-features 的环境把本特性并进去，避免出现第二个同名
+	// 开关把用户的值顶掉。
 	const noOcclusion = "CalculateNativeWinOcclusion"
 	prevArgs, hadArgs := os.LookupEnv(webView2ArgsEnv)
 	merged := prevArgs
@@ -441,7 +439,7 @@ func newDesktopFrontend(prev *panelRect) webview2.WebView {
 	}
 	dataDir := filepath.Join("data", "webview")
 	if webviewSoftwareRender.Load() {
-		// 兼容显示模式（软件合成）：黑屏自检升级或标记文件触发，把 GPU 整个
+		// 兼容显示模式（软件合成）：设置页手动开启（标记文件）触发，把 GPU 整个
 		// 让给与我们抢资源的其他应用（聊天界面很轻，软件合成无压力）。删掉
 		// data/webview-compat.flag 即恢复默认硬件加速（热重启本会话内也会切回）。
 		if !strings.Contains(merged, "--disable-gpu-compositing") {
@@ -510,20 +508,18 @@ func releaseFrontend(app *App, w webview2.WebView) {
 	}()
 }
 
-// ---------- 主窗口渲染唤醒（电脑操作时黑屏修复） ----------
-
-// 现象：执行电脑操作技能期间，主窗口被目标程序遮挡或整体最小化（模型常会
-// 激活别的窗口、点任务栏），WebView2 合成器停帧；恢复可见后偶发不再续帧——
-// 整个客户区黑屏、标题栏正常、执行不受影响，部分机型才复现（WebView2
-// Feedback #5171 / #2983 同类，官方未修）。右栏面板已踩过同族问题并验证了
-// 解法（browser_panel_windows.go applyRectOnUI：同矩形重发不重绘，真实位移
-// 1px 立即唤醒），这里把同款机制装到主窗口：
-//   - 吞掉最小化时的 WM_SIZE——绑定库会拿退化矩形 PutBounds，是停帧源之一；
-//   - 激活/还原/纯 Z 序变化（遮挡解除）时，1px 往返位移逼合成器出新帧，
-//     两步在同一次消息处理内完成，中间不发生绘制，肉眼不可见；
-//     （去抖 150ms，WM_ACTIVATE 与 WM_SIZE 连发时只唤醒一次）
-//   - 自己发出的位移事件带真实坐标（无 NOSIZE/NOMOVE 标志），被
-//     WM_WINDOWPOSCHANGED 分支的条件天然滤掉，不会递归。
+// ---------- 主窗口子类化（关窗进托盘 / 拖动让路 / 面板 Z 序） ----------
+//
+// 子类化只保留三件与窗口消息强相关的事（2026-10-15 撤掉 1px 渲染唤醒与
+// 黑屏自检/自动降级后收敛，快速切窗时的自发挪窗不再存在）：
+//   - 用户关窗（SC_CLOSE）隐藏进托盘，进程与后端驻留（见 tray_windows.go）；
+//   - 吞掉最小化时的 WM_SIZE——绑定库会拿退化矩形 PutBounds 给 WebView2，
+//     是坏矩形的来源之一；
+//   - 拖动/缩放让路（WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE，见 mainWndInSizeMove）
+//     与激活/Z 序变化时的面板 Z 序重申（Chromium 聚焦会把主 WebView2 提到顶、
+//     压住右栏面板——右栏白屏的根因之一）。
+// 渲染层的防遮挡停帧由 newDesktopFrontend 的 CalculateNativeWinOcclusion
+// 禁用开关承担；真黑屏由 WebView2 ProcessFailed 自愈与设置页手动兼容模式兜底。
 const (
 	wmSize             = 0x0005
 	sizeMinimized      = 1
@@ -549,40 +545,38 @@ type windowPosMirror struct {
 var (
 	// panelReassertHook 主窗口激活/Z 序变化时重申面板 Z 序（runDesktop 注入，
 	// 见 browserPanel.reassertTopOnUI）。原子指针：subclass 回调与窗口循环并发的护栏。
-	panelReassertHook    atomic.Value // 存 func()：主窗口激活时重申面板 Z 序
+	panelReassertHook atomic.Value // 存 func()：主窗口激活时重申面板 Z 序
 	// panelDragHoldHook 用户拖动/缩放主窗口时通知面板层让路（runDesktop 注入，
 	// 见 browserPanel.holdForWindowDrag）。存 func(bool)：true=进入拖动，
 	// false=拖动结束。与 panelReassertHook 同样的原子指针护栏。
-	panelDragHoldHook atomic.Value
+	panelDragHoldHook    atomic.Value
 	procSetWindowLongPtrW = desktopUser32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW   = desktopUser32.NewProc("CallWindowProcW")
 	procDefWindowProcW    = desktopUser32.NewProc("DefWindowProcW")
 	mainWndOrigProc       uintptr
-	mainWndNudgeCb        = windows.NewCallback(mainWndSubclassProc)
-	lastMainWndNudgeMs    int64
+	mainWndSubclassCb     = windows.NewCallback(mainWndSubclassProc)
 	// mainWndInSizeMove = 1：UI 线程正处在系统的模态移动/缩放循环内（用户按住
-	// 标题栏/边框正在拖动窗口，含最大化窗口被拖出还原）。拖动期间一律不做自发
-	// 挪窗与面板 Z 序重申——拖动由系统驱动，我们在自己的回调栈上同步改窗口几何
-	// 会让拖动错乱，并把 WebView2 控制器（PutBounds /
+	// 标题栏/边框正在拖动窗口，含最大化窗口被拖出还原）。拖动期间一律不做
+	// 自发挪窗与面板 Z 序重申——拖动由系统驱动，我们在自己的回调栈上同步改窗口
+	// 几何会让拖动错乱，并把 WebView2 控制器（PutBounds /
 	// NotifyParentWindowPositionChanged / 面板子窗口 SetWindowPos）在同一栈上重入；
 	// 2026-10-14 的「全屏拖动闪退」正出在这条路上。拖动结束
-	// （WM_EXITSIZEMOVE，栈已干净）一次性补做唤醒与 Z 序重申。
-	mainWndInSizeMove     int32
+	// （WM_EXITSIZEMOVE，栈已干净）一次性补做 Z 序重申。
+	mainWndInSizeMove int32
 )
 
 // subclassMainWindow 换掉主窗口原 wndproc（安装必须在 UI 线程；此后所有消息
-// 先经 mainWndSubclassProc 再转回绑定库原 proc）。失败则保持原样并落日志——
-// 用户侧若仍复现黑屏，靠 desktop.log 区分「修复未安装上」与「唤醒无效」，
-// 行为退回修复前，不影响功能。
+// 先经 mainWndSubclassProc 再转回绑定库原 proc）。失败则保持原样并落日志：
+// 行为退回原生消息处理（关窗直接退出而非进托盘），不影响功能。
 func subclassMainWindow(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
-	orig, _, callErr := procSetWindowLongPtrW.Call(hwnd, gwlpWndProc, mainWndNudgeCb)
+	orig, _, callErr := procSetWindowLongPtrW.Call(hwnd, gwlpWndProc, mainWndSubclassCb)
 	if orig != 0 {
 		mainWndOrigProc = orig
 	} else {
-		log.Printf("主窗口子类化失败：黑屏修复未生效（errno=%v）", callErr)
+		log.Printf("主窗口子类化失败：关窗将直接退出（进托盘失效），errno=%v", callErr)
 	}
 }
 
@@ -610,30 +604,26 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 		if wp == sizeMinimized {
 			return 0 // 别让绑定库把最小化下的退化矩形 PutBounds 给 WebView2
 		}
-		nudgeMainWindowIfIdle(hwnd)
 	case wmActivate:
 		if wp&0xffff != waInactive && atomic.LoadInt32(&mainWndInSizeMove) == 0 {
-			nudgeMainWindowIfIdle(hwnd)
 			panelReassertZ()
 		}
 	case wmEnterSizeMove:
 		// 用户开始拖动/缩放窗口（含把最大化窗口拖出还原）：系统接着就在本次
 		// WM_NCLBUTTONDOWN 处理里跑它的模态移动循环，期间窗口几何全由系统驱动。
-		// 置位后三个自理动作分支一律让路（见 mainWndInSizeMove 注释）。
+		// 置位后其余分支的面板动作一律让路（见 mainWndInSizeMove 注释）。
 		atomic.StoreInt32(&mainWndInSizeMove, 1)
 		panelDragHold(true)
 	case wmExitSizeMove:
-		// 模态循环已退出、栈已干净：把拖动期间攒下的唤醒与面板 Z 序重申补做一次，
-		// 黑屏唤醒/面板浮层的既有作用不丢。
+		// 模态循环已退出、栈已干净：把拖动期间攒下的面板落位与 Z 序重申
+		// 补做一次（面板浮层的既有作用不丢）。
 		atomic.StoreInt32(&mainWndInSizeMove, 0)
 		panelDragHold(false)
-		nudgeMainWindow(hwnd)
 		panelReassertZ()
 	case wmWindowPosChanged:
 		if p := (*windowPosMirror)(lp); p != nil &&
 			p.flags&swpNoSizeFlag != 0 && p.flags&swpNoMoveFlag != 0 &&
 			atomic.LoadInt32(&mainWndInSizeMove) == 0 {
-			nudgeMainWindowIfIdle(hwnd)
 			panelReassertZ()
 		}
 	}
@@ -645,11 +635,6 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 	return r
 }
 
-// nudgeMainWindow 真实位移 1px 再移回（复用右栏面板的 procPanelSetWindowPos/
-// procPanelGetWindowRect 与 panelRect），给合成器一次必达的窗口位置事件。
-// 每次落一行日志：用户侧若仍黑屏，desktop.log 里有「唤醒已发出」的记录，
-// 即可排除本机制、指向渲染进程/GPU 死亡的另一族黑屏（那族要靠截图瘦身或
-// ProcessFailed 自动重载来修）。
 // panelReassertZ 主窗口激活/Z 序变化：把右栏面板提回兄弟窗口顶（Chromium
 // 聚焦时会把主 WebView2 重新提到顶、压住面板——右栏白屏的根因之一）。
 // panelDragHold 通知面板层「用户开始/结束拖动、缩放主窗口」（见 panelDragHoldHook）。
@@ -665,159 +650,21 @@ func panelReassertZ() {
 	}
 }
 
-// nudgeMainWindowIfIdle 拖动/缩放让路版：系统的模态移动循环内一律不做
-// （见 mainWndInSizeMove 注释），循环外与 nudgeMainWindow 等价。
-func nudgeMainWindowIfIdle(hwnd uintptr) {
-	if atomic.LoadInt32(&mainWndInSizeMove) != 0 {
-		return
-	}
-	nudgeMainWindow(hwnd)
-}
-
-func nudgeMainWindow(hwnd uintptr) {
-	now := time.Now().UnixMilli()
-	if now-atomic.LoadInt64(&lastMainWndNudgeMs) < 150 {
-		return
-	}
-	atomic.StoreInt64(&lastMainWndNudgeMs, now)
-	var r panelRect
-	if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ok == 0 {
-		return
-	}
-	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
-	if w <= 0 || h <= 0 || r.Left <= -30000 { // 最小化（窗口挪到 -32000）不折腾
-		return
-	}
-	log.Printf("主窗口渲染唤醒：1px 位移（黑屏修复）")
-	procPanelSetWindowPos.Call(hwnd, 0, uintptr(int(r.Left)+1), uintptr(int(r.Top)), uintptr(w), uintptr(h),
-		swpNoZOrder|swpNoActivate)
-	procPanelSetWindowPos.Call(hwnd, 0, uintptr(int(r.Left)), uintptr(int(r.Top)), uintptr(w), uintptr(h),
-		swpNoZOrder|swpNoActivate)
-	scheduleSelfCheck(hwnd)
-}
-
-// ---------- 黑屏自检与自动降级 ----------
+// ---------- 兼容渲染模式与前端热重启 ----------
 
 var (
 	softwareCompatPath string
 	// webviewSoftwareRender 本次启动（或上次热重启后）前端是否软件合成。
-	// HTTP goroutine（设置页切换）与自检 goroutine 写、UI 线程窗口循环读，
-	// 一律走原子访问。
+	// 设置页切换的 HTTP goroutine 写、UI 线程窗口循环读，一律走原子访问。
 	webviewSoftwareRender atomic.Bool
 	mainWndHwnd           atomic.Uintptr // 当前主窗口句柄（窗口循环每轮登记）
-	mainWndDispatch       func(f func())
-	selfCheckBusy         int32
-	selfCheckLastMs       int64
-	selfCheckAlerted      int32                     // 弹窗只一次（防打扰/防循环）
-	frontendRestartReq    int32                     // 黑屏升级：置位后前端窗口循环热重启
+	frontendRestartReq    int32                     // 热重启请求（设置页渲染切换 / ProcessFailed 自愈）：窗口循环见位即按当前模式重建前端
 	restartWndRect        atomic.Pointer[panelRect] // 热重启时沿用旧窗口位置尺寸
 	procPostMessageW      = desktopUser32.NewProc("PostMessageW")
 )
 
-// scheduleSelfCheck 唤醒后验证「真的恢复了吗」：500ms 后截自己的客户区做
-// 像素判定。黑了 → 升级一档（真实 1px resize 强制重建合成表面）再验；
-// 仍黑 → 落兼容模式标记 + 弹窗引导重启。检测在独立 goroutine（截屏像素
-// 采样不占 UI 线程），动窗口的动作经 mainWndDispatch 回 UI 线程。
-func scheduleSelfCheck(hwnd uintptr) {
-	now := time.Now().UnixMilli()
-	if !atomic.CompareAndSwapInt32(&selfCheckBusy, 0, 1) {
-		return // 已有一轮在跑
-	}
-	if now-atomic.LoadInt64(&selfCheckLastMs) < 2000 {
-		atomic.StoreInt32(&selfCheckBusy, 0)
-		return // 2 秒去抖：连番激活只检一次
-	}
-	atomic.StoreInt64(&selfCheckLastMs, now)
-	go func() {
-		defer atomic.StoreInt32(&selfCheckBusy, 0)
-		// 用户正在拖动/缩放窗口：本轮不判黑、不升级。拖动中窗口由系统拖影驱动、
-		// 不做常规合成，判黑必成假阳；而升级动作会在系统的模态移动循环里改窗口
-		// 几何——正是闪退那条路（见 mainWndInSizeMove）。拖动结束后的下一次唤醒
-		// 会重新自检。
-		if atomic.LoadInt32(&mainWndInSizeMove) != 0 {
-			log.Printf("黑屏自检：窗口正被拖动/缩放，本轮跳过")
-			return
-		}
-		time.Sleep(500 * time.Millisecond)
-		if !windowIsBlack(hwnd) {
-			log.Printf("黑屏自检：通过")
-			return
-		}
-		log.Printf("黑屏自检：发现黑屏，升级手段（1px 真实 resize 重建表面）")
-		if mainWndDispatch != nil {
-			resizeNudgeDone := make(chan struct{})
-			mainWndDispatch(func() {
-				defer close(resizeNudgeDone)
-				if atomic.LoadInt32(&mainWndInSizeMove) != 0 {
-					return // 拖动/缩放中：不插手动窗口几何（见 mainWndInSizeMove）
-				}
-				var r panelRect
-				if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ok == 0 {
-					return
-				}
-				w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
-				if w <= 0 || h <= 0 || r.Left <= -30000 {
-					return
-				}
-				procPanelSetWindowPos.Call(hwnd, 0, uintptr(int(r.Left)), uintptr(int(r.Top)), uintptr(w-1), uintptr(h),
-					swpNoZOrder|swpNoActivate)
-				procPanelSetWindowPos.Call(hwnd, 0, uintptr(int(r.Left)), uintptr(int(r.Top)), uintptr(w), uintptr(h),
-					swpNoZOrder|swpNoActivate)
-			})
-			select {
-			case <-resizeNudgeDone:
-			case <-time.After(2 * time.Second):
-			}
-		}
-		time.Sleep(700 * time.Millisecond)
-		if !windowIsBlack(hwnd) {
-			log.Printf("黑屏自检：升级后已恢复")
-			return
-		}
-		selfCheckEscalate()
-	}()
-}
-
-// selfCheckEscalate 两级手段（位移 + resize）都救不回来：认定为该机显卡
-// 驱动与硬件合成冲突（多为与其他 GPU 重载应用抢资源，如另一个 WebView 应用
-// 在前台被电脑操作驱动时）。默认渲染下：落兼容标记（冷启动直达）+ **前端
-// 热重启**——当场关掉当前界面窗口，窗口循环按软件合成重建，后端（服务/
-// 会话/任务）原样继续，用户视角是「黑窗口自己关了、一两秒后界面回来了」。
-// 已在兼容模式下仍黑：不再折腾，提示取证反馈。弹窗每进程至多一次。
-func selfCheckEscalate() {
-	if !atomic.CompareAndSwapInt32(&selfCheckAlerted, 0, 1) {
-		log.Printf("黑屏自检：兼容处置本进程已执行过，跳过")
-		return
-	}
-	if webviewSoftwareRender.Load() {
-		log.Printf("黑屏自检：兼容模式下仍黑屏（疑似更深层驱动问题），请用户取证反馈")
-		go desktopMessageBox(
-			"检测到界面在兼容显示模式下仍然黑屏。\n\n"+
-				"这通常是显卡驱动层面的问题，请把以下信息反馈给我们：\n"+
-				"1. 安装目录 data\\desktop.log（含「黑屏自检」各行）\n"+
-				"2. 显卡型号与驱动版本（dxdiag 截图）\n"+
-				"3. 事件查看器 → 系统日志中来源为 Display 的 4101 事件记录\n\n"+
-				"临时可用：双击安装目录的「重启数字助理.cmd」重启软件。", desktopAppTitle)
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(softwareCompatPath), 0755)
-	if err := os.WriteFile(softwareCompatPath, []byte("black-screen auto fallback: software compositing\n"), 0644); err != nil {
-		log.Printf("黑屏自检：兼容标记写入失败: %v", err)
-		return
-	}
-	webviewSoftwareRender.Store(true)
-	log.Printf("黑屏自检：启用兼容显示模式（%s），前端热重启中（后端不动）", softwareCompatPath)
-	go desktopMessageBox(
-		"检测到显卡驱动与界面渲染冲突（界面持续黑屏）。\n\n"+
-			"已自动切换「兼容显示模式」：界面窗口将自动重开（后台任务与会话不受影响），"+
-			"并改用软件渲染，不再与其他应用争抢 GPU。\n\n"+
-			"下次启动也将直接使用兼容模式；如需恢复默认渲染，"+
-			"删除 data\\webview-compat.flag 后重启软件即可。", desktopAppTitle)
-	restartFrontendNow()
-}
-
-// restartFrontendNow 请求前端热重启（黑屏自检升级与设置页「界面渲染」切换
-// 共用）：记下旧窗口位置（重开原位）→ 向「当前活着的主窗口」投递 WM_CLOSE，
+// restartFrontendNow 请求前端热重启（设置页「界面渲染」切换与 WebView2 崩溃
+// 自愈共用）：记下旧窗口位置（重开原位）→ 向「当前活着的主窗口」投递 WM_CLOSE，
 // 窗口循环见 frontendRestartReq 即按当前 webviewSoftwareRender 重建前端。
 // 关键护栏：热重启存在 ~几百毫秒的重建间隙，此刻拿旧句柄 PostMessage 会
 // 静默失败、切换请求丢失（标记已写而前端没换 → 状态不一致）。这里改为
@@ -844,26 +691,17 @@ func restartFrontendNow() {
 // ---------- 渲染模式查询与切换（设置页「界面渲染」） ----------
 
 // displayMode 供 GET /api/display-mode：desktop=桌面壳是否在跑；
-// software=当前前端是否软件合成；reason=兼容模式来由（auto=黑屏自动
-// 切换 / user=设置页手动开启），非兼容模式下为空串。
+// software=当前前端是否软件合成（兼容模式）。兼容模式只经设置页手动切换。
 func (a *App) displayMode() map[string]any {
-	reason := ""
-	if webviewSoftwareRender.Load() {
-		reason = "auto"
-		if b, err := os.ReadFile(softwareCompatPath); err == nil && strings.Contains(string(b), "user") {
-			reason = "user"
-		}
-	}
 	return map[string]any{
 		"desktop":  a.shellWnd != 0,
 		"software": webviewSoftwareRender.Load(),
-		"reason":   reason,
 	}
 }
 
 // setDisplayMode 供 POST /api/display-mode：写/删兼容标记并前端热重启，
-// 当场切到目标模式（后端不动）。标记内容带 user 来由，displayMode 据此
-// 在设置页显示「手动开启」还是「黑屏自动切换」。
+// 当场切到目标模式（后端不动）。标记文件存在即兼容模式（内容无语义；
+// 历史版本区分 user/auto 的 reason 字段已随黑屏自检一并移除）。
 func (a *App) setDisplayMode(software bool) error {
 	if a.shellWnd == 0 {
 		return fmt.Errorf("仅桌面版支持渲染模式切换")
@@ -884,62 +722,6 @@ func (a *App) setDisplayMode(software bool) error {
 	// 响应先送达前端再关窗（400ms 缓冲），用户看到界面自动重开即生效
 	time.AfterFunc(400*time.Millisecond, restartFrontendNow)
 	return nil
-}
-
-// windowIsBlack 截本窗口客户区（含边框内整域）做纯黑判定：≥98.5% 像素
-// 亮度 <8 才算黑。正常界面有亮色侧栏与卡片，深色网页也到不了纯黑占比，
-// 阈值刻意保守——误判的代价（弹窗+标记+要求重启）远高于漏检（下次激活
-// 再检）。窗口最小化/矩形异常一律不算黑。
-func windowIsBlack(hwnd uintptr) bool {
-	var r panelRect
-	if ok, _, _ := procPanelGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ok == 0 {
-		return false
-	}
-	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
-	if w < 64 || h < 64 || r.Left <= -30000 {
-		return false
-	}
-	hScreen, _, _ := procGetDC.Call(0)
-	if hScreen == 0 {
-		return false
-	}
-	defer procReleaseDC.Call(0, hScreen)
-	hMem, _, _ := procCreateCompatibleDC.Call(hScreen)
-	if hMem == 0 {
-		return false
-	}
-	defer procDeleteDC.Call(hMem)
-	bmi := make([]byte, 40)
-	putU32(bmi[0:4], 40)
-	putU32(bmi[4:8], uint32(w))
-	putU32(bmi[8:12], uint32(-h))
-	putU16(bmi[12:14], 1)
-	putU16(bmi[14:16], 32)
-	var ppv unsafe.Pointer
-	hBmp, _, _ := procCreateDIBSection.Call(hScreen, uintptr(unsafe.Pointer(&bmi[0])), 0,
-		uintptr(unsafe.Pointer(&ppv)), 0, 0)
-	if hBmp == 0 {
-		return false
-	}
-	defer procDeleteObject.Call(hBmp)
-	procSelectObject.Call(hMem, hBmp)
-	if r1, _, _ := procBitBlt.Call(hMem, 0, 0, uintptr(w), uintptr(h), hScreen,
-		uintptr(int(r.Left)), uintptr(int(r.Top)), uintptr(0x00CC0020)); r1 == 0 {
-		return false
-	}
-	// 步长 16 采样（BGRA），统计纯黑占比
-	pixels := unsafe.Slice((*byte)(ppv), w*h*4)
-	total, black := 0, 0
-	for y := 0; y < h; y += 16 {
-		for x := 0; x < w; x += 16 {
-			i := (y*w + x) * 4
-			if int(pixels[i+0])+int(pixels[i+1])+int(pixels[i+2]) < 24 { // R+G+B<24 ≈ 亮度<8
-				black++
-			}
-			total++
-		}
-	}
-	return total > 0 && black*1000/total >= 985
 }
 
 // ---------- 主 WebView2 崩溃自愈（ProcessFailed） ----------

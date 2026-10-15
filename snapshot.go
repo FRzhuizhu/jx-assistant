@@ -301,7 +301,11 @@ func (t *toolContext) ensureJxAI() {
 // 写入成功后回读算哈希，落一条 checkpoint 并把正文写进 .jxai/snapshots/。
 // 旧文件读不了、超过单文件上限、正文属于 .jxai 自身或备份开关关闭时跳过快照
 // （写入照常）。快照失败只记日志，不让正常写入报错。
-func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) error {
+//
+// 回读结果随返回值交给调用方拼进工具成功文案（readBackNote）：verified
+// 表示"真的从盘上/SFTP 读回来了"；快照关闭（track=false）或远程回读失败
+// 降级时为 false，此时 readBack 不可作数。
+func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) (readBack []byte, verified bool, err error) {
 	var before []byte
 	existed := true
 	track := t.app.snapshotsEnabled()
@@ -322,33 +326,35 @@ func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) error
 		track = false // 系统目录自身的文件不做快照（快照/临时文件无需回退）
 	}
 	if err := t.envWriteFileWithGrant(abs, data, grant); err != nil {
-		return err
+		return nil, false, err
 	}
 	if !track {
-		return nil
+		return nil, false, nil
 	}
-	after, err := t.envReadFile(abs)
-	if err != nil {
-		after = data // 远程回读失败时退回写入内容（本地写即所得）
+	after, rerr := t.envReadFile(abs)
+	if rerr != nil {
+		after = data // 远程回读失败时退回写入内容（本地写即所得）；verified=false 如实相告
+	} else {
+		readBack, verified = after, true
 	}
 	cp := &Checkpoint{
 		SessionID: t.sess.ID, Seq: t.seq, ToolCallID: t.callID, ToolName: t.toolName,
 		Path: t.displayPath(abs), ExistedBefore: existed, BeforeSize: int64(len(before)),
 		AfterHash: hashBytes(after), AfterSize: int64(len(after)), CreatedAt: now(),
 	}
-	id, err := t.app.Store.AppendCheckpoint(cp)
-	if err != nil {
-		log.Printf("[快照] 会话 %s 写 %s 的快照落库失败: %v", t.sess.ID, cp.Path, err)
-		return nil
+	id, aerr := t.app.Store.AppendCheckpoint(cp)
+	if aerr != nil {
+		log.Printf("[快照] 会话 %s 写 %s 的快照落库失败: %v", t.sess.ID, cp.Path, aerr)
+		return readBack, verified, nil
 	}
 	if existed {
-		if err := t.writeSnapshotBody(id, before); err != nil {
+		if werr := t.writeSnapshotBody(id, before); werr != nil {
 			// 正文写不进去就把元数据行一并撤掉，避免留下"有快照却没正文"的坑
-			log.Printf("[快照] 会话 %s 写 %s 的快照正文失败: %v", t.sess.ID, cp.Path, err)
+			log.Printf("[快照] 会话 %s 写 %s 的快照正文失败: %v", t.sess.ID, cp.Path, werr)
 			_ = t.app.Store.DeleteCheckpoints(t.sess.ID, []int64{id})
 		}
 	}
-	return nil
+	return readBack, verified, nil
 }
 
 // rewindPlan 是一个文件的回退计划：恢复到 before 状态，或删除（改动前不存在）。

@@ -723,15 +723,14 @@ func detectOSDescWindows() string {
 }
 
 // winEncodingNotes 中文编码规则正文（纯文本构造、按是否装 pwsh 7 分支，
-// 便于单测）。注意 run_command 默认 shell 是 powershell（5.1），pwsh 需
-// 显式传 shell 参数——建议必须写明这一点，否则模型会以为版本探测到 pwsh
-// 就默认在用 pwsh。
+// 便于单测）。第一条只说引擎做的改动与切回方法——"默认 XX"类陈述不写
+// （模型自己知道默认，多余的默认描述只消耗注意力）。
 func winEncodingNotes(hasPwsh7 bool) string {
 	ps1 := "- .ps1 编码：write/edit 写出的文件固定为 UTF-8 无 BOM，而 Windows PowerShell 5.1 执行无 BOM 的 .ps1 时按 ANSI/GBK 解析源码，中文字面量必乱码——出路任选：① 脚本保持纯 ASCII（中文放数据文件或参数里）；② write 生成后转存带 BOM 再执行：$c=[IO.File]::ReadAllText('<脚本>'); [IO.File]::WriteAllText('<脚本>',$c,(New-Object Text.UTF8Encoding $true))；③ 含中文的脚本不用 write 落盘，改用 PowerShell 生成（Out-File / Set-Content -Encoding UTF8 自动带 BOM）"
 	if hasPwsh7 {
 		ps1 += "；④ run_command 带 shell=pwsh 执行（pwsh 默认按 UTF-8 读源码，无此坑）"
 	}
-	return "- 中文编码（乱码风险主要在脚本文件本身的编码，不在控制台输出）：cmd 默认代码页 936（GBK），涉及中文输入输出先执行 chcp 65001；run_command 默认用 Windows PowerShell 5.1，中文输出前先设 [Console]::OutputEncoding 为 UTF-8（pwsh 默认 UTF-8 无需设）；命令输出引擎已自动识别解码，不必为此反复折腾\n" +
+	return "- 中文编码：PowerShell 命令引擎已自动前置 $OutputEncoding=[Console]::OutputEncoding=UTF8，并注入 PYTHONUTF8=1、PYTHONIOENCODING=utf-8；需要 GBK 老程序（如 findstr 按代码页匹配中文）时在命令内自行改回：$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(936)，只影响该条命令\n" +
 		ps1 + "\n" +
 		"- 其他文件编码：文本文件一律 UTF-8 无 BOM 读写；.cmd/.bat 按系统代码页（GBK）解析，不要把中文面值写进批处理；路径、标识符、命令保持原文不翻译\n"
 }
@@ -770,7 +769,7 @@ func detectOSDescLinux() string {
 	if kr := kernelRelease(); kr != "" {
 		head += " · 内核 " + kr
 	}
-	return head + " · shell 为 sh（run_command 的 shell 参数用 sh）· 文本默认 UTF-8"
+	return head + " · shell 为 sh（run_command 的 shell 参数用 sh）"
 }
 
 // detectOSDescAndroid：安卓版本/ABI/机型/内核 + toybox 命令边界与

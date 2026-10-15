@@ -504,12 +504,15 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 带快照写入：改动前内容自动落 checkpoint，编辑历史消息时可回退
-	if err := t.snapshotWrite(path, grant, []byte(p.Content)); err != nil {
+	// 带快照写入：改动前内容自动落 checkpoint，编辑历史消息时可回退；
+	// 回读注记让模型第一轮就能发现"写进去的不是想要的"（乱码/被外部改写）
+	readBack, verified, err := t.snapshotWrite(path, grant, []byte(p.Content))
+	if err != nil {
 		return "", err
 	}
 	t.markObserved(path)
-	return fmt.Sprintf("已写入 %s（%d 字节）", filepath.ToSlash(path), len(p.Content)), nil
+	return fmt.Sprintf("已写入 %s（%d 字节）%s", filepath.ToSlash(path), len(p.Content),
+		readBackNote([]byte(p.Content), readBack, verified, true)), nil
 }
 
 func editFileTool() Tool {
@@ -575,14 +578,55 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 		updated = strings.Replace(content, p.OldString, p.NewString, 1)
 	}
 	// 带快照写入：改动前内容自动落 checkpoint（上面 envReadFile 读到的即旧内容）
-	if err := t.snapshotWrite(path, grant, []byte(updated)); err != nil {
+	readBack, verified, err := t.snapshotWrite(path, grant, []byte(updated))
+	if err != nil {
 		return "", err
 	}
 	// edit 的唯一匹配本身就是更强的 CAS（old_string 必须与当前内容精确
 	// 匹配，盲改不可能通过），故不设 read 前置；落盘后记为已观察，后续
 	// write 覆盖随之放行（对齐 DSH「刚编辑过视为已观察」）。
 	t.markObserved(path)
-	return fmt.Sprintf("已编辑 %s（替换 %d 处）", filepath.ToSlash(path), replaced), nil
+	return fmt.Sprintf("已编辑 %s（替换 %d 处）%s", filepath.ToSlash(path), replaced,
+		readBackNote([]byte(updated), readBack, verified, false)), nil
+}
+
+// readBackNote 生成写入后的回读注记（write/edit 成功文案的尾巴）。
+// 防御的目的不是不出错，是出错时第一轮就看见：远程 SFTP 写入、外部程序
+// 干预、编码转换都能在这里被模型立刻察觉，而不是执行到第三步才发现。
+// withFirstLine=true（write）附首行摘要；edit 只报一致/不一致，控制噪音。
+func readBackNote(wrote, readBack []byte, verified bool, withFirstLine bool) string {
+	if !verified {
+		return "（未回读校验）"
+	}
+	if !bytes.Equal(wrote, readBack) {
+		note := fmt.Sprintf("；⚠ 回读与写入不一致（写 %d 读 %d 字节），可能被外部程序改写或转了编码", len(wrote), len(readBack))
+		if bytes.HasPrefix(readBack, []byte{0xEF, 0xBB, 0xBF}) {
+			note += "，且回读带 UTF-8 BOM"
+		}
+		return note
+	}
+	note := "；回读一致"
+	if withFirstLine {
+		note += "，首行：" + firstLineSnippet(wrote, 60)
+	}
+	return note
+}
+
+// firstLineSnippet 取首行并截断到 max 字符（宽字符按 rune 数）；换行归一后
+// 整文件只有一行也照截。空文件返回占位符。
+func firstLineSnippet(b []byte, max int) string {
+	s := strings.ReplaceAll(string(b), "\r\n", "\n")
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	runes := []rune(s)
+	if len(runes) > max {
+		runes = append(runes[:max], []rune("…")...)
+	}
+	if len(runes) == 0 {
+		return "（空文件）"
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 // ---------- 文件快照与交付登记（不可追踪修改的配套工具） ----------
@@ -1012,17 +1056,20 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	var cmd *exec.Cmd
+	ps51 := false // PS 5.1 路径：前置 UTF-8 设置 + 注入 Python 环境变量（cmd/pwsh/sh 不注入）
 	switch strings.ToLower(shell) {
 	case "cmd":
 		cmd = exec.CommandContext(ctx, "cmd", "/C", r.Command)
 	case "sh", "bash":
 		cmd = exec.CommandContext(ctx, "sh", "-c", r.Command)
 	case "pwsh", "powershell":
-		exe := "powershell"
+		exe, command := "powershell", ps51Utf8Prefix+r.Command
 		if strings.ToLower(shell) == "pwsh" {
-			exe = "pwsh"
+			exe, command = "pwsh", r.Command
+		} else {
+			ps51 = true
 		}
-		cmd = exec.CommandContext(ctx, exe, "-NoProfile", "-NonInteractive", "-Command", r.Command)
+		cmd = exec.CommandContext(ctx, exe, "-NoProfile", "-NonInteractive", "-Command", command)
 	default:
 		return "", fmt.Errorf("不支持的 shell: %s（可选 powershell / cmd / sh）", r.Shell)
 	}
@@ -1031,6 +1078,9 @@ func runUnconfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 		hideConsoleWindow(cmd) // 默认压窗：桌面形态没有控制台可复用，不压就是一个个黑窗
 	}
 	cmd.Env = sandboxEnv(true)
+	if ps51 {
+		cmd.Env = appendEnvUnique(cmd.Env, ps51Utf8Env()...)
+	}
 	// 整树终止 + 强制收口（proctree_windows.go）：CombinedOutput 内部把
 	// Start+Wait 一体化，没机会在启动后挂 job，这里等价展开（同 buffer 合并
 	// stdout/stderr），供 attach 介入
@@ -1096,6 +1146,46 @@ func sandboxEnv(full bool) []string {
 		}
 	}
 	return out
+}
+
+// ---------- PowerShell 5.1 编码注入（仅此路径；cmd/pwsh/sh 不注入） ----------
+//
+// Windows PowerShell 5.1 的 $OutputEncoding 默认 ASCII（管道传中文丢字不可逆）、
+// [Console]::OutputEncoding 默认 OEM 代码页（GBK）。给模型命令统一前置一行
+// 设置 + 注入 Python 的 UTF-8 环境变量，中文不再依赖模型记得手动设置。
+// 注入都是单条命令内可覆盖的机制：需要 GBK 老程序时在命令里自行改回
+// （[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(936)）。
+
+// ps51Utf8Prefix 是给 PS 5.1 命令的前置语句。try/catch 防"没有控制台可设"
+// 的场景把整条命令炸掉；链式赋值让 $OutputEncoding（管出）与
+// [Console]::OutputEncoding（管入）同时成为 UTF-8。
+const ps51Utf8Prefix = `try{$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8}catch{}; `
+
+// ps51Utf8Env 是随命令注入的环境变量（Python 3 旧的发行版默认跟随 ANSI 代码页）。
+func ps51Utf8Env() []string {
+	return []string{"PYTHONUTF8=1", "PYTHONIOENCODING=utf-8"}
+}
+
+// appendEnvUnique 往 env 追加 adds，先摘除同名旧值（Windows 环境块与多数
+// 运行时对重复变量"先见为准"，直接追加会被宿主已有值静默吞掉）。
+func appendEnvUnique(env []string, adds ...string) []string {
+	if len(adds) == 0 {
+		return env
+	}
+	drop := make(map[string]bool, len(adds))
+	for _, kv := range adds {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			drop[strings.ToUpper(kv[:i])] = true
+		}
+	}
+	out := env[:0]
+	for _, kv := range env {
+		if i := strings.IndexByte(kv, '='); i > 0 && drop[strings.ToUpper(kv[:i])] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, adds...)
 }
 
 // ---------- 联网工具 ----------

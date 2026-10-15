@@ -13,7 +13,7 @@ func desktopWorkspaceDefault(cfg *Config) (string, bool) { return "", false }
 
 // 渲染模式（设置页「界面渲染」）在非 Windows 平台没有桌面壳，恒为不可用。
 func (a *App) displayMode() map[string]any {
-	return map[string]any{"desktop": false, "software": false, "reason": ""}
+	return map[string]any{"desktop": false, "software": false}
 }
 
 func (a *App) setDisplayMode(software bool) error {

@@ -1623,7 +1623,7 @@ document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
     const cur = st.software ? 'compat' : 'gpu';
     cards.forEach((b) => b.classList.toggle('cur', b.dataset.v === cur));
     stateLine.textContent = st.software
-      ? '当前运行：兼容模式（软件渲染，' + (st.reason === 'auto' ? '黑屏时自动切换）' : '手动开启）')
+      ? '当前运行：兼容模式（软件渲染）'
       : '当前运行：GPU 渲染（默认）';
   };
   sync();
@@ -1635,7 +1635,6 @@ document.querySelectorAll('#theme-cards .theme-card').forEach((b) => {
       try {
         await api('/api/display-mode', { method: 'POST', body: JSON.stringify({ software: want }) });
         st.software = want;
-        st.reason = 'user';
         sync();
       } catch (e) {
         sync(); // 切换失败（非桌面版等）：恢复显示当前实际状态

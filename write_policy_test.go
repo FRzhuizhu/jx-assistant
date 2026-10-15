@@ -95,7 +95,11 @@ func TestInJxAITmp(t *testing.T) {
 
 func TestWinEncodingNotes(t *testing.T) {
 	base := winEncodingNotes(false)
-	wantAll(t, base, "win 编码规则", "UTF-8 无 BOM", "ANSI/GBK", "转存带 BOM", "chcp 65001", ".cmd/.bat", "Out-File / Set-Content")
+	wantAll(t, base, "win 编码规则", "自动前置", "PYTHONUTF8=1", "GetEncoding(936)",
+		"UTF-8 无 BOM", "ANSI/GBK", "转存带 BOM", ".cmd/.bat", "Out-File / Set-Content")
+	if strings.Contains(base, "chcp") {
+		t.Fatalf("cmd 路径不注入，不应再让模型手动 chcp:\n%s", base)
+	}
 	if strings.Contains(base, "shell=pwsh") {
 		t.Fatalf("未装 pwsh 7 不应给 shell=pwsh 出路:\n%s", base)
 	}
