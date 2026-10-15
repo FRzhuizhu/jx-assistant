@@ -1,7 +1,7 @@
 data/
 config.json
 *.exe
-!jx-assistant.exe
+# jx-assistant.exe 是引擎编译产物，不再入库：发行走安装包，开发自行 go build
 !md-viewer/*.exe
 *.exe~
 .zcode/

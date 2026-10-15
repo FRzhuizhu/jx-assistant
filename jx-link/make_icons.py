@@ -7,7 +7,14 @@ import sys
 from PIL import Image
 
 here = os.path.dirname(os.path.abspath(__file__))
-src = os.path.join(os.path.dirname(here), "软著版数字助理", "web", "logo.png")
+# 优先用本仓库根的 web/logo.png（jx-link 内嵌主仓库时就是它）；
+# 若把本目录单独检出到主仓库之外，回落到主仓库「软著版数字助理」的同一张 logo。
+candidates = [
+    os.path.join(os.path.dirname(here), "web", "logo.png"),
+    os.path.join(os.path.dirname(here), "软著版数字助理", "web", "logo.png"),
+]
+src = next((q for q in candidates if os.path.exists(q)), candidates[0])
+print("logo 源：", os.path.abspath(src))
 res_dir = os.path.join(here, "app", "src", "main", "res")
 ratio = float(sys.argv[1]) if len(sys.argv) > 1 else 0.56
 
