@@ -305,6 +305,10 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "POST /api/questions/{id}", a.handleResolveQuestion, apiMeta{Summary: "回答提问/计划审批", Params: "answer（计划批准=__approve__、忽略=__ignore__）", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/workspace/test", a.handleTestWorkspace, apiMeta{Summary: "测试 SSH 远程工作区连通性", Params: "remote 配置", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/workspace/ls", a.handleWorkspaceLs, apiMeta{Summary: "浏览远程工作区目录", Params: "remote、path", Perm: permReadOnly})
+	// 已登记远程工作区（remotelist.go）：工作目录面板的远程条目
+	a.apiRoute(mux, "GET /api/remotes", a.handleListRemotes, apiMeta{Summary: "已登记的 SSH 远程工作区清单（不含密码）", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/remotes", a.handleRegisterRemote, apiMeta{Summary: "登记/刷新一个 SSH 远程工作区", Params: "remote 配置", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/remotes/delete", a.handleDeleteRemote, apiMeta{Summary: "忘记一个已登记的远程工作区", Params: "key", Perm: permWorkspace})
 	mux.HandleFunc("GET /attachments/", a.handleAttachment)
 	mux.HandleFunc("GET /api/skills", a.handleListSkills)
 	mux.HandleFunc("POST /api/skills/add", a.handleAddSkill)
@@ -3109,6 +3113,7 @@ func (a *App) handleTestWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 remote 字段")
 		return
 	}
+	a.fillRemoteCreds(body.Remote) // 面板复挂路径：密码留在服务端登记库里
 	fp, err := a.testRemoteWorkspace(body.Remote)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "message": err.Error()})
@@ -3129,6 +3134,7 @@ func (a *App) handleWorkspaceLs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 remote 字段")
 		return
 	}
+	a.fillRemoteCreds(body.Remote) // 面板复挂路径：密码留在服务端登记库里
 	spec, err := body.Remote.normalize()
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "message": err.Error()})
@@ -3199,6 +3205,7 @@ func (a *App) handleSetSessionRemote(w http.ResponseWriter, r *http.Request) {
 		m.Remote = nil
 		a.closeRemoteSession(m.ID)
 	} else {
+		a.fillRemoteCreds(body.Remote) // 面板复挂路径：密码留在服务端登记库里
 		spec, err := body.Remote.normalize()
 		if err != nil {
 			writeErr(w, 400, err.Error())

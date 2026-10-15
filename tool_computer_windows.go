@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -284,10 +286,24 @@ func putU16(b []byte, v uint16) {
 
 // ---------- 窗口枚举与激活 ----------
 
-func computerListWindows() ([]string, error) {
-	var titles []string
-	var mu sync.Mutex
-	cb := syscall.NewCallback(func(hwnd, lParam uintptr) uintptr {
+// EnumWindows 的回调跑在原生栈上（panic 冒出去＝整进程无声死亡），且
+// syscall.NewCallback 的回调槽位进程级有限（约 2000 个，用尽后再创建会
+// panic）：回调只建一次，状态经互斥的包变量传递。enumNeedle 空串 = 收集
+// 全部可见窗口标题（computerListWindows），非空 = 找首个标题含子串的窗口
+// （computerActivateWindow，命中即停）。
+var (
+	enumMu     sync.Mutex
+	enumTitles []string // 收集模式的累积结果
+	enumNeedle string   // 匹配子串（空 = 收集模式）
+	enumTarget uintptr  // 匹配到的窗口句柄
+	enumWndCb  = syscall.NewCallback(func(hwnd, lParam uintptr) uintptr {
+		// 就地兜住 panic：兜住后返回 0 终止本轮枚举（结果残缺，按本轮
+		// 失败/空结果论），进程保住（与窗口过程同一纪律）。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[computer] 枚举窗口回调 panic（已兜住）: %v\n%s", r, debug.Stack())
+			}
+		}()
 		if r1, _, _ := procIsWindowVisible.Call(hwnd); r1 == 0 {
 			return 1
 		}
@@ -298,44 +314,44 @@ func computerListWindows() ([]string, error) {
 		buf := make([]uint16, n+1)
 		procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), n+1)
 		title := strings.TrimSpace(syscall.UTF16ToString(buf))
-		if title != "" {
-			mu.Lock()
-			titles = append(titles, title)
-			mu.Unlock()
+		enumMu.Lock()
+		defer enumMu.Unlock()
+		if enumNeedle == "" {
+			if title != "" {
+				enumTitles = append(enumTitles, title)
+			}
+			return 1
+		}
+		if strings.Contains(title, enumNeedle) {
+			enumTarget = hwnd
+			return 0 // 命中即停
 		}
 		return 1
 	})
-	procEnumWindows.Call(cb, 0)
+)
+
+func computerListWindows() ([]string, error) {
+	enumMu.Lock()
+	enumTitles, enumNeedle, enumTarget = nil, "", 0
+	enumMu.Unlock()
+	procEnumWindows.Call(enumWndCb, 0)
+	enumMu.Lock()
+	titles := append([]string(nil), enumTitles...)
+	enumTitles = nil
+	enumMu.Unlock()
 	sort.Strings(titles)
 	return titles, nil
 }
 
 func computerActivateWindow(substring string) error {
-	var target uintptr
-	var mu sync.Mutex
-	cb := syscall.NewCallback(func(hwnd, lParam uintptr) uintptr {
-		if r1, _, _ := procIsWindowVisible.Call(hwnd); r1 == 0 {
-			return 1
-		}
-		n, _, _ := procGetWindowTextW.Call(hwnd, 0, 0)
-		if n == 0 {
-			return 1
-		}
-		buf := make([]uint16, n+1)
-		procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), n+1)
-		title := syscall.UTF16ToString(buf)
-		if strings.Contains(title, substring) {
-			mu.Lock()
-			target = hwnd
-			mu.Unlock()
-			return 0
-		}
-		return 1
-	})
-	procEnumWindows.Call(cb, 0)
-	mu.Lock()
-	hwnd := target
-	mu.Unlock()
+	enumMu.Lock()
+	enumNeedle, enumTarget, enumTitles = substring, 0, nil
+	enumMu.Unlock()
+	procEnumWindows.Call(enumWndCb, 0)
+	enumMu.Lock()
+	hwnd := enumTarget
+	enumNeedle, enumTarget = "", 0
+	enumMu.Unlock()
 	if hwnd == 0 {
 		return fmt.Errorf("没有找到标题包含「%s」的可见窗口", substring)
 	}

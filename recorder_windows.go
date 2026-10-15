@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -181,6 +182,14 @@ func mouseHookCallback() uintptr {
 		// lParam 声明为 unsafe.Pointer（指针大小、ABI 兼容；NewCallback 支持）：
 		// 回调参数直接以指针类型接收，免去 uintptr→unsafe.Pointer 的可疑转换
 		recMouseCb = syscall.NewCallback(func(nCode int32, wParam uintptr, lParam unsafe.Pointer) uintptr {
+			// 低级钩子回调跑在系统钩子线程的原生栈上，且是全系统鼠标输入的
+			// 必经之路：panic 冒出去＝整进程无声死亡且不留堆栈（windowsgui
+			// 子系统）。就地兜住落日志，兜住后返回 0＝事件继续传链。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[recorder] 鼠标钩子回调 panic（已兜住）: %v\n%s", r, debug.Stack())
+				}
+			}()
 			if nCode >= 0 {
 				info := (*msllHookStruct)(lParam)
 				if info.Flags&llmhfInjected == 0 {
@@ -213,6 +222,12 @@ func mouseHookCallback() uintptr {
 func kbdHookCallback() uintptr {
 	recKbdCbOnce.Do(func() {
 		recKbdCb = syscall.NewCallback(func(nCode int32, wParam uintptr, lParam unsafe.Pointer) uintptr {
+			// 同鼠标钩子：原生栈上的 panic 必须就地兜住（见上）。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[recorder] 键盘钩子回调 panic（已兜住）: %v\n%s", r, debug.Stack())
+				}
+			}()
 			if nCode >= 0 && (wParam == wmKeydown || wParam == wmKeyup || wParam == wmSysKeydown || wParam == wmSysKeyup) {
 				k := (*kbdllHookStruct)(lParam)
 				if k.Flags&llkhfInjected == 0 {
@@ -577,6 +592,18 @@ func recorderStart(dir string) error {
 	case <-time.After(3 * time.Second):
 		f.Close()
 		abortAudio()
+		// 钩子线程可能迟到就绪：放弃后没人再收 tid，两个低级钩子会挂到进程
+		// 退出（全系统输入白白多绕一层）。起个 watcher 消费迟到的 ready 并
+		// 投 WM_QUIT，让钩子线程正常拆钩退出；迟到的是安装失败则本就自清。
+		go func() {
+			select {
+			case tid := <-ready:
+				if tid != 0 {
+					procPostThreadMessageW.Call(uintptr(tid), wmQuit, 0, 0)
+				}
+			case <-errCh:
+			}
+		}()
 		return fmt.Errorf("演示记录器启动超时（钩子线程未就绪）")
 	}
 	activeRecP.Store(r)

@@ -3650,10 +3650,10 @@ function showRmStep(n) {
   $('rm-step1').classList.toggle('hidden', n !== 1);
   $('rm-step2').classList.toggle('hidden', n !== 2);
   $('rm-title').textContent = n === 1 ? '添加远程工作目录 · 连接配置' : '选择远程工作目录';
-  // 两步内容高度不同，弹窗重新对齐锚点
+  // 两步内容高度不同，弹窗重新对齐锚点（只重摆位置，不做开合切换）
   if (!$('remote-pop').classList.contains('hidden')) {
     const anchor = $('remote-badge').classList.contains('hidden') ? $('btn-plus') : $('remote-badge');
-    openPopover('remote-pop', anchor);
+    reposPopover('remote-pop', anchor);
   }
   if (n === 2) browseRemote($('rm-dir').value.trim());
 }
@@ -3767,7 +3767,8 @@ function renderDirList(entries) {
   list.scrollTop = 0;
 }
 
-// applyRemote 第二步「使用」：以当前所在目录为工作区落库/入草稿。
+// applyRemote 第二步「使用」：以当前所在目录为工作区落库/入草稿，
+// 并登记为可复选的远程工作区（工作目录面板里一键复挂）。
 async function applyRemote() {
   const spec = rmSavedSpec || collectRemoteSpec();
   const bad = validateRemoteSpec(spec);
@@ -3782,9 +3783,26 @@ async function applyRemote() {
   } else {
     homeDraft.remote = full;
   }
+  registerRemoteWs(full); // 后端登记（密码 DPAPI 落库，清单不回密码）
   closePopovers();
   syncComposer();
   loadSessions();
+}
+
+// registerRemoteWs 把使用过的远程工作区登记到后端（失败静默：登记只是
+// 复挂便利，不该打断「使用」成功的流程），成功后刷新面板清单缓存。
+function registerRemoteWs(spec) {
+  api('/api/remotes', { method: 'POST', body: JSON.stringify({ remote: spec }) })
+    .then(() => loadRmList())
+    .catch(() => {});
+}
+
+// loadRmList 拉取已登记的远程工作区清单（不回密码）。ws-pop 开着时顺手重渲。
+function loadRmList() {
+  return api('/api/remotes').then((d) => {
+    state.rmList = d.remotes || [];
+    if (!$('ws-pop').classList.contains('hidden')) renderWsPop();
+  }).catch(() => { state.rmList = state.rmList || []; });
 }
 
 async function clearRemote() {
@@ -5888,11 +5906,16 @@ function renderWsPop() {
   (state.sessions || []).forEach((s) => add(s.workspace));
   const q = ($('ws-search').value || '').trim().toLowerCase();
   const filtered = q ? list.filter((ws) => ws.toLowerCase().includes(q)) : list;
+  // 已登记的远程工作区（remotelist.go）：跟本地目录一起排进候选，
+  // 选中即挂载为远程工作区（不带密码，发送建会话时服务端回填）
+  const rms = (state.rmList || []).filter((r) => !q ||
+    (r.display || '').toLowerCase().includes(q) || (r.host || '').toLowerCase().includes(q));
   // 挂了远程目录时不标本地选中项
   const cur = homeDraft.remote ? '' : (homeDraft.workspace || state.defaultWs || '');
+  const curRm = homeDraft.remote ? remoteDisplay(homeDraft.remote) : '';
   const box = $('ws-pop-list');
   box.innerHTML = '';
-  if (!filtered.length) {
+  if (!filtered.length && !rms.length) {
     box.innerHTML = `<div class="ws-pop-empty">${q ? '没有匹配的工作目录' : '还没有工作目录，用下方按钮添加'}</div>`;
     return;
   }
@@ -5905,6 +5928,31 @@ function renderWsPop() {
       homeDraft.workspace = ws;
       closePopovers();
       syncComposer();
+    };
+    box.appendChild(b);
+  });
+  if (rms.length) {
+    const label = document.createElement('div');
+    label.className = 'pop-group ws-pop-group';
+    label.textContent = '远程工作区';
+    box.appendChild(label);
+  }
+  rms.forEach((r) => {
+    const b = document.createElement('button');
+    const sel = r.display === curRm;
+    b.className = 'pop-item ws-remote-item' + (sel ? ' sel' : '');
+    b.title = 'SSH 远程工作区 ' + r.display;
+    b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="2"/><path d="M7 8h.01M11 8h.01"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 18h.01M11 18h.01"/></svg>${esc(r.display || remoteDisplay(r))}<span class="ws-rm-x" title="忘记此远程工作区（不影响已有对话）">✕</span><span class="pop-check">${sel ? '✓' : ''}</span>`;
+    b.onclick = () => {
+      homeDraft.remote = { host: r.host, port: r.port, user: r.user, auth: r.auth, keyPath: r.keyPath || '', password: '', dir: r.dir };
+      homeDraft.workspace = ''; // 挂远程 = 不选本地目录
+      closePopovers();
+      syncComposer();
+    };
+    b.querySelector('.ws-rm-x').onclick = async (e) => {
+      e.stopPropagation();
+      try { await api('/api/remotes/delete', { method: 'POST', body: JSON.stringify({ key: r.key || r.display }) }); } catch (err) { alert('忘记失败：' + err.message); return; }
+      await loadRmList();
     };
     box.appendChild(b);
   });
@@ -6520,6 +6568,7 @@ jxDiag('init:绑定B sub/chips 完成');
 $('ws-row').onclick = () => {
   $('ws-search').value = '';
   $('ws-search-clear').classList.add('hidden');
+  loadRmList(); // 远程工作区清单异步刷新（回来时面板开着会自动重渲）
   renderWsPop();
   $('ws-pop-notice').classList.add('hidden'); // 告知行跟随面板开合复位
   openPopover('ws-pop', $('ws-row'));
@@ -6643,6 +6692,7 @@ $('perm-pop').addEventListener('change', (e) => {
 // 它们的 onclick 先开菜单，事件再冒泡到这里——不排除的话菜单会开完即关。
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.popover') && !e.target.closest('#btn-plus') &&
+      !e.target.closest('#remote-badge') && // 顶栏「远程」徽标：点它打开 SSH 配置弹窗
       !e.target.closest('#perm-chip') && !e.target.closest('#model-chip') && !e.target.closest('#ws-row') &&
       !e.target.closest('#mode-row') &&
       !e.target.closest('#sub-dd') &&

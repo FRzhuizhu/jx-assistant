@@ -81,6 +81,7 @@ func (a *App) createSession(p createSessionParams) (*SessionMeta, error) {
 	}
 	remote := p.Remote
 	if remote != nil {
+		a.fillRemoteCreds(remote) // 面板复挂路径：密码留在服务端登记库里
 		spec, err := remote.normalize()
 		if err != nil {
 			return nil, createSessionErr(400, "远程工作区配置无效: %v", err)

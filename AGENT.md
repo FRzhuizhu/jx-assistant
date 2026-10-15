@@ -434,6 +434,25 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   `sandbox unavailable`（fail closed）。helper 带语义版本号：每次连接
   远端执行 `version` 比对，不一致自动重传。私有临时目录由外层包装创建
   并经 `trap` 清理（历史版本曾按次泄漏 /tmp/jx-sbx-* 目录，已修复）。
+- **PS 5.1 编码注入（仅 PowerShell 5.1 路径）**：Windows PowerShell 5.1 的
+  `$OutputEncoding` 默认 ASCII（PS→原生程序管道传中文丢字不可逆）、
+  `[Console]::OutputEncoding` 默认 OEM 代码页。三条命令构造点
+  （`runUnconfinedLocal` / 沙箱 `buildShellCmdline` / 后台作业 `shellCmd`）
+  在解析为 PS 5.1（空 shell 缺省与显式 powershell）时统一前置
+  `try{$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8}catch{}; `
+  并注入 `PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`（`appendEnvUnique` 先摘后加，
+  环境块重复变量"先见为准"）。**cmd/pwsh/sh 分支与 Linux/安卓/SSH 远程零改动**
+  （pwsh 6+ 全平台默认 UTF-8；Linux 文件名是字节流、grep/sed 字节匹配，
+  locale 不影响中文；安卓 Termux 环境已有 LANG=en_US.UTF-8）。切回语义：
+  注入都是单条命令内可覆盖的机制，环境快照只写"引擎做了什么 + 怎么切回"
+  （`$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(936)`，
+  管出编码由 $OutputEncoding 决定，只改 [Console] 侧切不回去），不再写
+  "默认 XX"类陈述——模型自己知道默认，多余的默认描述只消耗注意力。
+- **write/edit 回读注记**：`snapshotWrite` 把写后回读（verified=真的从盘上/
+  SFTP 读回来）交给工具成功文案拼注记（`readBackNote`）——write 带
+  "回读一致，首行：<截 60 字符>"，edit 只报一致/不一致，不一致/多出 BOM
+  给 ⚠。防御的目的不是不出错，是出错时模型第一轮就看见（远程 SFTP 写入、
+  外部程序干预、编码转换），而不是执行到第三步才发现。
 - **拒绝驱动的升级**（对齐官方 bash 工具）：不做威胁命令猜测、不做执行前
   预检——命令先按会话策略进沙箱真实执行，被拒结果带
   `[sandbox: … denied under <mode> mode]` 标记；模型同轮带
@@ -480,10 +499,19 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   权限引擎照常把关（工作区边界 = 远程目录，POSIX 路径规则）。
 - 入口：加号菜单「SSH 远程工作区」→ 填主机/端口/用户/认证（私钥文件或密码）/
   远程目录 → 「测试连接」（拨号 + 命令通道 + SFTP + 目录检查，回显主机指纹）。
+  两步式：第一步连接配置「保存」，第二步浏览远程目录「使用」（也支持直接输路径）。
+- **登记与复挂**（remotelist.go）：「使用」成功后自动登记该远程工作区（密码 DPAPI
+  加密落 `data/remote_workspaces.json`，接口不回密码）；工作目录选择面板出现
+  「远程工作区」分组条目，点选即挂载（前端不带密码，建会话/测试/浏览/换挂载时
+  服务端按 主机+端口+用户 回填凭据 `fillRemoteCreds`），条目悬停出 ✕ 可忘记。
 - 主机密钥 OpenSSH 式 TOFU：首连记录指纹到 `data/ssh_known_hosts`，之后变更即
   拒连（防中间人）；会话内绑定指纹，换主机需重新测试保存。
 - 认证支持无口令私钥文件与密码；连接按会话缓存 + keepalive，断线自动重拨。
 - 数字助理派发的子任务自动继承主对话的远程工作区。
+- **弹窗开合的两个坑（已修，别再犯）**：`openPopover` 是切换语义（已开着就收起），
+  内容高度变化后重对齐位置要用 `reposPopover`（第一步→第二步曾误用 openPopover
+  导致弹窗自关、远程工作区「怎么都建不起来」）；文档级「点外收起」的锚点豁免
+  名单要含 `#remote-badge`（顶栏远程徽标也是弹层锚点）。
 
 ## 工作区模型
 
@@ -1358,6 +1386,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；ask 提问限时（timeout_sec 设秒数，默认 300、钳 30-600、显式 0=不限时；分档准则在系统提示词「提问的分寸」段，状态公告在环境快照「提问等待」行；界面倒计时、悬停/触碰/按钮停表转不限时，超时视为放行）；久等声光提醒（默认开、240 秒、设置·常规可调：MessageBeep 叮声 + ask_alert 全屏闪烁，浮窗上 15 秒倒计时走完才 TTS 朗读；悬停/触碰/停表、或从任何入口打开对应计划页/浮窗（holdQuestion 也受理无时限的计划审批）连提醒一并作废，见 askAlertDue）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/驳回/忽略 |
 | `interact_plan_test.go` | 计划审批的时限与持久化语义测试（跨重启挂待审批、批准/驳回/忽略三分支、plan 无 TTL、ask 的 timeout_sec 与停表） |
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |
+| `remotelist.go` | 已登记远程工作区（工作目录面板的远程条目）：DPAPI 加密存储、凭据回填、清单/登记/忘记 API |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
 | `browser_ops.go` | browserTarget 操作面：browser_* 工具与面板端点的形态无关接口 |
 | `browser_host.go` | chromedp 浏览器宿主：有头独立窗口 + 网页形态的后台无头内嵌目标 |
@@ -1415,6 +1444,10 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `POST /api/sessions/{id}/plans/export` | 把某份计划写成工作区里的 `计划-<时间>-<标题>.md`（`{seq}` 缺省最新一份；同名不覆盖、顺延 -2/-3） |
 | `POST /api/approvals/{id}` | 审批决定：`{approved, always}`（always=本会话总是允许） |
 | `POST /api/workspace/test` | 测试 SSH 远程工作区配置（拨号/SFTP/目录，回显主机指纹） |
+| `POST /api/workspace/ls` | 浏览远程主机目录（连接规格 + path，path 空回用户主目录） |
+| `GET /api/remotes` | 已登记的 SSH 远程工作区清单（remotelist.go；**不回密码**，key=display 供删除定位） |
+| `POST /api/remotes` | 登记/刷新一个远程工作区（密码 DPAPI 落盘 `data/remote_workspaces.json`；密码缺席时按 主机+端口+用户 从登记库回填） |
+| `POST /api/remotes/delete` | 忘记一个登记条目（`{key}`，不影响已有会话） |
 | `GET /api/events` | 全局事件流（后台派发进度、回报就绪、会话更新、审批请求） |
 | `GET/POST /api/plugins` | 统一插件清单（`{layers, plugins}`，带来源体系）/ 切换开关（`{layer,id,enabled}`，即时生效，界面部分刷新后生效） |
 | `GET /_plugins/{id}/{file}` | 插件浏览器半边资产（仅启用时提供） |

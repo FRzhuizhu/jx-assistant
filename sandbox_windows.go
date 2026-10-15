@@ -701,7 +701,7 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 	// 见文件头「历史注记」。
 
 	// 4) 解析 shell 与命令行（父进程解析，子进程环境可能不全）
-	app, cmdLine, err := buildShellCmdline(r.Shell, r.Command)
+	app, cmdLine, ps51, err := buildShellCmdline(r.Shell, r.Command)
 	if err != nil {
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("sandbox unavailable: %w", err)
@@ -743,6 +743,10 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 		"GOTMPDIR="+tempDir,
 		"GOCACHE="+filepath.Join(r.Workspace, ".jxai", "gocache"),
 		"JX_SANDBOX="+r.Policy)
+	// PS 5.1 编码注入（同 runUnconfinedLocal，仅 powershell 路径；先摘后加纪律见 appendEnvUnique）
+	if ps51 {
+		env = appendEnvUnique(env, ps51Utf8Env()...)
+	}
 	envBlock, err := envBlockPtr(env)
 	if err != nil {
 		os.RemoveAll(tempDir)
@@ -946,26 +950,33 @@ func (b *syncBuffer) Bytes() []byte {
 	return b.buf.Bytes()
 }
 
-// buildShellCmdline 解析 shell 名并构造 (appName, commandLine)。
-func buildShellCmdline(shell, command string) (string, string, error) {
+// buildShellCmdline 解析 shell 名并构造 (appName, commandLine, ps51)。
+// ps51 = 解析为 Windows PowerShell 5.1（空 shell 缺省与显式 powershell）：
+// 命令前置 UTF-8 编码设置，调用方据此注入配套环境变量；pwsh 本就 UTF-8、
+// cmd 不在此路径注入。
+func buildShellCmdline(shell, command string) (string, string, bool, error) {
 	switch strings.ToLower(strings.TrimSpace(shell)) {
 	case "cmd":
 		comspec := os.Getenv("COMSPEC")
 		if comspec == "" {
 			comspec = `C:\Windows\system32\cmd.exe`
 		}
-		return comspec, `"` + comspec + `" /C ` + command, nil
+		return comspec, `"` + comspec + `" /C ` + command, false, nil
 	case "", "pwsh", "powershell": // 空 shell 缺省 powershell（曾报「不支持的 shell: 」；空串直接 LookPath 会失败报「找不到 」）
 		if shell == "" {
 			shell = "powershell"
 		}
 		exe, err := exec.LookPath(shell)
 		if err != nil {
-			return "", "", fmt.Errorf("找不到 %s", shell)
+			return "", "", false, fmt.Errorf("找不到 %s", shell)
 		}
-		return exe, `"` + exe + `" -NoProfile -NonInteractive -Command ` + syscall.EscapeArg(command), nil
+		ps51 := strings.ToLower(shell) != "pwsh"
+		if ps51 {
+			command = ps51Utf8Prefix + command
+		}
+		return exe, `"` + exe + `" -NoProfile -NonInteractive -Command ` + syscall.EscapeArg(command), ps51, nil
 	default:
-		return "", "", fmt.Errorf("不支持的 shell: %s", shell)
+		return "", "", false, fmt.Errorf("不支持的 shell: %s", shell)
 	}
 }
 

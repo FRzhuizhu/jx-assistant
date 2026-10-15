@@ -38,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -189,6 +190,13 @@ type cdpCompletedVtbl struct{ queryInterface, addRef, release, invoke uintptr }
 var cdpCompletedVtblInst = cdpCompletedVtbl{
 	comQIProc, comRefProc, comRefProc,
 	windows.NewCallback(func(this *cdpCompletedHandler, errCode uintptr, resultJSON *uint16) uintptr {
+		// 回调发生在 WebView2 的原生栈上：panic 冒不出去也接不住，直接就是
+		// 整进程无声死亡——就地吞掉落日志（同 evtHandler 的纪律）。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[browser-panel] CDP 回调 panic（已兜住）: %v\n%s", r, debug.Stack())
+			}
+		}()
 		if this == nil || this.ch == nil {
 			return 0
 		}
