@@ -105,11 +105,13 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 /* 左上角三个入口按钮（新工作任务 / 数字助理主对话 / 待办与定时任务）的图标互动：
    鼠标进入按钮时，图标朝随机一侧轻扭一下再回正（幅度与方向由 JS 每次独立随机写在
    按钮的 --wig-deg 上，逻辑见 app-left.js 的 bindSideBtnWiggle），动画结束即回到直立。
+   小人按钮例外：圆脸扭动观感差，改「点头两下」（side-btn-nod，同一套触发）。
    作用域收在 #sidebar .actions 里的 .side-btn 直接子 svg——页面别处的同类图标不受影响；
    只加一条动画，按钮自身的尺寸、点击、tooltip、hover 背景都不动。 */
 #sidebar .actions .side-btn > svg,
 #sidebar .actions .side-btn > .doll-wrap {
   transform-box: fill-box; transform-origin: center;   /* 以图标自身盒中心为轴心，扭动不跑偏 */
+  color: var(--accent);   /* 三个入口图标跟随主题色（设置页换主题色时一起变）；文字仍是常规文字色 */
 }
 #sidebar .actions .side-btn.wig > svg,
 #sidebar .actions .side-btn.wig > .doll-wrap {
@@ -121,9 +123,22 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   74% { transform: rotate(calc(var(--wig-deg, 6deg) * -.26 * var(--wig-scale, 1))); }          /* 回位时反向过一点点：回弹感 */
   100% { transform: rotate(0); }
 }
-/* 小人与加号/时钟同一幅度（曾单独给 1.3 倍，观感上明显晃得更大、不统一，已删） */
+/* 小人按钮：不扭（换成点头两下）——同一套 .wig 触发，只是动画不同：
+   脸往下点两下（第一下重、第二下轻）回正，支点靠下巴。ID 选择器盖过上面的 wig 规则 */
+#sidebar .actions #btn-new-assistant.wig > .doll-wrap {
+  animation: side-btn-nod .64s cubic-bezier(.34, 1.3, .5, 1);
+  transform-origin: 50% 86%;
+}
+@keyframes side-btn-nod {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  26% { transform: translateY(1.3px) scaleY(.86); }   /* 第一磕 */
+  42% { transform: translateY(0) scaleY(1); }
+  66% { transform: translateY(.9px) scaleY(.9); }     /* 第二磕轻一点 */
+  84% { transform: translateY(0) scaleY(1); }
+}
 @media (prefers-reduced-motion: reduce) {
-  #sidebar .actions .side-btn.wig > svg { animation: none; }
+  #sidebar .actions .side-btn.wig > svg,
+  #sidebar .actions .side-btn.wig > .doll-wrap { animation: none; }
 }
 
 /* ---------- 数字助理按钮的小人动画（方案三：双循环随机轮播） ----------
