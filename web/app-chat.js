@@ -5402,7 +5402,9 @@ function levelsOfDefault() {
   return [];
 }
 
-let modelPopExpand = ''; // 模型菜单里展开思考档位浮窗的模型 key
+// 悬停展开只在真 hover 指针（鼠标）上生效；触屏没有 hover，思考档位靠点行尾箭头
+const hoverFineMq = window.matchMedia ? window.matchMedia('(hover: hover) and (pointer: fine)') : null;
+let modelSubLeaveTimer = 0; // 指针离开主面板/二级浮窗后的延迟收起计时（见 modelSubHideSoon）
 
 // 该模型的思考档位（「默认」条目取默认模型的档位）
 function modelLevelsOf(key) {
@@ -5416,7 +5418,10 @@ function renderModelPop(view) {
   view = view || popView || mainView;
   const pop = $('model-pop');
   const cur = currentModelKey(view);
-  let html = `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}${modelPopExpand === '__default__' && levelsOfDefault().length ? ' exp' : ''}" data-key="__default__">默认（${esc(state.defaultModel || '未配置')}）</button>`;
+  // 行尾箭头（带命中区 .lv-hit）：触屏点它开合思考档位；桌面悬停即展开、点它也可展开
+  const arrow = '<span class="lv-hit"><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></span>';
+  const defLv = levelsOfDefault();
+  let html = `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}${modelPopExpand === '__default__' && defLv.length ? ' exp' : ''}" data-key="__default__"><span>默认（${esc(state.defaultModel || '未配置')}）</span>${defLv.length ? arrow : ''}</button>`;
   let lastProv = '';
   for (const m of state.models || []) {
     if (m.providerId !== lastProv) {
@@ -5425,20 +5430,46 @@ function renderModelPop(view) {
     }
     const k = m.providerId + '|' + m.modelId;
     const hasLv = m.reasoningLevels && m.reasoningLevels.length;
-    const arrow = hasLv ? '<svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>' : '';
     // 停用服务商的模型置灰（公司通道出公司自动停用期间仍可见，点了也能选——
     // 会话解析时会自动回落到可用服务商，但选单里如实标注状态）
-    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}${modelPopExpand === k && hasLv ? ' exp' : ''}${m.providerOff ? ' off' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${arrow}</button>`;
+    html += `<button class="pop-item model-item ${k === cur ? 'sel' : ''}${modelPopExpand === k && hasLv ? ' exp' : ''}${m.providerOff ? ' off' : ''}" data-key="${esc(k)}"><span>${esc(m.modelName || m.modelId)}</span>${hasLv ? arrow : ''}</button>`;
   }
   pop.innerHTML = html;
-  // 点模型 = 选中并在该行右侧弹出/收起它的思考档位浮窗
   pop.querySelectorAll('.model-item').forEach((b) => {
-    b.onclick = async () => {
-      const key = b.dataset.key;
-      await pickModel(key, true, popView);
-      modelPopExpand = modelPopExpand === key ? '' : key;
-      renderModelPop(popView);
+    const key = b.dataset.key;
+    // 悬停整行：有档位就在右侧浮出它的思考档位，悬到无档位的行则收起（仅真 hover 指针）
+    b.onpointerenter = () => {
+      if (!hoverFineMq || !hoverFineMq.matches) return;
+      clearTimeout(modelSubLeaveTimer);
+      if (modelPopExpand === key) {
+        // 行曾滚出可视区被收起（展开标记还留着）：滚回来重新浮出
+        if ($('model-sub-pop').classList.contains('hidden')) syncModelSubPop(popView);
+        return;
+      }
+      const hasLv = !!modelLevelsOf(key).length;
+      modelPopExpand = hasLv ? key : '';
+      pop.querySelectorAll('.model-item.exp').forEach((x) => x.classList.remove('exp'));
+      if (hasLv) b.classList.add('exp');
       syncModelSubPop(popView);
+    };
+    b.onclick = async (e) => {
+      // 点行尾箭头 = 只开合该行的思考档位浮窗，不选中、不收菜单。
+      // 触屏没有 hover，箭头就是开合开关；桌面悬停已能展开，箭头点开可以、
+      // 点收不行——收下之后指针还停在行上，合成悬停会把它立刻再弹出来
+      if (e.target.closest('.lv-hit') && modelLevelsOf(key).length) {
+        if (hoverFineMq && hoverFineMq.matches) {
+          if (modelPopExpand === key) return;
+          modelPopExpand = key;
+        } else {
+          modelPopExpand = modelPopExpand === key ? '' : key;
+        }
+        renderModelPop(popView);
+        syncModelSubPop(popView);
+        return;
+      }
+      // 点行任意处 = 选中该模型并收起。不在这里顺带弹二级浮窗——那要求点了再
+      // 点才收，连点两下会互相抵消（旧版「偶尔关不掉」的来源），手机端也格外别扭
+      await pickModel(key, false, popView);
     };
   });
   // 打开面板的时序：onclick 里 openPopover 在本函数之后执行，rAF 等面板
@@ -5447,6 +5478,7 @@ function renderModelPop(view) {
 }
 
 // 思考档位二级浮窗：跟随 modelPopExpand 指向的模型行，向右弹出。
+// 桌面悬停整行即展开（renderModelPop 的 pointerenter），触屏点行尾箭头展开；
 // 行滚出主面板可视区（主面板会滚动）或主面板收起时一并收起。
 function syncModelSubPop(view) {
   view = view || popView || mainView;
@@ -5472,12 +5504,19 @@ function syncModelSubPop(view) {
   sub.innerHTML = h;
   sub.classList.remove('hidden');
   sub.querySelectorAll('.mp-lv').forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); pickThinking(b.dataset.lv, popView); };
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      // 在还没选中的模型行上直接定档 = 一并选中该模型（悬停别的模型定档是常态操作）
+      const key = modelPopExpand;
+      if (key && key !== currentModelKey(popView)) await pickModel(key, true, popView);
+      pickThinking(b.dataset.lv, popView);
+    };
   });
-  // 定位：贴该行右侧弹出；右侧放不下翻到左侧，垂直夹取在视口内
+  // 定位：贴该行右侧弹出；右侧放不下翻到主面板左缘外侧（不是行左缘——贴行左翻
+  // 会把浮窗压在菜单行上，行就点不了了）；再放不下贴视口左缘，垂直夹取在视口内
   const sw = sub.offsetWidth, sh = sub.offsetHeight;
   let x = rr.right + 2;
-  if (x + sw > window.innerWidth - 12) x = Math.max(12, rr.left - sw - 2);
+  if (x + sw > window.innerWidth - 12) x = Math.max(12, mp.left - sw - 2);
   let y = Math.max(12, Math.min(rr.top - 6, window.innerHeight - sh - 12));
   sub.style.left = x + 'px';
   sub.style.top = y + 'px';
@@ -6459,6 +6498,23 @@ $('model-chip').onclick = () => { popView = mainView; renderModelPop(popView); o
 $('sub-model-chip').onclick = () => { popView = subView; renderModelPop(popView); openPopover('model-pop', $('sub-model-chip')); };
 // 主面板滚动时二级浮窗跟随模型行重新定位（行滚出可视区自动收起）
 $('model-pop').addEventListener('scroll', () => syncModelSubPop());
+// 思考档位浮窗的悬停收起（仅真 hover 指针）：指针离开主面板与浮窗本体后稍候收起
+// ——跨过两者之间的窄缝去点档位时不误收（再进入任一面板即取消计时）；触屏
+// 没有 hover 不走这里，箭头展开的浮窗由点箭头/选中/点外面收起。
+function modelSubHideSoon() {
+  clearTimeout(modelSubLeaveTimer);
+  modelSubLeaveTimer = setTimeout(() => {
+    modelPopExpand = '';
+    $('model-sub-pop').classList.add('hidden');
+    $('model-pop').querySelectorAll('.model-item.exp').forEach((b) => b.classList.remove('exp'));
+  }, 250);
+}
+['model-pop', 'model-sub-pop'].forEach((id) => {
+  $(id).addEventListener('pointerenter', () => clearTimeout(modelSubLeaveTimer));
+  $(id).addEventListener('pointerleave', () => {
+    if (hoverFineMq && hoverFineMq.matches) modelSubHideSoon();
+  });
+});
 jxDiag('init:绑定B sub/chips 完成');
 // 工作目录面板：每次打开重置搜索；搜索实时过滤目录列表
 $('ws-row').onclick = () => {

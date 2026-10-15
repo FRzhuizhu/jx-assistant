@@ -837,8 +837,14 @@ const dotDone = {};     // 会话id -> 完成未查看（绿点）
 // 用户取消后前端显式传空数组，后端尊重用户、不再覆盖。
 const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: ['browser'], planMode: false, goalMode: false, goalText: '', remote: null, quote: '' };
 
+// 模型菜单里展开思考档位浮窗的模型 key（app-chat.js 的模型菜单在用）。
+// 放这半边是因为它属于弹层开合状态：任何关闭路径（Esc / 点外面 / 切别的
+// 弹层 / 选中收起）都要把它清零，重开菜单才不会把上次的二级浮窗又弹出来。
+let modelPopExpand = '';
+
 function closePopovers() {
   document.querySelectorAll('.popover').forEach((p) => p.classList.add('hidden'));
+  modelPopExpand = '';
   closeAllSelects();
 }
 
@@ -848,6 +854,16 @@ function openPopover(popId, anchor) {
   closePopovers();
   if (!reopening) return; // 点同一个按钮 = 收起
   pop.classList.remove('hidden');
+  reposPopover(popId, anchor);
+}
+
+// reposPopover 把一个已打开的弹窗重新对齐锚点（内容高度变化后重摆位置）。
+// 不做开合切换——openPopover 的 toggle 语义（已开着就收起）不适合这种场景：
+// 历史上 showRmStep 误用它「重对齐」，结果远程工作区弹窗在第一步→第二步时
+// 自己把自己关掉了，看起来就像什么都没保存。
+function reposPopover(popId, anchor) {
+  const pop = $(popId);
+  if (pop.classList.contains('hidden') || !anchor) return;
   const r = anchor.getBoundingClientRect();
   const pw = pop.offsetWidth, ph = pop.offsetHeight;
   let x = Math.min(r.left, window.innerWidth - pw - 12);
