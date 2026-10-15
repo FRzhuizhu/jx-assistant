@@ -1096,12 +1096,16 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
 	// 落库身份取待生效项自带的 kind/origin（用户插话=chat，派发注入=aiuser）。
 	interjectsBefore := func(emit func(Event)) bool {
-		got := false
-		for _, pm := range a.drainSteer(sess.ID) {
+		got := a.drainSteer(sess.ID)
+		for _, pm := range got {
 			a.landUserSide(sess, pm.Content, pm.Kind, pm.Origin, emit)
-			got = true
 		}
-		return got
+		// 排走后广播最新快照（排队路径 popQueue 后有同一广播）：前端据此摘掉
+		// 「插话中」气泡——不广播的话消息已落库，气泡却一直挂在对话末尾
+		if len(got) > 0 {
+			a.broadcastPending(sess.ID)
+		}
+		return len(got) > 0
 	}
 
 	// 开轮前先补齐历史里的悬空工具结尾（异常中断——进程崩溃、服务重启等

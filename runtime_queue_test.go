@@ -14,6 +14,8 @@ package main
 //  4. 收口兜底：续发循环走完之后才挤进队列的消息，由 finishRun 再拉一轮发出
 //  5. 派发回报的唯一投递路径：runSubAgent 在父会话正忙时把回报放进父会话的
 //     排队队列（不是另写一条旁路），父会话本轮结束即自动发出
+//  6. 插话在下一步调用模型前被注入落库的同一时刻广播空插话快照（排队路径
+//     popQueue 后有同一广播），前端的「插话中」气泡随即退场，不挂到本轮收尾
 //
 // 模型走内置 mock（BaseURL=mock），工具落在临时工作区，不联网、不碰真实工作区。
 
@@ -251,5 +253,57 @@ func TestSubAgentReportGoesThroughQueue(t *testing.T) {
 	}
 	if !hasPrefixRow(t, a, main.ID, kindAiUser, "dispatch", "【派发回报】") {
 		t.Fatal("回报未落到父会话历史")
+	}
+}
+
+// 6：插话被注入落库的同一时刻必须广播最新 pending 快照（排队路径 popQueue 后有
+// 同一广播）：不广播的话前端「插话中」气泡从注入起一直挂到本轮收尾才消失。
+// 收口兜底广播也发空快照，所以按时机断言——模型第一个增量输出（注入后的第一
+// 个可观测界标）时，订阅流里就应已有「steer 已空」的 pending。
+func TestSteerInjectBroadcastsEmptyPending(t *testing.T) {
+	a, main := newQueueTestApp(t)
+	ch, unsub := a.subscribe()
+	defer unsub()
+
+	// 订阅流只收广播事件（本轮的 emit 事件不进它）；扫一遍非阻塞通道
+	emptySteerSeen := func() bool {
+		for draining := true; draining; {
+			select {
+			case ev := <-ch:
+				if ev.Type == "pending" && ev.SessionID == main.ID && len(ev.Pending.Steer) == 0 {
+					return true
+				}
+			default:
+				draining = false
+			}
+		}
+		return false
+	}
+	clearedAtInject := false
+	emit := func(ev Event) {
+		if ev.Type == "delta" && !clearedAtInject {
+			clearedAtInject = emptySteerSeen()
+		}
+	}
+
+	run, ok := a.beginRun(main.ID)
+	if !ok {
+		t.Fatal("应能占住执行权")
+	}
+	a.pushPending(main.ID, "steer", "执行中插话：请改看方案二", kindChat, "")
+
+	// opening=true：跑一轮 RunAgent，第一步调用模型前插话被注入
+	if err := a.runRoundsWithQueue(main, run, emit, true, true); err != nil {
+		t.Fatalf("一轮执行应无错误: %v", err)
+	}
+	a.finishRun(main.ID)
+	if n := len(a.pendingOf(main.ID).Steer); n != 0 {
+		t.Fatalf("插话应已注入落库，插话队列剩 %d 条", n)
+	}
+	if !hasPrefixRow(t, a, main.ID, kindChat, "", "执行中插话：") {
+		t.Fatal("插话未按 chat 身份落库")
+	}
+	if !clearedAtInject {
+		t.Fatal("插话注入时未广播空插话快照（「插话中」气泡会一直挂到本轮收尾）")
 	}
 }

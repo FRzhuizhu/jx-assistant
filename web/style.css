@@ -2565,7 +2565,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 
 /* ---------- 等待队列：排队中的消息气泡 ---------- */
 .msg.user.queued { opacity: .85; }
-.msg.user.queued .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; }
+.msg.user.queued .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; border-width: 1px; }
 .msg.user.queued .q-badge {
   flex: none; font-size: .93em; color: var(--amber); border: 1px solid currentColor;
   border-radius: 999px; padding: 0 7px; line-height: 17px; white-space: nowrap;
@@ -2579,7 +2579,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 /* ---------- 执行中发消息：已插话气泡 + 输入框上方的排队坞 ---------- */
 
 /* 已插话、等下一次调用模型生效：与已发送的用户气泡同款，只加一个「插话中」角标 */
-.msg.user.pending-steer .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; }
+.msg.user.pending-steer .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; border-width: 1px; }
 .msg.user.pending-steer .q-badge {
   flex: none; font-size: .93em; color: var(--accent); border: 1px solid currentColor;
   border-radius: 999px; padding: 0 7px; line-height: 17px; white-space: nowrap;
