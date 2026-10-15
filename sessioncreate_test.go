@@ -2,7 +2,8 @@ package main
 
 // createSession / applyPermissionChange 的验收测试（service 单源）：
 //  1. 默认值口径与原 handleCreateSession 一致（模式未知退 task、权限默认
-//     workspace-write（创建技能 full）、Tools 缺席补默认、完全访问捆绑能力）；
+//     workspace-write（创建技能/数字经理主对话 full）、Tools 缺席补默认、
+//     完全访问捆绑能力）；
 //  2. 分支克隆：字段照抄父会话、Origin=human、标题默认、计划/目标重置、
 //     历史复制到子对话；
 //  3. 三入口等价：HTTP 建会话与 dispatch_task 建会话走同一 service，
@@ -42,6 +43,14 @@ func TestCreateSessionDefaults(t *testing.T) {
 	}
 	if m2.Permission != permFull || len(m2.Tools) == 0 {
 		t.Fatalf("创建技能应默认完全访问并捆绑能力: %+v", m2)
+	}
+	// 数字经理主对话默认完全访问 + 捆绑能力（新装机首启建的会话）
+	m2b, err := a.createSession(createSessionParams{Mode: "assistant", Title: "数字助理主对话"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2b.Permission != permFull || len(m2b.Tools) == 0 {
+		t.Fatalf("数字经理主对话应默认完全访问并捆绑能力: %+v", m2b)
 	}
 	// 显式传空 tools = 用户主动取消勾选：不补默认
 	m3, err := a.createSession(createSessionParams{Mode: "task", Tools: []string{}})

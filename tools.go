@@ -135,7 +135,7 @@ func (a *App) toolsFor(mode string) []Tool {
 	} else if mode == "aux" {
 		// enter_plan_mode 不配：aux 只读答疑，没有可暂停的执行动作，计划无意义
 		// （exit 保留，用户手动给 aux 会话开计划模式时仍可退出）。
-		tools = append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), readImageTool(),
+		tools = append([]Tool{readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(), a.webSearchTool(), readImageTool(),
 			exitPlanModeTool(), updateGoalTool()}, history...)
 	} else {
 		// 创建技能模式专属工具：register_skill 注册闭环只挂在该模式——其他模式的
@@ -148,7 +148,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		}
 		tools = append(append([]Tool{
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
-			globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
+			globTool(), grepTool(), runCommandTool(), webFetchTool(), a.webSearchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), publishWebpageTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			// call_api 已收窄到 assistant 模式：界面级接口操作归总控编排，

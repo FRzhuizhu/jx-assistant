@@ -3,10 +3,20 @@
 package main
 
 // 立即重启的接力助手：主进程挂在 kill-on-close Job 里（processguard_windows.go），
-// 自己拉起自己会随 Job 陪葬。这里生成一个一次性的 PowerShell 脚本（文本文件，
-// 不依赖主程序健康），以 CREATE_BREAKAWAY_FROM_JOB 逃出 Job 启动：等旧 PID
-// 退出 → 按交换时记录的启动参数拉起新 exe → 脚本自身退出。不删 .old：留给
-// 新版启动自清（万一新版起不来，.old 还在可手工救回）。
+// 自己拉起自己会随 Job 陪葬。这里经 WMI 把一个一次性 cmd 接力命令托管到 Job 外
+// （WmiPrvSE 系统服务代为创建，与主进程的 Job 无任何从属关系）：等约 5 秒旧进程
+// 退出 → start 拉起新 exe → 追加 restart.log。不删 .old：留给新版启动自清（万一
+// 新版起不来，.old 还在可手工救回）。
+//
+// 2026-10-15 实测教训（安装机 WMI→powershell 全链路排查，三层雷）：
+//  1. WMI 派生进程不认裸名 powershell.exe（System32 根目录下没有它），必须全路径；
+//  2. WMI 派生进程的工作目录是 C:\Windows\System32，相对路径脚本/日志全部失配；
+//  3. 部分机器（安全软件/反作弊驱动）直接拦 WMI 派生进程执行 .ps1 文件与
+//     cmd→powershell 链（"拒绝访问"），但 -Command 内联与 cmd 本体全程可用。
+// 结论：接力不落地脚本文件、不依赖 powershell，纯 cmd 命令行内联（已在本机
+// 7/7 实测通过，含中文路径与 D 盘安装目录）；powershell 只当 WMI 调用器（主进程
+// 上下文里执行，不受上述拦截影响）。等待用 ping 计时（timeout 在无控制台环境
+// 有翻车史）。WMI 侧带 Win32_ProcessStartup.ShowWindow=0 隐藏接力窗口。
 
 import (
 	"fmt"
@@ -20,36 +30,40 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// spawnRestartHelper 生成 restart.ps1 并启动接力。首选经 WMI 托管到 Job 外
-// （WmiPrvSE 系统服务代为创建，与主进程的 kill-on-close Job 无任何从属关系，
-// 主进程退出清场杀不到接力者）；WMI 不可用才回退 CREATE_BREAKAWAY_FROM_JOB
-// 逃逸——该路径在部分环境（嵌套 Job/权限差异）会静默失败，回退实例又在
-// Job 里随主进程陪葬，表现为用户点了「立即重启」只关不启（2026-10-14 案例）。
-// 调用方 powershell 允许随 Job 陪葬：WMI 受理即成（本函数同步等它返回，
-// 应答在受理确认之后才发、进程才退，无竞态）。
+// absUpdatePath 把 DataDir 相对路径（安装版默认 "data"）解析成绝对路径——WMI 派生
+// 的接力进程工作目录在 System32，相对路径在那边必然失配。
+func absUpdatePath(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if ap, err := filepath.Abs(p); err == nil {
+		return ap
+	}
+	return p
+}
+
+// spawnRestartHelper 生成接力命令并经 WMI 托管启动。调用方（powershell）允许随
+// Job 陪葬：WMI 受理即成（本函数同步等它返回，应答在受理确认之后才发、进程才
+// 退，无竞态）。WMI 不可用回退 CREATE_BREAKAWAY_FROM_JOB 逃逸。
 func spawnRestartHelper(a *App, st updateBlockState) error {
 	exePath := currentExePath()
 	if exePath == "" {
 		return fmt.Errorf("取不到本程序路径")
 	}
+	exePath = absUpdatePath(exePath)
 	argv := st.EngineArgv
 	if len(argv) == 0 {
 		argv = os.Args
 	}
-	updDir := filepath.Join(a.Cfg.DataDir, "updates")
-	script := filepath.Join(updDir, "restart.ps1")
-	logPath := filepath.Join(updDir, "restart.log")
-	// UTF-8 BOM 必须带：Windows PowerShell 5.1 对无 BOM 的 .ps1 按 ANSI/GBK 解
-	// 码，脚本里的中文路径会变乱码，Start-Process 静默失败（接力断链）
-	if err := writeFileAtomic(script, []byte("\ufeff"+restartScript(os.Getpid(), exePath, argv[1:], logPath))); err != nil {
-		return err
-	}
-	relayCmd := `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "` + script + `"`
-	// 首选 WMI：Invoke-CimMethod 让 WmiPrvSE 创建接力进程（Job 外）。同步等
-	// 待受理结果——失败时才走 breakaway，两条路都留 desktop.log 现场记录。
+	logPath := absUpdatePath(filepath.Join(a.Cfg.DataDir, "updates", "restart.log"))
+	relayCmd := restartRelayCmd(exePath, argv[1:], logPath)
+	// WMI 调用器：在主进程上下文里跑 powershell（正常环境，不受 WMI 派生拦截影
+	// 响）。ShowWindow=0 让接力窗口不闪；Create 返回非 0 视为失败好走回退。
 	caller := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-		"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "+
-			restartPSQuote(relayCmd)+" }; if ($r.ReturnValue -ne 0) { exit 1 }")
+		"$si = ([wmiclass]'Win32_ProcessStartup').CreateInstance(); $si.ShowWindow = 0; "+
+			"$r = ([wmiclass]'Win32_Process').Create("+restartPSQuote(relayCmd)+", "+
+			restartPSQuote(filepath.Dir(exePath))+", $si); "+
+			"if ($r.ReturnValue -ne 0) { exit 1 }")
 	caller.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := caller.Run(); err == nil {
 		log.Printf("[更新] 重启接力已交 WMI 托管（旧进程退出后自动拉起新版，过程记于 %s）", logPath)
@@ -58,6 +72,35 @@ func spawnRestartHelper(a *App, st updateBlockState) error {
 		log.Printf("[更新] WMI 托管失败（%v），回退 breakaway 接力", err)
 	}
 	return createBreakawayProcess(relayCmd)
+}
+
+// restartRelayCmd 拼一次性接力命令：ping 计时约 5 秒（等旧进程退出）→ start 拉起
+// 新版 → 全程留痕 restart.log。start 首个引号参数是窗口标题，必须给空串占位。
+// 路径全部绝对且带引号（含中文没问题，命令行全程 UTF-16）；日志行保持 ASCII，
+// 避免 cmd 代码页把中文写成乱码。
+func restartRelayCmd(exePath string, args []string, logPath string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		if strings.ContainsAny(a, " \t\"") {
+			quoted[i] = `"` + strings.ReplaceAll(a, `"`, `""`) + `"`
+		} else {
+			quoted[i] = a
+		}
+	}
+	argLine := strings.Join(quoted, " ")
+	dir := filepath.Dir(exePath)
+	wait := `ping -n 6 127.0.0.1 >nul`
+	mark := `echo [%date% %time%] relay: launching ` + exePath + ` >>"` + logPath + `" 2>&1`
+	start := `start "" /d "` + dir + `" "` + exePath + `"`
+	if argLine != "" {
+		start += " " + argLine
+	}
+	start += ` >>"` + logPath + `" 2>&1`
+	cmdExe := os.Getenv("SystemRoot") + `\System32\cmd.exe`
+	if os.Getenv("SystemRoot") == "" {
+		cmdExe = "cmd.exe"
+	}
+	return cmdExe + ` /c ` + wait + ` & ` + mark + ` & ` + start
 }
 
 // createBreakawayProcess 以 CREATE_BREAKAWAY_FROM_JOB 启动（Job 已配
@@ -86,51 +129,3 @@ func createBreakawayProcess(cmdLine string) error {
 
 // restartPSQuote PowerShell 单引号字面量（内部单引号加倍）。
 func restartPSQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-
-// restartScript 生成一次性重启脚本；启动参数按 Windows 命令行习惯加引号。
-func restartScript(oldPid int, exePath string, args []string, logPath string) string {
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		if strings.ContainsAny(a, " \t\"") {
-			quoted[i] = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
-		} else {
-			quoted[i] = a
-		}
-	}
-	argLine := strings.Join(quoted, " ")
-	return fmt.Sprintf(`# 坚祥数字助理 更新重启助手（立即重启时由主程序生成，一次性脚本）
-# 等旧进程退出（最多 60s）→ 启动新版（文件名未变、内容已换）→ 脚本退出。
-# 不删 .old：留给新版启动自清；新版若起不来可手工把 .old 改回原名救回。
-# 每步追加 restart.log：接力断链必须留下现场——Start-Process 失败在
-# SilentlyContinue 下是静默的，没日志就没法查（本文件曾栽过：中文路径无 BOM
-# 乱码导致启动静默失败，加了 BOM；这次把可观测性补全，再有断链一看便知）。
-$ErrorActionPreference = 'SilentlyContinue'
-$OldPid = %d
-$Exe = %s
-$ArgLine = %s
-$Log = %s
-function Log($m) { Add-Content -Path $Log -Value ("{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m) -Encoding UTF8 }
-Log "助手启动：等待旧进程 $OldPid 退出（最长 60s）"
-$p = Get-Process -Id $OldPid -ErrorAction SilentlyContinue
-if ($p) { $p | Wait-Process -Timeout 60 }
-Start-Sleep -Milliseconds 600
-Log "旧进程已退出，启动新版：$Exe $ArgLine"
-$ok = $false
-try {
-  # 空参数时不能带 -ArgumentList ''——那会把一个空字符串参数塞给新进程
-  if ($ArgLine -ne '') {
-    Start-Process -FilePath $Exe -ArgumentList $ArgLine -WorkingDirectory (Split-Path -Parent $Exe) -ErrorAction Stop
-  } else {
-    Start-Process -FilePath $Exe -WorkingDirectory (Split-Path -Parent $Exe) -ErrorAction Stop
-  }
-  $ok = $true
-} catch { Log ("Start-Process 失败: " + $_.Exception.Message) }
-if (-not $ok) {
-  Log "改走 cmd start 兜底"
-  cmd /c start "" $Exe
-}
-Start-Sleep -Milliseconds 1500
-$running = @(Get-Process -Name (Split-Path -Leaf $Exe) -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe })
-Log ("收尾：新版进程在跑=" + ($running.Count -gt 0) + "，Start-Path 成功=" + $ok)
-`, oldPid, restartPSQuote(exePath), restartPSQuote(argLine), restartPSQuote(logPath))
-}

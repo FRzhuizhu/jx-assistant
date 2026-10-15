@@ -20,11 +20,16 @@ import (
 // 被派发的会话不会被真的跑起来（测试只关心派发这个动作本身落下的东西）。
 func newDispatchTestApp(t *testing.T) (*App, *SessionMeta) {
 	t.Helper()
-	a := newCompactTestApp(t)
+	a := newCompactTestApp(t) // Store 与 DataDir 都在临时目录（见其注释）
 	a.initRuntime()
 	a.sessLocks = map[string]*sync.Mutex{} // NewApp 才有的一份运行态（sessLock 用），测试里补上
 	a.Cfg.Workspace = t.TempDir()
 	a.Cfg.Providers = nil
+	// 防回归闸门：登记库经 DataDir 落盘，DataDir 没隔离就会污染仓库真实
+	// data/remote_workspaces.json——直接炸出来，不静默写脏用户数据
+	if !filepath.IsAbs(a.Cfg.DataDir) {
+		t.Fatalf("测试 App 的 DataDir 未隔离（%q），会污染真实登记库", a.Cfg.DataDir)
+	}
 	main := &SessionMeta{ID: "main", Title: "数字助理主对话", Mode: "assistant",
 		Workspace: a.Cfg.Workspace, CreatedAt: now(), UpdatedAt: now()}
 	if err := a.Store.Create(main); err != nil {

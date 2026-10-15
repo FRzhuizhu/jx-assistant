@@ -17,6 +17,9 @@ import (
 )
 
 // newPermTestApp 建一个带临时库的 App（测试用完即删，只落本目录）。
+// DataDir 必须一并指向测试目录：DefaultConfig 的 "data" 是相对路径，不覆盖
+// 的话任何经 DataDir 的东西（如远程工作区登记库 remote_workspaces.json）
+// 会读写仓库真实 data/ 目录——测试结果随用户真实数据漂移，还会污染它。
 func newPermTestApp(t *testing.T, dir string) *App {
 	t.Helper()
 	os.RemoveAll(dir)
@@ -25,7 +28,9 @@ func newPermTestApp(t *testing.T, dir string) *App {
 		t.Fatalf("建库失败: %v", err)
 	}
 	t.Cleanup(func() { _ = s.db.Close(); os.RemoveAll(dir) })
-	return &App{Cfg: DefaultConfig(), Store: s}
+	cfg := DefaultConfig()
+	cfg.DataDir = dir
+	return &App{Cfg: cfg, Store: s}
 }
 
 func mustCreateSession(t *testing.T, a *App, sess *SessionMeta) {

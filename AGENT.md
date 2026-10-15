@@ -14,7 +14,7 @@ go build -o jx-assistant.exe .
 .\jx-assistant.exe -port 9000 -noopen
 .\jx-assistant.exe -desktop   # 桌面模式：系统 WebView2 开原生窗口（不开浏览器）
 .\jx-assistant.exe -webdir web   # 开发模式：前端从磁盘读取，改 web/ 后刷新浏览器即生效
-go test .                         # 单测（权限引擎 / 压缩管线 / 摘要折叠）
+go test -run TestXxx .             # 单测（只跑自己改动相关的，别全量——见「多 AI 并行开发」）
 ```
 
 首次使用：左下角「设置」中填入 API Key；`baseURL` 兼容 OpenAI chat-completions
@@ -63,13 +63,15 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
    或影响面拿不准时，先把方案讲清楚再继续。
 3. **执行**：小步前进，每完成一个可验证的小步骤就 `go build` 一次，
    保证随时可回退。
-4. **测试验证**：`go build` 与 `go test .` 必须通过；前端改动要实际打开
-   页面看一眼（布局、交互、组件/插件注入是否正常）——完成标准是"看起来
-   对"，不是"编译通过"。测试数据与辅助脚本只落本目录（`data/` 已
-   gitignore，用完即删），禁止在系统临时目录或其他位置留测试文件。
-   注：根目录的 Go 单测已搬到 `.回收站/`（点开头，Go 工具链自动忽略），
-   所以 `go test .` 现在没有测试文件可跑；搬运原因与搬回命令见
-   `.回收站/说明.md`。
+4. **测试验证**：`go build` 必须通过；测试只做**针对性运行**——只跑自己
+   本次改动相关的测试（`go test -run TestXxx .`），刚写的测试文件当然要
+   跑；**除非用户明确指定，否则不跑全量测试**（`go test ./...` 禁自作主张
+   执行）。原因：同一台电脑经常有多个 AI 同时改代码，全量测试经常因别人
+   改到一半而跑不起来，失败也不说明你的改动有问题；全量测试只在正式出包
+   前由用户指定执行，中途小更新没有必要。前端改动要实际打开页面看一眼
+   （布局、交互、组件/插件注入是否正常）——完成标准是"看起来对"，不是
+   "编译通过"。测试数据与辅助脚本只落本目录（`data/` 已 gitignore，用完
+   即删），禁止在系统临时目录或其他位置留测试文件。
 5. **提交**：测试通过后必须提交——没有 commit 的改动等同于没做完。只提交
    本次任务自己的改动（明确 add 涉及的文件，禁止 `git add -A` 一把梭）；
    一次提交对应一件事，提交信息一句中文说清做了什么；提交后推送到远程
@@ -85,6 +87,10 @@ go test .                         # 单测（权限引擎 / 压缩管线 / 摘�
   跑的工作给停掉。
 - **构建/运行突然失败，先怀疑"别人改到一半"**：失败原因指向正在变动的文件
   时不要急着"修复"，等约 5 分钟再看——多半已能正常启动，或已被对方启动。
+- **除非用户指定，否则不要运行（全量）测试**：测试文件可以写、可以运行，
+  但每个 AI 只应运行自己刚写出来的、与本次改动相关的测试；全量测试只在
+  正式版本出包前由用户指定时才跑——多 AI 同时修改时全量经常跑不起来，
+  中途小更新没有必要。
 
 ### 代码约定与常见陷阱
 
@@ -508,6 +514,15 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   拒连（防中间人）；会话内绑定指纹，换主机需重新测试保存。
 - 认证支持无口令私钥文件与密码；连接按会话缓存 + keepalive，断线自动重拨。
 - 数字助理派发的子任务自动继承主对话的远程工作区。
+- **二号工作区＝派发远程**（"本地主对话 + 远程子对话"的混合形态）：dispatch_sub /
+  dispatch_task 的 `remote_workspace` 参数（取值＝登记库 display，`resolveDispatchRemote`
+  返回副本、凭据不出服务端）让子对话/工作任务挂到指定远程工作区——与 `workspace`
+  互斥，缺省沿用继承。登记库非空时环境快照出现「可派发远程工作区」公告行
+  （`dispatchRemoteLine`，追加式差分、缓存友好；aux 模式不给）。设计取舍：ZCode 与
+  DSH 均为"一个会话一个工作区"（ZCode 多工作区＝多 Tab 各自会话；DSH workspace 对
+  模型不可见），同会话双工作区（文件工具按参数选边）无参考实现且要动权限围栏/
+  快照侧别/沙箱路由六层，留作二期；子代理路线复用已验证的纯远程会话链路，前缀
+  缓存除工具 schema 升级一次性断外不受影响。
 - **弹窗开合的两个坑（已修，别再犯）**：`openPopover` 是切换语义（已开着就收起），
   内容高度变化后重对齐位置要用 `reposPopover`（第一步→第二步曾误用 openPopover
   导致弹窗自关、远程工作区「怎么都建不起来」）；文档级「点外收起」的锚点豁免
@@ -594,7 +609,10 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   完全访问），右列能力多选（允许工作区外执行命令 / 操作浏览器 / 操作电脑）。
   切到完全访问时三项能力联动勾选并置灰（不可单独关闭）。新建会话默认权限是
   工作区内读写，因此**新建对话默认就勾着「操作浏览器」**（显式取消后不被覆盖；
-  从完全访问切回工作区内读写时会自动补回）。
+  从完全访问切回工作区内读写时会自动补回）。**例外：数字经理主对话（新装机
+  首启自动创建的 `mode=assistant` 会话）默认完全访问**——派发「只能同等或降权」，
+  总控自己站最高档，派出去的任务才有完整档位空间（任务默认仍是工作区内读写；
+  见 `createSession` 的权限兜底）。已建主对话的权限存在会话库里，不追改。
 - **待决定的浮窗**（审批 / 助手提问 / 计划审批，渲染见 `app-chat.js` 的
   「待用户决定的浮窗」一节）：**按「这张卡属于谁」分两处落**，各司其职：
   1) **本对话的卡 → 输入框上方**（主对话 `#ask-bar` / 右栏子对话 `#sub-ask-bar`）：
@@ -836,9 +854,9 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 | 模式 | 说明 | 工具 |
 |---|---|---|
-| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + **call_api（与前端同接口的通用直调，见 callapi.go）** + **publish_webpage（把工作区网页/文件夹发布到服务端托管平台换网址，见 websites.go；服务端半边是 jxaiserver 的 sites.go，协议改动需双侧同步）** + 历史查询 |
+| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch/**web_search（联网搜索，经服务端搜索网关，见 websearch.go；服务端半边是 jxaiserver 的 search.go，协议改动需双侧同步）** + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + **call_api（与前端同接口的通用直调，见 callapi.go）** + **publish_webpage（把工作区网页/文件夹发布到服务端托管平台换网址，见 websites.go；服务端半边是 jxaiserver 的 sites.go，协议改动需双侧同步）** + 历史查询 |
 | `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（补需求，可选 permission 只能同等或降权）/ stop_session（按用户指示分级停止：协作取消→3 秒未收口自动强制终结，与人工停止按钮同一停止函数、仅触发者不同）/ **call_api（与前端同接口的通用直调，见 callapi.go）** + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
-| `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch + 历史查询 |
+| `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch/web_search + 历史查询 |
 | `skill-create` | 创建技能：把「怎么做」沉淀成给后续 AI 照做的 SKILL.md 教程——用户点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **register_skill（注册/覆盖技能）**；演示录制归用户直控（界面按钮经 `/api/demo-record/*`，材料以【演示记录】通知进对话） |
 
 （各模式共有的常驻工具不再逐行列出：`read_skill` 对**所有模式**注册，
@@ -1388,6 +1406,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |
 | `remotelist.go` | 已登记远程工作区（工作目录面板的远程条目）：DPAPI 加密存储、凭据回填、清单/登记/忘记 API |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
+| `websearch.go` | 联网搜索工具 web_search 的客户端半边：调 jxai-server 的 /api/search 网关（服务端持上游 key，首版上游=智谱联网搜索 MCP）；服务端地址取 searchURL，空则市场同源 |
 | `browser_ops.go` | browserTarget 操作面：browser_* 工具与面板端点的形态无关接口 |
 | `browser_host.go` | chromedp 浏览器宿主：有头独立窗口 + 网页形态的后台无头内嵌目标 |
 | `browser_panel_windows.go` | 桌面右栏原生浏览器面板：第二个 WebView2 控件 + 控件级官方 CDP 通道 + 矩形同步 |
@@ -1406,7 +1425,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `components.go` | 组件管理：扫描、开关状态、组件资产服务、`Rescan`（市场装卸后重扫） |
 | `update.go` | 更新检查：定期拉发布源（updateURL，Gitea releases/latest 或 jxai-server 的 /updates/latest，两者同格式），tag_name 比当前新就经事件流推横幅；versionCompare 双体系（日期+V序号 恒新于 旧点分号） |
 | `update_blocks.go` | 分块静默更新：release 附件带 blocks.json（快照式清单=每块当前应是什么版本）就走静默路——engine 块趁旧进程活着原地换 exe（改名交换，重启生效，`POST /api/update/restart` 用 PowerShell 助手逃逸 Job 接力重启）、组件块杀 worker 后整目录替换热生效；落后多版一步对齐每块最新，没有 blocks.json 的旧源回退整包横幅；`config.updateMode`（auto/manual） |
-| `update_restart_windows.go` | 立即重启助手：生成带 UTF-8 BOM 的 restart.ps1（无 BOM 会被 PowerShell 5.1 按 GBK 读、中文路径乱码断链），CREATE_BREAKAWAY_FROM_JOB 逃出 kill-on-close Job 等旧进程退出后拉起新 exe |
+| `update_restart_windows.go` | 立即重启助手：经 WMI 托管一条纯 cmd 内联接力命令（不落地脚本文件——2026-10-15 实测部分机器拦 WMI 派生进程执行 .ps1 与 cmd→powershell 链；WMI 派生进程工作目录在 System32、不认裸名 powershell，一切路径必须绝对）到 Job 外，等约 5 秒拉起新 exe 并留痕 restart.log，ShowWindow=0 不闪窗；WMI 失败回退 CREATE_BREAKAWAY_FROM_JOB |
 | `wizard.go` | 公司接入向导后端：POST /api/wizard/discover（UDP 广播找同公司服务端——浏览器发不了 UDP 故在 Go 侧做，255.255.255.255+子网定向广播、公司名=口令、registryURL 查询兜底）+ POST /api/wizard/connect（验证 healthz → POST /provision → 内部提供方 company-internal 置顶即默认、marketURL/updateURL/wizardDone 一键落位；重跑替换不堆积）；config 增 wizardDone/registryURL |
 | `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问）。对服务端的请求一律带 `X-Jxai-User` 头（值=发布者姓名，没设不带）——服务端记条目归属 owner 与下载/安装明细；安装成功后上报 `POST /api/market/report-install` |
 | `market_publish.go` / `market_publish_test.go` / `market_publish_meta_test.go` | 市场·技能发布（**先装后传**）：只能发布已装到 `技能/user/` 的技能——后端从安装目录现场打 zip、走 inspectSkillZip/rewriteSkillZip 校验链（恰好一处 SKILL.md、内容体检、结构规整）、元信息按回退链补全（id 候选含中文→英文词表 `skillIDFromChinese`，词表只在 Go 一份），流式转发服务端用户端点 `/api/market/publish`；`GET /api/market/publish-meta` 给弹层预填；下架走 `/api/market/unpublish`——**归属校验与「挪进服务端回收站」都在服务端**，客户端只发消息（本地姓名比对只是按钮显隐的 UX） |

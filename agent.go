@@ -429,6 +429,14 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		b.WriteString("- 操作系统：" + a.osDescription() + "\n")
 		b.WriteString("- 工作区目录：" + wsOr(a, sess) + "\n")
 	}
+	// 可派发远程工作区（登记库非空才出现；aux 无派发工具不给）：模型的
+	// "二号工作区"入口——本地会话也能派子对话/子任务去远程干活。登记库增删
+	// 只影响快照尾部（追加式差分），前缀缓存不受影响。
+	if sess.Mode != "aux" {
+		if line := a.dispatchRemoteLine(); line != "" {
+			b.WriteString(line + "\n")
+		}
+	}
 	// 可用模型清单（易变的配置状态归环境快照正管）：派发工具的 model 参数要的
 	// 是「渠道+模型」完整格式，清单在这里一次列全、不截断——模型不必猜哪个渠道
 	// 有哪个模型（猜错只会得到「无可用渠道」这类看不懂的报错）。渠道增删或模型

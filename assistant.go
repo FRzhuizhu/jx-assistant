@@ -117,7 +117,8 @@ func dispatchTaskTool() Tool {
 			objSchema(map[string]any{
 				"task":        strProp("自足的任务描述：目标与已知背景（涉及的文件/目录给绝对路径）——工作任务看不到本对话的任何记录；不要替它列步骤清单和验收矩阵"),
 				"title":       strProp("给新任务起的标题，可省略"),
-				"workspace":   strProp("可选：工作任务的工作目录（绝对路径），默认沿用当前工作区"),
+				"workspace":   strProp("可选：工作任务的工作目录（绝对路径），默认沿用当前工作区；与 remote_workspace 互斥"),
+				"remote_workspace": strProp("可选：工作任务使用的 SSH 远程工作区（本对话的二号工作区），取值照抄环境快照「可派发远程工作区」行里的完整地址（user@host:dir）。与 workspace 互斥；不填＝沿用当前环境（本会话挂了远程则继承同一远程）"),
 				"model":       strProp("可选：任务会话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
 				"mode":        strProp("可选：工作模式，取值与人工新建会话的模式下拉同一份清单（" + chatModesDoc() + "）；按任务性质选——办公文档/表格/资料选 office，改代码/编译排障选 coding，用户不懂编程的编程需求选 beginner-coding，把做法沉淀成技能教程选 skill-create。不填＝通用工作任务（task，与改动前一致）"),
 				"plan_mode":   boolProp("可选：true＝让新任务以计划模式启动（与人工建会话勾选「计划模式」一致）：它先只读调研、提交计划等用户批准后才动手；适合改动面大、跨多文件、有风险的任务"),
@@ -325,7 +326,7 @@ func normalizeDispatchAttachments(in []string) []string {
 // dispatchTaskNote 组织这次派发回给数字助理的一句补充说明（模式、计划模式、
 // 附件、权限档——只讲与默认不同的点）。工具结果里带上它，模型才知道这次派发
 // 实际按什么档跑起来的；都取默认值时返回空串，不啰嗦。
-func dispatchTaskNote(mode, perm, reqPerm string, planMode bool, attached int) string {
+func dispatchTaskNote(mode, perm, reqPerm string, planMode bool, attached int, remoteDisplay string) string {
 	var parts []string
 	if m := chatModeByValue(mode); m != nil {
 		parts = append(parts, "模式：「"+m.Label+"」（"+mode+"）")
@@ -340,6 +341,9 @@ func dispatchTaskNote(mode, perm, reqPerm string, planMode bool, attached int) s
 		parts = append(parts, "权限档：「"+permModeLabel(perm)+"」（"+perm+"）")
 	} else if perm != permWorkspace {
 		parts = append(parts, "权限档：「"+permModeLabel(perm)+"」（"+perm+"，随本会话权限，只降不升）")
+	}
+	if remoteDisplay != "" {
+		parts = append(parts, "在 SSH 远程工作区 "+remoteDisplay+" 中工作（文件走 SFTP、命令经 SSH）")
 	}
 	if len(parts) == 0 {
 		return ""
@@ -359,7 +363,8 @@ func (a *App) dispatchSubTool() Tool {
 				"task":       strProp("完整子任务描述。未继承上下文的专家（如「标准子对话」）看不到本对话记录，task 必须自带全部上下文（目标、验收标准、涉及目录）；继承上下文的专家（如「继承上下文子对话」）能看到此前的聊天记录，task 只用写「接下来要做什么」"),
 				"expert":     strProp("子对话专家名称：不传等同「标准子对话」；内置另有「继承上下文子对话」；自定义专家的名字与用途先用 list_experts 查询，必须与返回的清单逐字一致"),
 				"title":      strProp("给子对话起的标题，可省略"),
-				"workspace":  strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区"),
+				"workspace":  strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区；与 remote_workspace 互斥"),
+				"remote_workspace": strProp("可选：子对话使用的 SSH 远程工作区（本对话的二号工作区），取值照抄环境快照「可派发远程工作区」行里的完整地址（user@host:dir）。与 workspace 互斥；不填＝沿用当前环境（本会话挂了远程则继承同一远程）"),
 				"model":      strProp("可选：覆盖专家预设的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填用预设默认模型或全局默认"),
 				"permission": strProp("可选：子对话的权限档，取值 read-only（只读）/ workspace-write（工作区内读写）/ full（完全访问）。只能**同等或降权**——不得高于本会话（数字助理）当前权限，超出即拒绝并报错（不静默钳制）。不填＝工作区内读写（本会话权限更窄时取本会话权限）"),
 			}, "task")),
@@ -375,18 +380,27 @@ func (a *App) dispatchSubTool() Tool {
 // 子会话记下专家名（SessionMeta.Expert），提示词构建时按名解析追加。
 func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Task       string `json:"task"`
-		Expert     string `json:"expert"`
-		Title      string `json:"title"`
-		Workspace  string `json:"workspace"`
-		Model      string `json:"model"`
-		Permission string `json:"permission"`
+		Task           string `json:"task"`
+		Expert         string `json:"expert"`
+		Title          string `json:"title"`
+		Workspace      string `json:"workspace"`
+		RemoteWorkspace string `json:"remote_workspace"`
+		Model          string `json:"model"`
+		Permission     string `json:"permission"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(p.Task) == "" {
 		return "", fmt.Errorf("task 不能为空")
+	}
+	// 二号工作区参数（快速失败：互斥与登记校验都在建会话之前）
+	if strings.TrimSpace(p.Workspace) != "" && strings.TrimSpace(p.RemoteWorkspace) != "" {
+		return "", fmt.Errorf("workspace 与 remote_workspace 互斥：要本地目录用 workspace，要远程工作区用 remote_workspace")
+	}
+	dispRemote, err := t.app.resolveDispatchRemote(p.RemoteWorkspace)
+	if err != nil {
+		return "", err
 	}
 	// 工具按模式分发，但人工把会话克隆成子对话后模式照旧、工具还在手里，
 	// 这里硬拦，保证子对话只有一级
@@ -425,7 +439,9 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	ws := t.workspace()
-	if strings.TrimSpace(p.Workspace) != "" {
+	if dispRemote != nil {
+		ws = "" // 二号工作区：环境由 remote_workspace 决定，不占本地 ws 字段
+	} else if strings.TrimSpace(p.Workspace) != "" {
 		ws = p.Workspace
 	}
 	title := strings.TrimSpace(p.Title)
@@ -440,7 +456,10 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 		Provider:   provider, Model: mdl,
 		CopyHistory: ex.InheritContext, // 预设要继承时复制本会话完整历史（task 排在继承块之后）
 	}
-	if t.sess.Remote != nil {
+	switch {
+	case dispRemote != nil:
+		params.Remote = dispRemote // 显式二号工作区优先于父会话继承
+	case t.sess.Remote != nil:
 		r := *t.sess.Remote
 		params.Remote = &r // 远程工作区继承：子对话默认同一远程环境
 	}
@@ -454,6 +473,9 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	var hints []string
 	if strings.TrimSpace(p.Permission) != "" {
 		hints = append(hints, "权限档：「"+permModeLabel(perm)+"」（"+perm+"，只能同等或降权）")
+	}
+	if dispRemote != nil {
+		hints = append(hints, "子对话在 SSH 远程工作区 "+dispRemote.Display()+" 中工作（文件走 SFTP、命令经 SSH）")
 	}
 	if strings.TrimSpace(ex.Prompt) != "" {
 		hints = append(hints, fmt.Sprintf("已按专家预设「%s」派发，追加提示词已生效", sub.Expert))
@@ -474,6 +496,7 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		Task        string   `json:"task"`
 		Title       string   `json:"title"`
 		Workspace   string   `json:"workspace"`
+		RemoteWorkspace string `json:"remote_workspace"`
 		Model       string   `json:"model"`
 		Mode        string   `json:"mode"`
 		PlanMode    bool     `json:"plan_mode"`
@@ -491,6 +514,14 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if t.sess.ParentID != "" {
 		return "", fmt.Errorf("子对话不能再派发子对话（本会话已是子对话，只有一级）；请把需求直接做掉，或让用户在主对话里派发")
 	}
+	// 二号工作区参数（快速失败：互斥与登记校验都在建会话之前）
+	if strings.TrimSpace(p.Workspace) != "" && strings.TrimSpace(p.RemoteWorkspace) != "" {
+		return "", fmt.Errorf("workspace 与 remote_workspace 互斥：要本地目录用 workspace，要远程工作区用 remote_workspace")
+	}
+	dispRemote, err := t.app.resolveDispatchRemote(p.RemoteWorkspace)
+	if err != nil {
+		return "", err
+	}
 	// 可选参数先全部解析校验（快速失败）：模式 / 权限 / 模型 / 附件都可能被拒，
 	// 拒绝必须发生在建出半个会话之前
 	mode, err := resolveDispatchMode(p.Mode)
@@ -506,8 +537,8 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	attPaths := normalizeDispatchAttachments(p.Attachments)
-	if len(attPaths) > 0 && t.sess.Remote != nil {
-		return "", fmt.Errorf("附件不能带给远程工作区的新任务（本会话挂了 SSH 远程工作区，新任务默认同环境）：本机文件路径在远程无从复制。请把 workspace 指到本地目录，或改用 send_to_session 让远程会话自己取文件")
+	if len(attPaths) > 0 && (t.sess.Remote != nil || dispRemote != nil) {
+		return "", fmt.Errorf("附件不能带给远程工作区的新任务（本会话挂了远程或 remote_workspace 指定了远程）：本机文件路径在远程无从复制。请去掉附件，或让远程会话自己取文件")
 	}
 	for _, src := range attPaths {
 		if _, _, _, err := resolveUploadSource(src); err != nil {
@@ -515,7 +546,9 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		}
 	}
 	ws := t.workspace()
-	if strings.TrimSpace(p.Workspace) != "" {
+	if dispRemote != nil {
+		ws = "" // 二号工作区：环境由 remote_workspace 决定，不占本地 ws 字段
+	} else if strings.TrimSpace(p.Workspace) != "" {
 		ws = p.Workspace
 	}
 	title := strings.TrimSpace(p.Title)
@@ -530,7 +563,10 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		DispatchedBy: t.sess.ID,  // 派发的是顶层工作任务（左侧列表可见）；回报链走 dispatched_by，不走 parent_id
 		Provider:     provider, Model: mdl,
 	}
-	if t.sess.Remote != nil {
+	switch {
+	case dispRemote != nil:
+		params.Remote = dispRemote // 显式二号工作区优先于父会话继承
+	case t.sess.Remote != nil:
 		r := *t.sess.Remote
 		params.Remote = &r // 远程工作区继承：新任务默认同一远程环境
 	}
@@ -556,7 +592,11 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	// 工作任务永远不带上下文：像用户发消息一样，只收到一段自足的任务描述，
 	// 与派发方的聊天记录完全隔离（要上下文的场景用 dispatch_sub 的继承模式）
 	// 需求正文（【数字助理派发】+ task）由 deliverSub 走统一投递落库
-	return t.deliverSub(sub, "【数字助理派发】\n\n"+p.Task, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached)), nil
+	remoteDisp := ""
+	if dispRemote != nil {
+		remoteDisp = dispRemote.Display()
+	}
+	return t.deliverSub(sub, "【数字助理派发】\n\n"+p.Task, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp)), nil
 }
 func sendToSessionTool() Tool {
 	return Tool{

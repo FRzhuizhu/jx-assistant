@@ -13,6 +13,8 @@ import (
 )
 
 // newCompactTestApp 建一个带临时库的 App（测试用完即删，只落本目录）。
+// DataDir 一并指向临时目录：DefaultConfig 的 "data" 是相对路径，不覆盖的话
+// 经 DataDir 的东西（如远程工作区登记库）会读写仓库真实 data/ 目录。
 func newCompactTestApp(t *testing.T) *App {
 	t.Helper()
 	dir := t.TempDir()
@@ -21,7 +23,9 @@ func newCompactTestApp(t *testing.T) *App {
 		t.Fatalf("建库失败: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return &App{Cfg: DefaultConfig(), Store: s}
+	cfg := DefaultConfig()
+	cfg.DataDir = dir
+	return &App{Cfg: cfg, Store: s}
 }
 
 // seedRound 落一轮对话：用户输入 → 带工具调用的助手行（带思考）→ 工具结果 →

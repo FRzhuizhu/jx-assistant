@@ -105,6 +105,20 @@ func currentExePath() string {
 	return p
 }
 
+// runningFromOldExe 判断当前进程是不是从交换残名（xxx.exe.old 或换名让路产生的
+// xxx.exe.old-<unix>）启动的——这是「内存版本旧于磁盘正位文件」唯一合法场景；
+// 否则说明交换被外部覆盖，pending 已悬空（FinalizeEngineSwap 据此清账）。
+func runningFromOldExe(exePath string) bool {
+	base := filepath.Base(exePath)
+	if i := strings.Index(base, ".old"); i > 0 {
+		rest := base[i+len(".old"):]
+		if rest == "" || (strings.HasPrefix(rest, "-") && strings.Trim(rest[1:], "0123456789") == "") {
+			return true
+		}
+	}
+	return false
+}
+
 // findReleaseAssetURL 按附件名找下载直链（找不到返回空串）。
 func findReleaseAssetURL(assets []releaseAsset, name, sourceURL string) string {
 	for _, a := range assets {
@@ -308,11 +322,20 @@ func (a *App) FinalizeEngineSwap() {
 			log.Printf("[更新] 静默更新已生效：当前版本 %s（%s 完成交换）", appVersion, st.SwappedAt)
 		case versionCompare(st.EnginePending, appVersion) < 0:
 			// 本机已比 pending 新（完整包覆盖安装等）：清账即可
-		default:
+		case runningFromOldExe(exePath):
 			// 磁盘已换、内存仍旧（从 .old 等异常路径启动）：保留 pending，
 			// 重启后自然生效
 			a.syncPendingToState()
 			return
+		default:
+			// 正位 exe 在跑却比 pending 旧：交换后被外部覆盖了（典型：静默换好
+			// 新版后又跑了旧版完整安装包，2026-10-15 案例——安装包盖掉已换新的
+			// exe，pending 却还在，横幅永远提示重启到新版本、点了也只会拉起旧
+			// 版）。清掉悬空 pending 并立即重新检查更新，让静默更新重新换一次。
+			log.Printf("[更新] 检测到待生效版本 %s 的交换已被覆盖（当前正位程序为 %s），清除悬空状态并重新检查更新", st.EnginePending, appVersion)
+			if url := a.Cfg.UpdateURL; url != "" && url != "off" {
+				go a.checkUpdateOnce(url)
+			}
 		}
 		st.EnginePending = ""
 		st.EngineArgv = nil
