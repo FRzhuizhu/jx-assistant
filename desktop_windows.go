@@ -354,6 +354,9 @@ func runDesktop(app *App, url string) error {
 		w.Navigate(url + sep + "shell=desktop")
 		// WebView2 崩溃自愈：渲染进程死亡/无响应自动刷新，浏览器进程死亡重建前端
 		attachProcessFailed(mainWebViewOf(w))
+		// 拖拽原件路径桥：页面拖入文件的真实路径只有宿主拿得到（见 dropbridge_windows.go），
+		// 交给页面登记成「路径型附件」，交付工具才能把成品送回桌面原位置。
+		attachDropBridge(mainWebViewOf(w), func(js string) { w.Dispatch(func() { w.Eval(js) }) })
 		if secs, err := strconv.Atoi(os.Getenv("JX_DESKTOP_AUTOCLOSE")); err == nil && secs > 0 {
 			// 每一轮前端都各自布防（热重启换了窗口句柄，只布防首轮会让
 			// 新窗口永远等不到关窗指令）。
@@ -372,6 +375,7 @@ func runDesktop(app *App, url string) error {
 		// 收尾前反注册崩溃事件（每轮前端换新控件，旧 handler 不能留给已销毁的环境）
 		if wv := mainWebViewOf(w); wv != nil {
 			detachProcessFailed(wv)
+			detachDropBridge(wv)
 		}
 		// Run 返回即窗口已亡：清掉句柄登记，托盘唤起/热重启投递不再指向死窗口
 		mainWndHwnd.Store(0)

@@ -584,7 +584,24 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   「文件没带进去、消息却发出去了」）；只挂附件不写字不给发（不替用户编消息）；
   换会话/新建对话/刷新即丢（暂存只在内存里）。载荷沿用原有两条路：桌面壳的本地
   会话走原生选择框采本机真实路径（该路径可作 `deliver_file` 交付目标），浏览器 /
-  手机 / 远程 / 粘贴 / 拖拽走 multipart（单文件 32MB 上限、一次最多 20 个）。
+  手机 / 远程 / 粘贴走 multipart（单文件 32MB 上限、一次最多 20 个）。
+  **拖拽另有原件路径桥**（`dropbridge_windows.go` + `app-chat.js` 的
+  `requestNativeDropPaths` / `JX.onNativeDrop`）：WebView2（Chromium）不给页面
+  文件绝对路径——实测拖入后 `File.path` 不存在、`text/uri-list` 与 `text/plain`
+  皆空、`webkitGetAsEntry().fullPath` 只有文件名，所以拖进来的文件过去只能按
+  multipart 送内容、原件路径无人登记，交付工具自然送不回原处。宿主拿得到：页面
+  把 File 对象经 `chrome.webview.postMessageWithAdditionalObjects(msg, files)`
+  发过来，宿主从 `WebMessageReceived` 的 `AdditionalObjects` 里读
+  `ICoreWebView2File.Path`（SDK 原文：obtain the path of a File dropped on
+  WebView2），再回调 `JX.onNativeDrop({batch,paths})` 把本批附件就地升级成
+  「路径型」（发送时走既有 JSON `{path}` 通路登记原件路径）。拖拽观感、悬停
+  高亮、页内 HTML5 拖拽（排队坞排序等）全不受影响；宿主侧桥挂不上（老运行时
+  没有 `AdditionalObjects` / 非 Windows）只落日志，拖拽退回 multipart，行为
+  与从前一致。交付侧对应改动在 `deliver.go` 的 `resolveUploadFor`：`upload`
+  参数改为可选——只给 `source` 时按工作区副本路径反查同一条上传记录取原件
+  位置（`findUpload` 同时认 uid / 原件路径 / 工作区副本路径），反查不到（浏览器、
+  手机、粘贴上传的成品，或新生成的文件）报可读错误并列出可用编号，绝不猜一个
+  目录去覆盖。
 - **桌面壳右键菜单**（`web/app-ctxmenu.js`，仅 `desktop-shell` 形态注册；网页/
   手机模式保留浏览器原生右键）：go-webview2 库在 `Debug=false` 时把 WebView2
   默认右键菜单与 DevTools 一并禁了，桌面壳右键原本什么都不弹——这里补自定义

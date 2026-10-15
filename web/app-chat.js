@@ -6241,26 +6241,88 @@ function stagePaths(paths, view) {
   if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
 }
 
-// 浏览器采集到的文件入列（File/Blob：发送时走 multipart）；粘贴与拖拽也走这里
+// 浏览器采集到的文件入列（File/Blob：发送时走 multipart）；粘贴与拖拽也走这里。
+// 返回本批真正入列的附件（超出上限/超大的会被跳过，调用方要按它对齐 File 对象）。
 function stageFiles(files, view) {
   view = view || uploadTarget || mainView;
   const list = attachmentsOf(view);
+  const added = [];
   let dropped = 0, tooBig = 0;
   for (const f of files) {
     if (list.length >= ATTACH_MAX_COUNT) { dropped++; continue; }
     if (f.size > ATTACH_MAX_BYTES) { tooBig++; continue; }
     const isImage = /^image\//.test(f.type || '');
-    list.push({
+    const a = {
       id: 'a' + (++attachSeq), kind: isImage ? 'image' : 'file',
       name: f.name || pasteImageName(f), size: f.size, mime: f.type || '',
       file: f, path: '', previewUrl: isImage ? URL.createObjectURL(f) : '', status: 'staged',
-    });
+    };
+    list.push(a);
+    added.push(a);
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
   if (tooBig) attachHint(view, tooBig + ' 个文件超过 ' + fmtBytes(ATTACH_MAX_BYTES) + '，没有加入；大文件请点 ＋ 用「文件上传」选（走本机路径，不受此限）', 8000);
   else if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
+  return added;
 }
+
+/* ---------- 拖拽原件路径桥（仅桌面壳 WebView2） ----------
+   WebView2 不给页面文件绝对路径（File.path 不存在、text/uri-list / text/plain
+   皆空、webkitGetAsEntry().fullPath 只有文件名——实测见 AGENT.md 界面节），所以
+   拖进来的文件过去只能按 multipart 送内容：原件路径无人登记，交付工具送不回原处。
+   宿主能拿到：页面把 File 对象经 chrome.webview.postMessageWithAdditionalObjects
+   发给宿主，宿主在 WebMessageReceived 的 AdditionalObjects 里读出
+   CoreWebView2File.Path（真实路径，见 dropbridge_windows.go），再回调
+   JX.onNativeDrop 交回来——这里把本批附件从「multipart」就地升级成「路径型」
+   （发送时走既有 JSON {path} 通路，登记原件路径）。
+   浏览器 / 手机 / 远程没有这个 API：函数直接返回，行为与从前完全一致。 */
+let dropBatchSeq = 0;
+const dropBatches = new Map(); // batch → { view, items:[{id,name}] }（等宿主回话）
+
+// 把一批拖入的 File 对象交给宿主换真实路径（batch 用于回话配对）
+function requestNativeDropPaths(files, added, view) {
+  const wv = window.chrome && window.chrome.webview;
+  if (!wv || typeof wv.postMessageWithAdditionalObjects !== 'function' || !added.length) return;
+  const batch = ++dropBatchSeq;
+  dropBatches.set(batch, { view, items: added.map((a) => ({ id: a.id, name: a.name })) });
+  if (dropBatches.size > 20) { // 没人回话（老运行时）的批次不积压
+    const oldest = dropBatches.keys().next().value;
+    dropBatches.delete(oldest);
+  }
+  try {
+    wv.postMessageWithAdditionalObjects(
+      { kind: 'jx-drop-paths', batch, names: added.map((a) => a.name) },
+      added.map((a) => a.file) // 与 added 一一对应（跳过的不进来，顺序不错位）
+    );
+  } catch (e) {
+    dropBatches.delete(batch); // 序列化失败等：保持 multipart，拖拽本身不受影响
+  }
+}
+
+// 宿主回话（宿主注入 JX.onNativeDrop({batch,names,paths})）：升级成路径型附件
+function applyNativeDropPaths(reply) {
+  const batch = reply && reply.batch;
+  const rec = batch != null ? dropBatches.get(batch) : null;
+  if (!rec) return;
+  dropBatches.delete(batch);
+  const list = attachmentsOf(rec.view);
+  const paths = (reply.paths || []);
+  let n = 0;
+  rec.items.forEach((it, i) => {
+    const p = paths[i];
+    if (!p) return; // 这一条没取到路径（非文件对象等）：保持 multipart
+    const a = list.find((x) => x.id === it.id);
+    if (!a || a.path === p) return;
+    a.path = p; // 发送时 flushAttachments 走 JSON {path} → 登记原件路径
+    n++;
+  });
+  if (n) {
+    renderAttachments(rec.view); // 卡片 title 会显示原件路径
+    jxDiag('drop:native-paths ' + n + '/' + rec.items.length);
+  }
+}
+JX.onNativeDrop = applyNativeDropPaths;
 
 // 清空附件（换会话 / 发送完毕）：缩略图的 objectURL 一并释放
 function clearAttachments(view) {
@@ -6374,7 +6436,10 @@ function setupAttachDrop(view) {
       const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
       if (!files.length) return;
       e.preventDefault();
-      stageFiles(files, view);
+      const added = stageFiles(files, view);
+      // 桌面壳：顺手把 File 对象交给宿主换真实路径（取到后升级成路径型附件，
+      // 交付工具才能把成品送回桌面原位置）；浏览器/手机没有这条桥，什么都不做。
+      requestNativeDropPaths(files, added, view);
     });
   }
   const rail = viewEl(view, 'attachments');

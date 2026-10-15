@@ -97,11 +97,11 @@ func (a *App) registerUploadPath(sess *SessionMeta, p string) (*Upload, string, 
 	}
 	var note string
 	if inWorkspace {
-		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：文件位于工作区内 %s，该路径现在可用作交付工具（deliver_file）的交付目标。",
+		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：用户给的文件本来就在工作区内 %s，没有另外的「原件位置」——交付工具（deliver_file）只会把它搬回工作区同一目录。",
 			u.UID, name, size, filepath.ToSlash(dst))
 	} else {
-		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：原件位于 %s，该路径现在可用作交付工具（deliver_file）的交付目标；已复制一份到工作区 %s。",
-			u.UID, name, size, filepath.ToSlash(abs), filepath.ToSlash(dst))
+		note = fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：原件位于 %s（用户拖入/选择它的位置），已复制一份到工作区 %s。交付工具（deliver_file）会把成品送回 %s 这个位置；只给 source（工作区里的成品文件）即可，不必指认是哪一次上传。",
+			u.UID, name, size, filepath.ToSlash(abs), filepath.ToSlash(dst), filepath.ToSlash(filepath.Dir(abs)))
 	}
 	return u, note, nil
 }

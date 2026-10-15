@@ -2174,7 +2174,9 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "写入工作区失败: "+err.Error())
 		return
 	}
-	note := fmt.Sprintf("【文件上传】用户上传了文件 %s（%d 字节），已保存到工作区；需要了解内容时可用只读工具查看。",
+	note := fmt.Sprintf("【文件上传】用户上传了文件 %s（%d 字节），已保存到工作区；需要了解内容时可用只读工具查看。"+
+		"这次上传没有登记原件路径（浏览器、手机、远程、粘贴只送文件内容，拿不到本机路径），交付工具（deliver_file）无法把成品送回原处；"+
+		"确实要交回原位置时，请让用户在桌面端把原文件直接拖进输入框、或用「＋→文件上传」选一次（那条路会登记原件位置）。",
 		filepath.ToSlash(dst), len(data))
 	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
 	m.UpdatedAt = now()
