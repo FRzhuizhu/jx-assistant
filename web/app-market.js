@@ -32,6 +32,7 @@ function toggleMarket() {
 }
 
 function openMarket() {
+  narrowClosePanels(); // 窄屏：从侧栏浮层点进市场页即收起浮层（与进设置/选中会话同一套）
   setMarketView(true);
   const search = $('mk-search');
   if (search) setTimeout(() => search.focus(), 60);

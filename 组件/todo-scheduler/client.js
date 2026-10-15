@@ -149,6 +149,9 @@
   function openPage() {
     const col = $('msg-col');
     if (!col) return;
+    // 手机端：从侧栏浮层点进本页即收起浮层，不然整屏侧栏盖着新打开的页面，
+    // 用户不知道要先收（与选中会话/进设置同一套，见 app-core.js narrowClosePanels）
+    if (typeof narrowClosePanels === 'function') narrowClosePanels();
     const s = appState();
     st.prevSession = (s && s.cur && s.cur.id) || null;
     // 主列换成这一页；对话那套外壳（输入区、会话进度条、模式徽标、子对话按钮）收起
