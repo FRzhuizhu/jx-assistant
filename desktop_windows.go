@@ -18,6 +18,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -138,11 +139,20 @@ func webView2RuntimeAvailable() bool {
 // 在跑（此时 release 为空函数，调用方应唤起旧窗口后退出）。
 func acquireSingleInstance() (release func(), already bool) {
 	procCreateMutexW := windows.NewLazySystemDLL("kernel32.dll").NewProc("CreateMutexW")
-	name, err := windows.UTF16PtrFromString(desktopMutexName)
+	name := desktopMutexName
+	// JX_DESKTOP_MUTEX：覆盖互斥体名（不带 Local\ 前缀时自动补上）——开发
+	// 调试需要多实例并行时用，发行形态不受影响。
+	if v := strings.TrimSpace(os.Getenv("JX_DESKTOP_MUTEX")); v != "" {
+		if !strings.Contains(v, `\`) {
+			v = `Local\` + v
+		}
+		name = v
+	}
+	mu, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return func() {}, false
 	}
-	h, _, callErr := procCreateMutexW.Call(0, 1, uintptr(unsafe.Pointer(name)))
+	h, _, callErr := procCreateMutexW.Call(0, 1, uintptr(unsafe.Pointer(mu)))
 	if errno, ok := callErr.(syscall.Errno); ok && errno == windows.ERROR_ALREADY_EXISTS {
 		return func() {}, true
 	}
@@ -264,7 +274,8 @@ func stringsEqualFold(a, b string) bool {
 	return true
 }
 
-// runDesktop 打开 WebView2 窗口并阻塞到窗口关闭。
+// runDesktop 打开 WebView2 窗口并驻留运行，直到退出请求（托盘菜单
+// 「退出」/ 自动冒烟 JX_DESKTOP_AUTOCLOSE）：用户关窗只隐藏进托盘。
 // JX_DESKTOP_AUTOCLOSE 秒数>0 时到点自动关窗（自动化冒烟用）。
 // 桌面壳就是主 WebView2 控件（承载 Web UI）；右栏原生浏览器面板
 // （browser_panel_windows.go）作为第二个 WebView2 控件惰性创建，挂在
@@ -292,12 +303,18 @@ func runDesktop(app *App, url string) error {
 		webviewSoftwareRender.Store(true)
 		log.Printf("兼容显示模式已启用（软件合成，标记文件 %s 存在）", softwareCompatPath)
 	}
-	// 前端窗口循环：正常一轮（用户关窗 → 退出循环、进程收尾）；黑屏自检
-	// 两级手段仍救不回时（selfCheckEscalate）置 frontendRestartReq 并关窗，
-	// 这里按兼容参数（软件合成）原地重建前端——后端（HTTP 服务、会话、
-	// 运行中任务）全在 Go 进程里，一个字节都不动。旧前端的 WebView2 控制器
-	// 在收尾时 Close（浏览器进程树与 GPU 占用一并释放），新旧环境用不同
-	// 数据目录（webview / webview-compat），互不抢 user-data-folder。
+	// 前端窗口循环：窗口的生死与进程的生死解耦——用户关窗（✕/Alt+F4）在
+	// subclass 里被拦截进托盘（hideMainWindowToTray），Run 不返回；只有退出
+	// 请求（托盘菜单「退出」/ autoclose 的 frontendQuitReq）才真正收尾退出。
+	// 黑屏自检升级（selfCheckEscalate）与设置页渲染切换置 frontendRestartReq
+	// 关窗重建；WebView2 崩溃（ProcessFailed）或窗口意外死亡走自愈/重建——
+	// 后端（HTTP 服务、会话、运行中任务）全在 Go 进程里，一个字节都不动。
+	// 旧前端的 WebView2 控制器在收尾时 Close（浏览器进程树与 GPU 占用一并
+	// 释放），新旧环境用不同数据目录（webview / webview-compat），互不抢
+	// user-data-folder。
+	// 托盘先挂上：后端（本进程）驻留的可见锚点，主窗口关闭/意外死亡都不消失。
+	traySetup(app)
+	defer trayTeardown()
 	var prevRect *panelRect
 	for {
 		w := newDesktopFrontend(prevRect)
@@ -337,6 +354,8 @@ func runDesktop(app *App, url string) error {
 			sep = "&"
 		}
 		w.Navigate(url + sep + "shell=desktop")
+		// WebView2 崩溃自愈：渲染进程死亡/无响应自动刷新，浏览器进程死亡重建前端
+		attachProcessFailed(mainWebViewOf(w))
 		if secs, err := strconv.Atoi(os.Getenv("JX_DESKTOP_AUTOCLOSE")); err == nil && secs > 0 {
 			// 每一轮前端都各自布防（热重启换了窗口句柄，只布防首轮会让
 			// 新窗口永远等不到关窗指令）。
@@ -344,6 +363,7 @@ func runDesktop(app *App, url string) error {
 				time.Sleep(time.Duration(secs) * time.Second)
 				// Terminate() 的 PostQuitMessage 只作用于调用线程，跨线程
 				// 无效；Destroy() 走 PostMessage(WMClose)，跨线程安全。
+				atomic.StoreInt32(&frontendQuitReq, 1) // 冒烟关窗 = 真退出（托盘驻留语义不影响）
 				w.Destroy()
 			}()
 		}
@@ -351,20 +371,35 @@ func runDesktop(app *App, url string) error {
 		recorderShutdown()    // 还在录演示就停录收尾（保 audio.wav、生成 INDEX.md）
 		// 收尾在 UI 线程（Run 返回处即主线程）：关面板与主控的 COM Close，
 		// 让两棵浏览器进程树真正退场（GPU/句柄全释放），再拆窗口句柄。
+		// 收尾前反注册崩溃事件（每轮前端换新控件，旧 handler 不能留给已销毁的环境）
+		if wv := mainWebViewOf(w); wv != nil {
+			detachProcessFailed(wv)
+		}
+		// Run 返回即窗口已亡：清掉句柄登记，托盘唤起/热重启投递不再指向死窗口
+		mainWndHwnd.Store(0)
 		releaseFrontend(app, w)
 		w.Destroy()
-		if atomic.LoadInt32(&frontendRestartReq) != 1 {
-			break // 正常关窗：走进程退出
+		switch {
+		case atomic.LoadInt32(&frontendQuitReq) == 1:
+			// 退出请求（托盘菜单「退出」/ 自动冒烟 autoclose）：整体收尾退出
+			log.Printf("退出请求（托盘/自动冒烟）：桌面壳退出")
+			return nil
+		case atomic.LoadInt32(&frontendRestartReq) == 1:
+			// 热重启（黑屏自检降级 / 设置页渲染模式切换）：按当前显示模式重建
+			atomic.StoreInt32(&frontendRestartReq, 0)
+			prevRect = restartWndRect.Load()
+			log.Printf("前端热重启：重建界面（后端与任务不受影响）")
+		default:
+			// 意外返回（WebView2 崩溃、窗口异常死亡）：非用户退出也非热重启请求
+			// ——自动重建前端，后端不动；带风暴保护（10 分钟内 ≥5 次弹窗告知一次，
+			// 避免运行时损坏时无限闪窗，进程保持驻留托盘）。
+			prevRect = restartWndRect.Load()
+			if !frontendCrashAllowRebuild() {
+				log.Printf("前端连续意外死亡达上限：已弹窗告知，继续重建（进程驻留托盘）")
+			}
+			log.Printf("桌面窗口意外关闭：自动重建前端（后端与任务不受影响）")
 		}
-		atomic.StoreInt32(&frontendRestartReq, 0)
-		prevRect = restartWndRect.Load()
-		log.Printf("前端热重启：切换兼容显示模式重建界面（后端与任务不受影响）")
 	}
-	// 消息循环退出 = 主窗口关闭（正常点 ✕，或 WebView2/窗口异常）。落一行日志：
-	// 桌面版「闪退」排障时，靠它区分「窗口关闭走正常退出」与「进程被杀/panic」
-	// （后者不会留任何痕迹——GUI 子系统 panic 输出无处可去）。
-	log.Printf("桌面窗口已关闭，桌面壳退出")
-	return nil
 }
 
 // newDesktopFrontend 建主窗口（含附加参数合并与兼容模式分流）。兼容模式走
@@ -494,6 +529,8 @@ const (
 	sizeMinimized      = 1
 	wmActivate         = 0x0006
 	wmWindowPosChanged = 0x0047
+	wmSysCommand       = 0x0112 // 系统命令（wParam 低 16 位 = 命令：关闭/最大化/还原等）
+	scClose            = 0xf060 // SC_CLOSE：用户关闭窗口（✕ / Alt+F4 / 任务栏右键）
 	wmEnterSizeMove    = 0x0231 // 用户开始拖动/缩放窗口（标题栏拖动、最大化还原拖动都算）
 	wmExitSizeMove     = 0x0232 // 系统的模态移动/缩放循环结束
 	swpNoSizeFlag      = 0x0001
@@ -559,6 +596,16 @@ func mainWndSubclassProc(hwnd, msg, wp uintptr, lp unsafe.Pointer) uintptr {
 		}
 	}()
 	switch msg {
+	case wmSysCommand:
+		// 用户关闭窗口（✕ / Alt+F4 / 任务栏右键「关闭窗口」）：隐藏进托盘，
+		// 进程与后端（服务/会话/任务）驻留。SC_CLOSE 比较前先掩掉 wParam 低
+		// 4 位的系统内部标志；不传原 proc 就不会走到 WM_CLOSE 的销毁路径，
+		// 消息循环继续跑。程序化投递的 WM_CLOSE（热重启 / 托盘退出 / 冒烟
+		// autoclose）不经本分支，销毁语义不变。
+		if wp&0xfff0 == scClose {
+			hideMainWindowToTray(hwnd)
+			return 0
+		}
 	case wmSize:
 		if wp == sizeMinimized {
 			return 0 // 别让绑定库把最小化下的退化矩形 PutBounds 给 WebView2
@@ -893,4 +940,168 @@ func windowIsBlack(hwnd uintptr) bool {
 		}
 	}
 	return total > 0 && black*1000/total >= 985
+}
+
+// ---------- 主 WebView2 崩溃自愈（ProcessFailed） ----------
+
+// pfArgsVtbl 镜像 ICoreWebView2ProcessFailedEventArgs（COM ABI 头 3 槽固定 +
+// get_ProcessFailedKind；绑定库未导出该事件，复用右栏面板的 vtbl 手法，
+// 见 browser_panel_windows.go 的 evtHandler / wvRawVtbl）。
+type pfArgsVtbl struct {
+	queryInterface, addRef, release edge.ComProc
+	getProcessFailedKind            edge.ComProc
+}
+
+// COREWEBVIEW2_PROCESS_FAILED_KIND 只列本地要处置的取值；其余（GPU 进程、
+// 工具进程、崩溃保护进程等）WebView2 会自动重启对应子进程，记日志即可。
+const (
+	pfBrowserExited      = 0 // 浏览器主进程退出（整个 WebView2 控件已不可用）
+	pfRenderUnresponsive = 1 // 渲染进程无响应（长任务重渲染也会触发，需容忍）
+	pfRenderExited       = 2 // 渲染进程退出（页面死掉，reload 即可恢复）
+)
+
+func pfKindName(kind int32) string {
+	switch kind {
+	case pfBrowserExited:
+		return "浏览器进程退出"
+	case pfRenderUnresponsive:
+		return "渲染进程无响应"
+	case pfRenderExited:
+		return "渲染进程退出"
+	}
+	return fmt.Sprintf("其他子进程事件(%d)", kind)
+}
+
+var (
+	frontendPfHandler *evtHandler // COM 侧只存裸指针，Go 侧必须持引用保活（同 browserPanel）
+	frontendPfToken   int64
+	pfMu              sync.Mutex
+	pfRenderExitN     int   // 渲染进程退出计数（时间窗内）
+	pfRenderExitSince int64 // 计数窗口起点（毫秒）
+	pfUnrespN         int   // 渲染无响应计数（时间窗内）
+	pfUnrespSince     int64
+	frontendCrashN    []int64 // 意外关窗时间戳（风暴保护窗口）
+)
+
+// mainWebViewOf 取主窗口 WebView2 的 ICoreWebView2：反射绑定库内部
+// *edge.Chromium 再经控制器 vtbl 取 CoreWebView2（releaseFrontend 同款手法；
+// 绑定库改版时反射失败返回 nil，自愈缺位但主流程不受影响）。
+func mainWebViewOf(w webview2.WebView) (wv *edge.ICoreWebView2) {
+	defer func() { _ = recover() }()
+	rv := reflect.ValueOf(w)
+	if rv.Kind() != reflect.Ptr {
+		return nil
+	}
+	f := rv.Elem().FieldByName("browser")
+	if !f.IsValid() || (f.Kind() == reflect.Ptr && f.IsNil()) {
+		return nil
+	}
+	ch, _ := reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Interface().(*edge.Chromium)
+	if ch == nil {
+		return nil
+	}
+	return ctlWebView(ch.GetController())
+}
+
+// attachProcessFailed 给主 WebView2 挂 ProcessFailed 事件（每轮前端创建后调用）。
+// 回调发生在 WebView2 的原生事件栈上，evtHandler 内置 recover 兜底（panic 不外泄）。
+func attachProcessFailed(wv *edge.ICoreWebView2) {
+	if wv == nil {
+		return
+	}
+	frontendPfHandler = newEvtHandler(func(sender, args unsafe.Pointer) {
+		handleProcessFailed((*edge.ICoreWebView2)(sender), args)
+	})
+	var tok int64
+	_, _, _ = wvVtblOf(wv).addProcessFailed.Call(
+		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(frontendPfHandler)), uintptr(unsafe.Pointer(&tok)))
+	frontendPfToken = tok
+}
+
+// detachProcessFailed 反注册（前端收尾时调用，与 attach 配对）。
+func detachProcessFailed(wv *edge.ICoreWebView2) {
+	if wv == nil || frontendPfHandler == nil {
+		return
+	}
+	_, _, _ = wvVtblOf(wv).removeProcessFailed.Call(
+		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(frontendPfHandler)), uintptr(unsafe.Pointer(&frontendPfToken)))
+	frontendPfHandler = nil
+}
+
+// handleProcessFailed 崩溃分级处置：
+//   - 浏览器主进程死：控件整体不可用 → restartFrontendNow 重建前端（后端不动）；
+//   - 渲染进程死（页面死）：reload 恢复；10 分钟内 3 次则升级重建前端（防崩溃循环）；
+//   - 渲染无响应：容忍一次（重渲染长任务会误报），连续 2 次才刷新；
+//   - 其余子进程事件：WebView2 自动重启，仅记日志。
+func handleProcessFailed(sender *edge.ICoreWebView2, args unsafe.Pointer) {
+	var kind int32
+	if args != nil {
+		_, _, _ = (*(**pfArgsVtbl)(unsafe.Pointer(args))).getProcessFailedKind.Call(
+			uintptr(args), uintptr(unsafe.Pointer(&kind)))
+	}
+	log.Printf("[ProcessFailed] %s", pfKindName(kind))
+	now := time.Now().UnixMilli()
+	pfMu.Lock()
+	defer pfMu.Unlock()
+	switch kind {
+	case pfBrowserExited:
+		log.Printf("[ProcessFailed] 浏览器进程已退出：重建前端窗口（后端与任务不受影响）")
+		restartFrontendNow()
+	case pfRenderExited:
+		if now-pfRenderExitSince > 10*60*1000 {
+			pfRenderExitSince, pfRenderExitN = now, 0
+		}
+		pfRenderExitN++
+		if pfRenderExitN >= 3 {
+			pfRenderExitN = 0
+			log.Printf("[ProcessFailed] 渲染进程 10 分钟内死亡 3 次：重建前端（防崩溃循环）")
+			restartFrontendNow()
+			return
+		}
+		log.Printf("[ProcessFailed] 渲染进程死亡：重新加载界面")
+		reloadWebView(sender)
+	case pfRenderUnresponsive:
+		if now-pfUnrespSince > 5*60*1000 {
+			pfUnrespSince, pfUnrespN = now, 0
+		}
+		pfUnrespN++
+		if pfUnrespN >= 2 {
+			pfUnrespN = 0
+			log.Printf("[ProcessFailed] 渲染进程持续无响应：刷新界面恢复")
+			reloadWebView(sender)
+		}
+	}
+}
+
+// reloadWebView 经 vtbl 调 ICoreWebView2::Reload（绑定库未导出；事件回调里的
+// sender 即主 WebView 的 ICoreWebView2，直接可用）。
+func reloadWebView(wv *edge.ICoreWebView2) {
+	if wv == nil {
+		return
+	}
+	_, _, _ = wvVtblOf(wv).reload.Call(uintptr(unsafe.Pointer(wv)))
+}
+
+// frontendCrashAllowRebuild 意外关窗的风暴保护：10 分钟窗口内意外重建不足 5 次
+// 返回 true；达到上限则弹窗告知一次并重置计数（继续重建但不再静默——
+// WebView2 运行时真损坏时用户至少知道发生了什么，进程保持驻留托盘）。
+func frontendCrashAllowRebuild() bool {
+	now := time.Now().UnixMilli()
+	kept := frontendCrashN[:0]
+	for _, t := range frontendCrashN {
+		if now-t < 10*60*1000 {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	frontendCrashN = kept
+	if len(kept) < 5 {
+		return true
+	}
+	frontendCrashN = nil
+	go desktopMessageBox(
+		"界面在短时间内多次意外关闭（通常是 WebView2 运行时或显卡驱动异常）。\n\n"+
+			"程序仍驻留后台（右下角托盘图标在），会话与运行中的任务不受影响；已继续尝试重开界面。\n\n"+
+			"如反复出现，请把安装目录 data\\desktop.log 反馈给我们排查。", desktopAppTitle)
+	return false
 }

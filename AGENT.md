@@ -237,6 +237,21 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   原地改名成「默认工作区」（装包时先做一次，启动时兜底重试，并把显式挂
   在旧路径上的历史会话一并改指新目录）；WebView2 运行时缺失时给官方下载
   指引。
+- **托盘驻留与前端自愈**（2026-10-15）：桌面形态下「窗口的生死」与「进程的
+  生死」解耦。用户关窗（✕/Alt+F4/任务栏右键关闭）被 `mainWndSubclassProc`
+  拦截（WM_SYSCOMMAND+SC_CLOSE → `hideMainWindowToTray`）：窗口只隐藏，
+  进程与后端（服务/会话/运行中任务）驻留托盘（`tray_windows.go`：图标
+  常驻，单击/双击恢复窗口，右键菜单「打开主界面 / 刷新界面 / 退出」，首次
+  隐藏气泡引导一次，explorer 重启自动重挂图标）。整体退出只有两条路：托盘
+  菜单「退出」与自动冒烟 `JX_DESKTOP_AUTOCLOSE`（都置 `frontendQuitReq`，
+  窗口循环据此收尾）。前端崩溃自愈：主 WebView2 挂 `ProcessFailed` 事件
+  （`desktop_windows.go`，复用 browser_panel 的 evtHandler/vtbl 手法）——
+  渲染进程死亡自动 reload（10 分钟内 3 次升级为重建前端）、无响应连续 2 次
+  才刷新（防误伤长任务渲染）、浏览器主进程死亡直接重建前端窗口；窗口循环
+  对意外返回一律自动重建（10 分钟内 5 次弹窗告知一次的风暴保护），后端
+  永续。程序化 WM_CLOSE（热重启/托盘退出/autoclose）不被拦截，销毁语义
+  不变。调试需要多实例并行时：`JX_DESKTOP_MUTEX` 环境变量覆盖单实例
+  互斥体名（不带 `Local\` 前缀会自动补上）。
 - **安装包**（Inno Setup，内置技能便携运行时，约 350MB 源经 LZMA2 压到
   约 103MB，装完离线全功能）：
 
