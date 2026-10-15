@@ -111,8 +111,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 #sidebar .actions .side-btn > svg,
 #sidebar .actions .side-btn > .doll-wrap {
   transform-box: fill-box; transform-origin: center;   /* 以图标自身盒中心为轴心，扭动不跑偏 */
-  color: var(--accent);   /* 三个入口图标跟随主题色（设置页换主题色时一起变）；文字仍是常规文字色 */
+  /* 图标颜色不单独设：currentColor 跟随按钮文字色（浅色主题黑、深色主题浅，自适应） */
 }
+/* 三个入口图标比全局默认（16px）稍放大；数字经理的小人是视觉主角，再大一号 */
+#sidebar .actions .side-btn > svg { width: 18px; height: 18px; }
+#sidebar .actions #btn-new-assistant .doll-wrap svg { width: 20px; height: 20px; }
 #sidebar .actions .side-btn.wig > svg,
 #sidebar .actions .side-btn.wig > .doll-wrap {
   animation: side-btn-wig .42s cubic-bezier(.34, 1.4, .5, 1);
