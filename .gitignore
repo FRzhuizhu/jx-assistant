@@ -40,3 +40,9 @@ ppt合并/
 android-poc/
 技能/user/
 打包/清理清单.iss
+# 本地运行残留与构建/发布产物（不入库）：jx.db=实例运行数据库；*.exe.old/.new=静默更新换装接力残留
+jx.db
+*.exe.old
+*.exe.new
+打包/输出服务端/
+打包/静默更新/
