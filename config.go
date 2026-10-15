@@ -350,6 +350,14 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.RemoteAccess.Host == "" {
 		cfg.RemoteAccess.Host = def.RemoteAccess.Host
 	}
+	// 一次性迁移（2026-10）：老部署的远程网关填的是 QNAP DDNS 域名，而 2227 上
+	// 的证书只覆盖 example.com/.cn——老域名生成的配对二维码/入口链接手机端必报
+	// 证书错误。启动时静默迁移到自有域名（仅精确匹配本家老地址，不动其他公司的网关）。
+	remoteHostMigrated := false
+	if cfg.RemoteAccess.Host == "nas.example.org" {
+		cfg.RemoteAccess.Host = "example.com"
+		remoteHostMigrated = true
+	}
 	if cfg.RemoteAccess.Port == 0 {
 		cfg.RemoteAccess.Port = def.RemoteAccess.Port
 	}
@@ -400,9 +408,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	// 步数上限从旧默认提升过：立即落盘，让设置页读数、配置文件与运行时三者
 	// 一致（免得用户看到配置文件里还是 30，以为没生效；其他补全都留给下一次保存）
-	if maxStepsBumped {
+	if maxStepsBumped || remoteHostMigrated {
 		if err := cfg.Save(path); err != nil {
-			log.Printf("回写步数上限失败: %v", err)
+			log.Printf("回写配置迁移失败: %v", err)
 		}
 	}
 	cfg.syncLegacyFields()
