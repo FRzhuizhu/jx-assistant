@@ -107,10 +107,12 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
    按钮的 --wig-deg 上，逻辑见 app-left.js 的 bindSideBtnWiggle），动画结束即回到直立。
    作用域收在 #sidebar .actions 里的 .side-btn 直接子 svg——页面别处的同类图标不受影响；
    只加一条动画，按钮自身的尺寸、点击、tooltip、hover 背景都不动。 */
-#sidebar .actions .side-btn > svg {
+#sidebar .actions .side-btn > svg,
+#sidebar .actions .side-btn > .doll-wrap {
   transform-box: fill-box; transform-origin: center;   /* 以图标自身盒中心为轴心，扭动不跑偏 */
 }
-#sidebar .actions .side-btn.wig > svg {
+#sidebar .actions .side-btn.wig > svg,
+#sidebar .actions .side-btn.wig > .doll-wrap {
   animation: side-btn-wig .42s cubic-bezier(.34, 1.4, .5, 1);
 }
 @keyframes side-btn-wig {
@@ -167,7 +169,31 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 #da-face.is-float .da-eyes { transform: translateY(-0.7px); transition-duration: .4s; }
 /* 眨眼：眼睛压成一条线（JS 独立随机节奏驱动） */
 #da-face.is-blink .da-eye { transform: scaleY(.06); }
-/* 完成态（done，约 4 秒后回 idle）：挤眼 + 微笑（沿用旧版动画） */
+/* 完成态（方案 C）：先进「举纸庆祝」——把手里那张纸举过头顶晃两下（一次性 1.15s，
+   app-core.js dollStart('done') 挂 is-cheer，1.3s 后摘），随后挤眼微笑常驻。
+   常驻与否由调用方决定：没看着对话时 setFace('done') 不带回退（徽章亮着等点开），
+   正看着时 setFace('done', 4000) 4 秒后自动回待机（见 app-chat.js done 事件）。 */
+#da-face.is-cheer .da-paper { animation: da-cheer 1.15s cubic-bezier(.34, 1.2, .5, 1) 1 forwards; }
+#da-face.is-cheer .head { transform: translateY(-1.2px); }
+@keyframes da-cheer {
+  0%   { opacity: 0; transform: translate(0, 0) rotate(0deg); }
+  16%  { opacity: 1; transform: translate(-2.5px, -14px) rotate(-11deg); }
+  38%  { transform: translate(-2.5px, -15px) rotate(10deg); }
+  60%  { transform: translate(-2.5px, -15px) rotate(-7deg); }
+  80%  { transform: translate(-2.5px, -14.5px) rotate(4deg); }
+  100% { opacity: 1; transform: translate(-2.5px, -14.5px) rotate(0deg); }
+}
+/* 完成未读徽章：挂 .doll-wrap 右上角（app-core.js setFace 计数、dollStart 清零） */
+#sidebar .actions .doll-wrap { position: relative; display: inline-flex; flex: none; }
+#sidebar .actions .da-badge {
+  position: absolute; top: -4px; right: -5px;
+  min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
+  background: var(--danger); color: #fff; font-size: 10px; font-weight: 700;
+  line-height: 15px; text-align: center; box-shadow: 0 0 0 2px var(--side-bg);
+}
+#sidebar .actions .da-badge.pop { animation: da-badge-pop .38s cubic-bezier(.34, 1.56, .64, 1); }
+@keyframes da-badge-pop { 0% { transform: scale(0); } 62% { transform: scale(1.22); } 100% { transform: scale(1); } }
+/* 挤眼 + 微笑（旧版动画沿用：6s 循环，大部分时间闭眼微笑，周期性睁眼看一下） */
 #da-face .da-smile { opacity: 0; }
 #da-face[data-state="done"] .da-eye { animation: da-squish 6s cubic-bezier(.5, 0, .5, 1) infinite; }
 #da-face[data-state="done"] .da-smile { animation: da-pop 6s cubic-bezier(.5, 0, .5, 1) infinite; }
@@ -180,8 +206,9 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 @media (prefers-reduced-motion: reduce) {
   #da-face .bob { animation: none; }
   #da-face .head, #da-face .da-eyes, #da-face .da-paper, #da-face .da-eye { transition: none; }
-  #da-face .da-eye, #da-face .da-eyes, #da-face .da-smile { animation: none !important; }
+  #da-face .da-eye, #da-face .da-eyes, #da-face .da-smile, #da-face.is-cheer .da-paper { animation: none !important; }
   #da-face[data-state="done"] .da-smile { opacity: 1; }
+  #sidebar .actions .da-badge.pop { animation: none; }
 }
 
 

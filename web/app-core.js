@@ -570,6 +570,22 @@ let dollState = null; // 已启动的状态。幂等：delta/reasoning 事件会
 const daRand = (a, b) => a + Math.random() * (b - a);
 const daWait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 完成未读徽章（方案 C）：常驻 done（没看着对话）每来一次 +1；任何非 done 状态清零。
+// 计数放 setFace（dollStart 有幂等，连续多次完成时数字要继续涨、弹跳重播）。
+let daDoneUnread = 0;
+function daBadgeSet(n) {
+  const b = document.getElementById('da-badge');
+  if (!b) return;
+  if (n > 0) {
+    b.textContent = n > 1 ? String(n) : '1';
+    b.classList.remove('hidden', 'pop'); void b.offsetWidth;
+    b.classList.add('pop');
+  } else {
+    daDoneUnread = 0;
+    b.classList.add('hidden'); b.classList.remove('pop');
+  }
+}
+
 // 循环一：低头读纸——纸在正中出现，眼睛慢慢转下去盯着它（盯久一点），再慢慢抬回，纸收起
 async function daLoopStare(face, gen) {
   face.classList.add('is-read', 'is-stare');
@@ -614,16 +630,22 @@ function dollStart(st) {
   dollGen++;
   const face = document.getElementById('da-face');
   if (!face) return;
-  ['is-read', 'is-stare', 'is-work', 'is-float', 'is-blink'].forEach((c) => face.classList.remove(c));
-  if (st === 'thinking') { daWorkLoop(face, dollGen); daBlinkLoop(face, dollGen); }
-  else if (st === 'idle') daBlinkLoop(face, dollGen);
-  // 'done'：微笑交给 CSS，不跑循环（眨眼也停——挤眼动画期间别再插一眨）
+  ['is-read', 'is-stare', 'is-work', 'is-float', 'is-blink', 'is-cheer'].forEach((c) => face.classList.remove(c));
+  if (st === 'thinking') { daWorkLoop(face, dollGen); daBlinkLoop(face, dollGen); daBadgeSet(0); }
+  else if (st === 'idle') { daBlinkLoop(face, dollGen); daBadgeSet(0); }
+  // 'done'（方案 C）：先把手里那张纸举过头顶晃两下（1.3s 后摘 class），随后微笑交给
+  // CSS 常驻，不跑循环（眨眼也停——挤眼动画期间别再插一眨）；徽章计数在 setFace 里做
+  else if (st === 'done') {
+    face.classList.add('is-cheer');
+    setTimeout(() => { if (dollState === 'done') face.classList.remove('is-cheer'); }, 1300);
+  }
 }
 
 function setFace(st, revertMs) {
   const f = document.getElementById('da-face');
   if (!f) return;
   f.setAttribute('data-state', st);
+  if (st === 'done' && !revertMs) daBadgeSet(++daDoneUnread); // 无回退＝常驻提醒（没看着对话）：算一条未读
   dollStart(st);
   if (faceTimer) { clearTimeout(faceTimer); faceTimer = null; }
   if (revertMs) faceTimer = setTimeout(() => {

@@ -118,6 +118,7 @@ async function openSession(id) {
   // （refreshCurrent 等）都以目标为准，旧会话的晚到事件不可能再把界面顶回去
   const brief = (state.sessions || []).find((s) => s.id === id);
   if (brief && (!state.cur || state.cur.id !== id)) optimisticSwitch(mainView, brief);
+  if (brief && brief.mode === 'assistant' && dollState === 'done') setFace('idle'); // 打开数字经理对话＝完成提醒已读：徽章清、小人回待机
   // 右栏切到目标对话自己的状态（开合/视图/各视图选择；没记忆＝默认收起+空态）。
   // 放在乐观切换之后：各视图的就位逻辑以 state.cur 为准，此刻它已是目标对话
   if (oldSid !== id) rpRestoreSession(id);
@@ -2185,7 +2186,7 @@ function handleGlobalEvent(ev) {
       loadSessions();
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrent();
-      if ((state.sessions.find((s) => s.id === ev.sessionId) || {}).mode === 'assistant') setFace('done', 4000);
+      if ((state.sessions.find((s) => s.id === ev.sessionId) || {}).mode === 'assistant') setFace('done', viewing ? 4000 : 0); // 没看着＝方案C常驻：举纸+微笑+徽章，点开才清；正看着＝4秒回待机
       break;
     case 'report_ready':
       // 子智能体/派发任务的回报已落库（数字助理与普通任务派发同走这里）：

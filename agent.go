@@ -1230,6 +1230,12 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					note = "\n\n（会话被中断）"
 				}
 				a.appendMessageThinking(sess, TextMessage("assistant", text.String()+note), reasoning.String())
+			} else if strings.TrimSpace(reasoning.String()) != "" {
+				// 中断落在纯思考阶段（正文一个字没出）：思考原文也要落盘，与下方
+				// 「只出思考没出正文」的正常收尾对称——否则流式出去的思考随内存
+				// 丢弃，前端回看与上下文重建（ReasoningContent 回传）都见不到。
+				// 不 emit message（与上半支口径一致）：停止/出错后前端 reloadMessages 拉回
+				a.appendMessageThinking(sess, TextMessage("assistant", ""), reasoning.String())
 			}
 			return a.modelErrWithChannelHint(target, err)
 		}
