@@ -854,7 +854,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 | 模式 | 说明 | 工具 |
 |---|---|---|
-| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch/**web_search（联网搜索，经服务端搜索网关，见 websearch.go；服务端半边是 jxaiserver 的 search.go，协议改动需双侧同步）** + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + **call_api（与前端同接口的通用直调，见 callapi.go）** + **publish_webpage（把工作区网页/文件夹发布到服务端托管平台换网址，见 websites.go；服务端半边是 jxaiserver 的 sites.go，协议改动需双侧同步）** + 历史查询 |
+| `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch/**web_search（联网搜索，经服务端搜索网关，见 websearch.go；服务端半边是 jxaiserver 的 search.go，协议改动需双侧同步）** + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + **call_api（与前端同接口的通用直调，见 callapi.go）** + **publish_webpage（把工作区网页/文件夹发布到服务端托管平台换网址，见 websites.go；服务端半边是 jxaiserver 的 sites.go，协议改动需双侧同步）** + **request_manager（找数字经理协调，见 requestmgr.go）** + 历史查询 |
 | `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（补需求，可选 permission 只能同等或降权）/ stop_session（按用户指示分级停止：协作取消→3 秒未收口自动强制终结，与人工停止按钮同一停止函数、仅触发者不同）/ **call_api（与前端同接口的通用直调，见 callapi.go）** + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch/web_search + 历史查询 |
 | `skill-create` | 创建技能：把「怎么做」沉淀成给后续 AI 照做的 SKILL.md 教程——用户点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **register_skill（注册/覆盖技能）**；演示录制归用户直控（界面按钮经 `/api/demo-record/*`，材料以【演示记录】通知进对话） |
@@ -937,6 +937,33 @@ report_ready / done / stopped），前端常驻订阅：父对话里的子任务
 会话时会自动接上这轮流、实时看输出；没在看则侧栏亮「完成未查看」绿点，打开即清。
 服务重启时未完成的执行会补
 【系统中断】记录，发「继续」即可接续（原始历史完整保留）。
+
+## 任务找经理协调（request_manager / requestmgr.go）
+
+任务会话在「问自己看不到的情况」或「要一个同时只能一个人用的资源」时，可以
+主动找数字经理（数字助理主对话）——这是任务侧**唯一**能触到经理的通道，也是
+经理跨会话视野真正被用起来的地方（典型案例：多个会话改同一仓库，谁都不知道
+现在合不合适跑测试）。
+
+- **语义是「投一条消息」**：`request_manager` 把 topic/detail/resource/expectation
+  组织成一条求助消息，走与用户消息完全相同的投递收口 `deliverToSession`
+  （kind=aiuser、origin=help，前缀【任务求助｜会话标题（id）】）——经理空闲就
+  落库并占住它这一轮（`kickSessionRound` 唤醒，与【派发回报】【待办任务派发】
+  同一套机制），正忙就进它的排队/插话队列。**工具立即返回，任务不等答复**：
+  没有阻塞等待，就不存在「任务停在那等经理、经理又在等任务」的互相等死。
+- **经理侧没有新工具**：它用既有的 `send_to_session`（插话/追加需求）、
+  `dispatch_task`（派新任务）、`list_sessions` / `read_session_summary`（看谁在跑、
+  改了哪些文件）处理——回不回、什么时候回都由它按全局情况定（比如先不动，
+  等另一个会话的【派发回报】到了、资源空出来再派测试任务）。
+- **不成池、不加接口**：求助消息落在经理会话历史里就是记录（可搜、可导出、
+  重启还在），因此没有求助池、没有新端点、也没有界面改动。
+- **边界**：只挂五个执行模式（task/office/coding/beginner-coding/skill-create，
+  启动自检 `assertManagerChannel` 看护）；子对话调用被硬拦（一级限制同口径）；
+  计划模式暂停；只带文本、不携带权限——经理后续动作仍受它自己的权限档与用户
+  审批约束，这条通道不构成提权路径。
+- **提示词成对**：执行模式拿 agent.go 的 `managerAskPrompt`（什么时候找、找什么、
+  不用等），数字助理拿 `managerCoordPrompt`（它们不等你、你可以插话/派活/先不动、
+  排先后是你的事）；工具说明只留一句「这是求助用的，不要滥用」。
 
 ## 上下文管理（核心特色）
 
@@ -1401,6 +1428,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装——发给模型的内容一律来自引擎 Assembly）；`envPrompt` 生成运行环境快照（不含时间——时间走 context.go 的 timeAfter 派生通道） |
 | `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截 |
 | `plans.go` | 计划读取端点：从会话日志里取回 exit_plan_mode 的正文（右栏「计划」视图的数据源） |
+| `requestmgr.go` | 任务找经理协调（request_manager）：把求助整理成一条消息投进数字助理主对话（kind=aiuser、origin=help），**立即返回、不等答复**——经理空闲就落库并唤醒它跑一轮，忙则进它的排队/插话队列（与【派发回报】【待办任务派发】同一套投递）；经理侧**没有**专用回复工具，它用既有的 send_to_session / dispatch_task 处理。不建池、不加接口（消息本身即记录）；子对话调用被硬拦、计划模式暂停；启动自检 assertManagerChannel 看护「只有执行模式有」 |
 | `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；ask 提问限时（timeout_sec 设秒数，默认 300、钳 30-600、显式 0=不限时；分档准则在系统提示词「提问的分寸」段，状态公告在环境快照「提问等待」行；界面倒计时、悬停/触碰/按钮停表转不限时，超时视为放行）；久等声光提醒（默认开、240 秒、设置·常规可调：MessageBeep 叮声 + ask_alert 全屏闪烁，浮窗上 15 秒倒计时走完才 TTS 朗读；悬停/触碰/停表、或从任何入口打开对应计划页/浮窗（holdQuestion 也受理无时限的计划审批）连提醒一并作废，见 askAlertDue）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/驳回/忽略 |
 | `interact_plan_test.go` | 计划审批的时限与持久化语义测试（跨重启挂待审批、批准/驳回/忽略三分支、plan 无 TTL、ask 的 timeout_sec 与停表） |
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |

@@ -227,6 +227,22 @@ dispatch_task 的可选参数与人工在界面新建工作任务**一一对应*
 
 纯聊天、简单问答直接回答，不必派发。用中文与用户交流，语气专业、简洁。`
 
+// managerCoordPrompt 是数字助理（被找的那个）处理任务求助的准则：任务会话可能
+// 用 request_manager 来找它协调（问自己看不到的情况 / 要「同时只能一个人用」的
+// 资源排先后）。关键差异：求助**不等答复**——那些会话发完就继续干了，所以没有
+// 「必须回答的提问」，经理怎么处理随它：插话回一句（send_to_session）、派新需求
+// 或新任务、或者先不动，等资源真空出来再动。排先后是它的职责；这条通道只传消息，
+// 不构成审批（删除/发布/提权仍要用户点头）。发起侧的使用准则见 managerAskPrompt。
+const managerCoordPrompt = `
+
+## 任务来找你协调
+
+任务会话可能用 request_manager 找你：问它看不到的情况（别的会话在改哪些文件、现在合不合适动手），或要求“同时只能一个人用”的资源（跑测试、编译、发布、占端口或设备）排先后。
+- 它们**不会等你**：消息发出来它们就继续干了，不必当场答复，也没有“待回答”这一说。
+- 怎么处理随你：① 用 send_to_session 给它或相关会话插一句话（如“先别动，等 X 完事”），也可以直接派新需求；② 或者什么都不做，等资源真空出来了再动——比如两个会话都改完了，你派一个测试任务，或者给别人发新需求。
+- 排先后是你的活：同一样东西同一时间只让一个会话动，给每个会话讲清顺序；判断依据就用 list_sessions / read_session_summary 看谁在跑、改了哪些文件。
+- 这条通道只传消息，不是审批：删除、发布、提权这类事仍然要用户点头。处理完顺手给用户一句话汇报。`
+
 // fileToolsPrompt 是有文件写入能力的工作准则补充（task / office 模式共用）：
 // 什么时候自动有快照、什么时候必须手动打快照、成果怎么交付。
 const fileToolsPrompt = `
@@ -278,6 +294,21 @@ const dispatchSubPrompt = `
 - 子对话专家：用户可在设置中预制定义专家（追加提示词 / 默认模型 / 默认上下文继承），当前可用的专家名要先调用 list_experts 查询（名单是易变的，别凭记忆猜）。需要那种专门视角（如对抗性审查）或专门模型时用 expert=名称 派发，其余参数照常；清单里没有合适的专家就按普通子对话派，别编名字。
 - 子对话只有一级：它们不能再派发。同质的批量工作可以一次派多个（并行执行）。`
 
+// managerAskPrompt 是任务类模式的「找经理帮忙」准则（task / office / coding /
+// beginner-coding / skill-create 五种执行模式附加；数字助理本体的处理准则在
+// assistantPrompt 之后的 managerCoordPrompt）。用途只有两类：问自己看不到的
+// 情况（别的会话在改什么、现在合不合适动手）与要「同时只能一个人用」的资源
+//（跑测试/编译/发布/占端口或设备）；其余的事自己做或派子对话。通道语义是
+// 「发完就走、不等答复」——经理怎么回、什么时候回由它自己判断（见
+// requestmgr.go 的文件头与 request_manager 的工具说明）。刻意只写一句
+// 「这是求助用的，不要滥用」：边界说清即可，不堆禁令（靠工具说明与
+// 环境快照里的既有纪律兜底）。
+const managerAskPrompt = `
+
+## 找经理帮忙
+
+数字经理（数字助理主对话）是全局协调者：别的会话在干什么、谁改了哪些文件，它知道；“同一时间只能一个人用”的东西（跑测试、编译、发布、占端口或设备），由它安排先后。这些你自己看不到——需要这类信息或资源时，调 request_manager 找它。比如代码最后要统一做测试，而你不知道别的会话改完没有；比如几个会话都要编译，谁先谁后得定一下。发完不用等，按你自己的判断继续干；经理会在合适的时候用自己的方式处理（插话、派活或先不动）。其余的事自己做或派子对话，别找经理；这是求助用的，不要滥用。`
+
 // askTierPrompt 是全模式共享的「提问的分寸」段：ask_user_question 的 timeout_sec
 // 分档准则（非必要 30 秒 / 一般缺省 5 分钟 / 必须确认不限时）。系统提示词常驻
 // （原则不随环境变），当前档位数值与停表行为的「状态公告」在环境快照的
@@ -328,14 +359,18 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	// coding 拼 codingFilePrompt（同一套文件/快照/目录约定，但不强调交付——
 	// 软件项目的成果直接长在项目文件里，见其注释）；
 	// assistant 只编排不亲手改文件，aux 只读，都不需要。
-	// 子对话派发准则给全部三个执行模式（assistant 的派发准则在其专属提示词里）。
+	// 子对话派发准则给全部三个执行模式（assistant 的派发准则在其专属提示词里）；
+	// 找经理协调的准则成对给：执行模式拿 managerAskPrompt（怎么找、找什么），
+	// 数字助理拿 managerCoordPrompt（被找的那个怎么处理）——两段互为口径。
 	switch sess.Mode {
 	case "task", "office":
-		base += fileToolsPrompt + dispatchSubPrompt
+		base += fileToolsPrompt + dispatchSubPrompt + managerAskPrompt
 	case "coding", "beginner-coding":
-		base += codingFilePrompt + dispatchSubPrompt
+		base += codingFilePrompt + dispatchSubPrompt + managerAskPrompt
 	case "skill-create":
-		base += skillFilePrompt + dispatchSubPrompt
+		base += skillFilePrompt + dispatchSubPrompt + managerAskPrompt
+	case "assistant":
+		base += managerCoordPrompt
 	}
 	// 内置技能运行时段只给带技能工具的本地执行模式：远程会话的命令在远程
 	// 主机执行，本机内置运行时与其无关；安卓的就绪状态易变（首启装配），
@@ -961,6 +996,8 @@ var planSuspendedTask = map[string]bool{
 	"write": true, "edit": true, "run_command": true,
 	"job_output": true, "job_list": true, "job_kill": true,
 	"deliver_file": true, // 登记即承诺搬运，计划模式下不该落任何实际行动
+	// 找经理协调归执行阶段：计划模式下先把情况自己调研清楚，等用户批准后再谈协调
+	"request_manager": true,
 }
 
 // suspendedInPlan 判断某工具在计划模式下是否被暂停。工具目录跨模式保持

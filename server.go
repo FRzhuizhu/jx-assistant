@@ -173,6 +173,9 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	// 是已知会话模式——前端下拉与 dispatch_task 的 mode 取值都照这份清单，
 	// 出现建不出来的模式即拒绝启动（见 chatmodes.go 的 assertChatModes）
 	assertChatModes()
+	// 求助通道自检：request_manager 只挂执行模式，数字助理/aux 不得有（见
+	// requestmgr.go 的 assertManagerChannel）
+	a.assertManagerChannel()
 	a.recoverInterrupted()
 	// 交付队列崩溃残留兜底：上一进程若死在执行中（running），复位回 pending
 	// 并统一重放——登记过的交付不能因为重启就丢

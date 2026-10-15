@@ -1220,7 +1220,7 @@ func (a *App) assistantSession() (*SessionMeta, error) {
 	if err := a.Store.Create(m); err != nil {
 		return nil, fmt.Errorf("创建数字助理主对话失败: %w", err)
 	}
-	log.Printf("[待办] 已自动创建数字助理主对话 %s", m.ID)
+	log.Printf("[会话] 已自动创建数字助理主对话 %s（待办转交 / 任务求助按需找它）", m.ID)
 	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
 	return m, nil
 }
