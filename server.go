@@ -356,11 +356,6 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
 	mux.HandleFunc("POST /api/voice/tts", a.handleVoiceTTS)
-	// 全局语音输入法（桌面壳）：页面内非对话框区按快捷键时组件转发 start；
-	// finish 由胶囊浮窗页（voice-float.html）收尾时回传文本，Go 侧粘贴/复制
-	mux.HandleFunc("POST /api/voice/global/start", a.handleVoiceGlobalStart)
-	mux.HandleFunc("POST /api/voice/global/stop", a.handleVoiceGlobalStop)
-	mux.HandleFunc("POST /api/voice/global/finish", a.handleVoiceGlobalFinish)
 	// 演示记录器（创建技能模式）：录制归用户直控——输入框旁的按钮 POST 这里
 	// 起录/停录，模型不持有录制工具，材料以【演示记录】系统通知进对话（recorder.go）
 	mux.HandleFunc("POST /api/demo-record/start", a.handleDemoRecordStart)
@@ -1140,11 +1135,6 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"snapshotEnabled":  a.snapshotsEnabled(),
 		"snapshotDays":     a.Cfg.SnapshotDays,
 		"compactThreshold": a.Cfg.CompactThreshold,
-		"voiceGlobal": map[string]any{
-			"enabled": a.Cfg.VoiceGlobal.Enabled == nil || *a.Cfg.VoiceGlobal.Enabled,
-			"mode":    map[bool]string{true: "hold", false: "tap"}[a.Cfg.VoiceGlobal.Mode == "hold"],
-			"kbd":     a.Cfg.VoiceGlobal.Kbd,
-		},
 		"accentColor": a.Cfg.AccentColor,
 		// 询问提醒（设置·常规）：下发解析后的生效值（enabled 已按 nil=开解析）
 		"askAlert": map[string]any{
@@ -1185,12 +1175,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			KeepChars *int    `json:"keepChars"`
 			Threshold float64 `json:"threshold"`
 		} `json:"compact"`
-		VoiceGlobal *struct {
-			Enabled *bool      `json:"enabled"` // 全局语音输入法开关（装卸系统钩子，热生效）
-			Mode    string     `json:"mode"`    // tap=点按切换（默认）| hold=按住说话
-			Kbd     [][]string `json:"kbd"`     // 键盘快捷键组合（页面主/副槽的键盘部分，照此监测）
-		} `json:"voiceGlobal"`
-		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：全局语音浮窗等独立环境取色
+		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：设置页换点缀色时同步写进来
 		AskAlert    *struct {
 			Enabled  *bool   `json:"enabled"`  // 询问提醒开关（nil=不改；存 nil 时表示默认开）
 			AfterSec *int    `json:"afterSec"` // 触发秒数（30-600，钳制后存）
@@ -1350,25 +1335,6 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if body.SnapshotEnabled != nil {
 		a.Cfg.SnapshotEnabled = body.SnapshotEnabled
 	}
-	if body.VoiceGlobal != nil {
-		if body.VoiceGlobal.Enabled != nil {
-			a.Cfg.VoiceGlobal.Enabled = body.VoiceGlobal.Enabled
-		}
-		if m := strings.TrimSpace(body.VoiceGlobal.Mode); m != "" {
-			if m != "tap" && m != "hold" {
-				writeErr(w, 400, "全局语音快捷键模式只支持 tap（点按）或 hold（长按）")
-				return
-			}
-			a.Cfg.VoiceGlobal.Mode = m
-		}
-		if body.VoiceGlobal.Kbd != nil {
-			if len(body.VoiceGlobal.Kbd) > 8 {
-				writeErr(w, 400, "全局语音键盘快捷键最多 8 组")
-				return
-			}
-			a.Cfg.VoiceGlobal.Kbd = body.VoiceGlobal.Kbd
-		}
-	}
 	if body.AccentColor != nil {
 		c := strings.TrimSpace(*body.AccentColor)
 		if c != "" && !strings.HasPrefix(c, "#") && len(c) == 7 {
@@ -1376,7 +1342,6 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		a.Cfg.AccentColor = c
 	}
-	voiceGlobalReapply(a) // 全局语音输入法：开关/模式热生效（装卸钩子；非桌面壳为空操作）
 	if body.SnapshotDays != nil && (*body.SnapshotDays > 0 || *body.SnapshotDays == -1) {
 		a.Cfg.SnapshotDays = *body.SnapshotDays
 	}
@@ -1427,47 +1392,6 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.syncRemoteAccess()
 	}
 	a.handleGetConfig(w, r)
-}
-
-// handleVoiceGlobalStart 页面内转发入口：焦点不在主/子输入框时，语音组件的
-// 快捷键引擎 POST 到这里（与系统钩子同一 toggle 语义）。仅桌面壳可用。
-func (a *App) handleVoiceGlobalStart(w http.ResponseWriter, r *http.Request) {
-	if !voiceGlobalSupported() {
-		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
-		return
-	}
-	voiceGlobalToggle()
-	writeJSON(w, 200, map[string]any{"ok": 1})
-}
-
-// handleVoiceGlobalStop 只停不 toggle：页面内听写开启前静默收掉全局会话
-// （防双录：全局浮窗开着时用户切回输入框按快捷键的场景）。
-func (a *App) handleVoiceGlobalStop(w http.ResponseWriter, r *http.Request) {
-	if !voiceGlobalSupported() {
-		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
-		return
-	}
-	voiceGlobalStopSession()
-	writeJSON(w, 200, map[string]any{"ok": 1})
-}
-
-// handleVoiceGlobalFinish 胶囊浮窗页收尾回传：校验会话代数后写剪贴板并模拟
-// Ctrl+V 粘贴到触发时记录的目标窗口（拉不回前台/目标已亡则仅复制）。
-func (a *App) handleVoiceGlobalFinish(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text  string `json:"text"`
-		Epoch int64  `json:"epoch"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, 400, "请求体不是合法 JSON")
-		return
-	}
-	if !voiceGlobalSupported() {
-		writeErr(w, 400, "全局语音输入法仅支持 Windows 桌面版")
-		return
-	}
-	voiceGlobalFinish(body.Text, body.Epoch)
-	writeJSON(w, 200, map[string]any{"ok": 1})
 }
 
 // ---------- 演示记录器端点（用户直控：输入框旁的录制按钮，见 recorder.go） ----------

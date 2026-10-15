@@ -1667,8 +1667,8 @@ function applyAccent(color, hover, save) {
   accentStyleEl.textContent = ':root{--accent:' + color + ';--accent-hover:' + hover + ';}';
   if (save) {
     lsSet('jx.accent', color + '|' + hover);
-    // 同步写主程序配置：全局语音浮窗等独立 WebView 环境读不到本页
-    // localStorage，从 /api/config 的 accentColor 取色（fire-and-forget）
+    // 同步写主程序配置：独立 WebView 环境读不到本页 localStorage，
+    // 从 /api/config 的 accentColor 取色（fire-and-forget）
     fetch('/api/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accentColor: color }),

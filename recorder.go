@@ -97,8 +97,8 @@ func recorderRecentDirs(ws string, n int) []string {
 }
 
 // recorderShutdown 进程收尾兜底：还在录就停录（保存 audio.wav）并生成
-// INDEX.md，避免中途退出丢掉整段材料。桌面壳退出路径调用
-//（voiceGlobalShutdown 同款位置）；没在录时是空操作。此处不做语音转写
+// INDEX.md，避免中途退出丢掉整段材料。桌面壳退出路径调用；没在录时
+// 是空操作。此处不做语音转写
 //（可能涉网络与耗时，留给停录端点与将来的补转端点）。
 func recorderShutdown() {
 	stats, err := recorderStop()

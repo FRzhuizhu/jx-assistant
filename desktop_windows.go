@@ -337,10 +337,6 @@ func runDesktop(app *App, url string) error {
 			sep = "&"
 		}
 		w.Navigate(url + sep + "shell=desktop")
-		// 全局语音输入法（voiceglobal_windows.go）：桌面壳专属，按配置装常驻
-		// 钩子（默认鼠标侧键，任意位置听写→胶囊浮窗→粘贴/复制）；窗口关闭
-		// 随进程卸载。每轮前端重建都会重调（幂等：已装则只刷新模式）。
-		voiceGlobalApply(app, url)
 		if secs, err := strconv.Atoi(os.Getenv("JX_DESKTOP_AUTOCLOSE")); err == nil && secs > 0 {
 			// 每一轮前端都各自布防（热重启换了窗口句柄，只布防首轮会让
 			// 新窗口永远等不到关窗指令）。
@@ -352,7 +348,6 @@ func runDesktop(app *App, url string) error {
 			}()
 		}
 		w.Run()
-		voiceGlobalShutdown() // 桌面窗口关闭：卸全局钩子（浏览器/远程端不受影响）
 		recorderShutdown()    // 还在录演示就停录收尾（保 audio.wav、生成 INDEX.md）
 		// 收尾在 UI 线程（Run 返回处即主线程）：关面板与主控的 COM Close，
 		// 让两棵浏览器进程树真正退场（GPU/句柄全释放），再拆窗口句柄。

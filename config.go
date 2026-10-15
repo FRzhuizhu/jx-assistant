@@ -120,13 +120,8 @@ type Config struct {
 	// SpeechRecognition，都不读这份配置）；接入后 recorder.go 的
 	// activeSpeechTranscriber 读这里。
 	SpeechAPI map[string]string `json:"speechApi,omitempty"`
-	// 全局语音输入法（voiceglobal_windows.go）：桌面壳常驻低级钩子（默认鼠标
-	// 侧键），在软件对话框之外的任意位置（含其他程序）触发胶囊浮窗听写，
-	// 结束自动粘贴/复制。Enabled=nil 表示配置未写过该键＝默认开启（显式
-	// false 才是关闭）；Mode：tap=点按切换（默认）｜hold=按住说话。
-	VoiceGlobal VoiceGlobalCfg `json:"voiceGlobal,omitempty"`
-	// 主题色（#rrggbb）：设置页换点缀色时同步写进来，全局语音浮窗等独立
-	// WebView 环境（读不到主界面 localStorage）从 /api/config 取它上色。
+	// 主题色（#rrggbb）：设置页换点缀色时同步写进来，独立 WebView 环境
+	//（读不到主界面 localStorage）可从 /api/config 取它上色。
 	AccentColor string `json:"accentColor,omitempty"`
 	// 询问提醒（设置·常规）：提问/审批卡等待达到 AfterSec 仍未答（且用户未
 	// 停表）时声光提醒——系统叮一声 + 全屏颜色闪烁 + 语音组件朗读 Text
@@ -196,15 +191,6 @@ func (c *Config) queueAutoSendOn() bool {
 		return true
 	}
 	return c.QueueAutoSend == nil || *c.QueueAutoSend
-}
-
-// VoiceGlobalCfg 全局语音输入法配置段（Enabled=nil＝默认开启；Mode tap/hold；
-// Kbd＝页面同步来的键盘快捷键组合，nil＝默认独按 Alt——每个元素是一组组合键，
-// 组合内是组件 normKey 同款键名：ctrl/alt/shift/meta/space/单字母数字/F1..F12）。
-type VoiceGlobalCfg struct {
-	Enabled *bool      `json:"enabled,omitempty"`
-	Mode    string     `json:"mode,omitempty"` // tap（默认）| hold
-	Kbd     [][]string `json:"kbd,omitempty"`
 }
 
 // RemoteAccessCfg 的 Host/Port 默认指向已跑通的 210 网关；MyID 与聊天服务的
