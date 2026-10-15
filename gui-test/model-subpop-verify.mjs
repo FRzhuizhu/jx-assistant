@@ -1,16 +1,24 @@
 // 模型菜单思考档位二级浮窗验证（web/app-chat.js renderModelPop + syncModelSubPop）：
 // 自包含——需要时自动构建隔离实例（mock 模型、独立 data/工作区，落 .jxai/tmp）
 // 并拉起无头 Edge（CDP 9223，沿用 cdp.mjs 约定）。断言与截图落
-// gui-test-screenshots/modelsub-*。用例：
-//   A 打开模型菜单：面板可见、无内嵌档位残留（不再有 .mp-levels/.mp-lv 在主列表里）
-//   B 点带档位的模型行：二级浮窗 #model-sub-pop 显示、贴该行右侧、垂直对齐、
-//     行标 exp、内容=「默认（跟随服务）」+ 该模型档位
-//   C 点档位「思考·低」：双面板都收起、芯片文案带「思考·低」
-//   D 重新打开菜单：上次展开状态保留，二级浮窗自动弹出且 .on=思考·低；
-//     再点同一行 = 收起（toggle）
-//   E 窄视口（420px）：二级浮窗仍完整落在视口内（右侧放不下自动翻左侧）
+// gui-test-screenshots/modelsub-*。交互模型（2026-10 改版）：
+//   桌面悬停整行 = 右侧浮出该行的思考档位；悬停无档位行 = 收起；
+//   点行任意处 = 选中该模型并整体收起（不再顺带弹二级菜单——旧版点击会 toggle，
+//   连点两下互相抵消出现「关不掉」）；点行尾箭头(.lv-hit) = 手动开合档位浮窗；
+//   在未选中的模型行上点档位 = 一并选中该模型再定档。
+// 用例：
+//   A 打开模型菜单：面板可见、无内嵌档位残留、二级浮窗默认收起
+//   B 悬停带档位的模型行：二级浮窗显示、贴行右侧、行标 exp、内容正确；
+//     悬停无档位行 → 浮窗收起
+//   C 点档位「思考·低」：双面板都收起、芯片文案 = 模型名 + 思考·低
+//   D 重开菜单：不幽灵弹出上次的浮窗；点行主体 = 选中并整体收起（切到 DeepSeek）
+//   E 点箭头展开；移开指针 250ms 自动收起；在未选中行(GLM)点「思考·高」→ 一并选中并收起
+//   F 点另一行箭头浮窗切档；桌面已展开行再点箭头保持展开；点行主体=选中并收起
+//     （触屏 hover:none 分支无法在无头桌面模拟：本机 Edge setEmulatedMedia 不支持
+//      hover/pointer 特性，点行收起与箭头展开路径已由 D/E/F 覆盖，真机另验收）
+//   G 窄视口（420px）：浮窗仍完整落在视口内（右侧放不下翻到菜单左缘外）
 // 运行：仓库根目录 node gui-test/model-subpop-verify.mjs
-import { newTab, read, click, shot, center, sleep, closeTab } from './cdp.mjs';
+import { newTab, read, click, shot, sleep, closeTab } from './cdp.mjs';
 import { mkdirSync, writeFileSync, rmSync, accessSync } from 'node:fs';
 import { spawn, execSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -42,6 +50,7 @@ async function up() {
     writeFileSync(join(TMP, 'config.json'), JSON.stringify({
       port: PORT, bindHost: '127.0.0.1',
       baseURL: 'mock', apiKey: '', model: 'glm-5.3',
+      wizardDone: true, // 首启接入向导不弹（弹了会挡住输入区，点不到模型芯片）
       providers: [{
         id: 'mock', name: 'Mock 服务', baseURL: 'mock', apiKey: '',
         models: [
@@ -90,20 +99,42 @@ async function clickEl(c, expr) {
   await click(c, b.x, b.y);
   return b;
 }
+// 真实移动鼠标（两步：先跳远点再移到目标，保证产生 hover 进入事件）
+async function moveTo(c, x, y) {
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 8 });
+  await sleep(60);
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y) });
+  await sleep(200);
+}
 const state = (c) => read(c, `(() => ({
   mainOpen: !document.getElementById('model-pop').classList.contains('hidden'),
   subOpen: !document.getElementById('model-sub-pop').classList.contains('hidden'),
   inlineLv: !!document.querySelector('#model-pop .mp-levels, #model-pop .mp-lv'),
+}))()`);
+const flyout = (c, key) => read(c, `(() => {
+  const sub = document.getElementById('model-sub-pop');
+  const pop = document.getElementById('model-pop');
+  const row = document.querySelector('#model-pop .model-item[data-key="${key}"]');
+  const sr = sub.getBoundingClientRect(), rr = row.getBoundingClientRect(), pr = pop.getBoundingClientRect();
+  return { open: !sub.classList.contains('hidden'), rowExp: row.classList.contains('exp'),
+    items: [...sub.querySelectorAll('.mp-lv')].map((x) => x.textContent.trim()),
+    onItem: (sub.querySelector('.mp-lv.on') || {}).textContent || '',
+    gap: sr.left - rr.right, subR: sr.right, subTop: sr.top, rowTop: rr.top, menuL: pr.left, menuR: pr.right,
+    overlapY: sr.top <= rr.bottom && sr.bottom >= rr.top,
+    coversMenu: sr.left < pr.right - 2 && sr.right > pr.left + 2 };
 })()`);
 
 async function main() {
   await up();
-  // 选一个档位多的模型（内置 glm-5.3 有 4 档；没有就退而求其次取第一个有档位的）
   const models = (await (await fetch(BASE + '/api/models')).json()).models || [];
   const target = models.find((m) => (m.reasoningLevels || []).length >= 3)
     || models.find((m) => (m.reasoningLevels || []).length > 0);
-  if (!target) throw new Error('mock 模型清单里没有带思考档位的模型');
+  const plain = models.find((m) => !(m.reasoningLevels || []).length);
+  if (!target || !plain) throw new Error('mock 模型清单里缺带档位/无档位的模型');
   const key = target.providerId + '|' + target.modelId;
+  const plainKey = plain.providerId + '|' + plain.modelId;
+  const rowExpr = `document.querySelector('#model-pop .model-item[data-key="${key}"]')`;
+  const LV_LABEL = { enabled: '思考·开', disabled: '思考·关', low: '思考·低', medium: '思考·中', high: '思考·高', max: '思考·深' };
 
   const t = await newTab(BASE + '/', 1280, 900);
   try {
@@ -114,78 +145,122 @@ async function main() {
     await sleep(350);
     const a = await state(t);
     ok('A1 模型面板打开', a.mainOpen, '');
-    ok('A2 主列表里不再有内嵌档位（.mp-levels/.mp-lv）', !a.inlineLv, '');
+    ok('A2 主列表里没有内嵌档位（.mp-levels/.mp-lv）', !a.inlineLv, '');
     ok('A3 打开时二级浮窗默认收起', !a.subOpen, '');
 
-    // ---------- B 点带档位的模型行 ----------
-    const rowExpr = `document.querySelector('#model-pop .model-item[data-key="${key}"]')`;
-    const rowBox = await clickEl(t, rowExpr);
-    await sleep(350);
-    const b = await read(t, `(() => {
-      const sub = document.getElementById('model-sub-pop');
-      const row = document.querySelector('#model-pop .model-item[data-key="${key}"]');
-      const sr = sub.getBoundingClientRect(), rr = row.getBoundingClientRect();
-      return { open: !sub.classList.contains('hidden'), rowExp: row.classList.contains('exp'),
-        items: [...sub.querySelectorAll('.mp-lv')].map((x) => x.textContent.trim()),
-        onItem: (sub.querySelector('.mp-lv.on') || {}).textContent || '',
-        gap: sr.left - rr.right, subTop: sr.top, rowTop: rr.top,
-        overlapY: sr.top <= rr.bottom && sr.bottom >= rr.top };
-    })()`);
-    ok('B1 二级浮窗弹出', b.open, '');
-    ok('B2 浮窗贴该行右侧（0~6px）', b.gap >= 0 && b.gap <= 6, `gap=${b.gap.toFixed(1)}`);
+    // ---------- B 悬停整行 → 浮窗弹出；悬停无档位行 → 收起 ----------
+    const rb = await read(t, `(() => { const r = document.querySelector('#model-pop .model-item[data-key="${key}"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await moveTo(t, rb.x, rb.y);
+    const b = await flyout(t, key);
+    ok('B1 悬停整行二级浮窗弹出', b.open, '');
+    ok('B2 浮窗贴行右侧或菜单左缘外侧（不压菜单）',
+      (b.gap >= 0 && b.gap <= 6) || (b.gap < 0 && b.subR <= b.menuL + 6),
+      `gap=${b.gap.toFixed(1)} subR=${b.subR.toFixed(0)} menuL=${b.menuL.toFixed(0)}`);
+    ok('B2b 浮窗不覆盖主面板任何一行', !b.coversMenu, '');
     ok('B3 浮窗与行垂直方向有交集', b.overlapY, `subTop=${b.subTop.toFixed(0)} rowTop=${b.rowTop.toFixed(0)}`);
     ok('B4 行带 exp 高亮', b.rowExp, '');
-    const want = ['默认（跟随服务）', ...(target.reasoningLevels || [])];
-    const labels = b.items.map((s) => s.replace(/^思考·/, '').replace('（跟随服务）', '（跟随服务）'));
-    ok('B5 内容=默认 + ' + target.reasoningLevels.join('/') + '（思考· 前缀）',
+    const want = ['默认（跟随服务）', ...(target.reasoningLevels || []).map((x) => LV_LABEL[x] || x)];
+    ok('B5 内容=默认 + ' + (target.reasoningLevels || []).map((x) => LV_LABEL[x] || x).join('/'),
       b.items[0] === '默认（跟随服务）' && b.items.length === want.length, JSON.stringify(b.items));
-    await shot(t, join(SCREEN, 'modelsub-1-flyout.png'));
+    await shot(t, join(SCREEN, 'modelsub-1-hover.png'));
+    const rp = await read(t, `(() => { const r = document.querySelector('#model-pop .model-item[data-key="${plainKey}"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await moveTo(t, rp.x, rp.y);
+    ok('B6 悬停无档位行浮窗收起', !(await state(t)).subOpen, '');
 
-    // ---------- C 点「思考·低」 ----------
-    const low = (target.reasoningLevels || []).includes('low')
-      ? (target.reasoningLevels || []).find((x) => x === 'low')
-      : (target.reasoningLevels || [])[0];
-    const lowLabel = { enabled: '思考·开', disabled: '思考·关', low: '思考·低', medium: '思考·中', high: '思考·高', max: '思考·深' }[low];
+    // ---------- C 点「思考·低」：一并选中该模型并定档，双面板收起 ----------
+    await moveTo(t, rb.x, rb.y);
+    const low = (target.reasoningLevels || []).includes('low') ? 'low' : (target.reasoningLevels || [])[0];
+    const lowLabel = LV_LABEL[low];
     await clickEl(t, `[...document.querySelectorAll('#model-sub-pop .mp-lv')].find((x) => x.textContent.trim() === ${JSON.stringify(lowLabel)})`);
     await sleep(400);
     const c1 = await state(t);
-    ok('C1 选档位后主面板收起', !c1.mainOpen, '');
-    ok('C2 选档位后二级浮窗收起', !c1.subOpen, '');
+    ok('C1 定档后主面板收起', !c1.mainOpen, '');
+    ok('C2 定档后二级浮窗收起', !c1.subOpen, '');
     const chip = await read(t, `document.getElementById('model-chip-label').textContent`);
-    ok('C3 芯片文案带档位「' + lowLabel + '」', chip.includes(lowLabel), chip);
+    ok('C3 芯片文案=模型名+「' + lowLabel + '」', chip.includes(lowLabel) && chip.includes(target.modelName || target.modelId), chip);
 
-    // ---------- D 重开菜单：展开状态保留 + toggle ----------
+    // ---------- D 重开：不幽灵弹出；点行主体 = 选中并整体收起 ----------
+    await moveTo(t, 8, 8);
     await clickEl(t, `document.getElementById('model-chip')`);
-    await sleep(500);
-    const d = await read(t, `(() => {
-      const sub = document.getElementById('model-sub-pop');
-      return { open: !sub.classList.contains('hidden'),
-        onItem: (sub.querySelector('.mp-lv.on') || {}).textContent || '',
-        selKey: (document.querySelector('#model-pop .model-item.sel') || {}).dataset || null };
-    })()`);
-    ok('D1 重开菜单二级浮窗自动弹出（保留上次展开）', d.open, '');
-    ok('D2 档位选中项=' + lowLabel, d.onItem === lowLabel, d.onItem);
-    ok('D3 选中模型行 sel', d.selKey && d.selKey.key === key, d.selKey && d.selKey.key);
-    await shot(t, join(SCREEN, 'modelsub-2-reopen-on.png'));
-    await clickEl(t, rowExpr);
-    await sleep(300);
-    ok('D4 再点同一行 = 收起浮窗（toggle）', !(await state(t)).subOpen, '');
+    await sleep(400);
+    const d0 = await state(t);
+    ok('D1 重开菜单不幽灵弹出上次浮窗', d0.mainOpen && !d0.subOpen, '');
+    const dsKey = models.find((m) => m.modelId === 'deepseek-v4-pro');
+    if (dsKey) {
+      const chip0 = await read(t, `document.getElementById('model-chip-label').textContent`);
+      await clickEl(t, `document.querySelector('#model-pop .model-item[data-key="${dsKey.providerId}|${dsKey.modelId}"]')`);
+      await sleep(350);
+      const d1 = await state(t);
+      ok('D2 点行主体=选中并整体收起（主面板）', !d1.mainOpen, '');
+      ok('D3 点行主体不弹二级浮窗', !d1.subOpen, '');
+      const chip1 = await read(t, `document.getElementById('model-chip-label').textContent`);
+      ok('D4 芯片切到 DeepSeek-V4-Pro', chip1.includes('DeepSeek-V4-Pro') && !chip1.includes(chip0), chip1);
+    }
 
-    // ---------- E 窄视口：浮窗完整落在视口内 ----------
+    // ---------- E 点箭头展开；移开指针自动收起；未选中行上定档=一并选中 ----------
+    await moveTo(t, 8, 8); // 先把指针挪远：菜单打开位置不压指针，避免合成悬停误弹
+    await clickEl(t, `document.getElementById('model-chip')`);
+    await sleep(350);
+    await clickEl(t, `document.querySelector('#model-pop .model-item[data-key="${key}"] .lv-hit')`);
+    await sleep(300);
+    const e1 = await flyout(t, key);
+    ok('E1 点箭头二级浮窗弹出（行 exp）', e1.open && e1.rowExp, JSON.stringify(e1.items));
+    await moveTo(t, 8, 8); // 指针离开面板 → 延迟收起
+    await sleep(450);
+    ok('E2 指针移开后浮窗自动收起（250ms 计时）', !(await state(t)).subOpen, '');
+    // E1 的 clickE 里 scrollIntoView 可能把菜单滚过，行坐标一律现取现用（rb 只在 B/C 段内有效）
+    const rowCenter = (k) => read(t, `(() => { const r = document.querySelector('#model-pop .model-item[data-key="${k}"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    const rc = await rowCenter(key);
+    await moveTo(t, rc.x, rc.y); // 悬停重新展开，直接在未选中的行上定档
+    await sleep(250);
+    const high = (target.reasoningLevels || []).includes('high') ? '思考·高' : e1.items[e1.items.length - 1];
+    await clickEl(t, `[...document.querySelectorAll('#model-sub-pop .mp-lv')].find((x) => x.textContent.trim() === ${JSON.stringify(high)})`);
+    await sleep(400);
+    const e2 = await state(t);
+    const chip2 = await read(t, `document.getElementById('model-chip-label').textContent`);
+    ok('E3 未选中行定档=一并选中并收起', !e2.mainOpen && !e2.subOpen && chip2.includes(target.modelName || target.modelId) && chip2.includes(high), chip2);
+
+    // ---------- F 箭头切换与桌面语义 ----------
+    // 注：触屏分支（hover:none 下箭头=开合开关、悬停不弹）无法在无头桌面验证——
+    // 本机 Edge 的 Emulation.setEmulatedMedia 不支持 hover/pointer 特性（已实测）。
+    // 点行=选中并收起与设备无关（D 段已测），箭头展开路径与触屏共用（下面覆盖切换分支）。
+    await moveTo(t, 8, 8);
+    await clickEl(t, `document.getElementById('model-chip')`);
+    await sleep(300);
+    const dsExpr = `document.querySelector('#model-pop .model-item[data-key="mock|deepseek-v4-pro"] .lv-hit')`;
+    await clickEl(t, dsExpr); // GLM 展开着（悬停）时点 DeepSeek 的箭头 → 浮窗切到 DeepSeek
+    await sleep(300);
+    const f1 = await read(t, `(() => ({
+      subOpen: !document.getElementById('model-sub-pop').classList.contains('hidden'),
+      items: [...document.querySelectorAll('#model-sub-pop .mp-lv')].map((x) => x.textContent.trim()),
+    }))()`);
+    ok('F1 点另一行箭头浮窗切到该行档位', f1.subOpen && f1.items.includes('思考·关') && !f1.items.includes('思考·高'), JSON.stringify(f1.items));
+    await clickEl(t, dsExpr); // 桌面分支：已展开的行再点箭头 = 保持展开（不误收）
+    await sleep(300);
+    ok('F2 桌面上已展开行再点箭头保持展开', (await state(t)).subOpen, '');
+    await shot(t, join(SCREEN, 'modelsub-2-caret-switch.png'));
+    await clickEl(t, `document.querySelector('#model-pop .model-item[data-key="mock|deepseek-v4-pro"]')`); // 点行主体收起
+    await sleep(350);
+    const f3 = await state(t);
+    ok('F3 点行主体=选中并整体收起', !f3.mainOpen && !f3.subOpen, '');
+
+    // ---------- G 窄视口：浮窗完整落在视口内 ----------
     await t.send('Emulation.setDeviceMetricsOverride', { width: 420, height: 800, deviceScaleFactor: 1, mobile: false });
     await sleep(300);
-    await clickEl(t, rowExpr);
+    await moveTo(t, 8, 8);
+    await clickEl(t, `document.getElementById('model-chip')`);
+    await sleep(300);
+    await clickEl(t, `document.querySelector('#model-pop .model-item[data-key="${key}"] .lv-hit')`);
     await sleep(350);
-    const e = await read(t, `(() => {
+    const g = await read(t, `(() => {
       const sub = document.getElementById('model-sub-pop');
-      const row = document.querySelector('#model-pop .model-item[data-key="${key}"]');
-      const sr = sub.getBoundingClientRect(), rr = row.getBoundingClientRect();
+      const sr = sub.getBoundingClientRect();
       return { open: !sub.classList.contains('hidden'), l: sr.left, r: sr.right, t: sr.top, b: sr.bottom,
-        vw: window.innerWidth, vh: window.innerHeight, rowL: rr.left, rowR: rr.right };
+        vw: window.innerWidth, vh: window.innerHeight };
     })()`);
-    ok('E1 窄视口浮窗仍显示', e.open, '');
-    ok('E2 浮窗完整在视口内', e.l >= 0 && e.r <= e.vw && e.t >= 0 && e.b <= e.vh,
-      `l=${e.l.toFixed(0)} r=${e.r.toFixed(0)} vw=${e.vw}`);
+    ok('G1 窄视口浮窗仍显示', g.open, '');
+    ok('G2 浮窗完整在视口内', g.l >= 0 && g.r <= g.vw && g.t >= 0 && g.b <= g.vh,
+      `l=${g.l.toFixed(0)} r=${g.r.toFixed(0)} vw=${g.vw}`);
     await shot(t, join(SCREEN, 'modelsub-3-narrow.png'));
   } finally {
     await closeTab(t);
