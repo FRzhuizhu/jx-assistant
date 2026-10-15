@@ -45,6 +45,7 @@ type App struct {
 	apiMux           *http.ServeMux      // call_api 进程内直调用的完整路由缓存（callapi.go，懒建）
 	apiMetas         []apiMeta           // 对 AI 开放的接口目录（注册顺序，callapi.go）
 	apiMetaByPattern map[string]apiMeta  // pattern→ 元数据（callapi.go，与 apiMetas 同源）
+	apiCatalogCache  string              // 完整目录文本的渲染缓存（注册表启动后不变，callapi.go）
 	apiMetaMu        sync.Mutex          // 上述字段的锁（registerRoutes 期间不与 a.mu 互斥）
 
 	mu              sync.Mutex

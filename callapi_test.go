@@ -1,11 +1,13 @@
 package main
 
 // call_api 的验收测试：
-//  1. 目录按权限档过滤（只读只见只读接口；⚠ 标记危险接口）；
+//  1. 完整目录：全档接口都在（不按会话档位过滤）、每条标注最低权限档；
+//     ⚠ 标记危险接口；
 //  2. 直调真的打到 handler（GET /api/modes 返回与前端同一份模式清单）；
 //  3. 未开放接口与低档位调用被拒（目录闸 + 权限闸）；
 //  4. 危险接口走审批卡：用户拒绝则取消、批准才执行（真的删掉会话）；
-//  5. 工具注册与模式集（assistant/task 有、aux 无），环境快照注入目录区块。
+//  5. 工具注册与模式集（仅 assistant 注入），工具说明携带完整目录，环境
+//     快照不再渲染「可调接口」区块。
 
 import (
 	"context"
@@ -25,31 +27,27 @@ func mkCallAPISession(t *testing.T, a *App, id, perm string) *toolContext {
 	return &toolContext{app: a, sess: m, emit: func(Event) {}, ctx: context.Background()}
 }
 
-// ① 目录按档位过滤；危险接口带 ⚠。
-func TestCallAPICatalogByPerm(t *testing.T) {
+// ① 完整目录：各档接口齐全（档位差异由调用时的权限闸校验，目录不过滤），
+// 每条标注最低权限档；危险接口带 ⚠。
+func TestCallAPICatalogFull(t *testing.T) {
 	a, _ := newDispatchTestApp(t)
-	ro := a.apiCatalogText(permReadOnly)
-	ws := a.apiCatalogText(permWorkspace)
-	full := a.apiCatalogText(permFull)
+	cat := a.apiCatalogText()
 
-	if !strings.Contains(ro, "GET /api/status") || !strings.Contains(ro, "GET /api/sessions") {
-		t.Fatalf("只读目录应含只读接口：\n%s", ro)
+	// 各档接口齐全：只读 / 读写 / 完全访问 / 危险各至少一条
+	for _, want := range []string{"GET /api/status", "POST /api/sessions [", "POST /api/config [", "DELETE /api/sessions/{id} ["} {
+		if !strings.Contains(cat, want) {
+			t.Fatalf("完整目录应含 %s：\n%s", want, cat)
+		}
 	}
-	if strings.Contains(ro, "POST /api/sessions ") || strings.Contains(ro, "DELETE /api/sessions/{id}") {
-		t.Fatalf("只读目录不该含写接口：\n%s", ro)
+	// 每条都标注最低权限档（三档之一）
+	for _, l := range strings.Split(cat, "\n") {
+		if !strings.Contains(l, "[只读]") && !strings.Contains(l, "[工作区内读写]") && !strings.Contains(l, "[完全访问]") {
+			t.Fatalf("目录每行都应标注最低权限档，got：%q", l)
+		}
 	}
-	if !strings.Contains(ws, "POST /api/sessions ") {
-		t.Fatalf("读写目录应含 POST /api/sessions：\n%s", ws)
-	}
-	if strings.Contains(ws, "POST /api/config") {
-		t.Fatalf("读写目录不该含完全访问接口（POST /api/config）：\n%s", ws)
-	}
-	if !strings.Contains(full, "POST /api/config") {
-		t.Fatalf("完全访问目录应含 POST /api/config：\n%s", full)
-	}
-	// 危险标记：DELETE 会话在 ws 目录里可见但要带 ⚠（调用前审批）
+	// 危险标记：DELETE 会话带 ⚠（调用前审批）
 	line := ""
-	for _, l := range strings.Split(ws, "\n") {
+	for _, l := range strings.Split(cat, "\n") {
 		if strings.Contains(l, "DELETE /api/sessions/{id}") {
 			line = l
 		}
@@ -197,30 +195,36 @@ func resolveFirstApproval(t *testing.T, a *App, approved bool) {
 	t.Fatal("审批卡没有出现（危险接口调用应触发 requestApproval）")
 }
 
-// ⑤ 工具注册与模式集；环境快照注入目录。
+// ⑤ 工具注册与模式集（仅 assistant 注入）；工具说明携带完整目录；环境快照
+// 不再渲染「可调接口」区块（目录已挪进工具定义）。
 func TestCallAPIToolRegistrationAndEnv(t *testing.T) {
 	a, _ := newDispatchTestApp(t)
 	if !toolNames(t, a, "assistant")["call_api"] {
 		t.Fatal("数字助理应有 call_api")
 	}
-	if !toolNames(t, a, "task")["call_api"] {
-		t.Fatal("任务会话应有 call_api")
+	// 其余模式一律不注入（范围收窄：界面级接口操作归总控编排）
+	for _, mode := range []string{"task", "office", "coding", "beginner-coding", "skill-create", "aux"} {
+		if toolNames(t, a, mode)["call_api"] {
+			t.Fatalf("%s 模式不该有 call_api（只在 assistant 注入）", mode)
+		}
 	}
-	if toolNames(t, a, "aux")["call_api"] {
-		t.Fatal("辅助对话（只读答疑）不该有 call_api")
+	// 工具说明携带完整目录（含档位标注与 ⚠，运行时按会话档位校验）
+	desc := ""
+	for _, tl := range a.toolsFor("assistant") {
+		if tl.Spec.Function.Name == "call_api" {
+			desc = tl.Spec.Function.Description
+		}
 	}
-	// 环境快照：执行类模式注入「可调接口」区块，aux 不注入
-	env := a.envPrompt(&SessionMeta{Mode: "task", Permission: permWorkspace, Workspace: a.Cfg.Workspace})
-	if !strings.Contains(env, "可调接口") || !strings.Contains(env, "GET /api/status") {
-		t.Fatalf("任务会话环境快照应含可调接口目录：\n%s", env)
+	for _, want := range []string{"GET /api/status [只读]", "POST /api/sessions [工作区内读写]", "⚠ DELETE /api/sessions/{id}"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("call_api 工具说明应含完整目录（%s）：\n%s", want, desc)
+		}
 	}
-	envAux := a.envPrompt(&SessionMeta{Mode: "aux", Permission: permReadOnly, Workspace: a.Cfg.Workspace})
-	if strings.Contains(envAux, "可调接口") {
-		t.Fatal("aux 会话不该注入可调接口目录（没有 call_api 工具）")
-	}
-	// 只读会话的目录不含写接口
-	envRO := a.envPrompt(&SessionMeta{Mode: "task", Permission: permReadOnly, Workspace: a.Cfg.Workspace})
-	if strings.Contains(envRO, "POST /api/sessions ") {
-		t.Fatal("只读会话的目录不该含写接口")
+	// 环境快照：所有模式都不再渲染接口目录区块
+	for _, mode := range []string{"assistant", "task", "aux"} {
+		env := a.envPrompt(&SessionMeta{Mode: mode, Permission: permWorkspace, Workspace: a.Cfg.Workspace})
+		if strings.Contains(env, "可调接口") || strings.Contains(env, "GET /api/status") {
+			t.Fatalf("%s 模式环境快照不该再含接口目录：\n%s", mode, env)
+		}
 	}
 }

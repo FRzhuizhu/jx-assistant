@@ -1349,7 +1349,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `browser_panel_windows.go` | 桌面右栏原生浏览器面板：第二个 WebView2 控件 + 控件级官方 CDP 通道 + 矩形同步 |
 | `tool_browser.go` | browser_* 九件工具（形态无关，作用于 browserTarget） |
 | `assistant.go` | 数字助理总控：编排工具 + 会话压缩摘要（建会话/模型选择走 sessioncreate.go 的 service） |
-| `callapi.go` | call_api 通用直通工具：路由元数据注册表（server.go apiRoute 注册即元数据，AI 可调接口目录是注册的副产品）+ 进程内直调执行器（httptest Recorder 打到与前端同一 mux）+ 按会话权限档过滤与危险接口审批；环境快照「可调接口」区块的渲染 |
+| `callapi.go` | call_api 通用直通工具（仅 assistant 模式注入）：路由元数据注册表（server.go apiRoute 注册即元数据，AI 可调接口目录是注册的副产品）+ 进程内直调执行器（httptest Recorder 打到与前端同一 mux）+ 最低权限档标注与危险接口审批（调用时按会话档位校验）；完整目录渲染进 call_api 工具定义（含档位与 ⚠ 标记，进程内缓存） |
 | `sessioncreate.go` | 建会话/改权限的 service 单源：createSession（HTTP 人工建会话、dispatch_task、dispatch_sub 三入口共用：模式/权限默认、能力默认、分支克隆、历史继承（失败回滚）、skill-create 演示材料兜底）+ applyPermissionChange（权限档落装与能力联动，人工 PATCH 与 send_to_session 共用） |
 | `historytools.go` | 跨会话历史查询工具（search / read_session_messages） |
 | `context.go` | 上下文组装管线（环境快照**追加式**：首条整份、后续按行差分为短更新，已发送前缀绝不改写）+ 规则压缩 + 模型摘要 + 溢出兜底 |
@@ -1375,7 +1375,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 
 ## 前后端接口
 
-下表是人类（前端）使用的接口。**AI 另有一条通用直通通道**：call_api 工具（assistant 与全部任务模式可用，aux 无）——同一批接口按「注册即元数据」开放（server.go 的 .apiRoute(..., apiMeta{...})，元数据缺席=不对 AI 开放；SSE 流、multipart 上传、二进制下载、组件桥等不适合同步直调的保持关闭），进程内直调与前端同一 handler（见 callapi.go）；目录经环境快照「可调接口」区块按会话权限档过滤下发，危险接口（删除/清空类）调用前走审批卡。执行类工具与意图工具（dispatch_task 等）不受影响——它们与前端共用 service（sessioncreate.go / deliverToSession / stopRunBy / registerUploadPath / chatModes）。
+下表是人类（前端）使用的接口。**AI 另有一条通用直通通道**：call_api 工具（仅 assistant 模式注入，其余模式一律没有）——同一批接口按「注册即元数据」开放（server.go 的 .apiRoute(..., apiMeta{...})，元数据缺席=不对 AI 开放；SSE 流、multipart 上传、二进制下载、组件桥等不适合同步直调的保持关闭），进程内直调与前端同一 handler（见 callapi.go）；完整目录（每条标注最低权限档与 ⚠ 危险标记）拼在 call_api 工具说明里静态随请求前缀，不进环境快照，会话档位不足在调用时被权限闸拒绝并提示需要的档位，危险接口（删除/清空类）调用前走审批卡。执行类工具与意图工具（dispatch_task 等）不受影响——它们与前端共用 service（sessioncreate.go / deliverToSession / stopRunBy / registerUploadPath / chatModes）。
 
 | 方法与路径 | 说明 |
 |---|---|

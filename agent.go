@@ -184,7 +184,7 @@ const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入�
 - dispatch_task：新建一个**工作任务**（用户任务列表里的顶层会话），把需求交给它**后台**执行；工具立即返回，不阻塞。可选参数与人工在界面新建工作任务一致：模式（mode）、计划模式（plan_mode）、附件（attachments）、权限（permission）、模型（model）——怎么选见下文「怎么选模式与参数」。这是你**唯一**的派发方式。
 - send_to_session：把新需求追加给已有会话并后台执行；同样立即返回。可选 permission 指定这条需求用哪个权限档跑（只能同等或降权）。
 - stop_session：按用户指示停掉一个正在跑的任务会话（等效人工点它的「停止」按钮）。停止是协作式的——当前那一步跑完才真正停下，不是硬杀。
-- call_api：调用本产品的一个 HTTP 接口——**与前端界面调用的完全相同**（进程内直调同一处理器）。可用接口清单在运行环境快照的「可调接口」区块（按你的权限档过滤过；⚠ 标记的删除/清空类接口调用前会弹审批卡）。做没有专用工具的界面级操作时用它：改会话设置（PATCH /api/sessions/{id}）、排队管理（interject/pending）、回答提问（POST /api/questions/{id}）、待办维护、Git 面板只读查询等。
+- call_api：调用本产品的一个 HTTP 接口——**与前端界面调用的完全相同**（进程内直调同一处理器）。完整接口目录就在 call_api 工具的说明里（每条标注最低权限档，本会话档位不足时调用会被拒绝并提示需要的档位；⚠ 标记的删除/清空类接口调用前会弹审批卡）。做没有专用工具的界面级操作时用它：改会话设置（PATCH /api/sessions/{id}）、排队管理（interject/pending）、回答提问（POST /api/questions/{id}）、待办维护、Git 面板只读查询等。
 - deliver_result：把成果文件登记为本对话的交付卡片（用户可下载、可打开）。这是你向用户展示文件成果的唯一入口；登记只做展示，不搬动文件。
 
 ## 怎么选目标
@@ -395,9 +395,11 @@ func (a *App) probeSelfLoc() {
 
 // skillRuntimePromptText 运行时段正文（纯文本构造，便于单测）。既写明
 // 「现在就能用」也写明「不在时会自动装配」——两条都是稳定事实，模型无论
-// 看到哪台机器的形态都不会误去找系统 Python。
+// 看到哪台机器的形态都不会误去找系统 Python。末尾一条工程惯例：中文/引号/
+// JSON 的转义与编码坑集中在脚本语言里处理（脚本本身经 write 落 .jxai/tmp，
+// UTF-8 无 BOM 有保证），PowerShell 只干它擅长的 Windows 原生交互。
 func skillRuntimePromptText(pyExe string) string {
-	return "\n\n## 内置技能运行时\n\n技能运行时随软件内置，无需用户安装环境，也不要去找系统的 python/py（新装机通常只有商店占位符，与能否完成任务无关）：便携 Python 位于 `" + filepath.ToSlash(pyExe) + "`，pdf / ocr / office_skill 技能共用。需要执行 Python 时一律用这个解释器的绝对路径；若该文件尚不存在，先调用 pdf / ocr / office_skill 之一会自动联网装配，装配后仍在原路径；office_skill 的调用结果里还会再给出确切的解释器与结构校验命令。\n"
+	return "\n\n## 内置技能运行时\n\n技能运行时随软件内置，无需用户安装环境，也不要去找系统的 python/py（新装机通常只有商店占位符，与能否完成任务无关）：便携 Python 位于 `" + filepath.ToSlash(pyExe) + "`，pdf / ocr / office_skill 技能共用。需要执行 Python 时一律用这个解释器的绝对路径；若该文件尚不存在，先调用 pdf / ocr / office_skill 之一会自动联网装配，装配后仍在原路径；office_skill 的调用结果里还会再给出确切的解释器与结构校验命令。\n\n涉及中文、引号、JSON 的处理一律优先用 Python（脚本落 .jxai/tmp 再执行）；PowerShell 仅用于 Windows 原生交互（taskkill/服务/注册表等）。\n"
 }
 
 // promptHash 取提示词内容的短指纹（版本行/时间线标识用；非安全用途）。
@@ -466,18 +468,10 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
 		}
 	}
-	// 可调接口目录（call_api 的清单）：从路由注册表自动生成（callapi.go），按
-	// 会话权限档过滤——只列当前档位调得着的；接口增删或权限变化只影响快照
-	// 尾部（环境更新），系统提示词与工具目录的前缀稳定。只给配了 call_api 的
-	// 模式注入（aux 只读答疑没有这个工具，不给空头支票）。
-	if sess.Mode == "assistant" || sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "beginner-coding" || sess.Mode == "skill-create" {
-		if cat := a.apiCatalogText(permModeOf(sess)); cat != "" {
-			b.WriteString("- 可调接口（call_api 进程内直调，与前端界面同一接口；清单已按本会话权限档过滤，⚠=危险接口、调用前弹审批卡请用户确认）：\n")
-			for _, line := range strings.Split(cat, "\n") {
-				b.WriteString("  " + line + "\n")
-			}
-		}
-	}
+	// 可调接口目录（call_api 的清单）已从环境快照挪进 call_api 工具定义
+	//（callapi.go）：接口目录是安装级稳定事实（不随权限/会话变化），静态拼在
+	// 工具说明里随请求前缀稳定命中 KV 缓存；会话档位差异由调用时的权限闸
+	// 校验。环境快照只装易变信息，不再渲染该区块。
 	b.WriteString("- 沙箱拒绝是正常工作方式：命令/写入直接尝试，被拒会得到 [sandbox: … denied under <mode> mode] 标记。若更宽权限能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档：workspace-write / danger-full-access / 文件写边界外用 full）与一句 justification 重试一次；重试会弹审批由用户批准\n")
 	b.WriteString("- 审批卡上用户点「始终允许」= 常设授权：命令升级点亮对应能力开关（如「允许工作区外执行命令」），工作区外写入把会话权限提升为完全访问（捆绑能力一并点亮），之后该类动作不再逐次审批\n")
 	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")

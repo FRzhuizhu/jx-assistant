@@ -13,8 +13,9 @@ package main
 // 三道闸：
 //  1. 目录闸：接口必须在注册表里带元数据（未开放=调不着，报错并指路）；
 //  2. 权限闸：元数据 Perm 是该接口要求的最低会话权限档，会话档位低于即拒绝
-//     （不静默钳制，与派发工具同一口径）；目录本身也按会话档位过滤——环境
-//     快照的「可调接口」区块只列当前档位调得着的；
+//     （不静默钳制，与派发工具同一口径）；完整目录（每条标最低权限档与 ⚠）
+//     拼在 call_api 工具说明里、静态随请求前缀，不按会话档位过滤——档位
+//     差异在调用时由本闸校验并提示需要的档位；
 //  3. 危险闸：Danger 非空（删除/清空/切换分支/立即执行类）的接口调用前走与
 //     文件越权相同的审批卡（App.requestApproval），用户批准才执行；
 //     always=本会话后续免审（与文件授权同一语义）。
@@ -86,35 +87,46 @@ func (a *App) apiMuxOf() *http.ServeMux {
 	return a.apiMux
 }
 
-// apiCatalogText 渲染「可调接口」目录（环境快照区块）：按会话权限档过滤——
-// 只列当前档位调得着的接口；危险接口标 ⚠（调用前会弹审批卡）。顺序即注册
-// 顺序（server.go registerRoutes 的书写序），稳定可读。首次调用会先确保路由
-// 注册完成（懒初始化：测试等没有走过 Routes() 的进程也能拿到完整目录）。
-func (a *App) apiCatalogText(perm string) string {
+// apiCatalogText 渲染完整接口目录（拼进 call_api 工具说明）：每条标注最低
+// 权限档与 ⚠ 危险标记，**不按会话档位过滤**——目录是安装级稳定事实（接口
+// 增删只随版本变化），静态进请求前缀稳定命中 KV 缓存，会话档位差异由
+// runCallAPI 的权限闸在调用时校验（拒绝并提示需要的档位）。顺序即注册
+// 顺序（server.go registerRoutes 的书写序），稳定可读。首次调用会先确保
+// 路由注册完成（懒初始化：测试等没有走过 Routes() 的进程也能拿到完整
+// 目录），渲染结果进程内缓存（注册表启动后不再变化）。
+func (a *App) apiCatalogText() string {
+	a.apiMetaMu.Lock()
+	if cached := a.apiCatalogCache; cached != "" {
+		a.apiMetaMu.Unlock()
+		return cached
+	}
+	a.apiMetaMu.Unlock()
 	a.apiMuxOf()
 	a.apiMetaMu.Lock()
 	metas := append([]apiMeta(nil), a.apiMetas...)
 	a.apiMetaMu.Unlock()
-	rank := sandboxPolicyRank(perm)
-	if rank < 0 || len(metas) == 0 {
+	if len(metas) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for _, m := range metas {
-		if sandboxPolicyRank(m.Perm) > rank {
-			continue
-		}
 		mark := "  "
 		if m.Danger != "" {
 			mark = "⚠ "
 		}
-		line := m.Method + " " + m.Path + " — " + m.Summary
+		line := mark + m.Method + " " + m.Path + " [" + permModeLabel(m.Perm) + "] — " + m.Summary
 		if m.Params != "" {
 			line += "（" + m.Params + "）"
 		}
-		b.WriteString(mark + line + "\n")
+		b.WriteString(line + "\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	out := strings.TrimRight(b.String(), "\n")
+	a.apiMetaMu.Lock()
+	if a.apiCatalogCache == "" {
+		a.apiCatalogCache = out
+	}
+	a.apiMetaMu.Unlock()
+	return out
 }
 
 // apiMetaFor 用 mux 的同款匹配规则（含 {参数} 通配与方法优先级）查一条请求
@@ -133,12 +145,16 @@ func (a *App) apiMetaFor(r *http.Request) (apiMeta, bool) {
 // 窄化请求或专用工具（读会话历史有 read_session_messages 等）。
 const callAPIResultMax = 20000
 
-func callAPITool() Tool {
+// callAPITool 构造 call_api 工具（仅 assistant 模式注入，见 tools.go）。完整
+// 接口目录拼在工具说明里：工具目录与系统提示词同为请求稳定前缀（对 KV 缓存
+// 等价），但目录正是 path/method/params 的取值文档，放在工具自己身上模型
+// 选参时零跳转，也不占其他模式的提示词正文。
+func (a *App) callAPITool() Tool {
 	return Tool{
-		Spec: toolSpec("call_api", "调用本产品的一个 HTTP 接口——与前端界面调用的完全相同（进程内直调同一处理器，不走网络）。可用接口见运行环境快照的「可调接口」区块（已按本会话权限档过滤）；标 ⚠ 的接口（删除/清空类）调用前会弹审批卡，用户批准才执行。path 写完整路径（可带查询串，路径参数直接填实际值，如 /api/sessions/abc123/chat）；GET 之外的请求把 JSON 参数放 params。响应原样返回（状态码+正文，正文超长会截断）。适合做没有专用工具的界面级操作（改会话设置、排队管理、回答提问、待办维护、Git 面板只读查询等）。",
+		Spec: toolSpec("call_api", "调用本产品的一个 HTTP 接口——与前端界面调用的完全相同（进程内直调同一处理器，不走网络）。完整接口目录如下（[档位]=该接口要求的最低会话权限档，本会话档位不足时调用会被拒绝并提示需要的档位；⚠=危险接口，调用前会弹审批卡请用户确认）：\n"+a.apiCatalogText()+"\n\npath 写完整路径（可带查询串，路径参数直接填实际值，如 /api/sessions/abc123/chat）；GET 之外的请求把 JSON 参数放 params。响应原样返回（状态码+正文，正文超长会截断）。适合做没有专用工具的界面级操作（改会话设置、排队管理、回答提问、待办维护、Git 面板只读查询等）。",
 			objSchema(map[string]any{
 				"path":   strProp("接口路径，以 / 开头，可带查询串；路径参数填实际值，如 /api/sessions/{id}/chat 的 id 换成目标会话 id"),
-				"method": strProp("HTTP 方法：GET（默认）/ POST / PATCH / DELETE，与环境快照目录里标的方法一致"),
+				"method": strProp("HTTP 方法：GET（默认）/ POST / PATCH / DELETE，与上方目录里标的方法一致"),
 				"params": strProp("请求体 JSON 对象（GET 忽略；POST/PATCH/DELETE 按各接口的参数说明填）"),
 			}, "path")),
 		Run: runCallAPI,
@@ -175,7 +191,7 @@ func runCallAPI(t *toolContext, args json.RawMessage) (string, error) {
 	// 闸一：目录（mux 同款匹配含方法校验——方法不对会匹配到 405 的空 pattern）
 	meta, ok := t.app.apiMetaFor(req)
 	if !ok {
-		return "", fmt.Errorf("接口 %s %s 不在可调目录里（未对 AI 开放、方法不对或路径不存在）。可用接口以运行环境快照的「可调接口」区块为准；没有对应接口的操作请用专用工具完成", method, path)
+		return "", fmt.Errorf("接口 %s %s 不在可调目录里（未对 AI 开放、方法不对或路径不存在）。可用接口以 call_api 工具说明里的目录为准；没有对应接口的操作请用专用工具完成", method, path)
 	}
 	// 闸二：权限（会话档位低于接口要求即拒绝，不静默钳制）
 	if sandboxPolicyRank(permModeOf(t.sess)) < sandboxPolicyRank(meta.Perm) {
