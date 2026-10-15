@@ -150,7 +150,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 			globTool(), grepTool(), runCommandTool(), webFetchTool(), a.webSearchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
-			snapshotFileTool(), deliverResultTool(), deliverFileTool(), publishWebpageTool(), a.dispatchSubTool(), a.listExpertsTool(),
+			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			// 找经理协调（requestmgr.go）：任务侧唯一能触到数字经理的通道——发一条
 			// 求助消息给经理会话，立即返回、不等答复。子对话拿到也调不通（调用时
 			// 硬拦），assistant / aux 分支不注册（它是被找的那个，不是发起方）。
