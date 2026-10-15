@@ -63,6 +63,7 @@ var (
 	trayUser32             = windows.NewLazySystemDLL("user32.dll")
 	procRegisterClassExW   = trayUser32.NewProc("RegisterClassExW")
 	procRegisterWindowMsgW = trayUser32.NewProc("RegisterWindowMessageW")
+	procIsIconic           = trayUser32.NewProc("IsIconic")
 	procCreatePopupMenu    = trayUser32.NewProc("CreatePopupMenu")
 	procAppendMenuW        = trayUser32.NewProc("AppendMenuW")
 	procTrackPopupMenu     = trayUser32.NewProc("TrackPopupMenu")
@@ -173,12 +174,15 @@ func trayTeardown() {
 }
 
 // trayNID 组装当前托盘图标的基础 NOTIFYICONDATAW（回调消息/图标/悬停提示）。
+// uFlags 必须三样全带：漏了 NIF_MESSAGE 系统不回投鼠标事件（图标挂上了但
+// 双击/右键全无反应），漏了 NIF_ICON / NIF_TIP 则 hIcon / szTip 被忽略。
 func trayNID() notifyIconDataW {
 	var nid notifyIconDataW
 	nid.cbSize = uint32(unsafe.Sizeof(nid))
 	nid.hWnd = trayHwnd
 	nid.uID = 1
 	nid.uCallbackMessage = trayCallbackMsg
+	nid.uFlags = nifMessage | nifIcon | nifTip
 	nid.hIcon = trayIcon
 	tip, _ := windows.UTF16FromString(desktopAppTitle)
 	copy(nid.szTip[:], tip)
@@ -221,15 +225,21 @@ func hideMainWindowToTray(hwnd uintptr) {
 	}
 }
 
-// trayShowMainWindow 从托盘恢复主窗口（隐藏/最小化都能拉起来）。前端正在
-// 重建的间隙里没有主窗口——本次唤起忽略，新窗口建好后自然可见。
+// trayShowMainWindow 从托盘恢复主窗口（隐藏/最小化都能拉起来）。只在最小化时
+// 用 SW_RESTORE（它会把最大化窗口降级成普通大小）；隐藏窗口用 SW_SHOW 直接
+// 显示，最大化状态原样保留。前端正在重建的间隙里没有主窗口——本次唤起忽略，
+// 新窗口建好后自然可见。
 func trayShowMainWindow() {
 	hwnd := mainWndHwnd.Load()
 	if hwnd == 0 {
 		log.Printf("托盘：主窗口当前不在（重建间隙），本次唤起忽略")
 		return
 	}
-	procDesktopShowWindow.Call(hwnd, 9 /*SW_RESTORE*/)
+	if r, _, _ := procIsIconic.Call(hwnd); r != 0 {
+		procDesktopShowWindow.Call(hwnd, 9) // SW_RESTORE
+	} else {
+		procDesktopShowWindow.Call(hwnd, 5) // SW_SHOW
+	}
 	procSetForegroundWindow.Call(hwnd)
 }
 
@@ -303,8 +313,11 @@ func trayShowMenu(hwnd uintptr) {
 	var pt pointStruct
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	procSetForegroundWindow.Call(hwnd)
+	// x64 下 TrackPopupMenu 的 x、y 是各自独立的参数位，不能像 32 位那样
+	// 打包成 x|y<<16 传一个槽（菜单会弹去屏幕外）；负坐标（多显示器左侧）
+	// 经 int32→uintptr 二进制补码直传。
 	cmd, _, _ := procTrackPopupMenu.Call(menu, tpmRightButton|tpmBottomAlign|tpmReturnCmd,
-		uintptr(uint32(pt.x))|uintptr(uint32(pt.y))<<16, 0, hwnd, 0)
+		uintptr(int32(pt.x)), uintptr(int32(pt.y)), 0, hwnd, 0)
 	procPostMessageW.Call(hwnd, wmNull, 0, 0)
 	switch cmd {
 	case trayCmdOpen:
