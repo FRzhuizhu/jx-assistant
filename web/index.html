@@ -418,6 +418,22 @@
   </div>
 </div>
 
+<!-- 文件工具（本次改动 diff 查看器）：点「文件改动」面板里的文件行打开，整文件
+     展示、改动行红绿高亮（红=删除、绿=新增）。数据复用 /file-version 接口，
+     渲染逻辑在 app-chat.js「文件工具」一节；样式 style.css 的 fdiff-* 前缀。
+     入口唯一：文件改动面板的文件行点击，别处不提供 -->
+<div id="fdiff-modal" class="modal hidden">
+  <div class="fdiff-card">
+    <div class="fdiff-head">
+      <span class="fdiff-name" id="fdiff-name"></span>
+      <span class="fdiff-stat" id="fdiff-stat"></span>
+      <button type="button" class="fdiff-x" id="fdiff-close">关闭</button>
+    </div>
+    <div class="fdiff-note hidden" id="fdiff-note"></div>
+    <div class="fdiff-body" id="fdiff-body"></div>
+  </div>
+</div>
+
 <!-- 首次接入向导（app-wizard.js）：填公司名（局域网自动发现）或服务器地址 二选一 +
      姓名 → 一键接通公司服务端：自动配置内部模型通道（含服务端分配的 API key 与
      公司默认模型）、技能/组件市场、软件更新。机制照 confirm-modal（hidden 切换/点遮罩

@@ -650,6 +650,70 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   white-space: pre-wrap; word-break: break-all; line-height: 1.5;
 }
 
+/* ---------- 文件工具（本次改动 diff 查看器，#fdiff-modal） ----------
+   点文件改动面板的文件行打开：整文件展开（新文件顺序），本次改动行红/绿高亮，
+   红=删除（旧侧）、绿=新增（新侧）。行号两列（旧/新）：未变行两列都有号，
+   删除行只有旧号、新增行只有新号；长行不折行（保持行对齐直觉），随表格横向
+   滚动，两列行号 sticky 钉在左侧（--lno-w 由 JS 渲染后按首列实际宽度写入）。
+   红绿用 color-mix 从 --green/--danger 派生，深/浅色主题各自可读（暗色
+   --danger 已提亮、--code-bg 为深底，混出的红绿行在两种主题下都是低饱和底+高对比字）。 */
+#fdiff-modal { z-index: 65; } /* confirm(60) 之上、询问声光提醒(70) 之下 */
+#fdiff-modal .fdiff-card {
+  width: min(1080px, 94vw); height: min(86vh, 920px);
+  display: flex; flex-direction: column; padding: 0; overflow: hidden;
+}
+.fdiff-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); flex: none;
+}
+.fdiff-name {
+  font-family: Consolas, \"Courier New\", monospace; font-weight: 600;
+  font-size: 1em; word-break: break-all; min-width: 0;
+}
+.fdiff-stat { flex: none; color: var(--text-3); font-size: .93em; white-space: nowrap; }
+.fdiff-stat .gs { color: var(--green); font-weight: 600; }
+.fdiff-stat .rs { color: var(--danger); font-weight: 600; }
+.fdiff-x {
+  flex: none; margin-left: auto; border: 1px solid var(--border-2); background: none;
+  color: var(--text-3); font: inherit; font-size: .93em; border-radius: 6px;
+  padding: 3px 12px; cursor: pointer;
+}
+.fdiff-x:hover { background: var(--hover); color: var(--text); border-color: var(--text-3); }
+.fdiff-note {
+  flex: none; padding: 6px 16px; font-size: .93em; line-height: 1.6;
+  color: var(--amber); background: var(--amber-bg);
+  border-bottom: 1px solid var(--border);
+}
+.fdiff-note.hidden { display: none; }
+.fdiff-note.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--bg)); }
+.fdiff-body { flex: 1; min-height: 0; overflow: auto; background: var(--code-bg); }
+.fdiff-tip { padding: 24px; text-align: center; color: var(--text-3); font-size: .93em; }
+.fdiff-tip.bad { color: var(--danger); }
+.fdiff-table {
+  border-collapse: collapse; font-family: Consolas, \"Courier New\", monospace;
+  font-size: 12.5px; line-height: 1.6; display: block; max-width: max-content;
+}
+.fdiff-table td { vertical-align: top; white-space: pre; }
+.fdiff-table .ln {
+  position: sticky; background: var(--code-bg); /* 横向滚动时行号钉住，须不透明 */
+  color: var(--text-3); text-align: right; user-select: none;
+  padding: 0 7px; border-right: 1px solid var(--border-2);
+  font-variant-numeric: tabular-nums;
+}
+.fdiff-table .lno { left: 0; }
+.fdiff-table .lnn { left: var(--lno-w, 3.5em); border-right: none; }
+.fdiff-table .sg { width: 1.4em; text-align: center; color: var(--text-3); user-select: none; }
+.fdiff-table .cd { padding: 0 14px 0 6px; }
+/* 未变行不动；改动行整行铺色（行号列随行同色，sticky 背景不透出下层内容） */
+.fdiff-table tr.add td { background: color-mix(in srgb, var(--green) 13%, var(--code-bg)); }
+.fdiff-table tr.add .sg { color: var(--green); font-weight: 700; }
+.fdiff-table tr.del td { background: color-mix(in srgb, var(--danger) 11%, var(--code-bg)); }
+.fdiff-table tr.del .sg { color: var(--danger); font-weight: 700; }
+/* 窄屏：卡片占满整屏、字号略收（行号两列 + 横向滚动的布局在手机上仍可用） */
+@media (max-width: 640px) {
+  #fdiff-modal .fdiff-card { width: 100vw; height: 100dvh; border-radius: 0; }
+  .fdiff-table { font-size: 12px; }
+}
 /* 交付成果卡片：deliver_result 登记的最终交付文件。
    每行两个动作（打开 / 在文件夹中查看），整行可点击并打开文件，悬停高亮；
    没有「下载」按钮。字号同样 em 继承 --chat-fs。 */

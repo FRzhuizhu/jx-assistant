@@ -1487,11 +1487,171 @@ function renderVersionBody(view, path, box, t) {
   box.appendChild(pre);
 }
 
+/* ---------- 文件工具：本次改动 diff 查看器（点文件改动面板的文件行打开） ----------
+   口径：一行的「本次改动」= 本批（这一回合）最早一条快照的"改动前内容" vs
+   文件当前内容——正好是该行「撤回」会在两个状态之间恢复的那一对。数据零新增
+   接口：复用 /file-version（一次同时返回版本正文与当前内容），diff 在前端算。
+   视图：整文件展开（按新文件顺序），删除行红、新增行绿、未变行不着色；行号
+   两列（旧/新），未变行两列都有号，删除行只有旧号、新增行只有新号。 */
+
+// 行切分：CRLF/LF 统一归一（比较按行文本，行尾 \r 不参与，显示也干净）
+function fdiffSplitLines(text) {
+  return String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n');
+}
+
+// 行级 diff：先修剪公共前后缀，剩余段做经典 LCS DP + 回溯（Int32Array 全表）。
+// 剩余段超限（约 2000×2000）时整段降级为"全删 + 全加"——正文后端已按 256KB
+// 截断，正常文件远达不到阈值；降级只损失中间段的对齐精度，界面永不卡死。
+function fdiffAlign(a, b) {
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let suf = 0;
+  while (suf < a.length - pre && suf < b.length - pre &&
+         a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+  const am = a.slice(pre, a.length - suf), bm = b.slice(pre, b.length - suf);
+  const rows = [];
+  for (let k = 0; k < pre; k++) rows.push({ t: 'ctx', ao: k, bo: k, text: a[k] });
+  let degraded = false;
+  if (am.length || bm.length) {
+    if (am.length * bm.length > 4000000 || am.length + bm.length > 30000) {
+      degraded = true;
+      for (let i = 0; i < am.length; i++) rows.push({ t: 'del', ao: pre + i, bo: -1, text: am[i] });
+      for (let j = 0; j < bm.length; j++) rows.push({ t: 'add', ao: -1, bo: pre + j, text: bm[j] });
+    } else {
+      const n = am.length, m = bm.length, w = m + 1;
+      const dp = new Int32Array((n + 1) * w);
+      for (let i = n - 1; i >= 0; i--) {
+        const row = i * w, next = row + w;
+        for (let j = m - 1; j >= 0; j--) {
+          dp[row + j] = am[i] === bm[j] ? dp[next + j + 1] + 1
+            : Math.max(dp[next + j], dp[row + j + 1]);
+        }
+      }
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        if (am[i] === bm[j]) { rows.push({ t: 'ctx', ao: pre + i, bo: pre + j, text: am[i] }); i++; j++; }
+        else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) { rows.push({ t: 'del', ao: pre + i, bo: -1, text: am[i] }); i++; }
+        else { rows.push({ t: 'add', ao: -1, bo: pre + j, text: bm[j] }); j++; }
+      }
+      while (i < n) { rows.push({ t: 'del', ao: pre + i, bo: -1, text: am[i] }); i++; }
+      while (j < m) { rows.push({ t: 'add', ao: -1, bo: pre + j, text: bm[j] }); j++; }
+    }
+  }
+  for (let k = 0; k < suf; k++) rows.push({ t: 'ctx', ao: a.length - suf + k, bo: b.length - suf + k, text: a[a.length - suf + k] });
+  return { rows, degraded };
+}
+
+// 打开文件工具：cp = 本批该文件最早一条快照（fileChangesPanel 的行数据），
+// 它的"改动前正文"就是本批改动的起点；当前内容随同一响应返回（t.current）。
+function openFileDiff(view, path, cp) {
+  const modal = $('fdiff-modal');
+  $('fdiff-name').textContent = path;
+  $('fdiff-stat').textContent = '读取中…';
+  const note = $('fdiff-note');
+  note.classList.add('hidden');
+  note.classList.remove('bad');
+  $('fdiff-body').innerHTML = '<div class="fdiff-tip">正在读取快照与当前内容…</div>';
+  modal.classList.remove('hidden');
+  api('/api/sessions/' + view.state.cur.id + '/file-version?path=' + encodeURIComponent(path) +
+    '&id=' + encodeURIComponent(cp.id))
+    .then(renderFileDiff)
+    .catch((err) => {
+      $('fdiff-stat').textContent = '';
+      $('fdiff-body').innerHTML = '<div class="fdiff-tip bad">读取失败：' + esc(err.message) + '</div>';
+    });
+}
+
+// 渲染：二进制给说明；新建=整篇绿、当前已删=整篇红；快照正文被清理时退化为
+// 只展示当前内容（不着色并说明）；正常路径 = fdiffAlign 对齐后逐行铺表格。
+function renderFileDiff(t) {
+  const body = $('fdiff-body');
+  const note = $('fdiff-note');
+  const notes = [];
+  const say = () => {
+    if (!notes.length) return;
+    note.textContent = notes.join('；');
+    note.classList.remove('hidden');
+  };
+  const cur = t.current || {};
+  if (t.binary || (cur.exists && cur.binary)) {
+    $('fdiff-stat').textContent = '二进制文件 · 不支持文本对比';
+    note.textContent = '这个文件的内容是二进制（改动前 ' + (t.binary ? fmtBytes(t.size || 0) : '未知') +
+      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '），无法做行级对比。';
+    note.classList.add('bad');
+    note.classList.remove('hidden');
+    body.innerHTML = '';
+    return;
+  }
+  if (t.truncated) notes.push('改动前内容超长，已按快照口径截断（前 256KB），对比基于截断内容');
+  if (cur.truncated) notes.push('当前内容超长，已截断（前 256KB）');
+  let oldText;
+  if (t.existedBefore === false) { oldText = ''; notes.push('本次改动是新建文件：整篇按新增（绿）显示'); }
+  else if (t.hasBody === false) { oldText = null; }
+  else oldText = String(t.text ?? '');
+  const newText = cur.exists ? String(cur.text ?? '') : '';
+  if (!cur.exists) notes.push('当前文件已不存在（后来被删除）：整篇按删除（红）显示');
+  if (oldText === null) {
+    oldText = newText; // 基线正文已被清理：两边同文 → 整篇不着色，说明见 note
+    notes.push('本批改动前的快照正文已被清理，无法对比；仅展示当前内容（不着色）');
+  }
+  const oldL = fdiffSplitLines(oldText), newL = fdiffSplitLines(newText);
+  const al = fdiffAlign(oldL, newL);
+  if (al.degraded) notes.push('差异段过大，未做行级对齐：中间整段按删除（红）/新增（绿）显示');
+  let addN = 0, delN = 0;
+  for (const r of al.rows) { if (r.t === 'add') addN++; else if (r.t === 'del') delN++; }
+  const stat = $('fdiff-stat');
+  stat.innerHTML = '';
+  const mk = (cls, txt) => { const sp = document.createElement('span'); if (cls) sp.className = cls; sp.textContent = txt; return sp; };
+  stat.appendChild(mk('', '旧 ' + oldL.length + ' 行 → 新 ' + newL.length + ' 行 · '));
+  if (addN) stat.appendChild(mk('gs', '+' + addN + ' 行'));
+  if (delN) stat.appendChild(mk('rs', (addN ? ' · ' : '') + '-' + delN + ' 行'));
+  const rows = al.rows;
+  const DOM_CAP = 15000; // DOM 行数上限：256KB 截断后正常远达不到，兜底防卡顿
+  const shown = rows.length > DOM_CAP ? rows.slice(0, DOM_CAP) : rows;
+  if (rows.length > DOM_CAP) notes.push('全文共 ' + rows.length + ' 行，界面只渲染前 ' + DOM_CAP + ' 行');
+  const tbl = document.createElement('table');
+  tbl.className = 'fdiff-table';
+  const tb = document.createElement('tbody');
+  for (const r of shown) {
+    const tr = document.createElement('tr');
+    tr.className = r.t;
+    const c1 = document.createElement('td'); c1.className = 'ln lno'; c1.textContent = r.ao >= 0 ? String(r.ao + 1) : '';
+    const c2 = document.createElement('td'); c2.className = 'ln lnn'; c2.textContent = r.bo >= 0 ? String(r.bo + 1) : '';
+    const c3 = document.createElement('td'); c3.className = 'sg'; c3.textContent = r.t === 'add' ? '+' : r.t === 'del' ? '-' : '';
+    const c4 = document.createElement('td'); c4.className = 'cd'; c4.textContent = r.text === '' ? '\u00A0' : r.text;
+    tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  body.innerHTML = '';
+  if (!rows.length) {
+    body.innerHTML = '<div class="fdiff-tip">（两边都是空文件，没有可显示的内容）</div>';
+  } else {
+    body.appendChild(tbl);
+    const first = tbl.querySelector('.lno'); // 第二列行号 sticky 的偏移 = 首列实际宽
+    if (first) tbl.style.setProperty('--lno-w', first.offsetWidth + 'px');
+  }
+  say();
+}
+
+// 文件工具的关闭通道：按钮 / Esc / 点遮罩（照 confirm-modal 的机制）
+(function () {
+  const modal = $('fdiff-modal');
+  const close = () => modal.classList.add('hidden');
+  $('fdiff-close').onclick = close;
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || modal.classList.contains('hidden')) return;
+    e.stopPropagation();
+    close();
+  });
+})();
 // 文件改动面板：一回合内动过的文件（自动快照 + 手动 snapshot_file 都算），
-// 折叠条显示「修改 N / 新增 M」，整条折叠行可点击展开/收起。折叠行上的
-// 「全部撤回」作用于本批全部文件；清单里每行文件另有两个互相独立的按钮：
-// 「撤回」（只回退这一行文件，仍限定在本批 seqs 内）与「历史版本」（列出
-// 该文件此前的快照版本，可查看内容、恢复到某个版本之前）。
+// 折叠条显示「修改 N / 新增 M」（点折叠条展开/收起清单）。折叠行上的
+// 「全部撤回」作用于本批全部文件；清单里每行文件：整行点击 = 打开文件工具
+// 看本次改动（整文件红绿对比，见上方 openFileDiff 一节），行内另有两个互相
+// 独立的按钮：「撤回」（只回退这一行文件，仍限定在本批 seqs 内）与
+// 「历史版本」（就地展开该文件此前的快照版本，可查看内容、恢复到某个版本之前）。
 // 字号一律走 .msg-col 继承来的 --chat-fs（设置里的「字体大小」），本面板
 // 不再写死字号：内部只用 em 相对值，跟随设置一起变化。
 function fileChangesPanel(cps, seqs, view) {
@@ -1541,7 +1701,7 @@ function fileChangesPanel(cps, seqs, view) {
     vers.type = 'button';
     vers.className = 'fp-btn fp-vers-btn';
     vers.textContent = '历史版本';
-    vers.title = '查看这个文件此前保存的快照版本，可对比或回退';
+    vers.title = '展开/收起这个文件的历史版本列表（可查看内容、恢复到某个版本之前）';
     acts.appendChild(rev);
     acts.appendChild(vers);
     row.appendChild(acts);
@@ -1565,8 +1725,10 @@ function fileChangesPanel(cps, seqs, view) {
         vers.classList.remove('on');
       }
     };
-    vers.onclick = toggleVers;
-    row.onclick = toggleVers; // 整行可点：与「历史版本」同效，展开/收起版本列表
+    vers.onclick = toggleVers; // 只有「历史版本」按钮就地展开/收起版本列表
+    // 行内其余区域点击：打开文件工具，整文件红绿视图看本次改动（openFileDiff）
+    row.onclick = () => openFileDiff(view, c.path, c);
+    row.title = '查看本次改动：整文件红绿对比（绿=新增、红=删除）；「历史版本」按钮 = 展开这个文件的历史版本列表';
     const wrap = document.createElement('div');
     wrap.appendChild(row);
     wrap.appendChild(vbox);
