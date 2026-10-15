@@ -56,8 +56,8 @@ $('btn-feedback').addEventListener('keydown', (e) => {
 });
 
 
-// 侧栏视图设置：分组方式（ws=按工作区 flat=单列表）与排序方式
-const viewCfg = Object.assign({ group: 'ws', sort: 'updated' }, lsGet('jx.view', {}));
+// 侧栏视图设置：分组方式（time=时间线 ws=按工作区 flat=单列表）与排序方式；默认时间线，手动选过则 localStorage 覆盖
+const viewCfg = Object.assign({ group: 'time', sort: 'updated' }, lsGet('jx.view', {}));
 const wsCollapsed = lsGet('jx.wscol', {});   // 工作区分组折叠状态
 
 
@@ -262,8 +262,8 @@ function openViewMenu(anchor) {
   const opt = (key, val, label) => ({ key, val, label, on: viewCfg[key] === val });
   const groups = [
     { title: '分组', opts: [
-      opt('group', 'ws', '按工作区'),
       opt('group', 'time', '时间线'),
+      opt('group', 'ws', '按工作区'),
       opt('group', 'flat', '单列表'),
     ] },
     { title: '排序', opts: [
