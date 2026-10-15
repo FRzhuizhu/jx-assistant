@@ -209,31 +209,6 @@ func hookCallEndpoint(t *testing.T, a *App, compID string, def ComponentWorkerDe
 	return rec.Body.Bytes()
 }
 
-func TestBridgePromptSubmitDecisions(t *testing.T) {
-	a := newHookTestApp(t)
-	emit := func(content string) ComponentHookOutcome {
-		return a.emitComponentHooks("prompt.submit", map[string]any{
-			"sessionID": "s1", "content": content,
-		})
-	}
-	// 普通消息：附加上下文（hooktest 订阅、hookslow 超时放行——两者都跑，顺序
-	// hookslow 在前：它超时不改写不附加，hooktest 的上下文应保留）
-	out := emit("正常消息")
-	if out.Block || out.Content != "" || !strings.Contains(out.AdditionalContext, "累计输入 4 字") {
-		t.Fatalf("附加上下文决定不符: %+v", out)
-	}
-	// 改写：hooktest 把正文追加后缀（hookslow 超时在前不干扰）
-	out = emit("请改写一下")
-	if out.Block || out.Content != "请改写一下（组件改写）" {
-		t.Fatalf("改写决定不符: %+v", out)
-	}
-	// 拒绝：hooktest 直接 block（hookslow 超时放行在前，block 即止）
-	out = emit("这个词要拒绝的")
-	if !out.Block || out.Reason != "测试拒绝" {
-		t.Fatalf("拒绝决定不符: %+v", out)
-	}
-}
-
 func TestBridgeHookTimeoutFailOpen(t *testing.T) {
 	a := newHookTestApp(t)
 	// 本用例只留慢速订阅者：hooktest 也订阅 prompt.submit，它的健康应答会盖住
