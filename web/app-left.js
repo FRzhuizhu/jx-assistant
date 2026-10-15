@@ -981,7 +981,7 @@ $('btn-recycle').onclick = () => setBinView(!binView);
    用事件委托挂在 .actions 上而不是逐个按钮绑：第三个按钮「待办与定时任务」是组件
    （组件/todo-scheduler/client.js）注册时才插进来的，静态绑会漏掉它；委托也顺带覆盖
    以后往这一组里加的新入口。 */
-const WIG_DEG = 7, WIG_JITTER = 3; // 扭动幅度 7° + 随机 0~3°（小人再乘 --wig-scale 1.3）：看得出来，但不夸张
+const WIG_DEG = 7, WIG_JITTER = 3; // 扭动幅度 7° + 随机 0~3°（三个图标同一幅度，小人不加倍）：看得出来，但不夸张
 function wiggleSideBtn(btn) {
   const dir = Math.random() < .5 ? -1 : 1; // 方向每次独立随机（左/右）
   const deg = dir * (WIG_DEG + Math.random() * WIG_JITTER);
