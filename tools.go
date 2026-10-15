@@ -150,7 +150,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 			globTool(), grepTool(), runCommandTool(), webFetchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
-			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
+			snapshotFileTool(), deliverResultTool(), deliverFileTool(), publishWebpageTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			// call_api 已收窄到 assistant 模式：界面级接口操作归总控编排，
 			// 任务会话专注实操（需要时由总控代调）。
 			askUserQuestionTool(), requestPermissionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),

@@ -1260,6 +1260,15 @@ $('btn-remote-pk-new').onclick = async () => {
 };
 // 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
 bindRemoteInput('set-market-url', 'marketURL');
+// 网页托管平台：从市场地址推导服务端根，打开 <根>/sites（与市场同一台 jxai-server）
+$('btn-open-sites').onclick = async () => {
+  const raw = ($('set-market-url').value || '').trim();
+  const m = raw.match(/^(https?:\/\/[^\/]+)/i);
+  if (!m) { alert('先在上方「市场服务器」里填服务端地址（如 http://192.168.1.210:PORT/market/manifest.json），托管平台与市场在同一台服务端。'); return; }
+  try {
+    await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: m[1] + '/sites' }) });
+  } catch (e) { window.open(m[1] + '/sites', '_blank'); }
+};
 bindRemoteInput('set-publisher-name', 'publisherName');
 bindRemoteInput('set-registry-url', 'registryURL');
 bindRemoteInput('set-update-url', 'updateURL');
