@@ -113,9 +113,9 @@ func runReadSummary(t *toolContext, args json.RawMessage) (string, error) {
 
 func dispatchTaskTool() Tool {
 	return Tool{
-		Spec: toolSpec("dispatch_task", "新建一个工作任务会话并把需求交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，任务完成后你会自动收到【派发回报】（含它的最终答复全文、轮数/步数、与实际落盘核对过的改动文件清单）。工作任务与我们的聊天记录完全隔离——你就像用户一样只给它发一段自足的消息，task 必须写全目标、验收标准、涉及目录等全部上下文。可选参数与人工在界面新建工作任务一致：mode 选工作模式、plan_mode 让它以计划模式启动、attachments 给它带上现成文件、model 指定模型（providerId/modelId 完整格式）、permission 调它的权限档（只能同等或降权，绝不允许增权）。",
+		Spec: toolSpec("dispatch_task", "新建一个工作任务会话并把需求交给它后台执行（它拥有读写文件与执行命令的全部工具）。本工具立即返回，任务完成后你会自动收到【派发回报】（含它的最终答复全文、轮数/步数、与实际落盘核对过的改动文件清单）。工作任务与我们的聊天记录完全隔离——你就像用户一样只给它发一段自足的消息：说清目标与已知背景（涉及的文件/目录给绝对路径）即可；怎么干、怎么验证交给它自己判断，不要替它列步骤清单和验收矩阵。可选参数与人工在界面新建工作任务一致：mode 选工作模式、plan_mode 让它以计划模式启动、attachments 给它带上现成文件、model 指定模型（providerId/modelId 完整格式）、permission 调它的权限档（只能同等或降权，绝不允许增权）。",
 			objSchema(map[string]any{
-				"task":        strProp("完整任务描述，自带全部上下文（目标、验收标准、涉及目录）——工作任务看不到本对话的任何记录"),
+				"task":        strProp("自足的任务描述：目标与已知背景（涉及的文件/目录给绝对路径）——工作任务看不到本对话的任何记录；不要替它列步骤清单和验收矩阵"),
 				"title":       strProp("给新任务起的标题，可省略"),
 				"workspace":   strProp("可选：工作任务的工作目录（绝对路径），默认沿用当前工作区"),
 				"model":       strProp("可选：任务会话使用的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填沿用默认"),
