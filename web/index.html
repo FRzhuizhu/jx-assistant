@@ -384,7 +384,22 @@
           <div class="ap-actions"><button id="plan-ignore" class="ghost" title="搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留着，随时可以再批准或驳回">忽略计划</button><button id="plan-approve" class="ok">批准并开始执行</button></div>
         </div>
       </div>
-      <div class="rp-view" id="rp-view-browser">
+      <!-- 文件视图（文件工具）：点对话里「文件改动」面板的文件行在此打开——
+           整文件展开的 diff 视图，本次删除的行红色、新增的行绿色、未变行正常，
+           行号两列（旧/新）。数据复用 /file-version 接口（本批最早快照的改动前
+           内容 vs 文件当前内容），渲染与页签注册见 app-chat.js「文件工具」一节；
+           样式 style.css 的 fvw-*/fdiff-* 前缀（视觉口径对齐 ZCode 轻量 diff）。 -->
+      <div class="rp-view" id="rp-view-file">
+        <div class="fvw-bar">
+          <span class="fvw-path" id="fvw-path" title=""></span>
+          <span class="fvw-stat" id="fvw-stat"></span>
+          <button id="fvw-wrap" class="fvw-ico" type="button" title="当前：长行横向滚动（点击改为折行显示）">折行</button>
+          <button id="fvw-reload" class="fvw-ico" type="button" title="重新读取（文件与快照）">⟳</button>
+        </div>
+        <div class="fvw-note hidden" id="fvw-note"></div>
+        <div class="fvw-body" id="fvw-body"></div>
+      </div>
+            <div class="rp-view" id="rp-view-browser">
         <div class="bpw-bar">
           <button id="bpw-back" title="后退">◀</button>
           <button id="bpw-fwd" title="前进">▶</button>
@@ -415,22 +430,6 @@
       <button id="confirm-cancel">取消</button>
       <button id="confirm-ok" class="danger">确定</button>
     </div>
-  </div>
-</div>
-
-<!-- 文件工具（本次改动 diff 查看器）：点「文件改动」面板里的文件行打开，整文件
-     展示、改动行红绿高亮（红=删除、绿=新增）。数据复用 /file-version 接口，
-     渲染逻辑在 app-chat.js「文件工具」一节；样式 style.css 的 fdiff-* 前缀。
-     入口唯一：文件改动面板的文件行点击，别处不提供 -->
-<div id="fdiff-modal" class="modal hidden">
-  <div class="fdiff-card">
-    <div class="fdiff-head">
-      <span class="fdiff-name" id="fdiff-name"></span>
-      <span class="fdiff-stat" id="fdiff-stat"></span>
-      <button type="button" class="fdiff-x" id="fdiff-close">关闭</button>
-    </div>
-    <div class="fdiff-note hidden" id="fdiff-note"></div>
-    <div class="fdiff-body" id="fdiff-body"></div>
   </div>
 </div>
 

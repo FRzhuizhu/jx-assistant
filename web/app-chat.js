@@ -1541,42 +1541,79 @@ function fdiffAlign(a, b) {
   return { rows, degraded };
 }
 
-// 打开文件工具：cp = 本批该文件最早一条快照（fileChangesPanel 的行数据），
-// 它的"改动前正文"就是本批改动的起点；当前内容随同一响应返回（t.current）。
+// 打开右栏「文件」视图看这个文件本次改动的 diff：cp = 本批该文件最早一条快照
+// （fileChangesPanel 的行数据），它的"改动前正文"是本批改动的起点；当前内容
+// 随同一响应返回（t.current）。右栏页签可反复点开，数据在页签打开时拉取。
+let fvwSid = '', fvwPath = '', fvwCpId = 0, fvwWrap = false;
+
 function openFileDiff(view, path, cp) {
-  const modal = $('fdiff-modal');
-  $('fdiff-name').textContent = path;
-  $('fdiff-stat').textContent = '读取中…';
-  const note = $('fdiff-note');
+  fvwSid = view.state.cur.id;
+  fvwPath = path;
+  fvwCpId = cp.id || 0;
+  rpOpen('file');
+  loadFileDiff();
+}
+
+// 空态：还没在看任何文件（页签手动点开 / 数据不属于当前会话）
+function showFvEmpty(text) {
+  const p = $('fvw-path');
+  p.textContent = ''; p.title = '';
+  $('fvw-stat').textContent = '';
+  const note = $('fvw-note');
+  note.textContent = '';
   note.classList.add('hidden');
   note.classList.remove('bad');
-  $('fdiff-body').innerHTML = '<div class="fdiff-tip">正在读取快照与当前内容…</div>';
-  modal.classList.remove('hidden');
-  api('/api/sessions/' + view.state.cur.id + '/file-version?path=' + encodeURIComponent(path) +
-    '&id=' + encodeURIComponent(cp.id))
+  const body = $('fvw-body');
+  body.innerHTML = '';
+  const tip = document.createElement('div');
+  tip.className = 'fvw-empty';
+  tip.textContent = text;
+  body.appendChild(tip);
+}
+
+function loadFileDiff() {
+  if (!fvwSid || !fvwPath || !fvwCpId) {
+    showFvEmpty('还没有正在查看的文件。\n到对话里的「文件改动」面板点一个文件行，这里会打开它的本次改动（整文件红绿对比）。');
+    return;
+  }
+  const p = $('fvw-path');
+  p.textContent = fvwPath;
+  p.title = fvwPath;
+  $('fvw-stat').textContent = '读取中…';
+  const note = $('fvw-note');
+  note.textContent = '';
+  note.classList.add('hidden');
+  note.classList.remove('bad');
+  $('fvw-body').innerHTML = '<div class="fvw-empty">正在读取快照与当前内容…</div>';
+  api('/api/sessions/' + fvwSid + '/file-version?path=' + encodeURIComponent(fvwPath) +
+    '&id=' + encodeURIComponent(fvwCpId))
     .then(renderFileDiff)
     .catch((err) => {
-      $('fdiff-stat').textContent = '';
-      $('fdiff-body').innerHTML = '<div class="fdiff-tip bad">读取失败：' + esc(err.message) + '</div>';
+      $('fvw-stat').textContent = '';
+      $('fvw-body').innerHTML = '';
+      const tip = document.createElement('div');
+      tip.className = 'fvw-empty';
+      tip.textContent = '读取失败：' + err.message;
+      $('fvw-body').appendChild(tip);
     });
 }
 
-// 渲染：二进制给说明；新建=整篇绿、当前已删=整篇红；快照正文被清理时退化为
-// 只展示当前内容（不着色并说明）；正常路径 = fdiffAlign 对齐后逐行铺表格。
+// 渲染：二进制给说明（文件工具只支持文本类文件）；新建=整篇绿、当前已删=
+// 整篇红；快照正文被清理时退化为只展示当前内容（不着色并说明）；正常路径 =
+// fdiffAlign 对齐后逐行铺表格。
 function renderFileDiff(t) {
-  const body = $('fdiff-body');
-  const note = $('fdiff-note');
+  const body = $('fvw-body');
+  const note = $('fvw-note');
   const notes = [];
   const say = () => {
-    if (!notes.length) return;
-    note.textContent = notes.join('；');
-    note.classList.remove('hidden');
+    if (notes.length) { note.textContent = notes.join('；'); note.classList.remove('hidden'); }
+    else { note.textContent = ''; note.classList.add('hidden'); }
   };
   const cur = t.current || {};
   if (t.binary || (cur.exists && cur.binary)) {
-    $('fdiff-stat').textContent = '二进制文件 · 不支持文本对比';
+    $('fvw-stat').textContent = '二进制文件 · 不支持文本对比';
     note.textContent = '这个文件的内容是二进制（改动前 ' + (t.binary ? fmtBytes(t.size || 0) : '未知') +
-      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '），无法做行级对比。';
+      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '）。文件工具只支持文本类文件，二进制请用系统默认程序打开。';
     note.classList.add('bad');
     note.classList.remove('hidden');
     body.innerHTML = '';
@@ -1599,7 +1636,7 @@ function renderFileDiff(t) {
   if (al.degraded) notes.push('差异段过大，未做行级对齐：中间整段按删除（红）/新增（绿）显示');
   let addN = 0, delN = 0;
   for (const r of al.rows) { if (r.t === 'add') addN++; else if (r.t === 'del') delN++; }
-  const stat = $('fdiff-stat');
+  const stat = $('fvw-stat');
   stat.innerHTML = '';
   const mk = (cls, txt) => { const sp = document.createElement('span'); if (cls) sp.className = cls; sp.textContent = txt; return sp; };
   stat.appendChild(mk('', '旧 ' + oldL.length + ' 行 → 新 ' + newL.length + ' 行 · '));
@@ -1611,6 +1648,7 @@ function renderFileDiff(t) {
   if (rows.length > DOM_CAP) notes.push('全文共 ' + rows.length + ' 行，界面只渲染前 ' + DOM_CAP + ' 行');
   const tbl = document.createElement('table');
   tbl.className = 'fdiff-table';
+  tbl.classList.toggle('wrap', fvwWrap);
   const tb = document.createElement('tbody');
   for (const r of shown) {
     const tr = document.createElement('tr');
@@ -1625,7 +1663,7 @@ function renderFileDiff(t) {
   tbl.appendChild(tb);
   body.innerHTML = '';
   if (!rows.length) {
-    body.innerHTML = '<div class="fdiff-tip">（两边都是空文件，没有可显示的内容）</div>';
+    body.innerHTML = '<div class="fvw-empty">（两边都是空文件，没有可显示的内容）</div>';
   } else {
     body.appendChild(tbl);
     const first = tbl.querySelector('.lno'); // 第二列行号 sticky 的偏移 = 首列实际宽
@@ -1634,22 +1672,36 @@ function renderFileDiff(t) {
   say();
 }
 
-// 文件工具的关闭通道：按钮 / Esc / 点遮罩（照 confirm-modal 的机制）
-(function () {
-  const modal = $('fdiff-modal');
-  const close = () => modal.classList.add('hidden');
-  $('fdiff-close').onclick = close;
-  modal.onclick = (e) => { if (e.target === modal) close(); };
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || modal.classList.contains('hidden')) return;
-    e.stopPropagation();
-    close();
-  });
-})();
+// 顶栏：折行切换（长行横向滚动 ↔ 折行）与重新读取
+$('fvw-wrap').onclick = () => {
+  fvwWrap = !fvwWrap;
+  $('fvw-wrap').classList.toggle('on', fvwWrap);
+  $('fvw-wrap').title = fvwWrap ? '当前：长行折行显示（点击改为横向滚动）' : '当前：长行横向滚动（点击改为折行显示）';
+  const tbl = $('fvw-body').querySelector('.fdiff-table');
+  if (tbl) tbl.classList.toggle('wrap', fvwWrap);
+};
+$('fvw-reload').onclick = () => loadFileDiff();
+
+// 右栏页签注册：与子对话/计划同一套机制。会话态记"这个会话正在看哪个文件的
+// 哪次改动"，切走再切回（面板开着时 rpOpen 的 onOpen 会重拉）能回到原文件。
+rpRegister('file', {
+  title: '文件', order: 2.5,
+  onOpen: () => { loadFileDiff(); },
+  saveSession: () => ({ sid: fvwSid, path: fvwPath, cpId: fvwCpId, wrap: fvwWrap }),
+  restoreSession: (d) => {
+    fvwSid = (d && d.sid) || '';
+    fvwPath = (d && d.path) || '';
+    fvwCpId = (d && d.cpId) || 0;
+    fvwWrap = !!(d && d.wrap);
+    $('fvw-wrap').classList.toggle('on', fvwWrap);
+    // 数据不在这里拉：面板开着时 rpOpen('file') 的 onOpen 会 loadFileDiff；
+    // 收着时等用户点开页签再拉（旧对话的正文不会被画出来）
+  },
+});
 // 文件改动面板：一回合内动过的文件（自动快照 + 手动 snapshot_file 都算），
 // 折叠条显示「修改 N / 新增 M」（点折叠条展开/收起清单）。折叠行上的
 // 「全部撤回」作用于本批全部文件；清单里每行文件：整行点击 = 打开文件工具
-// 看本次改动（整文件红绿对比，见上方 openFileDiff 一节），行内另有两个互相
+// 看本次改动（右栏「文件」视图整文件红绿对比，见上方 openFileDiff 一节），行内另有两个互相
 // 独立的按钮：「撤回」（只回退这一行文件，仍限定在本批 seqs 内）与
 // 「历史版本」（就地展开该文件此前的快照版本，可查看内容、恢复到某个版本之前）。
 // 字号一律走 .msg-col 继承来的 --chat-fs（设置里的「字体大小」），本面板
@@ -1728,7 +1780,7 @@ function fileChangesPanel(cps, seqs, view) {
     vers.onclick = toggleVers; // 只有「历史版本」按钮就地展开/收起版本列表
     // 行内其余区域点击：打开文件工具，整文件红绿视图看本次改动（openFileDiff）
     row.onclick = () => openFileDiff(view, c.path, c);
-    row.title = '查看本次改动：整文件红绿对比（绿=新增、红=删除）；「历史版本」按钮 = 展开这个文件的历史版本列表';
+    row.title = '在右侧栏查看本次改动：整文件红绿对比（绿=新增、红=删除）；「历史版本」按钮 = 展开这个文件的历史版本列表';
     const wrap = document.createElement('div');
     wrap.appendChild(row);
     wrap.appendChild(vbox);
