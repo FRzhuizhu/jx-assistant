@@ -1,7 +1,7 @@
 data/
 config.json
 *.exe
-!jx-assistant.exe
+# jx-assistant.exe 是引擎编译产物，不再入库：发行走安装包，开发自行 go build
 !md-viewer/*.exe
 # 共享便携 Python 运行时入库（全部内置技能与语音组件共用，全新克隆零装配即用）：
 # 放在 *.exe 规则之后放行运行时内全部文件（含 python.exe、Scripts\*.exe）

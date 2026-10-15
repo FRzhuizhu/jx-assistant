@@ -752,6 +752,11 @@ func (a *App) p2pShell() (string, error) {
 			s = strings.ReplaceAll(s, `src="/logo.png"`,
 				`src="data:image/png;base64,`+base64.StdEncoding.EncodeToString(logo)+`"`)
 		}
+		// 标签页图标同理转 dataURL（远程端拿不到本服务的 /favicon.png）
+		if fav, err := fs.ReadFile(a.static, "favicon.png"); err == nil {
+			s = strings.ReplaceAll(s, `href="/favicon.png"`,
+				`href="data:image/png;base64,`+base64.StdEncoding.EncodeToString(fav)+`"`)
+		}
 		// 头部注入远程引导（最先执行：app 脚本加载前劫持好 fetch/EventSource）
 		boot, err := fs.ReadFile(a.static, "remote-boot.js")
 		if err != nil {

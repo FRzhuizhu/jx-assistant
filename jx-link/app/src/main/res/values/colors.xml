@@ -11,6 +11,6 @@
     <color name="offline">#9AA0A6</color>
     <color name="danger">#D43C3C</color>
 
-    <!-- 自适应图标背景色：与桌面端 logo（白底黑图形）保持一致，同主壳 -->
+    <!-- 自适应图标背景色：白色底与桌面端 logo（彩色图形）保持一致，同主壳 -->
     <color name="launcher_bg">#FFFFFF</color>
 </resources>
