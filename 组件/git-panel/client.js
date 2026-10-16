@@ -573,10 +573,11 @@
     ta.value = S.commitMsg;
     ta.oninput = () => { S.commitMsg = ta.value; };
     const btns = el('div', 'gitp-commit-btns');
-    // 远程同步（靠左，单按钮两用）：远程有新提交=「拉取」，本地领先且远程
-    // 没有新提交=「推送」；其余（与远程一致 / 无上游）置灰。可用性与样式在
-    // syncCommitBar 里随 ahead/behind 切换：可按=与「✓ 提交」一致的强调样式，
-    // 不可按=AI 摘要那种普通描边（灰字）
+    // 远程同步 = 分裂按钮（VSCode 源代码管理同款，靠左）：主格单按钮两用——
+    // 远程有新提交=「拉取」，本地领先且远程没有新提交=「推送」；右侧贴着 ▾ 小格
+    // （点开「使用教程」清单），两格同属一个大按钮（共用外框，中间一条细分隔线）。
+    // 可用性与整组强调样式在 syncCommitBar 里随 ahead/behind 切换；▾ 格不随主格
+    // 置灰——同步不可用时教程仍可看
     const rmt = el('button', 'gitp-btn gitp-remote', '同步');
     rmt.id = 'gitp-remote-btn';
     rmt.onclick = () => {
@@ -631,13 +632,15 @@
       syncCommitBar();
       renderStrip();
     };
-    btns.appendChild(rmt);
-    btns.appendChild(tutBtn()); // 同步旁的 ▾：点开「使用教程」清单
+    const syncGrp = el('div', 'gitp-sync');
+    syncGrp.appendChild(rmt);
+    syncGrp.appendChild(tutBtn()); // 贴在同步主格右侧的 ▾ 小格：点开「使用教程」清单
+    btns.appendChild(syncGrp);
     btns.appendChild(ai);
     btns.appendChild(ok);
     cm.appendChild(ta);
     cm.appendChild(btns);
-    return { cm, ta, ai, ok, rmt };
+    return { cm, ta, ai, ok, rmt, syncGrp };
   }
 
   // 把状态刷到提交框（节点可能此刻不在文档里，比如正在看文件 diff——值照样留住）
@@ -650,13 +653,14 @@
     ok.disabled = S.commitBusy || !S.groups.staged.length;
     // 远程同步按钮（单按钮两用）：远程领先=拉取、本地领先=推送；与远程一致或
     // 没有上游时置灰。数据来自最近一次 status（面板刷新时 pokeRemote 会后台
-    // fetch 兜底）。样式随可用性切换：可按=primary（同「✓ 提交」），灰=普通描边
+    // fetch 兜底）。强调样式挂整组 .gitp-sync：主格与 ▾ 小格一起变主色
+    // （分裂按钮是一个整体），灰=普通描边
     const rBusy = S.pullBusy || S.pushBusy;
     const noUp = !S.upstream;
     const canPull = !noUp && S.behind > 0;
     const canPush = !noUp && !canPull && S.ahead > 0;
     rmt.disabled = rBusy || (!canPull && !canPush);
-    rmt.className = 'gitp-btn gitp-remote' + ((canPull || canPush) ? ' primary' : '');
+    if (commitBar.syncGrp) commitBar.syncGrp.className = 'gitp-sync' + ((canPull || canPush) ? ' primary' : '');
     rmt.textContent = S.pullBusy ? '拉取中…'
       : S.pushBusy ? '推送中…'
       : canPull ? '↓ 拉取'

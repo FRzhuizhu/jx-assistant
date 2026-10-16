@@ -140,9 +140,21 @@
 .gitp-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .gitp-btn.primary:hover { background: var(--accent-hover); }
 .gitp-btn:disabled { opacity: .55; cursor: default; }
-/* 提交栏的拉取/推送按钮靠左（AI 摘要、提交靠右） */
-.gitp-commit-btns .gitp-remote { margin-right: auto; }
-.gitp-commit-btns .gitp-tut-btn { min-width: 34px; padding: 4px 8px; }
+/* 远程同步 = 分裂按钮（VSCode 式，整组靠左；AI 摘要、提交靠右）：主格
+   （拉取/推送/已同步）+ 右侧贴着的 ▾ 小格，同属一个大按钮——共用外框与
+   圆角，中间只隔一条细分隔线（主格去掉右边框，▾ 格留左边框） */
+.gitp-commit-btns .gitp-sync { display: flex; margin-right: auto; }
+.gitp-sync .gitp-btn { border-radius: 0; }
+.gitp-sync .gitp-remote { border-radius: 7px 0 0 7px; border-right: 0; }
+.gitp-sync .gitp-tut-btn { border-radius: 0 7px 7px 0; min-width: 26px; padding: 4px 6px; }
+/* 与远程一致 / 无上游：主格置灰（灰字、不响应悬停）但外形仍是大按钮的一部分；
+   ▾ 格保持常亮常按——教程不随同步可用性失效 */
+.gitp-sync .gitp-remote:disabled { opacity: 1; color: var(--text-3); font-weight: 400; }
+.gitp-sync .gitp-remote:disabled:hover { background: var(--bg); }
+/* 强调态（可拉取 / 可推送）挂组上：两格一起填充主色，分隔线用半透明白 */
+.gitp-sync.primary .gitp-btn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.gitp-sync.primary .gitp-btn:hover { background: var(--accent-hover); }
+.gitp-sync.primary .gitp-tut-btn { font-weight: 400; border-left: 1px solid rgba(255, 255, 255, .4); }
 
 /* ---------- 更改区：文件分组 ---------- */
 .gitp-groups { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }

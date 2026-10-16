@@ -1,7 +1,7 @@
 {
   "id": "git-panel",
   "name": "Git 面板",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "右侧栏多一个 Git 页签：同屏双区（上下堆叠可切左右分栏，分隔条可拖）——更改区：VSCode 式清单（暂存/取消暂存/提交/AI 摘要/逐行 diff）；图谱区：分支泳道图（全部分支拓扑、合并分叉、引用徽标、HEAD 高亮、提交详情）。顶栏可选仓库、切换本地分支与「⟲ 同步」（fetch → 快进或无冲突自动合并 → push；需要决策的情形原样退回）。同时给模型提供 git_sync 工具：命令沙箱内 git 远程操作（fetch/pull/push）必失败（受限令牌限制），此工具经宿主通道代做远程同步，报错原样回模型；本地 git 操作不受影响。不做 reset/revert/discard/stash/rebase。宿主半边见 gitpanel.go 与 gittools.go。",
   "client": {
     "js": "client.js",
