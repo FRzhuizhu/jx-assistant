@@ -344,8 +344,14 @@ async function openSubSession(id) {
   try {
     const data = await api('/api/sessions/' + id);
     if (tok !== navTok.sub) return; // 已被更新的导航取代：晚到的旧响应不落地
-    subState.cur = data.meta;
     subState._loading = false; // 数据落地：退出加载态（必须在 renderMessages 之前）
+    // 迟到的旧快照（见 app-chat.js 的 snapshotStale，同会话才可比）：右栏已被
+    // 流式帧推进到更新，整包不应用，只收掉加载态并按现状重绘
+    if (snapshotStale(subView, id, data.messages)) {
+      renderMessages(subState.msgs, subView);
+      return;
+    }
+    subState.cur = data.meta;
     subState.msgs = data.messages || [];
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
     subState.pendingQueue = (data.pending && data.pending.queue) || [];

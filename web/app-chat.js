@@ -242,12 +242,35 @@ function showChatLoadError(view, msg, retry) {
   view.col.appendChild(box);
 }
 
+// 迟到的整包快照比界面已显示的还旧吗：只有视图正停在同一会话上才可比——会话内
+// 消息 seq 单调递增，末条 seq 被反超即为旧快照：切换加载在途时用户发了消息，回显
+// 与输出已随流式帧落地渲染，而这份 GET 的服务端快照取于落库之前，整包再落地会把
+// 刚显示的消息顶回发送之前，直到下次整包加载才回来——正是「发消息出去界面没
+// 更新，切走再切回来才正常」。navTok 只挡得住「更新的导航晚到」，挡不住「更旧的
+// 数据晚到」，这里按 seq 对龄补上后半边。跨会话（切换目标的历史天然更少甚至为空）
+// 绝不算旧快照，否则整个切换被拦下、界面停在旧会话上。
+function snapshotStale(view, sid, incoming) {
+  const st = view.state;
+  if (!st.cur || st.cur.id !== sid) return false; // 视图不在该会话上：真切换，快照照常应用
+  const cur = st.msgs || [];
+  const inc = incoming || [];
+  if (!cur.length) return false; // 界面还没有内容：任何快照都比它新
+  if (!inc.length) return true;  // 同一会话界面有内容而快照为空：快照必然更旧
+  return (inc[inc.length - 1].seq || 0) < (cur[cur.length - 1].seq || 0);
+}
+
 async function loadSessionInto(id, tok) {
   const data = await api('/api/sessions/' + id);
   // 已被更新的导航（切换/回首页）取代：晚到的旧响应不落地，否则会把界面顶回旧会话
   if (tok !== navTok.main) return;
-  state.cur = data.meta;
   state._loading = false; // 数据落地：退出加载态（必须在 renderMessages 之前）
+  // 迟到的旧快照（见 snapshotStale）：界面已被流式帧推进到更新，整包不应用，
+  // 只收掉加载态并按现状重绘——壳与列表由后续事件（title/done/session_updated）纠正
+  if (snapshotStale(mainView, id, data.messages)) {
+    renderMessages(state.msgs, mainView);
+    return;
+  }
+  state.cur = data.meta;
   state.msgs = data.messages || [];
   state.pendingSteer = (data.pending && data.pending.steer) || [];
   state.pendingQueue = (data.pending && data.pending.queue) || [];
@@ -5105,6 +5128,7 @@ async function reloadMessages(view) {
     // 已被更新的导航取代：晚到的旧会话数据不落地——否则 state.cur 被旧 meta 复活、
     // 界面被旧消息顶回旧会话，正是远程访问时「切过去又被跳回来」的根源
     if (nav !== navTok[view.key]) return;
+    if (snapshotStale(view, view.state.cur.id, d.messages)) return; // 迟到的旧快照：界面已被流式帧推进，不回退
     view.state.cur = d.meta;
     view.state.msgs = d.messages || [];
     view.state.pendingSteer = (d.pending && d.pending.steer) || [];
