@@ -56,7 +56,8 @@ var (
 	procWaveInAddBuffer       = winmmDLL.NewProc("waveInAddBuffer")
 )
 
-const whdrDone = 0x00000001 // WAVEHDR.dwFlags：缓冲已录满归还
+const whdrDone = 0x00000001     // WAVEHDR.dwFlags：缓冲已录满归还
+const whdrPrepared = 0x00000002 // WAVEHDR.dwFlags：缓冲已 Prepare（回队列必须保留）
 
 type tWAVEFORMATEX struct {
 	FormatTag      uint16
@@ -247,7 +248,14 @@ func kbdHookCallback() uintptr {
 // recHookLoop 在专用线程上安装两个低级钩子并跑消息循环（低级钩子要求
 // 安装线程有消息循环且保持存活）；WM_QUIT 退出并卸钩。ready 回传线程 id
 // （stop 用它投递 WM_QUIT），errCh 回传安装失败。
+// 【临时护栏】钩子回调（recMouseCb/recKbdCb）由本线程消息泵派发、跑在这条
+// goroutine 上，与主窗口同理须置于 stackguard_windows.go 的预增长深栈内
+// （Go 回调期间栈拷贝缺陷，详见该文件注释）。
 func recHookLoop(ready chan<- uint32, errCh chan<- error) {
+	withGuardedStack(func() { recHookLoopInner(ready, errCh) })
+}
+
+func recHookLoopInner(ready chan<- uint32, errCh chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	hMouse, _, err := procSetWindowsHookEx.Call(whMouseLL, mouseHookCallback(), 0, 0)
@@ -411,10 +419,18 @@ func (s *recAudioSession) loop() {
 				continue
 			}
 			s.handleFrame(s.bufs[i][:s.hdrs[i].BytesRecorded], time.Now())
-			s.hdrs[i].Flags = 0
+			// 回收只清 DONE 状态、必须保留 WHDR_PREPARED：全清会把 PREPARED
+			// 一并抹掉，waveInAddBuffer 立刻拒绝回队列（WAVERR_UNPREPARED=34）
+			// ——第一轮在途缓冲（6×100ms=600ms）录完后音频从此静默中断，
+			// audio.wav 固定只有 0.6 秒、VAD 无段可定稿、字幕/转写全空。
+			// 2026-10-16 本机双盲实测：全清=0.60s 且 6 次全拒；保留=满时长。
+			s.hdrs[i].Flags = whdrPrepared
 			s.hdrs[i].BytesRecorded = 0
 			if !s.stopFlag.Load() {
-				procWaveInAddBuffer.Call(s.hWave, uintptr(unsafe.Pointer(&s.hdrs[i])), sz)
+				if ret, _, _ := procWaveInAddBuffer.Call(s.hWave, uintptr(unsafe.Pointer(&s.hdrs[i])), sz); ret != 0 {
+					// 失败的缓冲不会再归还，每缓冲至多记一条，日志量有界
+					log.Printf("录音缓冲回队列失败（音频采集将中断）：错误码 %d", ret)
+				}
 			}
 			progressed = true
 		}

@@ -72,6 +72,12 @@ func guiLogRedirect() {
 	if st, err := os.Stat(logPath); err == nil && st.Size() > 5<<20 {
 		_ = os.Rename(logPath, logPath+".old")
 	}
+	// 日志只保留近 7 天：轮转出的 .old 超期即删（常态下它会在下次轮转被
+	// 覆盖，这里兜底「长期不重启、一直没触发轮转」的场景），日志盘占用
+	// 有界：desktop.log + 至多一份 7 天内的 .old。
+	if st, err := os.Stat(logPath + ".old"); err == nil && time.Since(st.ModTime()) > 7*24*time.Hour {
+		_ = os.Remove(logPath + ".old")
+	}
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return
@@ -281,7 +287,16 @@ func stringsEqualFold(a, b string) bool {
 // （browser_panel_windows.go）作为第二个 WebView2 控件惰性创建，挂在
 // 本窗口上。URL 带 shell=desktop 参数：前端据此进入桌面形态（右栏
 // 浏览器视图 + 矩形上报）。
+//
+// 【临时护栏】整个窗口循环连同主窗口 subclass / 托盘 / 面板 COM 等全部
+// Windows 回调都跑在这条 goroutine 上，必须置于 stackguard_windows.go
+// 的预增长深栈内——规避 Go 运行时「回调期间栈拷贝」静默闪退缺陷（详见
+// 该文件注释；Go 官方修复后随护栏一并移除）。
 func runDesktop(app *App, url string) error {
+	return withGuardedStackResult(func() error { return runDesktopLoop(app, url) })
+}
+
+func runDesktopLoop(app *App, url string) error {
 	if !webView2RuntimeAvailable() {
 		desktopMessageBox(
 			"未检测到 Microsoft WebView2 运行时（Windows 10 / 11 一般自带）。\n\n"+
