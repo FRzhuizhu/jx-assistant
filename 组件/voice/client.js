@@ -16,7 +16,7 @@
  *       可达，能力随浏览器版本波动（失败处置指引见 dictationFailMsg）；环境没有
  *       该能力时（部分远程手机端浏览器、Electron 壳）自动落到本地模型。
  *    b. 本地语音识别模型（需手动选择，voiceasr.go 通道）：本机/桌面走 WebSocket
- *       流式——说话实时出灰字、停顿约 3 秒由离线模型精修落成黑字（复用浏览器
+ *       流式——说话实时出灰字、停顿约 2 秒由离线模型精修落成黑字（复用浏览器
  *       引擎同款两段式体验）；远程 https 页面开不了 ws，自动回退整段识别。
  *       音频不出本机/服务器；要求 技能\_runtime 带 sherpa-onnx 且 data\asr-models
  *       模型文件齐备，未就绪时设置页切回云端。
@@ -986,14 +986,14 @@
       if (remain <= 0) { stopByUser(); return; }
       setCount(remain <= 9000 ? Math.ceil(remain / 1000) : null);
     };
-    const wsHint = () => '录音中·说话出灰字草稿，停顿约 3 秒定稿成正文；点麦克风结束';
+    const wsHint = () => '录音中·说话出灰字草稿，停顿约 2 秒定稿成正文；点麦克风结束';
     /* ---------- 本地引擎：伪流式（离线模型两档停顿），手机/电脑同一实现 ----------
      * 流式模型已删（163MB 太重且终稿质量逊于离线）。用离线模型 + 双停顿阈值
      * 复刻流式体验：
-     *   短停顿（~0.6s）→ 该短语快速识别 → 灰字草稿（「听到了」的即时反馈，
+     *   短停顿（~0.2s）→ 该短语快速识别 → 灰字草稿（「听到了」的即时反馈，
      *                     多个短语可叠在灰字层）
-     *   长停顿（尾随静音满 3s）/按钮结束/连续说超 18s 强切 → 自上次定稿的全部
- *                     音频整段重识别（静音垫限量 1.5s，近似停顿中点切分）
+     *   长停顿（尾随静音满 2s）/按钮结束 → 自上次定稿的全部
+ *                     音频整段重识别（静音垫限量 1s，近似停顿中点切分）
      *                     → 黑字定稿，替换灰字草稿（全上下文更准、标点完整）
      * 全部走 HTTP POST（桌面/远程同一条路，远程经中继隧道天然可达）；
      * 桌面/远程体验完全一致。VAD：噪声底自适应，阈值=max(0.008, 底×3.5)。
@@ -1006,16 +1006,15 @@
       const src = ctx.createMediaStreamSource(stream);
       const node = ctx.createScriptProcessor(4096, 1, 1);
       const SPEECH_MIN_MS = 350;    // 短于此视为噪声毛刺，丢弃
-      const DRAFT_PAUSE_MS = 600;   // 短停顿：出灰字草稿（该短语快速识别）
-      const FINAL_PAUSE_MS = 3000;  // 长停顿：定稿（自上次定稿的全部音频重识别）
-      const SEG_MAX_MS = 18000;     // 连续不停顿超 18 秒强制定稿
+      const DRAFT_PAUSE_MS = 200;   // 短停顿：出灰字草稿（该短语快速识别）
+      const FINAL_PAUSE_MS = 2000;  // 长停顿：定稿（自上次定稿的全部音频重识别）
       let seg = [];                 // 当前短语的帧
       let speechMs = 0, silenceMs = 0, segSpeechMs = 0;
       let noiseFloor = 0.004;       // 环境噪声底（RMS，自适应）
       let sinceFinal = [];          // 自上次定稿的全部语音帧（短语间静音间隙限量收录）
       let sinceFinalMs = 0;         // 定稿段内的有声总时长
-      let finalSilenceMs = 0;       // 尾随静音计时：满 3 秒才定稿（真停顿，非说话时长）
-      let padMs = 0;                // 定稿段内已收录的静音垫（间隙+尾部，上限 1.5 秒）
+      let finalSilenceMs = 0;       // 尾随静音计时：满 2 秒才定稿（真停顿，非说话时长）
+      let padMs = 0;                // 定稿段内已收录的静音垫（间隙+尾部，上限 1 秒）
       let ended = false, segCount = 0, failCount = 0;
       let draftEpoch = 0;          // 草稿代际：定稿时 +1，在途草稿的迟到应答按过期丢弃
       let level = 0;               // 实时音量 0..1（驱动按钮内波形条）
@@ -1137,16 +1136,18 @@
           silenceMs = 0; finalSilenceMs = 0;
         } else if (speechMs > 0) {
           silenceMs += frameMs; finalSilenceMs += frameMs;
-          // 间隙/尾部静音限量入定稿段（垫上限 1.5s，近似「在停顿中点切分」：
-          // 真停顿触发时尾部垫≈1.5s；不足 3s 的呼吸停顿全量保留不分段）
-          if (sinceFinalMs > 0 && padMs < 1500) {
+          // 间隙/尾部静音限量入定稿段（垫上限 1s，近似「在停顿中点切分」：
+          // 真停顿触发时尾部垫≈1s；不足 2s 的呼吸停顿全量保留不分段）
+          if (sinceFinalMs > 0 && padMs < 1000) {
             sinceFinal.push(new Float32Array(f));
             padMs += frameMs;
           }
         }
         if (segSpeechMs >= SPEECH_MIN_MS && silenceMs >= DRAFT_PAUSE_MS) draftSeg();
-        // 定稿=真停顿（尾随静音满 3 秒）；SEG_MAX 为连续说话的强制上限（防永不停顿）
-        if (sinceFinalMs >= SEG_MAX_MS || (sinceFinalMs >= SPEECH_MIN_MS && finalSilenceMs >= FINAL_PAUSE_MS)) {
+        // 定稿=真停顿（尾随静音满 2 秒）。不再做 SEG_MAX=18s 连续说话强切：常在语句
+        // 中途拦腰打断（体验差），去掉后由全局 maxDictateSec 上限与手动点停兜底；
+        // 每次真停顿定稿时计时自然归零、重新累计
+        if (sinceFinalMs >= SPEECH_MIN_MS && finalSilenceMs >= FINAL_PAUSE_MS) {
           finalizeSeg();
           speechMs = 0; silenceMs = 0;
         }
@@ -1505,7 +1506,7 @@
     row('听写引擎', engSel);
 
 
-    note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 3 秒自动'
+    note('「本地识别」全程离线（音频不出本机/服务器）：说完一句停顿约 2 秒自动'
       + '落成正文（电脑端另有实时灰字预览）。「云端识别」由当前浏览器内置的识别能力提供（各浏览器'
       + '接入的服务商不同，且依赖其在线服务可达）。默认本地，需要时手动切换；'
       + '首次使用本地识别需加载模型（几秒）。');
