@@ -124,6 +124,13 @@
 
     setSlot(def, slot, v) { def.set(slot, v); this._changed(def.id, def); },
     setChoice(def, v) { def.setChoice(v); this._changed(def.id, def); },
+    // 清空＝主副两槽一起停用（行级；单槽停用是键帽框里的 ✕）
+    clearDef(def) {
+      if (def.kind === 'choice') return;
+      def.set('main', []);
+      def.set('sub', []);
+      this._changed(def.id, def);
+    },
     restoreDef(def) {
       if (def.kind === 'choice') {
         if (def.choices && def.choices.length) def.setChoice(def.choices[0].v);
@@ -162,19 +169,36 @@
   JX.registerHotkey = (def) => HK.register(def);
   JX.unregisterHotkey = (id) => HK.unregister(id);
 
+  // 组合占用索引 + 冲突清单：按表格顺序展开全部生效组合，同一组合**先到者生效**
+  //（后到的进冲突清单、不进引擎索引——「从上往下按第一个处理」）。choice 的
+  // 各档键位也参与占位与冲突检测（它两档互斥但都该被保护）。
+  const SLOT_LABEL = { main: '主快捷键', sub: '副快捷键', choice: '固定键位' };
   function rebuildIndex() {
     HK._index = new Map();
+    HK._conflicts = [];
+    const seen = new Map(); // canonical -> 第一个占用项
+    const entries = [];
     for (const def of HK._defs) {
       if (def.kind === 'choice') {
         for (const c of def.choices || []) {
-          if (c.keys && c.keys.length) HK._index.set(canonical(c.keys), { def, slot: 'choice' });
+          if (c.keys && c.keys.length) entries.push({ def, slot: 'choice', keys: c.keys });
         }
         continue;
       }
       for (const slot of ['main', 'sub']) {
         const ks = HK.effectiveKeys(def, slot);
-        if (ks.length) HK._index.set(canonical(ks), { def, slot });
+        if (ks.length) entries.push({ def, slot, keys: ks });
       }
+    }
+    for (const e of entries) {
+      const c = canonical(e.keys);
+      const first = seen.get(c);
+      if (first) {
+        HK._conflicts.push({ keys: e.keys, a: first, b: e });
+        continue; // 引擎只认第一个
+      }
+      seen.set(c, e);
+      if (e.def.kind === 'keys') HK._index.set(c, { def: e.def, slot: e.slot });
     }
   }
   function renderAllBoxes() {
@@ -372,11 +396,12 @@
   function renderTable(host) {
     host.innerHTML = '';
     const defs = HK.list();
+    const rowNo = new Map(defs.map((d, i) => [d, i + 1])); // 行号从 1 起（冲突清单用它指代）
     const head = document.createElement('div');
     head.className = 'hk-head';
     const tip = document.createElement('span');
     tip.className = 'sf-desc';
-    tip.textContent = '共 ' + defs.length + ' 个快捷键。点键帽框录制自定义组合（松开保存、Esc 取消），框内 ✕ 停用该槽。方向键等仅当鼠标最后点在左侧栏或对话区时生效；输入框、右侧栏（浏览器）与弹窗内的按键不受影响。';
+    tip.textContent = '共 ' + defs.length + ' 个快捷键。点键帽框录制自定义组合（松开保存、Esc 取消），框内 ✕ 停用该槽，行末「清空」主副一起停用。方向键等仅当鼠标最后点在左侧栏或对话区时生效；输入框、右侧栏（浏览器）与弹窗内的按键不受影响。';
     const allBtn = document.createElement('button');
     allBtn.type = 'button';
     allBtn.className = 'hk-restore-all';
@@ -392,24 +417,54 @@
     table.className = 'hk-table';
     const hr = document.createElement('div');
     hr.className = 'hk-row hk-head-row';
-    ['快捷键名称', '主快捷键', '副快捷键', '描述', ''].forEach((t) => {
+    ['快捷键名称', '主快捷键', '副快捷键', '描述', '恢复默认', '清空'].forEach((t) => {
       const c = document.createElement('div');
       c.className = 'hk-cell';
       c.textContent = t;
       hr.appendChild(c);
     });
     table.appendChild(hr);
-    for (const def of defs) table.appendChild(tableRow(def));
+    // 卷入冲突的行（两侧任一）都变色，让人一眼看到要改谁
+    const conflictDefs = new Set();
+    for (const cf of HK._conflicts || []) {
+      conflictDefs.add(cf.a.def);
+      conflictDefs.add(cf.b.def);
+    }
+    for (const def of defs) table.appendChild(tableRow(def, rowNo.get(def), conflictDefs.has(def)));
     scroll.appendChild(table);
     host.appendChild(scroll);
+    // 底部冲突清单：同一组合被多处占用时，按表格顺序在前的生效、靠后的不触发。
+    // 一对一对地写行号+名称，用户直接知道改哪一个（改靠后的那项，或清空它）。
+    if ((HK._conflicts || []).length) {
+      const list = document.createElement('div');
+      list.className = 'hk-conf-list';
+      const h = document.createElement('div');
+      h.className = 'hk-conf-title';
+      h.textContent = '冲突 ' + HK._conflicts.length + ' 处';
+      list.appendChild(h);
+      for (const cf of HK._conflicts) {
+        const item = document.createElement('div');
+        item.className = 'hk-conf-item';
+        const a = '第' + rowNo.get(cf.a.def) + '项「' + cf.a.def.name + '」的' + SLOT_LABEL[cf.a.slot];
+        const b = '第' + rowNo.get(cf.b.def) + '项「' + cf.b.def.name + '」的' + SLOT_LABEL[cf.b.slot];
+        item.textContent = a + ' 与 ' + b + ' 都是 ' + comboText(cf.keys) + '——' + a + '生效、' + b + '不触发，建议改掉靠后的';
+        list.appendChild(item);
+      }
+      host.appendChild(list);
+    }
   }
 
-  function tableRow(def) {
+  function tableRow(def, no, conflict) {
     const row = document.createElement('div');
-    row.className = 'hk-row';
-    // 名称 + 来源徽标
+    row.className = 'hk-row' + (conflict ? ' conflict' : '');
+    row.title = conflict ? '这项的快捷键与别处冲突（见下方冲突清单）' : '';
+    // 序号 + 名称 + 来源徽标
     const c0 = document.createElement('div');
     c0.className = 'hk-cell hk-c0';
+    const noEl = document.createElement('span');
+    noEl.className = 'hk-no';
+    noEl.textContent = no + '.';
+    c0.appendChild(noEl);
     const nm = document.createElement('b');
     nm.textContent = def.name;
     c0.appendChild(nm);
@@ -453,7 +508,24 @@
         + '，副：' + (def.defaults.sub && def.defaults.sub.length ? comboText(def.defaults.sub) : '无');
     rb.onclick = () => HK.restoreDef(def);
     c4.appendChild(rb);
-    row.append(c0, c1, c2, c3, c4);
+    // 清空（主副一起停用；选项型没有可清的键位）
+    const c5 = document.createElement('div');
+    c5.className = 'hk-cell hk-c5';
+    if (def.kind === 'choice') {
+      const dash = document.createElement('span');
+      dash.className = 'hk-dash';
+      dash.textContent = '—';
+      c5.appendChild(dash);
+    } else {
+      const cb = document.createElement('button');
+      cb.type = 'button';
+      cb.className = 'hk-clr';
+      cb.textContent = '清空';
+      cb.title = '主、副快捷键一起停用（只想停一个用键帽框里的 ✕）';
+      cb.onclick = () => HK.clearDef(def);
+      c5.appendChild(cb);
+    }
+    row.append(c0, c1, c2, c3, c4, c5);
     return row;
   }
 
