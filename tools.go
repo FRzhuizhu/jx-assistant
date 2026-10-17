@@ -103,9 +103,11 @@ func (t *toolContext) resolve(p string) (string, error) {
 	return filepath.Abs(p)
 }
 
-// toolsFor 按会话模式返回可用工具。数字助理总控拥有编排类工具（不亲自读写
-// 文件、不执行命令；deliver_result 是唯一例外——只读核对路径并登记展示，
-// 让派发产出的成果文件能以交付卡片出现在总控对话里）；任务会话拥有全部
+// toolsFor 按会话模式返回可用工具。数字助理总控拥有编排类工具 + 只读
+// 四件套与 web_fetch（答小问题用——十步内的查看自己看，写文件、执行
+// 命令仍然没有，使用纪律见 agent.go 的 assistantPrompt；deliver_result
+// 是唯一例外——只读核对路径并登记展示，让派发产出的成果文件能以交付
+// 卡片出现在总控对话里）；任务会话拥有全部
 // 实操工具 + 子对话派发；辅助对话只有只读工具（定位是答疑，不修改任何东西）。
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
@@ -128,8 +130,11 @@ func (a *App) toolsFor(mode string) []Tool {
 		// 数字助理总控只有「派发工作任务」这一条派发路径：dispatch_sub（派子对话）
 		// 与 list_experts（子对话专家名单）不在这里——子对话归任务会话（见 toolsFor
 		// 的另一个分支），总控的编排手段是 dispatch_task / send_to_session。
+		// 只读四件套 + web_fetch：小问题（十步内的查看）总控自己看文件回答，
+		// 不必为「这个文件写了什么」专门派个任务；写与执行类工具绝不进场。
 		tools = append([]Tool{listSessionsTool(), readSummaryTool(), dispatchTaskTool(), sendToSessionTool(),
 			stopSessionTool(), a.callAPITool(),
+			readFileTool(), listDirTool(), globTool(), grepTool(), webFetchTool(),
 			deliverResultTool(),
 			enterPlanModeTool(), exitPlanModeTool(), updateGoalTool()}, append(todos, history...)...)
 	} else if mode == "aux" {

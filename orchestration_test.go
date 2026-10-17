@@ -192,6 +192,40 @@ func TestAssistantLosesSubDispatchTools(t *testing.T) {
 	}
 }
 
+// ---------- B2. 数字助理的只读四件套与 web_fetch ----------
+
+func TestAssistantReadOnlyTools(t *testing.T) {
+	a, _ := newDispatchTestApp(t)
+	as := toolNames(t, a, "assistant")
+	// 五个只读工具注册进总控（小问题自己看文件答，不必派任务）
+	for _, keep := range []string{"read", "list_dir", "glob", "grep", "web_fetch"} {
+		if !as[keep] {
+			t.Fatalf("数字助理应有只读工具 %s", keep)
+		}
+	}
+	// 红线：写、执行、交互、协调类工具绝不进场（只读定位）
+	for _, gone := range []string{"write", "edit", "run_command", "run_python", "snapshot_file",
+		"deliver_file", "dispatch_sub", "browser_open", "computer_screenshot", "request_manager"} {
+		if as[gone] {
+			t.Fatalf("数字助理不该有 %s（只读红线）", gone)
+		}
+	}
+	// 提示词带使用纪律：小事自己看、只读不写不执行、大批量仍派任务、读完就答
+	sys := a.systemPrompt(&SessionMeta{Mode: "assistant"})
+	for _, want := range []string{"只读自查的纪律", "十步", "只读不写不执行", "批量分析", "读完就答"} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("数字助理提示词缺只读纪律要点 %q", want)
+		}
+	}
+	// 任务会话的文件工具不受影响
+	tk := toolNames(t, a, "task")
+	for _, keep := range []string{"read", "list_dir", "glob", "grep", "web_fetch", "write", "edit"} {
+		if !tk[keep] {
+			t.Fatalf("任务会话应保留 %s", keep)
+		}
+	}
+}
+
 // ---------- C. send_to_session 的权限参数 ----------
 
 func TestSendToSessionPermission(t *testing.T) {
