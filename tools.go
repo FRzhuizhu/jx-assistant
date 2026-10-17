@@ -521,7 +521,7 @@ func runWriteFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func editFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。只读档被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
+		Spec: toolSpec("edit", "对既有文本文件做局部修改：把 old_string 字面量替换为 new_string（匹配时 CRLF/LF 行尾视为等价，写回自动保持文件原行尾风格）。默认要求 old_string 在文件中恰好出现一次（多次出现时给出更长的片段或设 replace_all）。只读档被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("文件路径"),
 				"old_string":          strProp("要被替换的原文（需保证唯一）"),
@@ -561,8 +561,20 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	content := string(data)
-	count := strings.Count(content, p.OldString)
+	// 行尾等价匹配：read 给模型的内容已把 CRLF 归一为 LF（runReadFile），
+	// 模型按所见写的 old_string/new_string 自然是 LF；若在原始字节上逐字
+	// 匹配，跨行片段会因每个换行差一个 \r 而永远对不上（Windows 项目上
+	// 必炸，2026-10-17 会话实际踩中）。匹配与替换都在归一域进行，写回前
+	// 再按原文件主导行尾风格恢复——与 DSH fs-local / zcode edit 的
+	// 「归一匹配 + 原样写回」同构。
+	norm := strings.ReplaceAll(content, "\r\n", "\n")
+	oldNorm := strings.ReplaceAll(p.OldString, "\r\n", "\n")
+	newNorm := strings.ReplaceAll(p.NewString, "\r\n", "\n")
+	count := strings.Count(norm, oldNorm)
 	if count == 0 {
+		if strings.Contains(content, "\r\n") {
+			return "", fmt.Errorf("old_string 在文件中不存在（已按 CRLF/LF 行尾等价匹配，请对照 read 输出核对原文，注意不要带行号前缀）")
+		}
 		return "", fmt.Errorf("old_string 在文件中不存在")
 	}
 	if count > 1 && !p.ReplaceAll {
@@ -576,11 +588,12 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	var updated string
 	replaced := 1
 	if p.ReplaceAll {
-		updated = strings.ReplaceAll(content, p.OldString, p.NewString)
+		updated = strings.ReplaceAll(norm, oldNorm, newNorm)
 		replaced = count
 	} else {
-		updated = strings.Replace(content, p.OldString, p.NewString, 1)
+		updated = strings.Replace(norm, oldNorm, newNorm, 1)
 	}
+	updated = restoreLineEndings(updated, detectFileLineEndings(content))
 	// 带快照写入：改动前内容自动落 checkpoint（上面 envReadFile 读到的即旧内容）
 	readBack, verified, err := t.snapshotWrite(path, grant, []byte(updated))
 	if err != nil {
@@ -592,6 +605,25 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	t.markObserved(path)
 	return fmt.Sprintf("已编辑 %s（替换 %d 处）%s", filepath.ToSlash(path), replaced,
 		readBackNote([]byte(updated), readBack, verified, false)), nil
+}
+
+// detectFileLineEndings 按多数派判定文件的主导行尾风格：CRLF 行数多于
+// 裸 LF 才算 CRLF，「99% LF + 偶发 CRLF」的混合文件不会被整体翻成 CRLF。
+func detectFileLineEndings(content string) string {
+	crlf := strings.Count(content, "\r\n")
+	if crlf > strings.Count(content, "\n")-crlf {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+// restoreLineEndings 把归一域（LF）内容按目标行尾风格写回；目标为 CRLF
+// 时内容已无 \r 残留（new_string 同样归一过），不会产生 \r\r\n 双重化。
+func restoreLineEndings(norm, eol string) string {
+	if eol == "\n" {
+		return norm
+	}
+	return strings.ReplaceAll(norm, "\n", "\r\n")
 }
 
 // readBackNote 生成写入后的回读注记（write/edit 成功文案的尾巴）。
