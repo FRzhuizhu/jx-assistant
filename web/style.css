@@ -2491,11 +2491,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 .pg-run .pg-run-time { flex: none; color: var(--text-3); font-size: .93em; }
 .pg-run .pg-run-stop {
-  flex: none; align-self: center; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px;
-  background: transparent; color: var(--text-3); font-size: .86em; line-height: 1.6; cursor: pointer;
+  flex: none; align-self: center; margin-left: 2px; padding: 0 8px; border: 1px solid #e9578f; border-radius: 5px;
+  background: transparent; color: #e9578f; font-size: .86em; line-height: 1.6; cursor: pointer;
+  opacity: 0; transition: opacity .12s ease;
 }
-.pg-run .pg-run-stop:hover { color: var(--danger); border-color: var(--danger); background: var(--hover); }
-.pg-run .pg-run-stop:disabled { opacity: .5; cursor: default; }
+.pg-run:hover .pg-run-stop { opacity: 1; }
+.pg-run .pg-run-stop:hover { background: #e9578f; color: #fff; }
+.pg-run:hover .pg-run-stop:disabled { opacity: .5; cursor: default; }
+@media (hover: none) { .pg-run .pg-run-stop { opacity: 1; } } /* 触屏没有悬停：常显（触屏版面本就少见） */
 .pg-run.live .pg-run-time { color: var(--accent); }
 .pg-run-dot {
   display: inline-block; width: 6px; height: 6px; margin-right: 4px;
