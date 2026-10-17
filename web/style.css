@@ -499,9 +499,10 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
    底色由主题色 --accent 调淡得出（设置里换主题色时自动跟随，不硬编码蓝）；
    第一行是不支持 color-mix 的旧内核兜底值。文字仍是 --text（亮色主题下即
    近黑色），浅蓝底上对比度约 12:1，远高于 WCAG AA 的 4.5:1。
-   悬停时气泡下方露出复制/编辑操作条。
-   间距拆两半放：气泡底部 2px + 容器底部 18px；带操作条时容器收零，
-   由操作条自己的 18px 接管（排队/插话/系统注入行没有操作条，走容器那份） */
+   悬停时气泡上方露出复制/编辑操作条：操作条贴自己气泡顶上、归属一目了然
+   （放气泡下方时视觉上更像上一轮对话的结尾，看着别扭）。
+   与下一条消息的间距统一由容器底部 18px 给（排队/插话/系统注入行没有
+   操作条，同样走这份） */
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 18px; }
 .msg.user .bubble {
   max-width: 72%; color: var(--text);
@@ -510,7 +511,6 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   --fold-bg: var(--bubble-mine);        /* 折叠渐隐终点 = 气泡自身底色 */
   padding: 10px 15px; border-radius: 14px 14px 4px 14px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
-  margin-bottom: 2px;
 }
 
 /* AI 发出的用户消息（aiuser：数字助理派发的任务指令/派发回报/子对话派发/待办
@@ -554,8 +554,6 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .fold-btn:hover { color: var(--text); }
 .fold-btn:focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; }
 .folded > .fold-btn { display: block; position: absolute; left: 50%; bottom: 5px; transform: translateX(-50%); margin: 0; }
-.msg.user:has(> .msg-actions) { margin-bottom: 0; }
-.msg.user .msg-actions { margin: 0 0 18px; }
 .msg.user:hover .msg-actions { opacity: 1; }
 
 /* 编辑重发：气泡原位换成输入框（发送后截断该消息之后的记录重新执行） */
@@ -761,15 +759,19 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
 }
 
-/* 助手消息：通栏 Markdown */
+/* 助手消息：通栏 Markdown。中间正文 6px 紧凑拼接；收尾输出（带操作行的那条）
+   底距放大到 18px 与下一条消息隔开——这 18px 原由操作行自带（行在正文下方），
+   操作行挪到上方后移交给消息容器。 */
 .msg.assistant { margin-bottom: 6px; }
+.msg.assistant:has(> .msg-actions) { margin-bottom: 18px; }
 .msg.assistant .md { line-height: 1.75; word-break: break-word; }
-/* 操作行（复制/压缩/分支/朗读 + 时间）一律悬停显隐——与用户气泡同一交互：
-   曾把助手侧改常驻（怕入口找不到），电脑端中间常驻一排按钮让按钮与下一条
-   用户消息的间距显得又短又乱；改回悬停后，行仍在布局里占位（opacity 不塌陷），
-   平时正好化作一段干净留白，悬停即现。 */
+/* 操作行（复制/压缩/分支/朗读 + 时间）一律悬停显隐、统一挂在气泡/正文上方
+   （按钮紧贴它所属的那条消息；放下方时视觉上更像上一轮对话的结尾），行与
+   气泡间 2px 贴合——与用户气泡同一交互：曾把助手侧改常驻（怕入口找不到），
+   电脑端中间常驻一排按钮让按钮与下一条用户消息的间距显得又短又乱；改回悬停
+   后，行仍在布局里占位（opacity 不塌陷），平时正好化作一段干净留白，悬停即现。 */
 .msg-actions {
-  display: flex; gap: 4px; margin: 2px 0 18px; opacity: 0; transition: opacity .15s;
+  display: flex; gap: 4px; margin: 0 0 2px; opacity: 0; transition: opacity .15s;
 }
 .msg.assistant:hover .msg-actions { opacity: 1; }
 .act-copy {

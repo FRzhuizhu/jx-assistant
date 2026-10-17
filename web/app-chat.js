@@ -917,7 +917,7 @@ function actTime(iso, side) {
   return el;
 }
 
-// 用户消息气泡：右下悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息
+// 用户消息气泡：气泡上方悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息
 // 开放（kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。AI 发出的
 // 用户消息（kind=aiuser，数字助理派发的指令/回报）同款气泡但底色偏白（.ai），
 // 操作行有时间与复制、没有编辑——它是 AI 说的，不能编辑重发。
@@ -952,7 +952,7 @@ function userBubble(m, view) {
       ed.onclick = () => editUserMsg(m, view, wrap);
       acts.appendChild(ed);
     }
-    wrap.appendChild(acts);
+    wrap.insertBefore(acts, b); // 操作行放气泡上方：紧贴自己的消息，放下方时视觉上更像上一轮的结尾
   }
   return wrap;
 }
@@ -1065,8 +1065,8 @@ function renderItem(it, opts) {
     body.className = 'md';
     body.innerHTML = md(it.text);
     wrap.appendChild(body);
-    // 操作按钮只挂在回合最终输出下：中间正文不带，过程拼得更紧凑
-    if (opts && opts.final) wrap.appendChild(msgActions(it.m, { final: true }));
+    // 操作按钮只挂在回合最终输出上（正文上方）：中间正文不带，过程拼得更紧凑
+    if (opts && opts.final) wrap.insertBefore(msgActions(it.m, { final: true }), body);
     return wrap;
   }
   // 系统通知：常显独立块
@@ -2168,7 +2168,7 @@ function renderMessages(msgs, view, opts) {
       ed.title = '退回输入框编辑后重新发送';
       ed.onclick = () => editPendingMsg(view, pm);
       acts.appendChild(ed);
-      wrap.appendChild(acts);
+      wrap.insertBefore(acts, b); // 与正式用户气泡一致：操作行在气泡上方
     }
     tail.appendChild(wrap);
   });
