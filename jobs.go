@@ -133,7 +133,12 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 			j.setExit("被终止（job_kill 或会话停止）")
 			return
 		}
+		// 沙箱路径的 wait 不携带真实退出码（文案照旧），但补一行日志留痕：
+		// 「作业启动后秒退」类异常（2026-10-17 曾发生一次、不可复现）从此可从
+		// 日志对账定位，不再查无实据。运行时长是关键信号：秒退 = 命令没真跑起来。
+		dur := time.Since(j.startedAt).Round(time.Second)
 		j.setExit("exit 0")
+		log.Printf("[作业] %s（%s）正常结束，运行 %s", j.ID, truncateRunes(j.Command, 60), dur)
 	}()
 	return j, nil
 }
