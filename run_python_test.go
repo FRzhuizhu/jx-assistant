@@ -18,6 +18,10 @@ import (
 func newRunPyTestApp(t *testing.T) *App {
 	t.Helper()
 	a := &App{Cfg: &Config{DataDir: t.TempDir(), Workspace: t.TempDir(), AllowShell: true}}
+	// CfgPath 必须显式给：空值会让 protectPaths 把 cwd（项目根）整目录保护，
+	// 工具读项目根的文件全被「受保护路径」误拦（真实 App 的 CfgPath 恒非空）
+	a.CfgPath = filepath.Join(a.Cfg.DataDir, "config.json")
+	a.initRuntime()
 	// 技能目录指向本仓库的 技能/（go test 的 cwd=项目根）：内置便携 Python
 	// 已装配的机器上真机用例可跑；否则主体用例自动跳过
 	a.Cfg.SkillsDir = "技能"
