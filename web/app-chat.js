@@ -3830,12 +3830,25 @@ function drawProgress() {
         + '<span class="pg-run-label">' + esc(r.label || '子进程') + '</span>'
         + '<span class="pg-run-cmd" title="' + esc(cmd) + '">' + esc(cmd.length > 70 ? cmd.slice(0, 70) + '…' : cmd) + '</span>'
         + '<span class="pg-run-time">' + (live ? '已跑 ' + fmtElapsed(r.elapsed) : esc(r.exit || '已结束')) + '</span>'
+        + (live ? '<button type="button" class="pg-run-stop" data-id="' + esc(r.id) + '" title="停止这个程序（会通知 AI：这是用户停止的，不是出错）">停止</button>' : '')
         + '</li>';
     }
     html += '</ul>';
   }
   panel.innerHTML = html;
   panel.querySelector('.progress-head').onclick = () => { pgFold = false; drawProgress(); };
+  // 运行中的程序：停止按钮 → 真正终止（后台作业优雅取消、子进程强杀），后端
+  // 会向本会话投【用户停止程序】注记（不触发 AI 对话）；列表由 children 事件刷新，
+  // 这里的 loadProgress 只是成功后的即时反馈
+  for (const b of panel.querySelectorAll('.pg-run-stop')) {
+    b.onclick = () => {
+      b.disabled = true;
+      if (!state.cur) return;
+      api('/api/sessions/' + state.cur.id + '/stop-child', { method: 'POST', body: JSON.stringify({ id: b.dataset.id }) })
+        .then(() => loadProgress())
+        .catch((e) => { b.disabled = false; alert('停止失败：' + e.message); });
+    };
+  }
   scheduleRunTick();
 }
 

@@ -177,6 +177,7 @@ func (a *App) browserFor(sid, mode string) browserTarget {
 		a.browserActive = map[string]browserTarget{}
 	}
 	a.browserActive[key] = t
+	a.browserUserClosedAt = time.Time{} // 重新打开：用户关闭标记作废（此后的「未在运行」另有原因）
 	a.browserMu.Unlock()
 	return t
 }

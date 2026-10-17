@@ -32,6 +32,9 @@ func sessionBrowserKey(t *toolContext) string {
 func activeHost(t *toolContext) (browserTarget, error) {
 	h := t.app.activeBrowser(sessionBrowserKey(t))
 	if h == nil {
+		if t.app.browserUserClosed() {
+			return nil, fmt.Errorf("浏览器页面已被用户在右栏关闭（用户主动关闭，非崩溃）：如需继续浏览请重新 browser_open（各实例保留的地址与登录态仍在）")
+		}
 		return nil, fmt.Errorf("浏览器未在运行（可能已被用户关闭窗口，或尚未打开）：请调用 browser_open（重新）打开")
 	}
 	return h, nil

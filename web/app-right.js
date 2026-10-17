@@ -190,6 +190,9 @@ let rpLastView = null; // 收起前在看的视图 id
 
 function setRpanelBtn(open) {
   const label = open ? '收起右侧栏' : '展开右侧栏';
+  // ✕ 的提示语跟随当前视图：浏览器页签下它是「真关闭页面」，别的视图只是收起
+  const xbtn = $('rp-close');
+  if (xbtn) xbtn.title = rpActive === 'browser' ? '关闭浏览器页面并收起侧栏' : '收起侧栏';
   const btn = $('btn-rpanel');
   if (btn) btn.title = label;
   const txt = $('rp-btn-text');
@@ -411,7 +414,19 @@ async function newAuxChat() {
     alert('新建子对话失败：' + e.message);
   }
 }
-$('rp-close').onclick = rpClose;
+$('rp-close').onclick = () => {
+  // 浏览器视图的 ✕ 是「真关闭」：先关掉页面（后端销毁实例，并向本会话投
+  // 【用户关闭浏览器】注记——AI 不被触发对话，下次醒来自然看到），再收起
+  // 面板。其他视图照旧只收起；顶栏 btn-rpanel 任何视图都只是收起（浏览器
+  // 后台保留），两条路各管各的。
+  if (rpActive === 'browser') {
+    api('/api/browser/close', { method: 'POST', body: JSON.stringify({ session: (state.cur && state.cur.id) || '' }) }).catch(() => {});
+    $('bpw-url').value = '';
+    $('bpw-title').textContent = '未打开页面';
+    $('bpw-vp').textContent = '';
+  }
+  rpClose();
+};
 $('btn-rpanel').onclick = toggleRpanel; // 顶栏最右：右栏整体开合（收起后再展开回到上次看的视图）
 // 子对话视图：下拉选/新建 + 独立输入区（与主对话同一套 send/render 代码，见 subView）
 $('sub-dd').onclick = () => { renderSubDDPop(); openPopover('sub-dd-pop', $('sub-dd')); };

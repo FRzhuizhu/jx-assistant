@@ -98,6 +98,7 @@ type App struct {
 	browsersHeaded  map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
 	nativePanel     browserTarget            // 桌面右栏原生 WebView2 面板（browser_panel_windows.go；网页模式为 nil）
 	browserActive   map[string]browserTarget // 工具作用目标：每会话最近一次 browser_open 选定的实例（键=browserProfileKey）
+	browserUserClosedAt time.Time            // 用户在右栏 ✕ 关闭浏览器页面的时刻（0=无，browserMu 保护）：browser_* 报「未在运行」时据此区分为用户主动关闭（非崩溃）；browserFor 重新打开时清零
 
 	// 桌面壳（runDesktop）注入的右侧栏截图通道（panelshot_windows.go）：
 	// shellEval 往主界面注入 JS、panelViewCh 收回右栏矩形回传，shellWnd 是
@@ -269,6 +270,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "POST /api/assistant/compact", a.handleAssistantCompact, apiMeta{Summary: "压缩数字助理主对话历史", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/assistant/clear", a.handleAssistantClear, apiMeta{Summary: "清空数字助理主对话历史", Perm: permFull, Danger: "清空总控主对话的全部历史，不可恢复"})
 	a.apiRoute(mux, "GET /api/sessions/{id}/progress", a.handleGetProgress, apiMeta{Summary: "会话进度清单", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/sessions/{id}/stop-child", a.handleStopChild, apiMeta{Summary: "停止会话的一个运行中程序（进度面板停止按钮）", Params: "id=程序 id（job-*/child-*）", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/sessions/{id}/plans", a.handleListPlans, apiMeta{Summary: "会话提交过的计划清单", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/sessions/{id}/plans/export", a.handleExportPlan, apiMeta{Summary: "把计划导出为工作区 md 文件", Params: "seq 可选", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/sessions/{id}/context", a.handleContextStats, apiMeta{Summary: "上下文用量统计", Perm: permReadOnly})
@@ -391,6 +393,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/navigate", a.handleBrowserNavigate)
 	mux.HandleFunc("POST /api/browser/viewport", a.handleBrowserViewport)
 	mux.HandleFunc("GET /api/browser/state", a.handleBrowserState)
+	mux.HandleFunc("POST /api/browser/close", a.handleBrowserClose)
 	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
 	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)
 	// Electron 壳面板桥的导航回报（panel-bridge.js 在 did-navigate 推送）：

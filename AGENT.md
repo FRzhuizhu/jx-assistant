@@ -820,7 +820,11 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   就用一张舒适宽度的卡；默认只在留白够的时候自动展开，窄屏/中等窗口一律折叠成
   胶囊，用户点过之后按用户的选择来（刷新复位）。清单超过半屏高卡内滚动。它永远
   是浮层（不占对话区高度、切换不触发重排），层级压在消息之上、输入区之下——报错
-  条必须始终看得见。宽度算在 JS（pgMetrics），CSS 只管摆位与两种形态。
+  条必须始终看得见。宽度算在 JS（pgMetrics），CSS 只管摆位与两种形态。面板下半部
+  的「运行中的程序」每行带停止按钮：POST /api/sessions/{id}/stop-child
+  （userstops.go）——后台作业优雅取消（与 job_kill 同路径）、前台子进程按进程树
+  强杀（killSessionChildren 的单点版），停止后向该会话投【用户停止程序】report
+  注记（不触发对话，AI 下轮自然看到「用户停止的，不是出错」）。
 
 ## 子对话：上下文继承与一级限制
 
@@ -1127,10 +1131,10 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   `data/webview-browser` 与日常浏览器隔离。注意：新版 WebView2（Chromium 136
   起）封禁 `--remote-debugging-port`，chromedp 直连嵌入控件不可靠，官方替代
   即控件级 CDP 调用接口。接口：`POST
-  /api/browser/{panel-rect,navigate,viewport,open-view}`、`GET
+  /api/browser/{panel-rect,navigate,viewport,open-view,close}`、`GET
   /api/browser/{state,view}`；全局事件 `browser_nav`（工具栏地址/标题）、
   `browser_resize`（AI 的视口宽度请求，前端让对话区让位调宽面板）。右栏收起
-  只是隐藏面板（AI 继续操作）；工具条的「在系统浏览器打开」把当前网址跳到
+  只是隐藏面板（AI 继续操作）；右栏浏览器视图的 ✕ 是**真关闭**（POST /api/browser/close，userstops.go：销毁内嵌实例、打「用户关闭」标记、向该会话投 report 注记；activeHost 据此把之后的报错说成用户主动关闭）；顶栏开合按钮仍只是收起。工具条的「在系统浏览器打开」把当前网址跳到
   用户日常浏览器（跳转后不受 AI 控制）。
 - **聊天链接点开（人机共看）**：对话正文里的 markdown 链接与裸 http(s) 网址
   渲染为可点链接——桌面版左键点击一律在右栏浏览器面板打开（Ctrl/中键走
@@ -1504,6 +1508,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `GET /api/questions` | 待回答的助手提问 / 计划审批清单（轮询兜底） |
 | `POST /api/questions/{id}` | 回答提问；计划批准传 `__approve__`，驳回传反馈文本，**忽略（搁置：本轮停下、计划仍留着）传 `__ignore__`**；内存里没有等待者的（重启后遗留的待审批计划）走 resolvePersistedPlan |
 | `GET /api/sessions/{id}/progress` | 会话进度清单（progress_write 的持久化结果） |
+| `POST /api/sessions/{id}/stop-child` | 停止会话的一个运行中程序（进度面板停止按钮；body: id=job-*/child-*，userstops.go） |
 | `GET /api/sessions/{id}/plans` | 会话历史里提交过的计划（exit_plan_mode 的正文 + 出处，右栏「计划」视图的数据源；plans.go） |
 | `POST /api/sessions/{id}/plans/export` | 把某份计划写成工作区里的 `计划-<时间>-<标题>.md`（`{seq}` 缺省最新一份；同名不覆盖、顺延 -2/-3） |
 | `POST /api/approvals/{id}` | 审批决定：`{approved, always}`（always=本会话总是允许） |
