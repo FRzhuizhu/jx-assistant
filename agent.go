@@ -434,7 +434,7 @@ func (a *App) probeSelfLoc() {
 // JSON 的转义与编码坑集中在脚本语言里处理（脚本本身经 write 落 .jxai/tmp，
 // UTF-8 无 BOM 有保证），PowerShell 只干它擅长的 Windows 原生交互。
 func skillRuntimePromptText(pyExe string) string {
-	return "\n\n## 内置技能运行时\n\n技能运行时随软件内置，无需用户安装环境，也不要去找系统的 python/py（新装机通常只有商店占位符，与能否完成任务无关）：便携 Python 位于 `" + filepath.ToSlash(pyExe) + "`，pdf / ocr / office_skill 技能共用。需要执行 Python 时一律用这个解释器的绝对路径；若该文件尚不存在，先调用 pdf / ocr / office_skill 之一会自动联网装配，装配后仍在原路径；office_skill 的调用结果里还会再给出确切的解释器与结构校验命令。\n\n涉及中文、引号、JSON 的处理一律优先用 Python（脚本落 .jxai/tmp 再执行）；PowerShell 仅用于 Windows 原生交互（taskkill/服务/注册表等）。\n"
+	return "\n\n## 内置技能运行时\n\n技能运行时随软件内置，无需用户安装环境，也不要去找系统的 python/py（新装机通常只有商店占位符，与能否完成任务无关）：便携 Python 位于 `" + filepath.ToSlash(pyExe) + "`，pdf / ocr / office_skill 技能共用。需要执行 Python 时一律用这个解释器的绝对路径；若该文件尚不存在，先调用 pdf / ocr / office_skill 之一会自动联网装配，装配后仍在原路径；office_skill 的调用结果里还会再给出确切的解释器与结构校验命令。\n\n涉及中文、引号、JSON 的处理建议用 run_python 提交 Python 脚本（只用标准库与内置包；shell 命令行内联 JSON 或拼多步长命令在 PowerShell 5.1 上容易踩引号与编码坑）；run_command 与 run_python 都可用，一般按此分工走：单一工具链调用（go build / git status 等一条命令）直接 run_command；PowerShell 主要用于 Windows 原生交互（taskkill/服务/注册表/窗口）。\n"
 }
 
 // promptHash 取提示词内容的短指纹（版本行/时间线标识用；非安全用途）。

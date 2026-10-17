@@ -190,7 +190,7 @@ func skillRuntimeNotice(msg string) {
 func (a *App) ensureSkillRuntime(modules, wheels []string) (*pythonRuntime, error) {
 	provisionMu.Lock()
 	defer provisionMu.Unlock()
-	if provisionedPy != nil && !isAndroidRuntime {
+	if provisionedPy != nil && !isAndroidRuntime && pyModulesReady(provisionedPy, modules) {
 		return provisionedPy, nil
 	}
 	emit := skillRuntimeNotice
@@ -213,6 +213,20 @@ func (a *App) ensureSkillRuntime(modules, wheels []string) (*pythonRuntime, erro
 	}
 	provisionedPy = py
 	return py, nil
+}
+
+// pyModulesReady 缓存的运行时是否已具备本次请求的全部依赖模块。带依赖的
+// 请求（office/pdf 等）不能被「裸运行时」缓存短路：run_python 会先取基础
+// 运行时（modules 为空），若就此命中缓存，后续带依赖的请求补装永远走不到
+// （顺序敏感的隐患）。hasModule 有结果缓存，全命中时零开销；缺模块则不命中
+// 缓存、落到 provisionPythonRuntime 幂等补装（已装过的 wheel 会跳过）。
+func pyModulesReady(py *pythonRuntime, modules []string) bool {
+	for _, m := range modules {
+		if !py.hasModule(m) {
+			return false
+		}
+	}
+	return true
 }
 
 // ensureTermuxSkillRuntime 安卓：技能解释器 = 内置 Linux 运行时的 python3

@@ -7,7 +7,7 @@ description: 创建、读取、修改并校验 Word（docx）/ Excel（xlsx）/ 
 
 三个文档族分别使用：docx → `python-docx`；xlsx → `openpyxl`；
 pptx → `python-pptx`。由助手的 `office_skill` 工具获取对应分册要点，
-然后用 `run_command` 执行 Python 实际操作。
+然后用 `run_python` 执行 Python 实际操作（`run_command` 也可用）。
 
 ## 通用纪律
 

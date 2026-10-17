@@ -271,7 +271,7 @@ func runOcrTool(t *toolContext, args json.RawMessage) (string, error) {
 func officeSkillTool() Tool {
 	return Tool{
 		Spec: toolSpec("office_skill",
-			"获取 Word/Excel/PowerPoint 文档技能的操作指南（docx/xlsx/pptx 分册）：库的选择、关键 API 模式、中文字体陷阱与生成后的结构校验命令。拿到指南后，用 run_command 执行 Python 实际创建或修改文档（Python 运行时随软件内置，无需用户安装环境；解释器绝对路径见运行环境快照与调用结果）。",
+			"获取 Word/Excel/PowerPoint 文档技能的操作指南（docx/xlsx/pptx 分册）：库的选择、关键 API 模式、中文字体陷阱与生成后的结构校验命令。拿到指南后，建议用 run_python 执行 Python 脚本实际创建或修改文档（Python 运行时随软件内置，无需用户安装环境；run_command 也可用）。",
 			objSchema(map[string]any{
 				"kind": map[string]any{"type": "string", "enum": []string{"docx", "xlsx", "pptx"}, "description": "文档类型"},
 			}, "kind"),

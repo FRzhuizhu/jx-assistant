@@ -1854,6 +1854,13 @@ func (a *App) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	// 历史作业行留着无妨，量小且可追溯）
 	_ = a.Store.DeleteUploadsForSession(id)
 	_ = a.Store.DeletePendingJobsForSession(id)
+	// 本会话的 run_python 脚本目录一并回收（.jxai/tmp/<会话id>/，见 run_python.go；
+	// 会话没专属工作区时脚本落在全局配置工作区）
+	pyWs := oldWS
+	if strings.TrimSpace(pyWs) == "" {
+		pyWs = a.Cfg.Workspace
+	}
+	_ = os.RemoveAll(filepath.Join(pyWs, ".jxai", "tmp", id))
 	a.scheduleResidualCleanup(oldWS) // 会话结束：清本产品的常驻授权残留
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }

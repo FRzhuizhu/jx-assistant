@@ -148,7 +148,7 @@ func (a *App) toolsFor(mode string) []Tool {
 		}
 		tools = append(append([]Tool{
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
-			globTool(), grepTool(), runCommandTool(), webFetchTool(), a.webSearchTool(), readImageTool(),
+			globTool(), grepTool(), runCommandTool(), runPythonTool(), webFetchTool(), a.webSearchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
 			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			// 找经理协调（requestmgr.go）：任务侧唯一能触到数字经理的通道——发一条

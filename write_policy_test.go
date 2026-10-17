@@ -112,8 +112,9 @@ func TestSkillRuntimePromptText(t *testing.T) {
 	s := skillRuntimePromptText(`C:\Apps\坚祥数字助理GO\技能\_runtime\python\python.exe`)
 	wantAll(t, s, "运行时段", "C:/Apps/坚祥数字助理GO/技能/_runtime/python/python.exe",
 		"无需用户安装环境", "python/py", "office_skill", "自动联网装配",
-		"涉及中文、引号、JSON 的处理一律优先用 Python（脚本落 .jxai/tmp 再执行）",
-		"PowerShell 仅用于 Windows 原生交互（taskkill/服务/注册表等）")
+		"涉及中文、引号、JSON 的处理建议用 run_python 提交 Python 脚本",
+		"run_command 与 run_python 都可用",
+		"PowerShell 主要用于 Windows 原生交互")
 }
 
 func TestSystemPromptSelfLoc(t *testing.T) {
