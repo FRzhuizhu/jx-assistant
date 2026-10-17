@@ -337,9 +337,23 @@ func (t *toolContext) envStat(p string) (isDir bool, size int64, err error) {
 	return info.IsDir(), info.Size(), nil
 }
 
-// envWalk 遍历目录树（跳过 .git、.jxai 与 node_modules），fn 收到相对 root 的
-// 斜杠路径；fn 返回 filepath.SkipAll 时整体停止。远程经 SFTP 递归。
-// .jxai 是本助手的系统目录（快照正文 + 模型临时文件），不进目录检索；
+// jxaiHiddenRel 报告 rel（相对工作区根的斜杠路径）是否是 .jxai 的系统子目录：
+// snapshots（快照正文）、tmp（模型暂存，旧文件跨会话残留）、delivery-backups
+// （交付备份）都是内部数据，不进目录检索；.jxai 本体与其下的 uploads（用户
+// 上传文件的统一存放处）照常可检索——模型要能看见用户传进来的文件。
+func jxaiHiddenRel(rel string) bool {
+	for _, sub := range []string{"snapshots", "tmp", "delivery-backups"} {
+		if rel == jxAIName+"/"+sub || strings.HasPrefix(rel, jxAIName+"/"+sub+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// envWalk 遍历目录树（跳过 .git、node_modules 与 .jxai 的系统子目录），fn 收到
+// 相对 root 的斜杠路径；fn 返回 filepath.SkipAll 时整体停止。远程经 SFTP 递归。
+// .jxai 的 snapshots/tmp/delivery-backups 是系统内部数据，不进目录检索；
+// .jxai/uploads（用户上传文件的统一存放处）与 .jxai 其余内容照常可检索；
 // 按路径直接 read 访问不受影响。
 func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error) error {
 	if t.isRemote() {
@@ -364,8 +378,14 @@ func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error
 					r = rel + "/" + e.Name
 				}
 				if e.IsDir {
-					if e.Name == ".git" || e.Name == "node_modules" || e.Name == jxAIName {
+					if e.Name == ".git" || e.Name == "node_modules" {
 						continue
+					}
+					if e.Name == jxAIName && r != jxAIName {
+						continue // 工作区根以外的 .jxai 目录照旧整棵跳过
+					}
+					if jxaiHiddenRel(r) {
+						continue // .jxai 的系统子目录：内部数据不外露
 					}
 					if err := rec(dir+"/"+e.Name, r); err != nil {
 						return err
@@ -390,8 +410,19 @@ func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error
 		}
 		if info.IsDir() {
 			name := info.Name()
-			if name == ".git" || name == jxAIName || (name == "node_modules" && p != root) {
+			rel, rerr := filepath.Rel(root, p)
+			if rerr != nil {
+				return nil
+			}
+			r := filepath.ToSlash(rel)
+			if name == ".git" || (name == "node_modules" && p != root) {
 				return filepath.SkipDir
+			}
+			if name == jxAIName && r != jxAIName {
+				return filepath.SkipDir // 工作区根以外的 .jxai 目录照旧整棵跳过
+			}
+			if jxaiHiddenRel(r) {
+				return filepath.SkipDir // .jxai 的系统子目录：内部数据不外露
 			}
 			return nil
 		}

@@ -2163,31 +2163,60 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tctx := &toolContext{app: a, sess: m}
-	ws, err := tctx.resolve("")
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	var dst string
-	if m.Remote != nil {
-		dst = path.Join(ws, name)
-	} else {
-		dst = filepath.Join(ws, name)
-	}
 	data, err := io.ReadAll(io.LimitReader(file, 256<<20))
 	if err != nil {
 		writeErr(w, 500, "读取上传内容失败: "+err.Error())
 		return
 	}
-	// 用户主动上传不走模型权限审批，直接写（本地或远程 SFTP）
-	if err := tctx.envWriteFile(dst, data); err != nil {
-		writeErr(w, 500, "写入工作区失败: "+err.Error())
+	// 判重与落位和桌面端路径上传（registerUploadPath）同一套规矩：内容一致的
+	// 重传当成功处理、不重复落盘；同名不同内容顺延 -2/-3；统一存 .jxai/uploads
+	// （不占工作区根目录），永不覆盖任何现有文件。
+	uploadsDir, err := tctx.uploadsDirOf()
+	if err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
-	note := fmt.Sprintf("【文件上传】用户上传了文件 %s（%d 字节），已保存到工作区；需要了解内容时可用只读工具查看。"+
-		"这次上传没有登记原件路径（浏览器、手机、远程、粘贴只送文件内容，拿不到本机路径），交付工具（deliver_file）无法把成品送回原处；"+
-		"确实要交回原位置时，请让用户在桌面端把原文件直接拖进输入框、或用「＋→文件上传」选一次（那条路会登记原件位置）。",
-		filepath.ToSlash(dst), len(data))
+	dup := tctx.findUploadDuplicate(uploadsDir, fingerprintBytes(data))
+	storedName := name
+	if dup == "" {
+		storedName = tctx.allocUploadName(uploadsDir, name)
+		// 用户主动上传不走模型权限审批，直接写（本地或远程 SFTP）；目标永远是
+		// 空闲的新名字，覆盖动作不存在
+		if err := tctx.envWriteFile(tctx.envPathJoin(uploadsDir, storedName), data); err != nil {
+			writeErr(w, 500, "写入工作区失败: "+err.Error())
+			return
+		}
+	}
+	dst := dup
+	if dst == "" {
+		dst = tctx.envPathJoin(uploadsDir, storedName)
+	}
+	// multipart 也登记 uploads 表（orig_path 留空——交付工具只认登记了原件
+	// 路径的记录，无副作用），会话内上传台账与注记口径统一
+	u := &Upload{SessionID: m.ID, OrigPath: "", CopyPath: dst, Name: name, Size: int64(len(data)), CreatedAt: now()}
+	if err := a.Store.AddUpload(u); err != nil {
+		writeErr(w, 500, "上传登记落库失败: "+err.Error())
+		return
+	}
+	var lead string
+	switch {
+	case dup != "":
+		ref := ""
+		if uid := a.uploadDupRef(m, dup); uid != "" {
+			ref = "（即 " + uid + " 那次上传的文件）"
+		}
+		lead = fmt.Sprintf("【文件上传】《%s》（%d 字节）：与工作区已有文件 %s 内容完全一致（大小与逐字节哈希比对通过）%s，当上传成功处理，没有重复复制。",
+			name, len(data), filepath.ToSlash(dup), ref)
+	case storedName != name:
+		lead = fmt.Sprintf("【文件上传】《%s》（%d 字节）：工作区里已有同名的其他内容，这份存成了 %s（原有文件未被动过）；已保存到工作区 %s（用户上传的文件统一存放在 .jxai/uploads，不占工作区根目录）。",
+			name, len(data), storedName, filepath.ToSlash(dst))
+	default:
+		lead = fmt.Sprintf("【文件上传】用户上传了文件 %s（%d 字节），已保存到工作区（用户上传的文件统一存放在 .jxai/uploads，不占工作区根目录）；需要了解内容时可用只读工具查看。",
+			filepath.ToSlash(dst), len(data))
+	}
+	note := lead +
+		"这次上传没有登记原件路径（浏览器、手机、远程、粘贴只送文件内容，拿不到本机路径），交付工具（deliver_file）无法把成品送回原处；" +
+		"确实要交回原位置时，请让用户在桌面端把原文件直接拖进输入框、或用「＋→文件上传」选一次（那条路会登记原件位置）。"
 	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
 	m.UpdatedAt = now()
 	_ = a.Store.SaveMeta(m)

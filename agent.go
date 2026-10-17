@@ -166,9 +166,9 @@ const skillFilePrompt = `
 
 ## 工作区目录约定
 
-- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
+- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区；用户上传的文件统一存放在 .jxai/uploads（对目录检索可见）。
 - 过程产物放 .jxai/tmp/ 下，不要散落在工作区根目录；演示记录/ 是记录器的专用位置，不挪动、不改名、不删除（那是用户的演示原始材料）。
-- .jxai 不进目录检索；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
+- .jxai 的系统子目录（snapshots/tmp/delivery-backups）不进目录检索；.jxai/uploads 可检索；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
 
 const assistantPrompt = `你是「坚祥数字助理」，用户唯一的总入口。用户只对你提需求，由你决定这件事交给哪个会话去做。
 
@@ -256,9 +256,9 @@ const fileToolsPrompt = `
 
 ## 工作区目录约定
 
-- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
+- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区；用户上传的文件统一存放在 .jxai/uploads（对目录检索可见）。
 - 一切临时产物——中间脚本、下载的素材、截图、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在工作区根目录；只有最终交付文件才放在正式位置。
-- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
+- .jxai 的系统子目录（snapshots/tmp/delivery-backups）不进目录检索（list_dir/glob/grep 不扫），.jxai/uploads 可检索，按路径直接 read 访问没有限制；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
 
 // codingFilePrompt 是编程模式的文件工作准则：与 fileToolsPrompt 同一套文件工具
 // 使用、快照与目录约定，但不拼交付强调——软件项目的成果直接落在项目文件里
@@ -276,9 +276,9 @@ const codingFilePrompt = `
 
 ## 工作区目录约定
 
-- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区。
+- 工作区里的 .jxai/ 是本助手的系统目录：.jxai/snapshots 存文件快照正文（系统管理，禁止读写），.jxai/tmp 是给你用的暂存区；用户上传的文件统一存放在 .jxai/uploads（对目录检索可见）。
 - 一切临时产物——中间脚本、下载的依赖与素材、日志、过程数据——都放到 .jxai/tmp/ 下（可按任务建子目录），不要散落在项目里；只有属于项目本身的文件才放在正式位置。
-- .jxai 不进目录检索（list_dir/glob/grep 不扫它），按路径直接 read 访问没有限制；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
+- .jxai 的系统子目录（snapshots/tmp/delivery-backups）不进目录检索（list_dir/glob/grep 不扫），.jxai/uploads 可检索，按路径直接 read 访问没有限制；tmp 里的旧文件会跨会话残留（检索看不到），write 覆盖 tmp 下的文件不受观察策略限制。`
 
 // dispatchSubPrompt 是子对话派发工具的使用准则（task / office / coding /
 // beginner-coding / skill-create 模式附加；assistant 的派发准则在其专属

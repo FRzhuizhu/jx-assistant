@@ -299,8 +299,9 @@ func (t *toolContext) ensureJxAI() {
 
 // snapshotWrite 带快照的文件写入（write / edit 共用）：先读旧内容，
 // 写入成功后回读算哈希，落一条 checkpoint 并把正文写进 .jxai/snapshots/。
-// 旧文件读不了、超过单文件上限、正文属于 .jxai 自身或备份开关关闭时跳过快照
-// （写入照常）。快照失败只记日志，不让正常写入报错。
+// 旧文件读不了、超过单文件上限、正文属于 .jxai 系统子目录或备份开关关闭时跳过
+// 快照（写入照常；.jxai/uploads 里的用户上传文件不在其列，照常追踪）。快照
+// 失败只记日志，不让正常写入报错。
 //
 // 回读结果随返回值交给调用方拼进工具成功文案（readBackNote）：verified
 // 表示"真的从盘上/SFTP 读回来了"；快照关闭（track=false）或远程回读失败
@@ -322,8 +323,9 @@ func (t *toolContext) snapshotWrite(abs string, grant *Grant, data []byte) (read
 	} else {
 		before = b
 	}
-	if track && strings.HasPrefix(t.displayPath(abs), jxAIName+"/") {
-		track = false // 系统目录自身的文件不做快照（快照/临时文件无需回退）
+	if track && jxaiHiddenRel(t.displayPath(abs)) {
+		track = false // .jxai 系统子目录（快照正文/暂存/交付备份）不做快照；
+		// uploads 里的用户上传文件照常追踪——文件改动行要能看到对它的编辑
 	}
 	if err := t.envWriteFileWithGrant(abs, data, grant); err != nil {
 		return nil, false, err
