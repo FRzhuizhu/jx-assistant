@@ -6020,8 +6020,9 @@ function viewChatMode(view) {
 }
 
 // 模式控件离场动画：切换工作模式（如 编程 → 标准办公）时，工具栏上的模式胶囊
-// （「计划」琥珀色开关、创建技能的录制按钮）不再瞬间消失，而是边缩边平移、
-// 压成一条线钻进同行最左侧的加号按钮（像漏斗收拢）。实现取向是「稳」：
+// （「计划」琥珀色开关、创建技能的录制按钮）不再瞬间消失，而是漏斗三段收进
+// 同行最左侧的加号按钮：原位瘪成细线 → 细线滑到加号 → 在加号处立起融入
+// （像被吞进去又立起来）。实现取向是「稳」：
 // ① 原件立刻加 hidden——布局当场回到真实状态，快速连续切换模式绝不会出现
 //    双胶囊、错位或布局抖动；飞走的只是一枚克隆的“幽灵”。
 // ② 幽灵 fixed 挂 body、pointer-events:none，不参与布局、不可点；新动画开始
@@ -6053,11 +6054,18 @@ function vanishIntoPlus(el, view) {
   document.body.appendChild(ghost);
   const dx = p.left + p.width / 2 - (r.left + r.width / 2);
   const dy = p.top + p.height / 2 - (r.top + r.height / 2);
+  // 漏斗三段（二改：一版“整体缩小+平移”看不出进入加号，被吞的叙事要分三步讲）：
+  // ① 原位骤压：宽度略收、高度压到 12% —— 胶囊瞬间瘪成一条细横线（漏斗入口）；
+  // ② 细线滑行：保持细线形态平移到加号中心，宽度继续收窄（漏斗收口）；
+  // ③ 立起融入：在加号处高度回弹立起（略过冲再落定），同时淡出 —— 像“吞进去又立起来”。
+  // 每段自带 easing：骤压加速、滑行匀速、立起减速，一眼看出是“进去了”而非平移消失。
   const anim = ghost.animate([
-    { transform: 'none', opacity: 1 },
-    { transform: 'translate(' + (dx * .45) + 'px,' + (dy * .6) + 'px) scale(.55,.7)', opacity: .95, offset: .45 },
-    { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.06,.28)', opacity: 0 }, // 压成一条线钻进加号中心
-  ], { duration: 300, easing: 'cubic-bezier(.55,0,.8,.45)' });
+    { transform: 'none', opacity: 1, offset: 0, easing: 'cubic-bezier(.5,0,.85,.55)' },
+    { transform: 'scale(.85,.12)', opacity: 1, offset: .28, easing: 'linear' },
+    { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.28,.12)', opacity: 1, offset: .62, easing: 'cubic-bezier(.25,.6,.35,1)' },
+    { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.13,1.18)', opacity: .55, offset: .88 },
+    { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.13,1)', opacity: 0, offset: 1 },
+  ], { duration: 400 });
   const drop = () => ghost.remove();
   anim.onfinish = drop;
   anim.oncancel = drop;
