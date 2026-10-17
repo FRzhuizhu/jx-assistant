@@ -487,14 +487,14 @@ func (s *Store) GetSessionData(sessionID, key string) string {
 
 // ---------- 待审批计划（计划审批不设时限：关软件重开也还挂着等审批） ----------
 
-// PendingPlan 是一份已提交、还没被用户批准/驳回的计划。存 meta 表
+// PendingPlan 是一份已提交、还没被用户批准/修改的计划。存 meta 表
 // （键 sessdata:pendingplan:<会话id>，一个会话只留最新一份：新计划覆盖旧的）。
 //
 // 为什么必须落库：计划审批与普通审批（perm.go 的 approvalTTL）/提问
 // （interact.go 的 questionTTL）不一样——它**不设时限**。用户可能过一会儿才
 // 回来，甚至关掉软件第二天再打开。内存里的等待者（App.questions）一重启就没了，
 // 但计划本身要一直在，所以提交那一刻就落库；重启后由 pendingQuestions 读回来
-// 重新挂成待审批卡，用户批准/驳回走「恢复执行」那条分支（见 interact.go 的
+// 重新挂成待审批卡，用户批准/修改走「恢复执行」那条分支（见 interact.go 的
 // resolveQuestion / resolvePersistedPlan）。
 type PendingPlan struct {
 	ID        string `json:"id"`        // 提问 id：与内存等待者同一个 id，前后端靠它配对
@@ -522,7 +522,7 @@ func (s *Store) PendingPlanOf(sessionID string) (PendingPlan, bool) {
 	return p, true
 }
 
-// ClearPendingPlan 撤掉某会话的待审批计划（批准/驳回、或判定过期时调用；幂等）。
+// ClearPendingPlan 撤掉某会话的待审批计划（批准/修改、或判定过期时调用；幂等）。
 func (s *Store) ClearPendingPlan(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -270,7 +270,7 @@ try {
   })()`);
   check('右栏计划视图被打开', pv.open && pv.active, { open: pv.open, active: pv.active });
   check('计划按 Markdown 渲染（标题/小标题/列表/表格/代码块）', pv.h2 && pv.h3 && pv.ul && pv.table && pv.pre, pv);
-  check('待审批时底部有批准/驳回操作区', pv.actVisible === true, { actVisible: pv.actVisible });
+  check('待审批时底部有批准/修改操作区', pv.actVisible === true, { actVisible: pv.actVisible });
   check('标签顺序为 子对话 → 计划 → 浏览器', pv.tabs[0] === '子对话'
     && pv.tabs.indexOf('计划') > 0 && pv.tabs.indexOf('计划') < pv.tabs.indexOf('浏览器'), pv.tabs);
   await shot(c, resolve(DIR, 'ask-04-plan-sidebar.png'));

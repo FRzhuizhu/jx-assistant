@@ -362,7 +362,7 @@
            链接一律新标签页打开，此视图仅作占位提示。 -->
       <!-- 计划视图：本对话提交过的计划按 Markdown 渲染（正文来自 /api/sessions/{id}/plans
            ——从会话日志里读回 exit_plan_mode 的调用参数，与对话同寿命，刷新/切走/重启都在）；
-           待审批的那份在底部就地批准/驳回。交互见 app-chat.js 的「右栏「计划」视图」 -->
+           待审批的那份在底部就地批准/修改。交互见 app-chat.js 的「右栏「计划」视图」 -->
       <div class="rp-view" id="rp-view-plan">
         <div class="plan-bar">
           <select id="plan-pick" class="plan-pick" title="切换本对话提交过的计划"></select>
@@ -379,9 +379,9 @@
         <div id="plan-act" class="plan-act hidden">
           <div class="q-free">
             <input id="plan-feedback" type="text" placeholder="反馈修改意见（可留空）">
-            <button id="plan-reject" class="ghost">驳回</button>
+            <button id="plan-reject" class="ghost">修改</button>
           </div>
-          <div class="ap-actions"><button id="plan-ignore" class="ghost" title="搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留着，随时可以再批准或驳回">忽略计划</button><button id="plan-approve" class="ok">批准并开始执行</button></div>
+          <div class="ap-actions"><button id="plan-ignore" class="ghost" title="搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留着，随时可以再批准或修改">忽略计划</button><button id="plan-approve" class="ok">批准并开始执行</button></div>
         </div>
       </div>
       <!-- 文件视图（文件工具）：点对话里「文件改动」面板的文件行在此打开——
@@ -468,6 +468,10 @@
         <button class="set-nav-item active" data-pane="general">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
           常规
+        </button>
+        <button class="set-nav-item" data-pane="hotkeys">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg>
+          快捷键
         </button>
         <button class="set-nav-item" data-pane="models">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -623,6 +627,15 @@
             </div>
           </div>
           <p class="tip">本页偏好保存在本机浏览器；最大步数、关闭窗口驻留在服务端（即时生效）。</p>
+        </div>
+        <!-- 快捷键总表（app-hotkeys.js 的 HK.renderTable 渲染）：界面内置与组件
+             （经 JX.registerHotkey 登记，如语音）的快捷键统一在此展示/录制/恢复默认；
+             常规页发送键、语音页听写键与这里同一份数据，改任一处两边同步 -->
+        <div class="set-pane" id="set-pane-hotkeys">
+          <h3>快捷键</h3>
+          <div class="prov-section">
+            <div id="hotkeys-table"></div>
+          </div>
         </div>
         <div class="set-pane" id="set-pane-network">
           <h3>网络访问</h3>
@@ -1137,10 +1150,11 @@
   </div>
 </div>
 
-<!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ left → right → chat → ctxmenu（桌面壳右键菜单）→ settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
+<!-- 加载顺序即依赖顺序：core（全局状态/视图抽象/工具）→ hotkeys（快捷键统一登记）→ left → right → chat → ctxmenu（桌面壳右键菜单）→ settings → app（启动入口）。跨文件只有全局名引用，顺序不可调换 -->
 <script src="/qrcode.lib.js"></script>
 <script src="/qr.js"></script>
 <script src="/app-core.js"></script>
+<script src="/app-hotkeys.js"></script>
 <script src="/app-left.js"></script>
 <script src="/app-right.js"></script>
 <script src="/app-chat.js"></script>

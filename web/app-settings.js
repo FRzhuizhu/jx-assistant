@@ -194,6 +194,7 @@ async function openSettings(pane) {
   mountPluginSections();
   renderComponentList();
   mountComponentPanes(); // 声明了 pane 的组件（如语音）的独立设置页
+  renderHotkeysPane(); // 快捷键总表（含组件经 JX.registerHotkey 登记的条目）
   renderSkillsPanel();
   bindSkillDropZone();
   renderMCPPage(); // 独立「MCP 连接器」分区（app-mcp.js）
@@ -395,9 +396,22 @@ window.addEventListener('cx:change', () => {
   if (set && !set.classList.contains('hidden')) {
     mountComponentSections();
     mountComponentPanes();
+    renderHotkeysPane(); // 组件带上/撤下自己的快捷键（如语音）→ 快捷键页跟着变
   } else {
     syncComponentPanePresence();
   }
+});
+
+/* ---------- 快捷键总表（设置 · 快捷键）：数据与渲染都在 app-hotkeys.js 的 HK，
+   这里只管挂载时机——打开设置、组件注册变动、任一处快捷键被改（hotkeys:change）
+   都重挂；语音页/常规页与这张表改的是同一份数据，天然同步 ---------- */
+function renderHotkeysPane() {
+  const host = $('hotkeys-table');
+  if (host && window.HK) HK.renderTable(host);
+}
+JX.on('hotkeys:change', () => {
+  const set = $('settings');
+  if (set && !set.classList.contains('hidden') && setNav.pane === 'hotkeys') renderHotkeysPane();
 });
 
 /* ---------- 插件清单与分区（统一插件页：/api/plugins 带 layers + JX 注册的分区） ---------- */
@@ -1743,10 +1757,18 @@ function buildAccentRow() {
   }
 }
 buildAccentRow();
-makeSelect('sel-sendkey', 'sendkey', [
-  { v: 'enter', label: 'Enter 发送，Shift+Enter / Ctrl+Enter 换行' },
-  { v: 'ctrl', label: 'Ctrl+Enter 发送，Enter / Shift+Enter 换行' },
-], (v) => { lsSet('jx.sendkey', v); updateSendKeyHint(); }); // 输入框占位文案同步跟随
+// 发送快捷键：两枚键帽芯片（与 设置·快捷键 同一控件 HK.choiceChips、同一数据源
+// jx.sendkey——chat.send 在那张表里登记，改任一处两边同步；占位提示链路
+// updateSendKeyHint 不变）。selRefs.sendkey 保留：openSettings 打开时回显刷新用。
+(function buildSendKeyRow() {
+  const host = $('sel-sendkey');
+  const def = window.HK ? HK.get('chat.send') : null;
+  if (!host || !def) { selRefs.sendkey = { set() {} }; return; }
+  host.innerHTML = '';
+  const chips = HK.choiceChips(def);
+  host.appendChild(chips);
+  selRefs.sendkey = { set() { chips._hkRender(); } }; // 值的真相在 localStorage，set 只刷新外观
+})();
 // 默认值 = 等待排队：故「等待」放第一项（makeSelect 以第一项为初始值，与
 // openSettings 里 lsGet('jx.midrun','queue') 的兜底默认一致）；用户手选后由
 // onChange 的 lsSet('jx.midrun', v) 记住，选过「插话」的照旧保持插话。

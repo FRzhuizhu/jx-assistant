@@ -3162,3 +3162,85 @@ body.mk-4col .mk-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .skill-drop-zone.drop-hover,
 #set-pane-skills.drop-hover,
 #set-pane-mcp.drop-hover { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* ---------- 快捷键（app-hotkeys.js）：设置·快捷键 总表与共用键帽控件 ----------
+   键帽观感沿自语音组件的 .sc-*（随统一登记上移主程序，语音页不再自带这套样式）。
+   表格五列：名称(含来源徽标) | 主快捷键 | 副快捷键 | 描述 | 恢复默认；窄屏不换布局，
+   整表横向滚动（行数少，横滑可接受）。 */
+.hk-head { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 10px; flex-wrap: wrap; }
+.hk-head .sf-desc { flex: 1 1 260px; min-width: 220px; margin: 2px 0; }
+.hk-restore-all {
+  font-size: 12px; padding: 5px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+}
+.hk-restore-all:hover { color: var(--accent); border-color: var(--accent); }
+.hk-scroll { overflow-x: auto; }
+.hk-table { display: flex; flex-direction: column; min-width: 720px; }
+.hk-row {
+  display: grid; align-items: center; gap: 12px; padding: 8px 2px;
+  grid-template-columns: minmax(128px, auto) auto auto minmax(220px, 1fr) auto;
+}
+.hk-row + .hk-row { border-top: 1px solid var(--border); }
+.hk-head-row { padding: 2px 2px 7px; font-size: 12px; color: var(--text-3); border-bottom: 1px solid var(--border); }
+.hk-cell { font-size: 12.5px; }
+.hk-c0 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hk-c0 b { font-weight: 600; }
+.hk-c3 { color: var(--text-3); line-height: 1.5; }
+.hk-src {
+  padding: 1px 6px; border-radius: 8px; font-size: 11px; white-space: nowrap;
+  color: var(--text-3); border: 1px solid var(--border);
+}
+.hk-dash { color: var(--text-3); }
+
+/* 键帽录制框：长得像只读输入框，点进去录组合（虚线高亮+提示文案） */
+.hk-box {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  min-width: 128px; min-height: 30px; padding: 3px 26px 3px 10px;
+  font-size: 12.5px; font-family: inherit; color: var(--text-2);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; text-align: left;
+}
+.hk-box:hover { border-color: var(--accent); color: var(--text-1); }
+.hk-box:focus-visible { outline: 2px solid rgba(77, 107, 254, .35); outline-offset: 1px; }
+.hk-box.rec { border-style: dashed; border-color: var(--accent); color: var(--accent); }
+.hk-rec-tip { font-size: 12px; }
+/* 停用小 ✕：悬停框时浮现，避免与键帽抢视线 */
+.hk-x {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  width: 17px; height: 17px; line-height: 16px; text-align: center;
+  border-radius: 4px; color: var(--text-3); font-size: 11px; opacity: 0;
+  transition: opacity .12s;
+}
+.hk-box:hover .hk-x { opacity: 1; }
+.hk-x:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* 键帽：经典 kbd 观感（浅底、细边、下边略厚） */
+.hk-key {
+  display: inline-block; padding: 1px 7px; margin: 0 1px;
+  font-family: inherit; font-size: 11.5px; line-height: 1.5;
+  color: var(--text-1); background: var(--bg);
+  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px;
+  white-space: nowrap;
+}
+.hk-combo { display: inline-flex; align-items: center; gap: 4px; }
+.hk-plus { color: var(--text-3); font-size: 11.5px; }
+.hk-none { color: var(--text-3); font-size: 12px; }
+/* 选项型快捷键（发送键）：键帽芯片，点击切换档位 */
+.hk-chips { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hk-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
+  font-size: 12.5px; font-family: inherit; color: var(--text-2);
+  background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer;
+}
+.hk-chip:hover { border-color: var(--accent); color: var(--text-1); }
+.hk-chip.cur {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.hk-chip-label { font-size: 11.5px; color: var(--text-3); }
+.hk-chip.cur .hk-chip-label { color: var(--accent); }
+.hk-restore {
+  font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+}
+.hk-restore:hover { color: var(--accent); border-color: var(--accent); }

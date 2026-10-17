@@ -2611,7 +2611,7 @@ function askJumpTo(sid) {
   openSession(sid);
 }
 
-// 自由输入行：值存草稿、重建后回填（卡片的「发送/驳回/拒绝」都走它）
+// 自由输入行：值存草稿、重建后回填（卡片的「发送/修改/拒绝」都走它）
 function askFreeRow(id, placeholder, btnText, onSend) {
   const row = document.createElement('div');
   row.className = 'q-free';
@@ -3154,15 +3154,15 @@ function buildQuestionCard(e, own) {
         ? '点这张卡跳回那个对话并打开计划全文（右侧边栏「计划」，Markdown 渲染）：除输入框与三个按钮外，卡片任何位置都可以点'
         : '点这张卡看计划全文（右侧边栏「计划」，Markdown 渲染）：除输入框与三个按钮外，卡片任何位置都可以点') + '</p>';
     card.appendChild(body);
-    card.appendChild(askFreeRow(q.id, '反馈修改意见后点「驳回」，或直接批准', '驳回',
+    card.appendChild(askFreeRow(q.id, '反馈修改意见后点「修改」，或直接批准', '修改',
       (v) => decideQuestion(q.id, v || '（未填写具体意见）')));
     const acts = document.createElement('div');
     acts.className = 'ap-actions';
-    // 三个动作：驳回（带反馈文本）、忽略计划（本轮就此停下、计划仍留着）、批准执行。
+    // 三个动作：修改（带反馈文本）、忽略计划（本轮就此停下、计划仍留着）、批准执行。
     const ig = document.createElement('button');
     ig.className = 'ghost';
     ig.textContent = '忽略计划';
-    ig.title = '搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留在这里，随时可以再批准或驳回';
+    ig.title = '搁置这份计划：本轮对话到此结束（等同点「停止」），计划仍留在这里，随时可以再批准或修改';
     ig.onclick = (e) => { e.stopPropagation(); decideQuestion(q.id, '__ignore__'); };
     // 整张卡可点 → 打开这份计划（输入框与按钮自己拦下冒泡，不误触）
     card.classList.add('clickable');
@@ -3482,7 +3482,7 @@ if (window.ResizeObserver) {
    文档来源两路合一：
    · 历史：GET /api/sessions/{id}/plans（后端从会话日志里读回 exit_plan_mode 的调用
      参数——计划与对话同寿命，刷新页面、切走再回来、重启进程后都还在）；
-   · 待审批：/api/questions 里该会话 kind=plan 的提问，正文在这里就地批准/驳回。
+   · 待审批：/api/questions 里该会话 kind=plan 的提问，正文在这里就地批准/修改。
    计划全文不进输入区（那边只留摘要卡），所以表格/清单/代码块都能在右栏正常展开。 */
 
 let planSid = '';      // 视图绑定的会话（默认跟随主对话；从别的对话的卡点进来则绑那个会话）
@@ -6019,6 +6019,51 @@ function viewChatMode(view) {
   return view === mainView ? (homeDraft.mode || '') : '';
 }
 
+// 模式控件离场动画：切换工作模式（如 编程 → 标准办公）时，工具栏上的模式胶囊
+// （「计划」琥珀色开关、创建技能的录制按钮）不再瞬间消失，而是边缩边平移、
+// 压成一条线钻进同行最左侧的加号按钮（像漏斗收拢）。实现取向是「稳」：
+// ① 原件立刻加 hidden——布局当场回到真实状态，快速连续切换模式绝不会出现
+//    双胶囊、错位或布局抖动；飞走的只是一枚克隆的“幽灵”。
+// ② 幽灵 fixed 挂 body、pointer-events:none，不参与布局、不可点；新动画开始
+//    前先清掉旧幽灵（新动作取代旧动作），播完自动移除，另有兜底定时器——
+//    无论怎么快速折腾页面都绝无残留、绝无堆积。
+// ③ 任何异常情形（不支持 WAAPI、元素或加号不在屏上、系统开了“减弱动态
+//    效果”）一律退回“瞬间隐藏”：动画纯锦上添花，永远不挡正确的最终状态。
+function vanishIntoPlus(el, view) {
+  if (!el || el.classList.contains('hidden')) return; // 本来就看不见：无事可做
+  const plus = viewEl(view, 'btn-plus'); // 主视图 #btn-plus / 右栏 #sub-btn-plus
+  const r = el.getBoundingClientRect();
+  const p = plus ? plus.getBoundingClientRect() : null;
+  if (!el.animate || !p || !p.width || !r.width ||
+      (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.add('hidden'); // 原件先退场（真实状态先行），幽灵接着飞
+  for (const g of document.querySelectorAll('.mfx-ghost')) g.remove(); // 快速切换：旧的立即让位
+  const ghost = el.cloneNode(true);
+  ghost.classList.remove('hidden');
+  ghost.removeAttribute('id'); // 克隆不带 id，绝不与原件撞 id
+  ghost.classList.add('mfx-ghost');
+  Object.assign(ghost.style, {
+    position: 'fixed', left: r.left + 'px', top: r.top + 'px',
+    width: r.width + 'px', height: r.height + 'px', margin: '0',
+    zIndex: 200, pointerEvents: 'none', // 压过消息流即可（弹层 240、侧栏 210 均在其上）
+  });
+  document.body.appendChild(ghost);
+  const dx = p.left + p.width / 2 - (r.left + r.width / 2);
+  const dy = p.top + p.height / 2 - (r.top + r.height / 2);
+  const anim = ghost.animate([
+    { transform: 'none', opacity: 1 },
+    { transform: 'translate(' + (dx * .45) + 'px,' + (dy * .6) + 'px) scale(.55,.7)', opacity: .95, offset: .45 },
+    { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.06,.28)', opacity: 0 }, // 压成一条线钻进加号中心
+  ], { duration: 300, easing: 'cubic-bezier(.55,0,.8,.45)' });
+  const drop = () => ghost.remove();
+  anim.onfinish = drop;
+  anim.oncancel = drop;
+  setTimeout(drop, 600); // 兜底：动画事件万一不来也绝不残留
+}
+
 // 模式前端定制的应用点（机制见 CHAT_MODES 上方「模式前端定制点」注释）：
 // 当前模式挂了 ui 就「首挂 + 刷状态」，没挂就把本视图已挂的模式控件全部隐藏
 const _modeUIMounted = new WeakMap(); // view → { [mode]: 控件根元素 }
@@ -6027,7 +6072,7 @@ function applyModeUI(view) {
   const ui = chatModeOf(mode).ui;
   const mounted = _modeUIMounted.get(view) || {};
   if (!ui) {
-    for (const el of Object.values(mounted)) if (el) el.classList.add('hidden');
+    for (const el of Object.values(mounted)) vanishIntoPlus(el, view);
     return;
   }
   let el = mounted[mode];
@@ -6036,7 +6081,7 @@ function applyModeUI(view) {
     mounted[mode] = el;
     _modeUIMounted.set(view, mounted);
   }
-  for (const [m, e] of Object.entries(mounted)) if (e && m !== mode) e.classList.add('hidden');
+  for (const [m, e] of Object.entries(mounted)) if (e && m !== mode) vanishIntoPlus(e, view);
   if (!el) return;
   el.classList.remove('hidden');
   ui.sync(view, sessionOrDraftFor(view), el);

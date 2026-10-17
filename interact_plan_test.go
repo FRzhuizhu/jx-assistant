@@ -3,7 +3,7 @@ package main
 // 计划审批的两条关键语义（interact.go / store.go）：
 //   · 计划审批不设时限，而且提交即落库——关掉软件、重启进程之后再打开，
 //     它仍以「待审批」挂在会话里（普通提问与「进入计划模式」确认照旧 5 分钟时限）；
-//   · 重启后的批准 / 驳回 / 忽略由 resolvePersistedPlan 收口：投一条通知进会话、
+//   · 重启后的批准 / 修改 / 忽略由 resolvePersistedPlan 收口：投一条通知进会话、
 //     按需拉起新一轮。测试里用 runners 塞一个空 run 把会话标成「正在执行」，
 //     投递就走排队（不真跑模型），只验证语义与落库结果。
 
@@ -123,7 +123,7 @@ func TestResolvePersistedPlanApprove(t *testing.T) {
 	}
 }
 
-// 重启后的驳回：留在计划模式，把反馈投给模型让它修订后重新提交
+// 重启后的修改：留在计划模式，把反馈投给模型让它修订后重新提交
 func TestResolvePersistedPlanReject(t *testing.T) {
 	st := testPlanStore(t)
 	createPlanSession(t, st, "s1", "会话一", true)
@@ -134,18 +134,18 @@ func TestResolvePersistedPlanReject(t *testing.T) {
 	a.runners["s1"] = &sessionRun{}
 
 	if err := a.resolveQuestion("q-3", "第二步换个做法"); err != nil {
-		t.Fatalf("驳回应成功: %v", err)
+		t.Fatalf("修改应成功: %v", err)
 	}
 	if _, ok := st.PendingPlanOf("s1"); ok {
-		t.Fatal("驳回后这份待审批记录应作废（模型会重新提交一份新的）")
+		t.Fatal("修改后这份待审批记录应作废（模型会重新提交一份新的）")
 	}
 	m, _ := st.Get("s1")
 	if !m.PlanMode {
-		t.Fatal("驳回后会话应留在计划模式")
+		t.Fatal("修改后会话应留在计划模式")
 	}
 	q := a.pendingOf("s1")
 	if len(q.Queue) != 1 || !strings.Contains(q.Queue[0].Content, "第二步换个做法") {
-		t.Fatalf("驳回应把用户反馈投给会话，实际 %+v", q.Queue)
+		t.Fatalf("修改应把用户反馈投给会话，实际 %+v", q.Queue)
 	}
 }
 
@@ -311,7 +311,7 @@ func TestPlanAskHasNoTTL(t *testing.T) {
 }
 
 // 计划获批要把主循环的步数预算从头计：exit_plan_mode 获批时应置位
-// toolContext.planApproved（主循环据此重置 step）；驳回不置位（仍在计划模式，没开始执行）。
+// toolContext.planApproved（主循环据此重置 step）；修改不置位（仍在计划模式，没开始执行）。
 func TestPlanApprovalSignalsStepReset(t *testing.T) {
 	run := func(answer string) bool {
 		st := testPlanStore(t)
@@ -356,7 +356,7 @@ func TestPlanApprovalSignalsStepReset(t *testing.T) {
 		t.Fatal("计划获批应置位步数重算信号（主循环要重新计步）")
 	}
 	if run("第二步改一下") {
-		t.Fatal("计划被驳回不该置位步数重算信号（仍留在计划模式修订，没有开始执行）")
+		t.Fatal("计划被修改不该置位步数重算信号（仍留在计划模式修订，没有开始执行）")
 	}
 }
 

@@ -24,7 +24,7 @@ package main
 //   - ask / enter-plan：等 5 分钟（questionTTL），超时按「用户未回应」返回；
 //   - plan（计划审批）：**不设时限**——计划一旦提交就一直在那儿等用户审批，
 //     关掉软件、重启进程之后再打开也还是等着（提交即落库，见 store.go 的
-//     PendingPlan；重启后内存里的等待者没了，用户批准/驳回时走
+//     PendingPlan；重启后内存里的等待者没了，用户批准/修改时走
 //     resolvePersistedPlan 那条「恢复执行」分支）。
 
 import (
@@ -106,7 +106,7 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 	q.SessionTitle = sess.Title
 	q.CreatedAt = now()
 	// 计划审批不设时限：提交那一刻就落库，等待一直有效。进程重启后内存里的
-	// 等待者没了，但库里的计划还在——前端照样看到待审批卡，用户批准/驳回走
+	// 等待者没了，但库里的计划还在——前端照样看到待审批卡，用户批准/修改走
 	// resolvePersistedPlan（恢复执行）。其余提问按 timeout_sec（缺省 300 秒）
 	// 限时，用户悬停/触碰卡片可停表（holdQuestion）转为无限等待。
 	ttl := questionTTL
@@ -164,7 +164,7 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		a.permMu.Unlock()
 		// 计划仍在库里等审批（这一轮只是被停止/中断，不是用户批了或驳了）：
 		// 不发「已解决」——前端把卡收了就再没人挂出来；改为让会话刷新一次，
-		// 卡片原样留着等用户处置（用户之后批准/驳回走 resolvePersistedPlan）。
+		// 卡片原样留着等用户处置（用户之后批准/修改走 resolvePersistedPlan）。
 		if pp, ok := a.Store.PendingPlanOf(sess.ID); ok && pp.ID == q.ID {
 			a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 			return
@@ -172,7 +172,7 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		a.broadcast(Event{Type: "question_resolved", QuestionID: q.ID, SessionID: sess.ID})
 	}()
 	// 无时限的卡（计划审批）让 timeout 永远为 nil：超时分支永不触发，
-	// 只有用户批准/驳回或本轮被停止（ctx 取消）才会结束等待。带时限的提问
+	// 只有用户批准/修改或本轮被停止（ctx 取消）才会结束等待。带时限的提问
 	// 用可掐的 timer：holdQuestion 停表后，Stop 前已发出的那次触发按持有标记
 	// 丢弃（时间差内到点的误报），此后无限等待。
 	var timeout <-chan time.Time
@@ -209,7 +209,7 @@ func (a *App) resolveQuestion(id, answer string) error {
 	if !ok {
 		// 内存里没有等待中的提问：可能是进程重启后留下来的待审批计划
 		// （exit_plan_mode 提交时落了库，重启后谁也不在阻塞等待）。
-		// 那种情况按「恢复执行」处理：把批准/驳回落成一条通知并接续这一轮。
+		// 那种情况按「恢复执行」处理：把批准/修改落成一条通知并接续这一轮。
 		return a.resolvePersistedPlan(id, answer)
 	}
 	return nil
@@ -253,12 +253,12 @@ func (a *App) askAlertDue(id string) bool {
 	return pending && !q.decided && !q.TimerHeld
 }
 
-// resolvePersistedPlan 处理「库里那份待审批计划」的用户决定（批准/驳回）。
+// resolvePersistedPlan 处理「库里那份待审批计划」的用户决定（批准/修改）。
 // 走到这里的都是**没有内存等待者**的情形：最典型的是进程重启——计划提交时
 // 就落了库，重启后内存里的等待者没了，可计划仍在等用户审批。
 //
 // 恢复执行的办法：把决定落成一条用户侧通知投递给会话，并按需要拉起新一轮
-// （批准 → 退出计划模式并让模型按计划开始执行；驳回 → 留在计划模式，模型
+// （批准 → 退出计划模式并让模型按计划开始执行；修改 → 留在计划模式，模型
 // 带着反馈修订后重新提交）。会话若正在跑，投递自然走排队/插话，不会打断它。
 func (a *App) resolvePersistedPlan(id, answer string) error {
 	var hit *PendingPlan
@@ -284,7 +284,7 @@ func (a *App) resolvePersistedPlan(id, answer string) error {
 		log.Printf("[对话] 会话 %s 的遗留待审批计划 %s 被用户搁置（保留，继续等待审批）", sess.ID, id)
 		return nil
 	}
-	// 批准/驳回都让这份待审批记录作废（忽略那条路在上面提前返回了：计划要留着）
+	// 批准/修改都让这份待审批记录作废（忽略那条路在上面提前返回了：计划要留着）
 	_ = a.Store.ClearPendingPlan(hit.SessionID)
 	var content string
 	if answer == "__approve__" {
@@ -302,7 +302,7 @@ func (a *App) resolvePersistedPlan(id, answer string) error {
 	if d.Started {
 		go a.executeRun(sess, d.Run, nil)
 	}
-	log.Printf("[对话] 会话 %s 的遗留待审批计划 %s 已按用户决定处理（%s）", sess.ID, id, map[bool]string{true: "批准", false: "驳回"}[answer == "__approve__"])
+	log.Printf("[对话] 会话 %s 的遗留待审批计划 %s 已按用户决定处理（%s）", sess.ID, id, map[bool]string{true: "批准", false: "修改"}[answer == "__approve__"])
 	return nil
 }
 
@@ -318,7 +318,7 @@ func (a *App) pendingQuestions() []*UserQuestion {
 	}
 	a.permMu.Unlock()
 	// 内存里没有等待者、但库里还挂着待审批计划（典型场景：软件关掉又重开）：
-	// 一并列出来，前端照样弹一张「计划审批」卡，批准/驳回走 resolvePersistedPlan。
+	// 一并列出来，前端照样弹一张「计划审批」卡，批准/修改走 resolvePersistedPlan。
 	for _, pp := range a.pendingPlanQuestions() {
 		if seen[pp.ID] {
 			continue
@@ -574,17 +574,17 @@ func runExitPlanMode(t *toolContext, args json.RawMessage) (string, error) {
 	ans, ok := t.app.requestUserAnswer(t.ctx, t.sess, uq)
 	if !ok {
 		// 计划审批不设时限：走到这里只可能是本轮被停止/中断（ctx 取消）。计划仍在
-		// 库里等着——用户随时能在计划卡上批准或驳回（那会走 resolvePersistedPlan
+		// 库里等着——用户随时能在计划卡上批准或修改（那会走 resolvePersistedPlan
 		// 把决定落成一条通知并接续执行）。
-		return "（本轮在用户审批之前就结束了（被停止/中断）。这份计划仍然挂着等待审批：用户随时可以批准或驳回，批准后按计划继续执行。）", nil
+		return "（本轮在用户审批之前就结束了（被停止/中断）。这份计划仍然挂着等待审批：用户随时可以批准或修改，批准后按计划继续执行。）", nil
 	}
 	ans = strings.TrimSpace(ans)
 	if ans == "__approve__" {
 		if ans == "__ignore__" {
 			// 「忽略计划」= 搁置这一轮：把本轮停下来（等同点「停止」），计划本身不撤销
-			// ——它仍留在对话里（也留在库里继续等处置），用户之后随时能再批准或驳回。
+			// ——它仍留在对话里（也留在库里继续等处置），用户之后随时能再批准或修改。
 			t.app.stopRun(t.sess.ID)
-			return "（用户先搁置了这份计划：本轮到此结束。计划仍留在对话里等待处置，用户之后可以再批准或驳回。）", nil
+			return "（用户先搁置了这份计划：本轮到此结束。计划仍留在对话里等待处置，用户之后可以再批准或修改。）", nil
 		}
 		// 用户批了：撤掉库里那份待审批记录（内存等待者的收尾由 requestUserAnswer 做）
 		_ = t.app.Store.ClearPendingPlan(t.sess.ID)

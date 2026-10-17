@@ -483,6 +483,7 @@ function sessionStatusCell(s) {
 function sessionItem(s) {
   const item = document.createElement('div');
   item.className = 'session-item' + (state.cur && state.cur.id === s.id ? ' active' : '');
+  item.dataset.sid = s.id; // 方向键快捷键按「此刻列表 DOM」切换对话时取 id（app-hotkeys.js）
   // 圆点：平时不显示；橙=待确认（审批/提问/计划），绿=完成未查看，红=标为未读
   let dot = '';
   if (sessionPendingAsk(s.id)) dot = ' ap';
