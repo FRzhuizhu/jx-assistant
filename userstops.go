@@ -84,7 +84,7 @@ func (a *App) handleStopChild(w http.ResponseWriter, r *http.Request) {
 	a.jobsMu.Unlock()
 	if j != nil && j.SessionID == m.ID {
 		j.setExit("被用户在进度面板终止")
-		j.cancel()
+		j.stop(5 * time.Second) // 发终止并限时等进程树死透（结算纪律），超时由顶层 Job 兜底
 		desc = "后台作业 " + j.Command + "（" + j.ID + "，已取消）"
 	}
 	// 前台子进程：按进程树强杀（killSessionChildren 的单点版）

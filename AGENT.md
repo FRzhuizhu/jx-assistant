@@ -417,7 +417,13 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   浏览器、技能 python、`start` 派生的孙进程）全部继承成员身份；助手
   无论正常退出、被强杀还是崩溃，内核都会终止它启动过的一切，不留
   无人认领的后台残留。对照实验：有守护时父进程退出子进程即清，无守护
-  时子进程成孤儿存活（Windows 默认语义）。
+  时子进程成孤儿存活（Windows 默认语义）。正常退出路径先走**主动收口**
+  （main.go → shutdownJobs，exitguard.go）：停全部后台作业并限时等死透
+  （jobRun.stop 结算纪律），再记**退出自检日志**（exitguard_windows.go 查
+  顶层 Job 剩余成员 PID）；被强杀/崩溃不经过收口，直接靠内核兜底。长驻
+  服务的正道是 `run_in_background`（命令直接写服务本体，作业挂 kill-on-close
+  Job、台账登记、进度面板可见可停）；`Start-Process` 类脱离 shell 的进程
+  会随命令结束连坐清理——runUnconfinedLocal 的 ErrWaitDelay 提示会指路。
 - **敏感字段静态加密**：API Key 与 SSH 密码落盘前 DPAPI 加密
   （`dpapi:v1:` 前缀，绑定当前 Windows 用户），读取时透明解密、首启自动
   迁移——沙箱读不受限语义下 `type config.json` 看到的只是密文。
@@ -1455,6 +1461,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `remote.go` | SSH 远程工作区：连接池、TOFU 指纹库、远程 exec、SFTP 文件操作、连接测试 |
 | `remotelist.go` | 已登记远程工作区（工作目录面板的远程条目）：DPAPI 加密存储、凭据回填、清单/登记/忘记 API |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
+| `run_python.go` | run_python 工具：AI 交 Python 脚本全文，自动落盘 `.jxai/tmp/<会话id>/`（会话删除随 handleDeleteSession 回收、启动按天兜底清理）后用内置便携运行时执行；与 run_command 同一把权限锁/沙箱/编码注入（Shell 形态，不走绕过沙箱的 Argv 直跑）；提示词按「建议」引导 JSON/引号/多步场景优先用它（run_command 仍可用，无硬限制）；ensureSkillRuntime 缓存条件按 modules 核对（防裸运行时短路 office 依赖补装） |
 | `websearch.go` | 联网搜索工具 web_search 的客户端半边：调 jxai-server 的 /api/search 网关（服务端持上游 key，首版上游=智谱联网搜索 MCP）；服务端地址取 searchURL，空则市场同源 |
 | `browser_ops.go` | browserTarget 操作面：browser_* 工具与面板端点的形态无关接口 |
 | `browser_host.go` | chromedp 浏览器宿主：有头独立窗口 + 网页形态的后台无头内嵌目标 |

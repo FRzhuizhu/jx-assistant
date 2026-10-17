@@ -203,6 +203,7 @@ func main() {
 	// 历史密级沙箱残留还原：旧版给工作区打过常驻 Low 完整性标签（机制已
 	// 撤除），启动时自动还原为 Medium（异步；根级签名校验防误伤他人标签）。
 	go app.startupIntegrityLabelRestore(cfg.Workspace)
+	go app.startupPySessionCleanup(cfg.Workspace) // run_python 会话脚本目录的按天兜底回收（run_python.go）
 
 	host := cfg.BindHost
 	if host == "" {
@@ -253,6 +254,7 @@ func main() {
 		if derr := runDesktop(app, url); derr != nil {
 			log.Fatalf("桌面模式启动失败: %v", derr)
 		}
+		app.shutdownJobs() // 退出主动收口：停后台作业+自检日志（内核兜底前的第一道收口）
 		log.Printf("桌面窗口已关闭，进程退出")
 		os.Exit(0)
 	}
@@ -280,8 +282,10 @@ func main() {
 	}
 
 	if err := srv.Serve(ln); err != nil {
+		app.shutdownJobs() // 异常退场也先收口（Fatal 前最后一步）
 		log.Fatalf("服务退出: %v", err)
 	}
+	app.shutdownJobs() // 正常收尾：停后台作业+自检日志（内核兜底前的第一道收口）
 }
 
 // lanIPv4s 枚举本机非回环、非链路本地（169.254.*）的 IPv4 地址——局域网内

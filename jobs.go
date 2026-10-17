@@ -141,6 +141,25 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 // stopSessionJobs 终止某会话全部仍在运行的后台作业，返回终止数。
 // 会话停止 = 「这一摊全停」（产品决策：运行逻辑清晰明确优先于作业跨轮存活），
 // 由 stopRun 统一收口调用；正常轮末（finishRun）不走这里，作业照旧跨轮存活。
+// stop 终止一个仍在运行的作业并（限时）等待进程树真正退出——结算纪律：
+// cancel 后内核异步终止 Job 内全部进程（含孙进程），done 才代表「已死透」。
+// 超时不阻塞调用方：退出/停止路径超时后继续走，顶层 Job 兜底清场。
+func (j *jobRun) stop(wait time.Duration) {
+	select {
+	case <-j.done:
+		return
+	default:
+	}
+	j.cancel()
+	if wait <= 0 {
+		return
+	}
+	select {
+	case <-j.done:
+	case <-time.After(wait):
+	}
+}
+
 func (a *App) stopSessionJobs(id string) int {
 	a.jobsMu.Lock()
 	mine := []*jobRun{}
@@ -157,7 +176,7 @@ func (a *App) stopSessionJobs(id string) int {
 			continue
 		default:
 		}
-		j.cancel()
+		j.stop(3 * time.Second) // 发终止并限时等死透：结算纪律与 job_kill 同款
 		n++
 	}
 	if n > 0 {
