@@ -155,7 +155,10 @@ func (a *App) callAPITool() Tool {
 			objSchema(map[string]any{
 				"path":   strProp("接口路径，以 / 开头，可带查询串；路径参数填实际值，如 /api/sessions/{id}/chat 的 id 换成目标会话 id"),
 				"method": strProp("HTTP 方法：GET（默认）/ POST / PATCH / DELETE，与上方目录里标的方法一致"),
-				"params": strProp("请求体 JSON 对象（GET 忽略；POST/PATCH/DELETE 按各接口的参数说明填）"),
+				// params 必须声明为 object：声明成 string 时按 schema 行事的模型
+				// 会把请求体对象先序列化成字符串再传（双重编码），服务端解码
+				// struct 必失败。形状随接口各异，不枚举 properties，开放对象。
+				"params": map[string]any{"type": "object", "description": "请求体 JSON 对象本身（不要序列化成字符串；GET 忽略；POST/PATCH/DELETE 按各接口的参数说明填）"},
 			}, "path")),
 		Run: runCallAPI,
 	}
@@ -209,10 +212,13 @@ func runCallAPI(t *toolContext, args json.RawMessage) (string, error) {
 			return "", fmt.Errorf("接口 %s %s 是危险操作（%s），用户未批准，已取消", method, path, meta.Danger)
 		}
 	}
-	// 带上请求体（GET/HEAD 不带）
+	// 带上请求体（GET/HEAD 不带）。params 声明为 object，但旧 schema 曾声明
+	// string、个别模型仍会按字符串习惯把对象序列化后再传（双重编码）——字符串
+	// 形态剥掉外壳再用，保证到达处理器的一律是 JSON 对象本体。
 	if len(p.Params) > 0 && method != http.MethodGet && method != http.MethodHead {
-		req.Body = io.NopCloser(bytes.NewReader(p.Params))
-		req.ContentLength = int64(len(p.Params))
+		body := unwrapJSONString(p.Params)
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
 		req.Header.Set("Content-Type", "application/json")
 	}
 	// 进程内直调：同一 mux、同一 handler，行为与前端完全一致
@@ -224,6 +230,28 @@ func runCallAPI(t *toolContext, args json.RawMessage) (string, error) {
 		body, note = truncated, fmt.Sprintf("\n\n（响应共超出上限，此处显示前 %d 字；需要剩余部分请用更窄的查询参数或专用工具）", callAPIResultMax)
 	}
 	return fmt.Sprintf("HTTP %d %s\n%s%s", rec.Code, http.StatusText(rec.Code), body, note), nil
+}
+
+// unwrapJSONString 把字符串形态的 params 剥成它包着的 JSON 文本：模型按旧
+// schema（params 声明为 string）或字符串习惯传参时，请求体对象会先被序列化
+// 成字符串（如 "{\"content\":…}"），不剥的话处理器拿到的是 JSON 字符串而非
+// 对象，解码 struct 必失败（"cannot unmarshal string into Go value of type
+// struct"）。只剥字符串外壳（最多三层，防病态多重编码），对象/数组等其余
+// 形态原样通过；剥出的内容不是 JSON 对象/数组/字符串开头时也原样通过（如
+// 普通文本，交给接口按自己的校验报错）。
+func unwrapJSONString(raw json.RawMessage) json.RawMessage {
+	for i := 0; i < 3; i++ {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			break
+		}
+		t := strings.TrimSpace(s)
+		if t == "" || (t[0] != '{' && t[0] != '[' && t[0] != '"') {
+			break
+		}
+		raw = json.RawMessage(t)
+	}
+	return raw
 }
 
 // clipBody 把响应正文截到 limit 个字符（rune 计数，中文安全），返回截断后的

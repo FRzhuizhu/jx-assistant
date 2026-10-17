@@ -11,6 +11,9 @@ package main
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +112,106 @@ func TestCallAPIDirectCreateAndPatch(t *testing.T) {
 	}))
 	if err != nil || !strings.Contains(out, "HTTP 200") || !strings.Contains(out, "改过的标题") {
 		t.Fatalf("PATCH 改标题应成功：%v\n%s", err, out)
+	}
+}
+
+// ②c POST params 的字符串形态：params 的 schema 曾声明为 string，按 schema
+// 行事的模型会把请求体对象先序列化成字符串再传（args 里是
+// "params":"{\"title\":…}" 的双重编码形态）——剥掉外壳后到达处理器的必须是
+// 对象本体，POST 建会话与对象形态行为一致。
+func TestCallAPIDirectPostStringParams(t *testing.T) {
+	a, _ := newDispatchTestApp(t)
+	ctx := mkCallAPISession(t, a, "t-str", permWorkspace)
+	// params 传 Go 字符串：mustArgs 序列化后正是模型双重编码出的形态
+	out, err := runCallAPI(ctx, mustArgs(t, map[string]any{
+		"path": "/api/sessions", "method": "POST",
+		"params": `{"title":"字符串形态建的会话","mode":"task"}`,
+	}))
+	if err != nil {
+		t.Fatalf("POST /api/sessions（字符串形态 params）失败: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "HTTP 200") || !strings.Contains(out, "字符串形态建的会话") {
+		t.Fatalf("字符串形态 params 应与对象形态同样建出会话并回显标题：\n%s", out)
+	}
+	found := false
+	if sessions, _ := a.Store.List(); err == nil {
+		for _, m := range sessions {
+			if m.Title == "字符串形态建的会话" && m.Mode == "task" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("会话没有真的落库（处理器拿到的 body 不是对象）")
+	}
+}
+
+// ②d 实报 bug 的还原：call_api POST /api/sessions/{id}/interject——修复前
+// params 被序列化成字符串，处理器解码失败被报成「content 不能为空」。会话
+// 标记为执行中：steer 生效且不会顺手拉起真执行。对象与字符串两种形态都要
+// 把 content 送进插话队列。
+func TestCallAPIDirectInterject(t *testing.T) {
+	a, _ := newDispatchTestApp(t)
+	ctx := mkCallAPISession(t, a, "t-inj", permWorkspace)
+	a.runners["t-inj"] = &sessionRun{} // 执行中：interject 走 steer，不 kickQueue
+	defer delete(a.runners, "t-inj")
+
+	for name, params := range map[string]any{
+		"对象形态":   map[string]any{"content": "对象形态插话", "mode": "steer"},
+		"字符串形态": `{"content":"字符串形态插话","mode":"steer"}`,
+	} {
+		out, err := runCallAPI(ctx, mustArgs(t, map[string]any{
+			"path": "/api/sessions/t-inj/interject", "method": "POST", "params": params,
+		}))
+		if err != nil || !strings.Contains(out, "HTTP 200") || !strings.Contains(out, `"mode":"steer"`) {
+			t.Fatalf("%s的 interject 应成功并入插话队列：%v\n%s", name, err, out)
+		}
+	}
+	st := a.pendingOf("t-inj")
+	if len(st.Steer) != 2 {
+		t.Fatalf("插话队列应有 2 条（对象/字符串形态各一），实际 %d", len(st.Steer))
+	}
+	joined := st.Steer[0].Content + "|" + st.Steer[1].Content
+	if !strings.Contains(joined, "对象形态插话") || !strings.Contains(joined, "字符串形态插话") {
+		t.Fatalf("插话内容不对：%q", joined)
+	}
+}
+
+// ②e 前端链路（真 HTTP 打同一 mux、同一处理器）：POST JSON 对象 body 的
+// interject 与建会话都正常——call_api 的修复不改变前端两条链路的行为。
+func TestCallAPIFrontendHTTPChain(t *testing.T) {
+	a, _ := newDispatchTestApp(t)
+	mkCallAPISession(t, a, "t-http", permWorkspace)
+	a.runners["t-http"] = &sessionRun{} // 执行中：steer 生效，不拉起真执行
+	defer delete(a.runners, "t-http")
+	srv := httptest.NewServer(a.apiMuxOf())
+	defer srv.Close()
+
+	// interject：前端 fetch 同款（JSON.stringify 的对象 body）
+	resp, err := http.Post(srv.URL+"/api/sessions/t-http/interject", "application/json",
+		strings.NewReader(`{"content":"前端链路插话","mode":"steer"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(raw), `"mode":"steer"`) {
+		t.Fatalf("前端链路 interject 应 200 且 mode=steer：%d %s", resp.StatusCode, raw)
+	}
+	if st := a.pendingOf("t-http"); len(st.Steer) != 1 || st.Steer[0].Content != "前端链路插话" {
+		t.Fatalf("前端链路插话应入队：%+v", st.Steer)
+	}
+
+	// 建会话：前端同一 handler 收对象 body
+	resp, err = http.Post(srv.URL+"/api/sessions", "application/json",
+		strings.NewReader(`{"title":"前端链路建的会话","mode":"task"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(raw), "前端链路建的会话") {
+		t.Fatalf("前端链路建会话应 200 并回显标题：%d %s", resp.StatusCode, raw)
 	}
 }
 
