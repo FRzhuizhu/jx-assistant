@@ -759,20 +759,21 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   white-space: pre-wrap; word-break: break-word; line-height: 1.6;
 }
 
-/* 助手消息：通栏 Markdown。中间正文 6px 紧凑拼接；收尾输出（带操作行的那条）
-   底距放大到 18px 与下一条消息隔开——这 18px 原由操作行自带（行在正文下方），
-   操作行挪到上方后移交给消息容器。 */
+/* 助手消息：通栏 Markdown。中间正文与收尾输出都 6px 紧凑拼接；收尾输出
+   与下一条消息的 18px 间隔由它自己的操作行给出（行在正文下方、自带底距）。 */
 .msg.assistant { margin-bottom: 6px; }
-.msg.assistant:has(> .msg-actions) { margin-bottom: 18px; }
 .msg.assistant .md { line-height: 1.75; word-break: break-word; }
-/* 操作行（复制/压缩/分支/朗读 + 时间）一律悬停显隐、统一挂在气泡/正文上方
-   （按钮紧贴它所属的那条消息；放下方时视觉上更像上一轮对话的结尾），行与
-   气泡间 2px 贴合——与用户气泡同一交互：曾把助手侧改常驻（怕入口找不到），
-   电脑端中间常驻一排按钮让按钮与下一条用户消息的间距显得又短又乱；改回悬停
-   后，行仍在布局里占位（opacity 不塌陷），平时正好化作一段干净留白，悬停即现。 */
+/* 操作行（复制/压缩/分支/朗读 + 时间）一律悬停显隐——与用户气泡同一交互：
+   曾把助手侧改常驻（怕入口找不到），电脑端中间常驻一排按钮让按钮与下一条
+   用户消息的间距显得又短又乱；改回悬停后，行仍在布局里占位（opacity 不塌陷），
+   平时正好化作一段干净留白，悬停即现。
+   位置两侧分开：用户气泡的操作行挂气泡上方（margin 0 0 2px：行下方贴自己
+   气泡 2px，行上方留白归容器 18px 底距让位）；助手收尾输出的操作行挂正文
+   下方（margin 2px 0 18px：上贴正文 2px、下 18px 与下一条消息隔开）。 */
 .msg-actions {
   display: flex; gap: 4px; margin: 0 0 2px; opacity: 0; transition: opacity .15s;
 }
+.msg.assistant .msg-actions { margin: 2px 0 18px; }
 .msg.assistant:hover .msg-actions { opacity: 1; }
 .act-copy {
   display: flex; align-items: center; gap: 5px;
@@ -1485,6 +1486,12 @@ body.rp-open .w-handle { display: none; }
   font-size: 14px; font-family: inherit; color: var(--text);
   line-height: 1.6; padding: 2px 4px; min-height: 72px; max-height: 200px;
   background: transparent;
+  /* 内容自适应高度交给浏览器原生（Chromium≥123）：不再由 JS「写 auto→读
+     scrollHeight→写回」量高——那条路径每次按键强制同步布局，在几百条消息的
+     超大对话（数字经理主对话）上是逐键卡顿的主凶。不支持的内核（如 iOS
+     Safari）由 app-core.js 的 autoGrow 兜底量高。max/min-height 照常生效：
+     高度被钳住时超出部分走 textarea 自带滚动。 */
+  field-sizing: content;
 }
 .composer-input::placeholder { color: var(--text-3); }
 /* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——多条累计，

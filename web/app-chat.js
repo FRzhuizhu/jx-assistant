@@ -62,7 +62,8 @@ function resetEmpty() {
   rpClose();
   rpRestoreSession(''); // 回首页：右栏各视图的会话态统一清空（Git 仓库跟随、子对话、计划）
   placeComposer();
-  // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）
+  // 输入框整体替换为首页草稿（跨重启保留；没有就是空，绝不带着别的对话的字）。
+  // 落盘兜底在调用方（goHomeNewTask 在 cur 置空前已 flush；初始加载无输入）
   $('input').value = homeDraft.text || '';
   restoreQuoteLS(mainView); // 首页草稿里的引用也一并回来（state.cur 为空 → 取 homeDraft.quote）
   autoGrow();
@@ -86,6 +87,7 @@ function goHomeNewTask() {
   if (marketOpen()) closeMarket(); // 新工作任务也是一张「对话页」：回首页即关掉市场页
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   if (state.cur) rpSnapshot(state.cur.id); // 回首页前记住这个对话的右栏状态（resetEmpty 会收起右栏）
+  flushMainDraft(); // cur 置空前把防抖窗口内的输入落进旧会话草稿（resetEmpty 会整体替换输入框）
   navTok.main++;          // 作废在途的会话加载（回首页是同步完成的导航）
   navBusy.main = false;
   state._pfxSid = null;   // 消息区的增量渲染缓存随之失效
@@ -172,6 +174,9 @@ function applySessionChrome(view) {
   }
   syncComposer(view);
   renderPanels(); // 待决定的浮窗跟着会话归属走
+  // 覆盖输入框为目标上下文的草稿前，先把当前输入（防抖 300ms 窗口内的最后几下）
+  // 落盘——否则切换/同会话刷新会把还没落盘的几个字顶回旧草稿
+  if (view === mainView) flushMainDraft(); else flushSubDraft();
   try {
     viewEl(view, 'input').value = localStorage.getItem(
       view === mainView ? sessionDraftKey(st.cur.id) : subDraftKey(st.cur.id)
@@ -1065,8 +1070,8 @@ function renderItem(it, opts) {
     body.className = 'md';
     body.innerHTML = md(it.text);
     wrap.appendChild(body);
-    // 操作按钮只挂在回合最终输出上（正文上方）：中间正文不带，过程拼得更紧凑
-    if (opts && opts.final) wrap.insertBefore(msgActions(it.m, { final: true }), body);
+    // 操作按钮只挂在回合最终输出下（正文下方）：中间正文不带，过程拼得更紧凑
+    if (opts && opts.final) wrap.appendChild(msgActions(it.m, { final: true }));
     return wrap;
   }
   // 系统通知：常显独立块
@@ -7115,8 +7120,14 @@ document.addEventListener('selectionchange', () => {
   if (el) el.addEventListener('scroll', hideSelPop, { passive: true });
 });
 $('input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => send()));
+// 每键输入：量高与草稿落盘都不再同步做——autoGrow 合并到 rAF（field-sizing
+// 内核下是 no-op，旧内核兜底也每帧最多一次），草稿防抖 300ms（切换上下文/
+// 发送/关页前由 flushMainDraft 兜底，见 app-core.js）。旧版逐键同步做两件事，
+// 在超大对话上放大逐键卡顿（见《前端渲染性能分析-主对话卡顿.md》）
+let inputGrowRaf = 0;
 $('input').addEventListener('input', () => {
-  autoGrow();
-  persistMainDraftLS(); // 首页/会话两份草稿按当前上下文即时落本地
+  if (!inputGrowRaf) inputGrowRaf = requestAnimationFrame(() => { inputGrowRaf = 0; autoGrow(); });
+  scheduleMainDraft();
 });
+window.addEventListener('beforeunload', () => { flushMainDraft(); flushSubDraft(); });
 jxDiag('init:app-chat.js 顶层执行完毕');

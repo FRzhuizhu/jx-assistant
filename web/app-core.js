@@ -767,6 +767,31 @@ function persistMainDraftLS() {
   persistSessionDraftLS();
 }
 
+// 草稿落盘的防抖包装：input 事件逐键同步写 localStorage 在输入快/存储慢时
+// 白费（上午排查报告路径三）；300ms 尾随合并。执行时读当下输入框与上下文，
+// 不捕获参数——期间发生的清空/切换会话会让晚到的落盘写空值或新上下文的值，
+// 都幂等无害。覆盖输入框的路径（applySessionChrome / resetEmpty / 子对话切换）
+// 与关页（beforeunload）前必须先 flush，保证最后 300ms 内的输入不丢。
+let mainDraftTimer = 0, subDraftTimer = 0;
+function scheduleMainDraft() {
+  clearTimeout(mainDraftTimer);
+  mainDraftTimer = setTimeout(persistMainDraftLS, 300);
+}
+function flushMainDraft() {
+  clearTimeout(mainDraftTimer);
+  mainDraftTimer = 0;
+  persistMainDraftLS();
+}
+function scheduleSubDraft() {
+  clearTimeout(subDraftTimer);
+  subDraftTimer = setTimeout(persistSubDraftLS, 300);
+}
+function flushSubDraft() {
+  clearTimeout(subDraftTimer);
+  subDraftTimer = 0;
+  persistSubDraftLS();
+}
+
 function clearSessionDraftLS(id) {
   try { localStorage.removeItem(sessionDraftKey(id)); localStorage.removeItem('jx.q.' + id); } catch (e) {}
 }
@@ -895,8 +920,18 @@ function restoreContentWidth() {
 }
 
 /* ---------- 输入框自动增高（主/子输入区与语音共用） ---------- */
+// 支持 field-sizing:content 的内核（WebView2 / Chromium≥123）下高度由 CSS 原生
+// 自适应，这里只清掉旧版本可能写下的内联高度（内联 height 会盖住样式表），
+// 量高路径完全不跑——旧路径「写 auto→读 scrollHeight→写回」每次按键都强制
+// 同步布局，且 min-height:72px 决定了 1~3 行输入高度根本不变，绝大多数按键
+// 是纯浪费；在几百条消息常驻 DOM 的主对话上就是逐键卡顿的主凶（见根目录
+// 《前端渲染性能分析-主对话卡顿.md》）。旧内核（iOS Safari 等）兜底走原量高。
 function autoGrow(t) {
   t = t || $('input');
+  if (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content')) {
+    if (t.style.height) t.style.height = '';
+    return;
+  }
   t.style.height = 'auto';
   t.style.height = Math.min(t.scrollHeight, 200) + 'px';
 }

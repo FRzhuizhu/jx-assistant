@@ -314,6 +314,7 @@ function renderSubDDPop() {
 // 换主对话时 rpRestoreSession 走这里把上一个对话的子对话彻底清出右栏。
 function subClearCurrent() {
   if (subState.streaming) detachStream(subView); // 只放开本地流，子对话在后台照旧跑完
+  flushSubDraft(); // 清空前把防抖窗口内的输入落进旧子对话草稿（cur 清掉后 persist 就找不着上下文了）
   navTok.sub++;        // 作废在途的子对话加载：晚到的旧响应不得再落地
   navBusy.sub = false;
   subState.cur = null;
@@ -336,6 +337,7 @@ function subClearCurrent() {
 
 // 子对话只在右栏显示，绝不切换主对话区
 async function openSubSession(id) {
+  flushSubDraft(); // 切换前把防抖窗口内的输入落进旧子对话的草稿（下面会整体替换输入框）
   // 右栏换子对话：同样先放开本地这条流（后端执行照旧，回来自动接上）
   if (subState.streaming && (!subState.cur || subState.cur.id !== id)) detachStream(subView);
   const tok = ++navTok.sub;
@@ -374,6 +376,7 @@ async function openSubSession(id) {
     syncComposerPad(subView); // 悬浮输入区：重算子对话消息列的垫高与按钮锚点
     renderPanels(); // 待决定的浮窗：这个子对话自己的卡落在右栏输入区上方，主对话区那份随之撤掉
     // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个子对话的字）
+    flushSubDraft(); // 覆盖前落盘：乐观切换后到数据落地之间输入的字不能被顶回旧草稿
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
@@ -433,7 +436,13 @@ $('sub-dd').onclick = () => { renderSubDDPop(); openPopover('sub-dd-pop', $('sub
 $('sub-send').onclick = () => send(null, subView);
 $('sub-stop').onclick = () => stopRun(subView);
 $('sub-input').addEventListener('keydown', (e) => composerEnterKeydown(e, () => send(null, subView)));
-$('sub-input').addEventListener('input', (e) => { autoGrow(e.target); persistSubDraftLS(); });
+// 与主输入同款（见 app-chat.js 顶部绑定处注释）：量高合并 rAF、草稿防抖 300ms，
+// 切换/清空子对话前由 flushSubDraft 兜底
+let subGrowRaf = 0;
+$('sub-input').addEventListener('input', () => {
+  if (!subGrowRaf) subGrowRaf = requestAnimationFrame(() => { subGrowRaf = 0; autoGrow($('sub-input')); });
+  scheduleSubDraft();
+});
 rpRegister('subs', { // 右侧边栏：注册首个视图
   title: '子对话', order: 1,
   onOpen: () => { refreshDrawer(); syncComposer(subView); },
