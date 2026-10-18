@@ -257,15 +257,14 @@ func trayShowMainWindow() {
 	procSetForegroundWindow.Call(hwnd)
 }
 
-// trayReloadUI 刷新前端界面：页面卡死/渲染异常时用户可手动恢复（等价浏览器
-// 的 F5）。shellEval 即主界面 WebView2 的 ExecuteScript（runDesktop 注入）。
+// trayReloadUI 重启前端界面（托盘菜单「刷新界面」）：页面卡死/渲染进程
+// 挂起或僵死时用户可手动恢复。不走 ExecuteScript("location.reload()")——
+// 它的执行者是（可能已挂起的）渲染进程 JS 主线程，僵死时指令永久排队、
+// 刷新永远无效；restartFrontendNow 销毁并重建整个 WebView 前端（窗口原位
+// 重开，后端与任务不受影响），挂死的渲染进程随旧进程树一并退场。
 func trayReloadUI() {
-	if trayApp == nil || trayApp.shellEval == nil {
-		log.Printf("托盘：界面刷新通道未就绪")
-		return
-	}
-	log.Printf("托盘：刷新前端界面（location.reload）")
-	trayApp.shellEval("location.reload()")
+	log.Printf("托盘：重启前端界面（重建 WebView）")
+	restartFrontendNow()
 }
 
 // trayRequestExit 托盘菜单「退出」：置退出请求，再按主窗口在与否选择唤起

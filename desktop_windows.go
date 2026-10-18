@@ -764,8 +764,8 @@ type pfArgsVtbl struct {
 // 工具进程、崩溃保护进程等）WebView2 会自动重启对应子进程，记日志即可。
 const (
 	pfBrowserExited      = 0 // 浏览器主进程退出（整个 WebView2 控件已不可用）
-	pfRenderUnresponsive = 1 // 渲染进程无响应（长任务重渲染也会触发，需容忍）
-	pfRenderExited       = 2 // 渲染进程退出（页面死掉，reload 即可恢复）
+	pfRenderExited       = 1 // 渲染进程退出（官方枚举 1=RenderProcessExited；页面死掉，reload 即可恢复）
+	pfRenderUnresponsive = 2 // 渲染进程无响应（官方枚举 2=RenderProcessUnresponsive；长任务重渲染也会触发，需容忍）
 )
 
 func pfKindName(kind int32) string {
