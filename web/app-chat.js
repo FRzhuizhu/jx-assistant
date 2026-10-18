@@ -1952,8 +1952,8 @@ document.addEventListener('click', (e) => {
 
 // 文件路径链接（file-link，正文/反引号里的路径渲染而来）：按消息所在视图
 // 解析出会话——网页文件进右栏「浏览器」，其余一律系统默认程序打开
-// （/api/sessions/{id}/open-path：边界=会话工作区内已存在的文件，越界/
-// 不存在/远程工作区都有明确报错）。
+// （/api/sessions/{id}/open-path：用户手势直通，工作区内外都不校验、无
+// 确认弹窗；只有「路径不存在」这类自然错误才弹带完整路径的提示）。
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a.file-link');
   if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -1963,9 +1963,7 @@ document.addEventListener('click', (e) => {
   const sid = view.state.cur && view.state.cur.id;
   if (!sid || !path) return;
   if (deliveryOpenRoute(view, path) === 'panel') { openInPanelBrowser({ session: sid, path }); return; }
-  api('/api/sessions/' + encodeURIComponent(sid) + '/open-path', {
-    method: 'POST', body: JSON.stringify({ path }),
-  }).catch((er) => alert('打开失败：' + er.message));
+  openWorkspacePath(view, sid, path);
 });
 
 /* 渲染契约（性能与滚动）：

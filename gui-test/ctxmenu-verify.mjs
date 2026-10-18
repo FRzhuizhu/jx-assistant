@@ -19,7 +19,9 @@
 //   C11 空白处右键不弹
 //   C12 左栏会话项右键仍是原会话菜单（全局监听让路）
 //   C13 网页模式（无 shell=desktop）右键不弹自定义菜单
-//   C14 服务端校验：open-url 非 http(s)/缺参 400；open-path 不存在/越界 404
+//   C14 服务端校验：open-url 非 http(s)/缺参 400；open/reveal/delivery 的
+//       open·reveal 不存在 404（文案带完整解析路径）。放行分支会真开系统
+//       程序，不在此测（归 ctxmenu-desktop-smoke 真机覆盖）
 // 运行：仓库根目录 node gui-test/ctxmenu-verify.mjs
 import { newTab, read, click, typeText, shot, center, sleep, closeTab }
   from './cdp.mjs';
@@ -335,7 +337,8 @@ async function run() {
       m && m.includes('重命名') && !m.includes('粘贴'), JSON.stringify(m));
     await read(t, `closePopovers()`);
 
-    // C14 服务端校验分支（直连真实服务；全部走拒绝/404 路，不会真开系统程序）
+    // C14 服务端校验分支（直连真实服务；只走拒绝/404 路，不会真开系统程序
+    // ——用户手势链路已无工作区校验，放行分支会真开程序，归真机冒烟覆盖）
     const sess = ((await (await fetch(BASE + '/api/sessions')).json()).sessions) || [];
     const sid = Array.isArray(sess) && sess.length ? (sess[0].id || sess[0].ID) : '';
     const post = async (path, body) => (await fetch(BASE + path, {
@@ -344,9 +347,12 @@ async function run() {
     const s1 = await post('/api/open-url', { url: 'file:///c:/windows' });
     const s2 = await post('/api/open-url', {});
     const s3 = await post('/api/sessions/' + sid + '/open-path', { path: '不存在的文件.txt' });
-    const s4 = await post('/api/sessions/' + sid + '/reveal-path', { path: '../../' });
-    ok('C14 服务端校验：open-url 非法 scheme/缺参 400，open-path 不存在/越界 404',
-      s1 === 400 && s2 === 400 && s3 === 404 && s4 === 404, `${s1} ${s2} ${s3} ${s4} sid=${sid}`);
+    const s4 = await post('/api/sessions/' + sid + '/reveal-path', { path: '不存在的文件.txt' });
+    const s5 = await post('/api/sessions/' + sid + '/delivery/open', { path: '不存在的文件.txt' });
+    const s6 = await post('/api/sessions/' + sid + '/delivery/reveal', { path: join(TMP, 'ws', '不存在-绝对.txt') });
+    ok('C14 服务端校验：open-url 非法 scheme/缺参 400，open/reveal/delivery 不存在 404',
+      s1 === 400 && s2 === 400 && s3 === 404 && s4 === 404 && s5 === 404 && s6 === 404,
+      `${s1} ${s2} ${s3} ${s4} ${s5} ${s6} sid=${sid}`);
 
     await closeTab(t);
   } catch (e) {

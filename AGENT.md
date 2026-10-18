@@ -683,8 +683,11 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   截图常带的 PNG 注册格式，文本优先、PNG 入附件与 Ctrl+V 同口径；
   剪贴板属敏感数据，loopbackOnly 仅回环可达）；网页模式 readText 行为正常
   走标准 API。配套端点：`POST /api/open-url`（仅 http/https）、
-  `POST /api/sessions/{id}/open-path|reveal-path`（`insideWorkspace` 限
-  工作区内，远程会话拒绝），用户主动操作、不经模型权限门控（同交付卡片口径）。
+  `POST /api/sessions/{id}/open-path|reveal-path` 与 delivery 的 open·reveal、
+  `/api/browser/open-view`（预览）——全是**用户手势链路：一律直通**，无工作区
+  校验、无确认弹窗（这些路由不在 call_api 目录里，AI 调不到；对用户自己的
+  点击做拦截违背设计意图），仅保留「路径不存在」这类自然错误，用户主动操作、
+  不经模型权限门控（同交付卡片口径）。
 - **权限面板**（点权限芯片弹出，两列）：左列权限单选（只读 / 工作区内读写 /
   完全访问），右列能力多选（允许工作区外执行命令 / 操作浏览器 / 操作电脑）。
   切到完全访问时三项能力联动勾选并置灰（不可单独关闭）。新建会话默认权限是
@@ -1211,7 +1214,8 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   浏览器面板修不好时期的替代品，只支持文本、观感差）已整体移除。交付卡与
   聊天文件链接的「打开」两路路由：html/htm 与网址进右栏「浏览器」；其余
   一律 `ShellExecute` 系统默认应用（`/api/sessions/{id}/open-path` 与
-  `/delivery/open`，工作区边界校验，SSH 远程工作区无本机路径给直白报错）。
+  `/delivery/open`；用户手势直通——工作区内外都不校验、无确认弹窗，这些
+  路由不在 call_api 目录里 AI 调不到，SSH 远程工作区无本机路径给直白报错）。
 - **`panel_screenshot`**（无能力门控，仅桌面版）：对右侧栏截图（GDI 截屏
   像素，浏览器页/任何右栏视图通用）。实现：注入主界面探针 JS 读
   `#rpanel` 矩形 POST `/api/shell/panel-view` 回传，Go 侧客户区原点+CSS×dpr
