@@ -518,3 +518,71 @@ func TestRequireNotReadOnly(t *testing.T) {
 	}
 	wantAll(t, err.Error(), "只读模式", "request_permission", "权限芯片")
 }
+
+// ---------- 沙箱内浏览器预拦（browserLaunchHit：确定性失败路径的快速失败） ----------
+
+// TestBrowserLaunchBlocked 非完全访问档下，启动浏览器的命令在执行前被拦下
+// 并给出 browser_* 出路；full 档（用户知情批准的沙箱外执行）放行；
+// 含浏览器子串但非启动浏览器的命令（chromedriver 等）不误拦。
+func TestBrowserLaunchBlocked(t *testing.T) {
+	a := newCapTestApp(t, "data-browser-block-test")
+	ws := roTestWS(t)
+	rw := &SessionMeta{ID: "s1", Mode: "task", Permission: permWorkspace, Workspace: ws, CreatedAt: "2026-10-14 03:00:00"}
+	ro := &SessionMeta{ID: "s2", Mode: "task", Permission: permReadOnly, Workspace: ws, CreatedAt: "2026-10-14 03:00:00"}
+	full := &SessionMeta{ID: "s3", Mode: "task", Permission: permFull, Workspace: ws, CreatedAt: "2026-10-14 03:00:00"}
+	mustCreateSession(t, a, rw)
+	mustCreateSession(t, a, ro)
+	mustCreateSession(t, a, full)
+	mk := func(sess *SessionMeta) *toolContext {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		return &toolContext{ctx: ctx, app: a, sess: sess, toolName: "run_command"}
+	}
+
+	// 1. 各形态的浏览器启动命令：workspace-write / read-only 档都拦，
+	//    错误带预拦标记与 browser_* 出路，命令不执行（无凭证签发）
+	for _, cmd := range []string{
+		`& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --version`,
+		`Start-Process msedge`,
+		`start microsoft-edge:https://example.com`,
+		`msedge --headless --dump-dom https://example.com`,
+		`google-chrome --headless --dump-dom https://example.com`,
+		`chromium-browser --version`,
+		`firefox --version`,
+		`iexplore.exe https://example.com`,
+		`msedgewebview2.exe --version`,
+	} {
+		for _, tc := range []*toolContext{mk(rw), mk(ro)} {
+			_, err := tc.authorize(permAction{Op: "exec", Tool: "run_command", Command: cmd})
+			if err == nil {
+				t.Fatalf("沙箱内启动浏览器应被预拦：%s", cmd)
+			}
+			wantAll(t, err.Error(), "browser launch blocked", "browser_open", "browser_*")
+		}
+	}
+
+	// 2. 不误拦：常规命令与「含浏览器子串但非启动浏览器」的命令正常签发凭证
+	for _, cmd := range []string{
+		`git status`, `go build ./...`,
+		`chromedriver --version`,                       // 词边界外（chromedriver ≠ chrome）
+		`Invoke-WebRequest https://example.com -UseBasicParsing`, // 抓网页不含浏览器名
+		`Get-Process | Where-Object {$_.Name -like '*edge*'}`,   // 只读查看进程
+	} {
+		g, err := mk(rw).authorize(permAction{Op: "exec", Tool: "run_command", Command: cmd})
+		if err != nil {
+			t.Fatalf("常规命令不应被预拦：%s → %v", cmd, err)
+		}
+		if g == nil || g.Policy != permWorkspace {
+			t.Fatalf("凭证应按 workspace-write 签发：%s → %+v", cmd, g)
+		}
+	}
+
+	// 3. full 档放行：沙箱外执行浏览器可正常启动，不拦
+	g, err := mk(full).authorize(permAction{Op: "exec", Tool: "run_command", Command: `msedge --version`})
+	if err != nil {
+		t.Fatalf("full 档不应预拦浏览器命令：%v", err)
+	}
+	if g == nil || g.Policy != permFull {
+		t.Fatalf("full 档凭证应按 full 签发，得到 %+v", g)
+	}
+}

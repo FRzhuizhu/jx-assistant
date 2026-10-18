@@ -561,11 +561,11 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	// （不随开关增删，请求形状稳定、缓存友好），真实状态在这里公告——
 	// 开与关都说，变化经环境快照补充在对话尾部，配合调用时的 requireCapability 拦截
 	if sess.Mode == "task" || sess.Mode == "office" || sess.Mode == "coding" || sess.Mode == "beginner-coding" || sess.Mode == "skill-create" {
-		b.WriteString("- 能力开关与命令沙箱是两套门：browser_* / computer_* / device_* 由助手进程直接驱动本机浏览器/桌面/手机，不经过命令沙箱；sandbox_permissions 升级只放宽命令沙箱，不会打开能力开关（要开能力得在被拦后于 browser_* / computer_* 调用里带 request_capability=true 申请）。别用命令行去拉浏览器（沙箱内起不来，见下方能力项）。下面逐项列出当前开关状态：\n")
+		b.WriteString("- 能力开关与命令沙箱是两套门：browser_* / computer_* / device_* 由助手进程直接驱动本机浏览器/桌面/手机，不经过命令沙箱；sandbox_permissions 升级只放宽命令沙箱，不会打开能力开关（要开能力得在被拦后于 browser_* / computer_* 调用里带 request_capability=true 申请）。网页操作一律走 browser_*，别用命令行拉浏览器——非完全访问档下启动浏览器的命令会被直接预拦（见下方能力项）。下面逐项列出当前开关状态：\n")
 		if hasCapability(sess, capBrowser) {
-			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图（助手进程直接驱动本机 Edge/Chrome，不经命令沙箱）\n")
+			b.WriteString("- 能力：已开启「操作浏览器」——可用 browser_* 工具打开网页、读取内容、点击、输入、截图（助手进程直接驱动本机 Edge/Chrome，不经命令沙箱）。网页操作一律走 browser_*：命令行启动浏览器（msedge/chrome/firefox 等）会被预拦、不会执行（沙箱内必败，跑了也白跑）\n")
 		} else {
-			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拦下。此能力是沙箱外的独立通道：关着时你在命令沙箱里启动浏览器**一定失败**（受限令牌下报 access denied / 进程直接崩），不要用 shell 去试，也不要申请 sandbox_permissions（升级只放宽命令沙箱，打不开能力开关）。需要看网页时：重试 browser_* 调用并带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡，用户批准后即可用），或请用户在权限芯片里勾选「允许操作浏览器」\n")
+			b.WriteString("- 能力：未开启「操作浏览器」——browser_* 工具的调用会被拦下。此能力是沙箱外的独立通道：关着时你在命令沙箱里启动浏览器**一定失败**（受限令牌下报 access denied / 进程直接崩），这类命令会被直接预拦、不会执行，不要用 shell 去试，也不要申请 sandbox_permissions（升级只放宽命令沙箱，打不开能力开关）。需要看网页时：重试 browser_* 调用并带 request_capability=true 与一句 justification 向用户申请开启（弹审批卡，用户批准后即可用），或请用户在权限芯片里勾选「允许操作浏览器」\n")
 		}
 		if hasCapability(sess, capComputer) {
 			b.WriteString("- 能力：已开启「操作电脑」——可用 computer_* 工具截屏、点击、输入、切换窗口（点击坐标以 computer_screenshot 的图片为准；同样不经命令沙箱）\n")

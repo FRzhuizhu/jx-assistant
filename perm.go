@@ -646,6 +646,32 @@ func (a *App) isProtectedPath(p string, remote bool) bool {
 	return false
 }
 
+// ---------- 沙箱内浏览器预拦（确定性失败路径的快速失败） ----------
+
+// browserLaunchRes 浏览器启动特征：浏览器可执行名（词边界匹配，.exe 变体
+// 与全路径自然覆盖）+ microsoft-edge: 协议形式。chromedriver 等不含纯词
+// 边界的不在此列——那是另一个进程，预拦没有收益。见 browserLaunchHit。
+var browserLaunchRes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(msedgewebview2|msedge|chrome|chromium|firefox|iexplore)\b`),
+	regexp.MustCompile(`(?i)\bmicrosoft-edge:`),
+}
+
+// browserLaunchHit 命令试图启动浏览器时返回命中的特征词（供报错展示），
+// 空串表示放行进沙箱。与危险命令护栏（安全边界）不同，这层拦的是
+// 「注定失败的白跑」：OS 沙箱内浏览器进程起不来（要写 AppData 等系统
+// 位置），且失败多为静默秒退、无任何输出——模型对着空输出只会反复重试
+// 打扰用户。因此在执行前拦下并把正确出路（browser_*，宿主直驱不经沙箱）
+// 说清楚，不做组件开关。极端误拦（echo/写文件里出现浏览器名）代价低：
+// 报错自带出路，模型改写即可。
+func browserLaunchHit(cmd string) string {
+	for _, re := range browserLaunchRes {
+		if m := re.FindString(cmd); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
 // ---------- 危险命令护栏（可开关组件） ----------
 
 // destructiveCmds 危险命令拦截表：不可逆破坏在任何模式下都拒绝。
@@ -1024,6 +1050,20 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 				}
 			}
 			policy = req
+		}
+		// 沙箱内浏览器预拦（升级处理之后按最终档位判定）：非 full 档命中
+		// browserLaunchHit 直接拒绝、不执行——沙箱内起浏览器必败且多为静默
+		// 秒退，让命令白跑只会换来空输出与模型反复重试。full（用户知情
+		// 批准的沙箱外执行）不拦：浏览器在沙箱外可以正常启动。
+		if policy != permFull {
+			if name := browserLaunchHit(act.Command); name != "" {
+				return nil, fmt.Errorf("[sandbox: browser launch blocked under %s mode]\n"+
+					"命令试图启动浏览器（命中特征：%s），已被预拦、没有执行：OS 沙箱内浏览器进程起不来（写不了 AppData/用户配置等系统位置，且多为静默秒退、无任何报错输出），跑了也只是白跑。"+
+					"要看网页/操作浏览器，一律用 browser_* 工具（browser_open 打开、browser_content 读正文、browser_click/browser_type 交互、browser_screenshot 截图）——"+
+					"它们由助手进程直接驱动本机 Edge/Chrome，不经命令沙箱，当前权限档即可用；若「操作浏览器」能力未开启，重试 browser_* 时带 request_capability=true 与一句 justification 向用户申请。"+
+					"不要改试其他浏览器命令或参数（沙箱内同样必败）；确有「必须在命令行里跑浏览器」的罕见场景，才带 sandbox_permissions=full 申请沙箱外执行（弹审批由用户决定）。",
+					policy, name)
+			}
 		}
 		return t.app.issueGrant(t.sess.ID, act.Tool, "exec", truncateRunes(act.Command, 200), policy), nil
 	}

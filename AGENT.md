@@ -527,8 +527,15 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   **能力开关与命令沙箱是两套门**：`browser_*` / `computer_*` / `device_*` 由
   助手进程直接驱动本机浏览器/桌面/手机，**不经命令沙箱**、也不需要
   `sandbox_permissions` 升级；反过来，沙箱内的命令启动不了浏览器（受限令牌下
-  access denied），要看网页只能用 `browser_*`（前提是该会话已开启能力）。这条
-  已写进环境快照的「能力」段（`agent.go` `envPrompt`：开关状态逐项列出，关着时
+  access denied），要看网页只能用 `browser_*`（前提是该会话已开启能力）。
+  2026-10-19 起，非完全访问档下启动浏览器的命令（msedge/chrome/firefox 等，
+  `perm.go` `browserLaunchHit`）在 `authorize` exec 分支**执行前预拦**：不跑、
+  直接返回带 `[sandbox: browser launch blocked …]` 标记的引导错误（指路
+  browser_*）——这不是安全预检（与危险命令护栏语义不同），是「确定性失败
+  路径的快速失败」：沙箱内浏览器启动多为**静默秒退无输出**（实测 msedge
+  --version / Start-Process msedge 均空输出返回），让命令白跑只会换来模型
+  对着空输出反复重试打扰用户。full 档（用户知情批准的沙箱外执行）不拦。
+  这条已写进环境快照的「能力」段（`agent.go` `envPrompt`：开关状态逐项列出，关着时
   说明后果与正确出路）。
   **能力门控有自己的升级参数**（`perm.go` `requireCapability`）：能力关着被拦后，
   模型同轮带 `request_capability=true` + `justification` 重试同一工具即弹审批卡——
@@ -1514,7 +1521,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `llm.go` | OpenAI 兼容流式客户端（SSE 解析、工具调用增量聚合）+ mock 演示模型 |
 | `contextengine.go` | 上下文引擎：请求材料的唯一组装者 + 上下文事件总线。系统提示词（可被 `data/prompts/<mode>.md` 引用文件覆盖，版本行记来源与内容 hash）、环境快照、工具目录、历史视图、视觉内联经 `Assemble` 成包（确定性：同一状态逐字节一致——前缀缓存命中的根基，有测试看护），token 估算与前缀指纹随包产出；每轮开轮的 prompt 展示快照行经 `OpenRound` 落库；需把上下文发给模型的侧路调用（模型摘要）由 `CallSummarizer` 拼装并发送（留痕 audit scope=summarize，不进请求环形缓存）；权限/模型/思考档位/计划目标/工作区/远程挂载等配置变更经 `Notify` 落时间线（audit type=ctx，含前后值）；技能增减由环境快照 diff 在尾部留痕，同一事实不重复记账 |
 | `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装——发给模型的内容一律来自引擎 Assembly）；`envPrompt` 生成运行环境快照（不含时间——时间走 context.go 的 timeAfter 派生通道） |
-| `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截 |
+| `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截、沙箱内浏览器预拦（browserLaunchHit：非 full 档启动浏览器的命令执行前拦下并指路 browser_*，确定性失败路径的快速失败，不做组件开关） |
 | `plans.go` | 计划读取端点：从会话日志里取回 exit_plan_mode 的正文（右栏「计划」视图的数据源） |
 | `requestmgr.go` | 任务找经理协调（request_manager）：把求助整理成一条消息投进数字助理主对话（kind=aiuser、origin=help），**立即返回、不等答复**——经理空闲就落库并唤醒它跑一轮，忙则进它的排队/插话队列（与【派发回报】【待办任务派发】同一套投递）；经理侧**没有**专用回复工具，它用既有的 send_to_session / dispatch_task 处理。不建池、不加接口（消息本身即记录）；子对话调用被硬拦、计划模式暂停；启动自检 assertManagerChannel 看护「只有执行模式有」 |
 | `interact.go` | 模型↔用户交互工具（ask_user_question / enter·exit_plan_mode / update_goal）；ask 提问限时（timeout_sec 设秒数，默认 300、钳 30-600、显式 0=不限时；分档准则在系统提示词「提问的分寸」段，状态公告在环境快照「提问等待」行；界面倒计时、悬停/触碰/按钮停表转不限时，超时视为放行）；久等声光提醒（默认开、240 秒、设置·常规可调：MessageBeep 叮声 + ask_alert 全屏闪烁，浮窗上 15 秒倒计时走完才 TTS 朗读；悬停/触碰/停表、或从任何入口打开对应计划页/浮窗（holdQuestion 也受理无时限的计划审批）连提醒一并作废，见 askAlertDue）；计划审批无时限且提交即落库，重启后由 resolvePersistedPlan 收口批准/修改/忽略 |

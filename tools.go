@@ -1015,7 +1015,7 @@ func runGrep(t *toolContext, args json.RawMessage) (string, error) {
 
 func runCommandTool() Tool {
 	return Tool{
-		Spec: toolSpec("run_command", "执行一条 shell 命令并返回输出。命令按会话权限模式在 OS 级沙箱内执行：workspace-write 下只能写工作区与私有临时目录（Windows 受限令牌 / Linux Landlock / 远程沙箱 helper），read-only 下不能写任何位置，联网不受限。尝试沙箱可能拒绝的命令是安全且符合预期的：直接运行并读取标记。若命令因沙箱拒绝失败且更宽档位能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档）与一句 justification 重试同一命令一次——该重试会弹审批由用户批准；未经真实拒绝不要请求升级；被拒后该命令终局，停止并说明，不要绕过。sandbox_permissions 只放宽命令沙箱，开不了 browser_*/computer_* 的能力开关。需要看网页或操作浏览器时，不要用命令行拉起浏览器（沙箱内会被拒），直接用 browser_* 工具（若「操作浏览器」能力未开启，调用会被拦，可在重试该工具时带 request_capability=true 与 justification 向用户申请开启）。",
+		Spec: toolSpec("run_command", "执行一条 shell 命令并返回输出。命令按会话权限模式在 OS 级沙箱内执行：workspace-write 下只能写工作区与私有临时目录（Windows 受限令牌 / Linux Landlock / 远程沙箱 helper），read-only 下不能写任何位置，联网不受限。尝试沙箱可能拒绝的命令是安全且符合预期的：直接运行并读取标记。若命令因沙箱拒绝失败且更宽档位能让它成功，在同一轮内带 sandbox_permissions（够用的最宽档）与一句 justification 重试同一命令一次——该重试会弹审批由用户批准；未经真实拒绝不要请求升级；被拒后该命令终局，停止并说明，不要绕过。sandbox_permissions 只放宽命令沙箱，开不了 browser_*/computer_* 的能力开关。看网页/操作浏览器永远不要用命令行启动浏览器（msedge/chrome/firefox/microsoft-edge: 等一律同下场）：非完全访问档下这类命令会被直接预拦、不会执行，报错会指路——一律改用 browser_* 工具（助手进程直接驱动本机 Edge/Chrome，不经命令沙箱；若「操作浏览器」能力未开启，调用会被拦，可在重试该工具时带 request_capability=true 与 justification 向用户申请开启）。",
 			objSchema(map[string]any{
 				"command":             strProp("要执行的命令"),
 				"shell":               strProp("本地执行时的 shell：Windows 默认 powershell（或 cmd），其他平台默认 sh；远程执行忽略"),
