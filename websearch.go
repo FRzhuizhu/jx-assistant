@@ -15,8 +15,10 @@
 //	         "engine":"zhipu-mcp","cached":bool,"answer":"…(可选)"}
 //	  → 4xx/5xx {"error":"一句话原因"}
 //
-// 身份走 X-Jxai-User 头（与市场发布同一条链路）；服务端地址取
-// config.searchURL，空则跟随市场地址同源（marketOrigin）。
+// 身份走 X-Jxai-User 头（与市场发布同一条链路）；对话标识走
+// X-Jxai-Conversation 头（值=发起搜索的会话 id，服务端按对话轮询搜索
+// 引擎——同一对话始终同一引擎、不同对话交替，缺省退化按用户轮询）；
+// 服务端地址取 config.searchURL，空则跟随市场地址同源（marketOrigin）。
 package main
 
 import (
@@ -45,6 +47,11 @@ func (a *App) webSearchTool() Tool {
 		Run: a.runWebSearch,
 	}
 }
+
+// searchConversationHeader 对话标识头：与服务端 search 网关同名约定，
+// 值=发起搜索的会话 id。服务端按它轮询搜索引擎（同一对话固定同一引擎，
+// 不同对话交替）；缺省退化按用户身份轮询。
+const searchConversationHeader = "X-Jxai-Conversation"
 
 // searchResponse 服务端 /api/search 的响应契约。
 type searchResponse struct {
@@ -99,6 +106,8 @@ func (a *App) runWebSearch(t *toolContext, args json.RawMessage) (string, error)
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// sess 在 authorize（permModeOf）处已保证非空；服务端按此头对对话轮询搜索引擎
+	req.Header.Set(searchConversationHeader, t.sess.ID)
 	client := &http.Client{Timeout: 35 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

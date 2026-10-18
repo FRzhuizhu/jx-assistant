@@ -3,6 +3,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -54,5 +58,24 @@ func TestRenderSearchResults(t *testing.T) {
 	out2 := searchResponse{Engine: "zhipu-mcp", Answer: "直接回答文本"}
 	if text := renderSearchResults("q", out2); !strings.Contains(text, "直接回答文本") {
 		t.Fatalf("answer 应转交:\n%s", text)
+	}
+}
+
+// 请求头契约：搜索请求带 X-Jxai-Conversation（值=会话 id，服务端按它对
+// 对话轮询搜索引擎；工具执行时 sess 恒非空——authorize 更早就依赖它）。
+func TestWebSearchConversationHeader(t *testing.T) {
+	var conv string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conv = r.Header.Get(searchConversationHeader)
+		w.Write([]byte(`{"results":[{"title":"t","url":"https://a","snippet":"s"}],"engine":"zhipu-mcp"}`))
+	}))
+	defer srv.Close()
+	a := &App{Cfg: &Config{SearchURL: srv.URL}}
+	if _, err := a.runWebSearch(&toolContext{ctx: context.Background(), app: a, sess: &SessionMeta{ID: "sess-conv-1"}},
+		json.RawMessage(`{"query":"测试"}`)); err != nil {
+		t.Fatalf("runWebSearch 出错: %v", err)
+	}
+	if conv != "sess-conv-1" {
+		t.Fatalf("应带对话标识头 X-Jxai-Conversation=sess-conv-1，实得 %q", conv)
 	}
 }
