@@ -468,6 +468,16 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
    （同 em 相对值）。禁止在对话区内写死 px 字号。 */
 .msg-col, .plan-doc, .q-card.plan { font-size: var(--chat-fs); }
 
+/* 离屏消息跳过渲染（消息流虚拟化的低成本等效物）：主对话几百条消息常驻 DOM，
+   任何布局/绘制失效都要在全量节点上重算——content-visibility:auto 让视口外的
+   消息行（.msg）与回合折叠段（.tf-sec，展开态可能塞着几十条工具行）整体跳过
+   layout/paint。contain-intrinsic-size 的 auto 关键字启用 last-remembered size：
+   渲染过一次的行离屏时用真实尺寸占位，滚动条不抖。配套在 app-chat.js 的
+   applyFolds：折叠测量已增量化（只测新增气泡、视口外不测等滚入再补），
+   避免逐气泡读 scrollHeight 把离屏内容强制实例化、吃掉这里的收益。
+   见《前端渲染性能分析-主对话卡顿.md》。 */
+.msg, .tf-sec { content-visibility: auto; contain-intrinsic-size: auto 200px; }
+
 /* 对话区两侧拖拽把手：调宽对话内容列（左右对称，偏好记入 localStorage） */
 .w-handle {
   position: absolute; top: 0; bottom: 0; width: 10px;

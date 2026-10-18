@@ -1012,6 +1012,9 @@ const FONT_PX_DEFAULT = 14; // 默认档（「（默认）」标在它身上，�
 function applyChatFont(px) {
   document.documentElement.style.setProperty('--chat-fs', px + 'px');
   lsSet('jx.fontpx', String(px));
+  // 字号变化改变行高与每行字数：已测过的气泡折叠判定作废（data-fold-done），
+  // 清标记触发全量重测（app-chat.js 的 resetFoldMarks；脚本加载顺序异常时静默跳过）
+  if (typeof resetFoldMarks === 'function') resetFoldMarks();
 }
 
 function restoreChatFont() {

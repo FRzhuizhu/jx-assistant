@@ -1237,15 +1237,27 @@ function applyFolds() {
   else if (!unmeasurable) foldRetry = 0;
 }
 
-// 单个视图的一轮重算；返回「本轮有没有还没排好版、量不准的元素」
+// 单个视图的一轮重算；返回「本轮有没有还没排好版、量不准的元素」。
+// 增量策略（配合 .msg/.tf-sec 的 content-visibility:auto，见 style.css 与
+// 《前端渲染性能分析-主对话卡顿.md》）：
+// - 已测过的气泡带 data-fold-done 标记，本轮跳过——旧版每轮全列重测，流式
+//   期间 MutationObserver 每帧触发一次，主对话几百个用户气泡逐个
+//   getBoundingClientRect + scrollHeight，DOM 脏时首次读强制整页同步布局；
+// - 离屏气泡不测也不标记：content-visibility 下离屏内容的 scrollHeight 是
+//   占位估算值，量了会误判（过短漏折/过长误折）；滚入视口后由滚动监听的
+//   防抖补测轮再量（上下各留 200px 提前量，快滚到的先量好）；
+// - 全量重测只在「每行能放多少字变了」时发生：宽度变化（拖把手/窗口 resize）
+//   与字号变化，由 resetFoldMarks 清标记触发。
 function applyFoldsIn(view, enabled) {
   const col = view.col;
   if (!col) return false;
   const boxes = Array.from(col.querySelectorAll('.fold-box'));
   const seen = new Set();
   let unmeasurable = false; // 还没完成布局（高度 0）的元素：本轮跳过，稍后重算
+  const vr = view.scroll ? view.scroll.getBoundingClientRect() : null; // 本视图的滚动视口
   foldTargets(view).forEach((el) => {
     seen.add(el);
+    if (el.dataset.foldDone === '1') return; // 已测过：增量轮跳过
     const r = el.getBoundingClientRect();
     if (r.height === 0 || r.width === 0) {
       // 元素被隐藏/还没排好版时 scrollHeight 不可信（会误判成「不折叠」），
@@ -1253,6 +1265,8 @@ function applyFoldsIn(view, enabled) {
       unmeasurable = true;
       return;
     }
+    // 占位盒与滚动视口不相交 = 离屏：不测不标记，滚入视口后补测
+    if (vr && (r.bottom < vr.top - 200 || r.top > vr.bottom + 200)) return;
     const m = enabled ? foldMeasure(el) : null;
     const btn = el.querySelector(':scope > .fold-btn');
     if (!m || !m.overflow) {
@@ -1263,40 +1277,42 @@ function applyFoldsIn(view, enabled) {
       if (fade) fade.remove();
       if (btn) btn.remove();
       el.removeAttribute('data-fold-open');
-      return;
-    }
-    if (!el.classList.contains('fold-box')) {
-      el.classList.add('fold-box');
-      const fade = document.createElement('div');
-      fade.className = 'fold-fade';
-      el.appendChild(fade);
-    }
-    el.style.setProperty('--fold-h', Math.ceil(m.maxH) + 'px');
-    if (!btn) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'fold-btn';
-      b.textContent = '展开';
-      b.onclick = () => toggleFold(el, b);
-      el.appendChild(b);
-      el.dataset.foldOpen = '0';
-      el.classList.add('folded'); // 默认折叠：只显示前 6 行
     } else {
-      // 已经在折叠体系里：保留用户的展开意图，只同步按钮文案
-      const open = el.dataset.foldOpen === '1';
-      el.classList.toggle('folded', !open);
-      btn.textContent = open ? '收起' : '展开';
+      if (!el.classList.contains('fold-box')) {
+        el.classList.add('fold-box');
+        const fade = document.createElement('div');
+        fade.className = 'fold-fade';
+        el.appendChild(fade);
+      }
+      el.style.setProperty('--fold-h', Math.ceil(m.maxH) + 'px');
+      if (!btn) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'fold-btn';
+        b.textContent = '展开';
+        b.onclick = () => toggleFold(el, b);
+        el.appendChild(b);
+        el.dataset.foldOpen = '0';
+        el.classList.add('folded'); // 默认折叠：只显示前 6 行
+      } else {
+        // 已经在折叠体系里：保留用户的展开意图，只同步按钮文案
+        const open = el.dataset.foldOpen === '1';
+        el.classList.toggle('folded', !open);
+        btn.textContent = open ? '收起' : '展开';
+      }
+      const want = el.dataset.foldOpen === '1' ? 'true' : 'false';
+      const b2 = el.querySelector(':scope > .fold-btn');
+      if (b2 && b2.getAttribute('aria-expanded') !== want) b2.setAttribute('aria-expanded', want); // 同值不写，免得触发 MutationObserver 空转
     }
-    const want = el.dataset.foldOpen === '1' ? 'true' : 'false';
-    const b2 = el.querySelector(':scope > .fold-btn');
-    if (b2 && b2.getAttribute('aria-expanded') !== want) b2.setAttribute('aria-expanded', want); // 同值不写，免得触发 MutationObserver 空转
+    el.dataset.foldDone = '1'; // 本轮已测：之后的增量轮直接跳过
   });
-  // 已经不在目标集合里的（重渲染后残留、切走会话）：清掉折叠痕迹
+  // 已经不在目标集合里的（重渲染后残留、切走会话）：清掉折叠痕迹与测量标记
   boxes.forEach((el) => {
     if (seen.has(el)) return;
     el.classList.remove('folded', 'fold-box');
     el.style.removeProperty('--fold-h');
     el.removeAttribute('data-fold-open');
+    el.removeAttribute('data-fold-done');
     el.querySelectorAll(':scope > .fold-fade, :scope > .fold-btn').forEach((n) => n.remove());
   });
   return unmeasurable;
@@ -1331,6 +1347,10 @@ function scheduleFolds() {
 // 两种都会让它的盒子尺寸变化）；消息 DOM 变化（流式重绘、尾部重建、后台刷新插入）
 // 同样要重算——否则「渲染顺序」会让某条长消息错过那一次重算，出现「该折没折」。
 // 另挂窗口 resize 兜底，字体就绪后再算一次（行高/字宽会变）。
+// 增量时代的分工（applyFoldsIn 只测新增/视口内气泡）：
+// - 宽度变化 → resetFoldMarks 全量重测（每行字数变，旧判定作废）；
+// - 纯高度变化（流式内容增长）→ 只跑增量轮（新气泡），不清标记；
+// - 滚动 → 防抖补测：滚入视口的未测气泡（离屏时被跳过的）在停顿后量上。
 function setupFolds() {
   if (setupFolds.done) return;
   setupFolds.done = true;
@@ -1340,18 +1360,44 @@ function setupFolds() {
     const col = view.col;
     if (!col) return;
     if (typeof ResizeObserver === 'function') {
-      new ResizeObserver(() => scheduleFolds()).observe(col);
+      let lastW = 0; // 上次观测到的列宽：区分宽度变化（判定作废）与纯高度变化
+      new ResizeObserver((ents) => {
+        const w = ents && ents[0] ? ents[0].contentRect.width : 0;
+        if (lastW && Math.abs(w - lastW) > 1) resetFoldMarks();
+        else scheduleFolds();
+        lastW = w;
+      }).observe(col);
     }
     if (typeof MutationObserver === 'function') {
       // 只算状态是否变，不变就不写 DOM（见 applyFolds），所以不会自激空转
       new MutationObserver(() => scheduleFolds()).observe(col, { childList: true, subtree: true });
     }
+    if (view.scroll) {
+      // 滚动补测：增量轮跳过离屏气泡，上翻/下翻经过的等滚动停顿后补上（200ms 防抖）
+      let scTimer = 0;
+      view.scroll.addEventListener('scroll', () => {
+        clearTimeout(scTimer);
+        scTimer = setTimeout(scheduleFolds, 200);
+      }, { passive: true });
+    }
   });
   try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => scheduleFolds()); } catch (e) {}
   window.addEventListener('resize', () => {
     clearTimeout(foldTimer);
-    foldTimer = setTimeout(scheduleFolds, 120); // 拖窗口时别每像素都量一遍
+    foldTimer = setTimeout(resetFoldMarks, 120); // 拖窗口时别每像素都量一遍；宽度可能变了，清标记全量重测
   });
+}
+
+// 全量重测入口：清掉全部增量标记——宽度/字号变化会改变「每行能放多少字」，
+// 已测过的折叠判定全部作废。离屏气泡清标记后不会立刻重测（applyFoldsIn 的
+// 视口过滤会跳过它们），滚入视口时由滚动补测轮接管，正好只测看得见的。
+// 字号变化的挂钩在 app-settings.js 的 applyChatFont。
+function resetFoldMarks() {
+  foldViews().forEach((view) => {
+    if (!view.col) return;
+    view.col.querySelectorAll('[data-fold-done]').forEach((el) => el.removeAttribute('data-fold-done'));
+  });
+  scheduleFolds();
 }
 
 /* ---------- 文件改动面板与交付成果卡片（文件快照子系统的前端半边） ---------- */
