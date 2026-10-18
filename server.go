@@ -2354,6 +2354,9 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 		mode = "steer"
 	}
 	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content), kindChat, "")
+	// 用户亲自开口（哪怕是排进队列的）：作废「用户叫停」守卫——队列排水、
+	// 之后的系统投递都恢复正常拉起（见 stopGuardHolds）。
+	_ = a.Store.ClearStopGuard(m.ID)
 	if !a.IsRunning(m.ID) && !a.queuePausedOf(m.ID) {
 		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次（暂停时只排队不拉起）
 	}
@@ -3407,6 +3410,10 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		_ = a.Store.SaveMeta(m)
 		opening = append(opening, Event{Type: "title", SessionID: m.ID, Title: m.Title})
 	}
+	// 用户亲自开口＝新的执行意图：作废上一轮的「用户叫停」守卫（回报拉起
+	// 拦截，见 stopGuardHolds）——之后的系统投递恢复正常拉起。放在锁内
+	// appendMessage 之后，与发言落库同序。
+	_ = a.Store.ClearStopGuard(m.ID)
 	lock.Unlock()
 	a.serveRun(w, r, m, run, opening)
 }
@@ -3439,6 +3446,18 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.stopRun(m.ID) {
+		// 轮间隙竞态：finishRun 摘表 → kickQueue/beginRun 之间点停止会扑空
+		//（执行体已不在注册表、下一轮还没挂上），停止意图就此丢失且无
+		// StopRecord。库状态仍是 running 说明新轮正在起来：等 500ms 重查一次
+		// 把它接住（此时停的是新一轮，语义正是用户要的「别再跑了」）；仍不在
+		// 执行才如实答 stopped:false。
+		if cur, err := a.Store.Get(m.ID); err == nil && cur.Status == "running" {
+			time.Sleep(500 * time.Millisecond)
+			if a.stopRun(m.ID) {
+				writeJSON(w, 200, map[string]any{"stopped": true})
+				return
+			}
+		}
 		writeJSON(w, 200, map[string]any{"stopped": false, "reason": "该会话当前没有在执行"})
 		return
 	}
@@ -3465,6 +3484,8 @@ func (a *App) handleRetry(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"started": false, "reason": "该会话正在执行中"})
 		return
 	}
+	// 用户点重试＝新的执行意图：作废上一轮的「用户叫停」守卫（见 stopGuardHolds）。
+	_ = a.Store.ClearStopGuard(m.ID)
 	a.clearRunError(m.ID)
 	a.serveRun(w, r, m, run, []Event{{Type: "retry"}})
 }

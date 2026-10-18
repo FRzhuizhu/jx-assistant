@@ -136,6 +136,10 @@ func dispatchTaskTool() Tool {
 func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
 	d := t.app.deliverToSession(sub, text, kindAiUser, "task")
 	if !d.Started {
+		if d.Held {
+			// 守卫拦下（用户刚叫停过目标会话且没再开口）：只落库不拉起。
+			return "已投递到会话 " + sub.ID + "「" + sub.Title + "」，但它刚被用户叫停：这条需求已落库（未读绿点可见），不会自动执行，等用户回来处理。" + note
+		}
 		return subQueueNote(sub, d.Mode, note)
 	}
 	// 当前主对话的 SSE 若还连着，先给它推一条派发确认

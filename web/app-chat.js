@@ -5195,6 +5195,30 @@ async function attachRun(view) {
   }
 }
 
+// reconcileAfterStop 停止后的状态对账：以服务端真相为准修正本地界面。/stop 的
+// 三条不利路径——请求悬挂、答 stopped:false、网络错——原先都各自早退不做对账，
+// state.streaming 假阳性就永久钉死（停止按钮挂在「停止中」）。现在统一到这里：
+// 后端还在跑（停止未生效或新一轮已起）就接上流如实显示；后端已不在执行而本地
+// 还挂着 streaming（假阳性），复位并重载消息，按钮状态随之归位。
+async function reconcileAfterStop(view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (!cur) return;
+  const sid = cur.id;
+  let running = false;
+  try { running = await backendRunning(sid, view); } catch (e) { return; }
+  if (!view.state.cur || view.state.cur.id !== sid) return; // 对账期间已切走：不落地
+  if (running) {
+    // 停止没生效（或新轮已起）：如实显示执行中。本地流已断就接上；
+    // 流还挂着则继续跟它收尾（attachRun 自带 streaming 防重入）。
+    if (!view.state.streaming) attachRun(view);
+    else view.hint.textContent = '';
+    return;
+  }
+  if (view.state.streaming) detachStream(view); // 复位假阳性（removeLive+setStreamUI(false)+断本地流）
+  await reloadMessages(view);
+}
+
 // stopRun 显式停止：后端执行体独立于页面，必须让服务端停——本地只是等着这条流自己收尾
 // （取消会立刻作用到模型流/工具/等待，服务端写入的收尾记录也就随流到达）。
 async function stopRun(view) {
@@ -5202,21 +5226,48 @@ async function stopRun(view) {
   const cur = view.state.cur;
   if (!cur) return;
   view.hint.textContent = '正在停止…';
-  try {
-    const r = await api('/api/sessions/' + cur.id + '/stop', { method: 'POST' });
-    if (r && r.stopped === false) { view.hint.textContent = ''; return; }
-  } catch (e) {
-    view.hint.textContent = '';
-    return;
-  }
-  // 兜底：5 秒还没收尾（网络异常/执行体卡住）就断掉本地流并重新对齐一次
+  // 5 秒兜底提到 try 之前：无论 /stop 走到哪条路径（成功等待收尾 / stopped:false /
+  // 网络错 / 请求悬挂），到点还没自然收尾就断本地流并做一次对账——「停止中」
+  // 不再有钉死的路径。
   const token = view.state.abort;
   setTimeout(async () => {
-    if (view.state.streaming && view.state.abort === token) {
-      if (view.state.abort) view.state.abort.abort();
+    if (!view.state.streaming || view.state.abort !== token) return;
+    if (view.state.abort) view.state.abort.abort();
+    await reconcileAfterStop(view);
+  }, 5000);
+  let idleAnswer = false; // 后端答「该会话当前没有在执行」
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000); // /stop 悬挂也要有个了断：8s 超时后走对账
+    const r = await api('/api/sessions/' + cur.id + '/stop', { method: 'POST', signal: ctl.signal });
+    clearTimeout(timer);
+    if (r && r.stopped === false) idleAnswer = true;
+  } catch (e) { /* 网络错/超时：对账见真章 */ }
+  await reconcileAfterStop(view);
+  if (idleAnswer && !view.state.streaming) {
+    view.hint.textContent = '该会话当前没有在执行，已对齐状态';
+    setTimeout(() => { if (view.hint.textContent === '该会话当前没有在执行，已对齐状态') view.hint.textContent = ''; }, 3000);
+  }
+}
+
+// resyncViews 唤醒对账：页面从后台/锁屏/断网中回来时，本地对 streaming 的信念
+// 可能已与服务端脱节——流静默死亡=假阳性（全局事件全被 !streaming 门闩挡住，
+// 发送被误判成执行中）、后端自己跑完=假阴性（有输出没跟随）。对两个视图各自
+// 对齐一次：还在跑就接流，不在跑就复位+重载。手机锁屏/切网是常态暴露面，
+// 桌面端网络抖动同样受益（见排查报告第六/七节，两处共用本件）。
+async function resyncViews() {
+  for (const view of [mainView, subView]) {
+    const cur = view.state.cur;
+    if (!cur) continue;
+    let running = false;
+    try { running = await backendRunning(cur.id, view); } catch (e) { continue; }
+    if (!view.state.cur || view.state.cur.id !== cur.id) continue; // 对账期间已切走
+    if (running && !view.state.streaming) { attachRun(view); continue; }
+    if (!running && view.state.streaming) {
+      detachStream(view);
       await reloadMessages(view);
     }
-  }, 5000);
+  }
 }
 
 /* ---------- 上下文用量：圆环指示器（模型选择左侧）+ 悬停明细 ---------- */

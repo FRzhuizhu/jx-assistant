@@ -301,3 +301,75 @@ func TestStopRunKeepsManualButtonSemantics(t *testing.T) {
 		t.Fatalf("人为叫停应累计到 UserStops, got %d", rec.UserStops)
 	}
 }
+
+// ⑥ 守卫：父会话（如主对话）被用户叫停后、且用户没有再开口时，正常完成的
+// 派发回报也不得自动拉起它（回报只落库+绿点）；用户带着新意图回来（发新
+// 消息/点重试触发 ClearStopGuard）后恢复正常拉起。这是「点停止没用、模型
+// 还在跑」体验的放大器缺口（见排查报告第七节③）。
+func TestStopGuardHoldsParentUntilUserSpeaks(t *testing.T) {
+	a, main := newDispatchTestApp(t)
+	land := func(content, at string) {
+		t.Helper()
+		if err := a.Store.AppendRow(main.ID, &StoredMessage{Message: TextMessage("user", content), Kind: kindChat, CreatedAt: at}); err != nil {
+			t.Fatalf("落用户发言失败: %v", err)
+		}
+	}
+	stopRound := func() {
+		t.Helper()
+		if _, ok := a.beginRun(main.ID); !ok {
+			t.Fatal("登记执行失败")
+		}
+		if !a.stopRun(main.ID) {
+			t.Fatal("停止失败")
+		}
+		a.finishRun(main.ID) // 协作收口：Kind 保留、Manual 清除——正是「叫停已完成」的稳态
+		if a.IsRunning(main.ID) {
+			t.Fatal("停止后应已收口")
+		}
+	}
+	// 停止前有一条用户发言（时间远早于停止时刻）
+	land("去干活", "2000-01-01 00:00:00")
+	stopRound()
+
+	// 场景1：被叫停后一份正常回报到达（会话空闲）——不拉起、只落库、标记 Held
+	d := a.deliverToSession(main, "【派发回报】任务会话「X」本轮结束。", kindAiUser, "dispatch")
+	if d.Started {
+		t.Fatal("用户叫停父会话后，正常回报不该自动拉起它")
+	}
+	if !d.Held {
+		t.Fatalf("被守卫拦下应标记 Held（调用方据此给准确文案）: %+v", d)
+	}
+	rows, err := a.Store.RawMessagesAll(main.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed := false
+	for _, m := range rows {
+		if m.Kind == kindAiUser && strings.Contains(m.Text(), "【派发回报】") {
+			landed = true
+		}
+	}
+	if !landed {
+		t.Fatal("回报应落库（用户回来能看到，只是不自动起轮）")
+	}
+
+	// 场景2：用户再开口（handleChat 入口的 ClearStopGuard）——恢复自动拉起
+	if err := a.Store.ClearStopGuard(main.ID); err != nil {
+		t.Fatalf("清守卫失败: %v", err)
+	}
+	d = a.deliverToSession(main, "【数字助理派发】\n\n再来一件事", kindAiUser, "task")
+	if !d.Started || d.Held {
+		t.Fatalf("守卫作废后应正常拉起: %+v", d)
+	}
+	a.finishRunOf(main.ID, d.Run)
+
+	// 场景3：再叫停一次，这次不清守卫，用「晚于停止时间的新用户发言」验证
+	// 时间比较的兜底放行（写库异常清不掉记录时也不误拦用户的新意图）
+	stopRound()
+	land("我回来了，接着做", "2099-01-01 00:00:00")
+	d = a.deliverToSession(main, "【派发回报】任务会话「Y」本轮结束。", kindAiUser, "dispatch")
+	if !d.Started || d.Held {
+		t.Fatalf("用户已有新发言（晚于停止时间）：回报应正常拉起: %+v", d)
+	}
+	a.finishRunOf(main.ID, d.Run)
+}
