@@ -1952,9 +1952,8 @@ document.addEventListener('click', (e) => {
 
 // 文件路径链接（file-link，正文/反引号里的路径渲染而来）：按消息所在视图
 // 解析出会话——网页文件进右栏「浏览器」，其余一律系统默认程序打开
-// （/api/sessions/{id}/open-path：工作区内直接开；工作区外先弹确认再带
-// confirmOutside 重发，见 app-ctxmenu.js 的 openWorkspacePath；不存在/
-// 远程工作区都有带完整路径的明确报错，不默默失败）。
+// （/api/sessions/{id}/open-path：用户手势直通，工作区内外都不校验、无
+// 确认弹窗；只有「路径不存在」这类自然错误才弹带完整路径的提示）。
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a.file-link');
   if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;

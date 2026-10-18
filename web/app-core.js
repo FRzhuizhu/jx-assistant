@@ -145,15 +145,13 @@ async function api(path, opts = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     // 错误体里的结构字段挂到 Error 上：文件回退的 409 带 blocked/unsafe
-    // （哪些文件被外部改过、哪些可退），open-path 的 403 带 outside（工作区
-    // 外打开需确认）——前端要据此给出可操作的提示，只保留 message 会把这些
-    // 信息丢掉
+    // （哪些文件被外部改过、哪些可退）——前端要据此给出可操作的提示，
+    // 只保留 message 会把这些信息丢掉
     const err = new Error(data.error || res.statusText);
     err.status = res.status;
     err.blocked = data.blocked;
     err.unsafe = data.unsafe;
     err.safe = data.safe;
-    err.outside = data.outside;
     throw err;
   }
   return data;

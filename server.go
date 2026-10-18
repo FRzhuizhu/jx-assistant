@@ -294,9 +294,8 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/reveal", a.handleDeliveryReveal)
 	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
 	// 桌面壳右键菜单的「在系统中打开/在文件夹中定位/在系统浏览器中打开」：
-	// 用户主动操作（同交付卡片口径），open-path/reveal-path 要求路径已存在
-	// ——工作区外 reveal 直接放行（仅定位不执行），open 先回 403+outside 由
-	// 前端确认后带 confirmOutside 重发（见 handleSessionOpenOrReveal），
+	// 用户手势链路一律直通（无工作区校验、无确认弹窗——这些路由不在
+	// call_api 目录里，AI 调不到），仅保留「路径不存在」自然错误；
 	// open-url 只放行 http(s)
 	mux.HandleFunc("POST /api/open-url", a.handleOpenURL)
 	mux.HandleFunc("POST /api/sessions/{id}/open-path", a.handleSessionOpenPath)
@@ -2814,9 +2813,10 @@ func (a *App) handleFileVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, payload)
 }
 
-// handleDeliveryOpenFile 用系统默认程序打开一个已登记的交付文件（交付卡片
-// 整行点击/「打开」按钮）。只放行 deliveries 里登记过的路径——用户主动操作，
-// 不经模型权限审批；未登记的任意路径一律 404，防越权打开。
+// handleDeliveryOpenFile 用系统默认程序打开一个交付文件（交付卡片整行点击/
+// 「打开」按钮）。与 open-path 同口径：用户手势链路不做边界拦截（无交付
+// 登记、无工作区校验——这些路由不在 call_api 目录里，AI 调不到），仅保留
+// 「路径不存在」这类自然错误。
 func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
@@ -2834,18 +2834,14 @@ func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 path")
 		return
 	}
-	if !a.deliveryListed(m.ID, want) {
-		http.NotFound(w, r)
-		return
-	}
 	tctx := &toolContext{app: a, sess: m}
 	abs, err := tctx.resolve(want)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, 400, "路径无法解析: "+want)
 		return
 	}
 	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
-		writeErr(w, 404, "交付文件不存在: "+want)
+		writeErr(w, 404, "交付文件不存在: "+abs)
 		return
 	}
 	if m.Remote != nil {
@@ -2859,8 +2855,9 @@ func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleDeliveryReveal 在系统文件资源管理器里定位一个已登记的交付文件
-// （交付卡片的「在文件夹中查看」）。远程会话没有本机路径，明确拒绝。
+// handleDeliveryReveal 在系统文件资源管理器里定位一个交付文件（交付卡片的
+// 「在文件夹中查看」）。与 open 同口径：用户手势直通，无登记/工作区校验；
+// 远程会话没有本机路径，明确拒绝。
 func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
@@ -2878,10 +2875,6 @@ func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 path")
 		return
 	}
-	if !a.deliveryListed(m.ID, want) {
-		http.NotFound(w, r)
-		return
-	}
 	if m.Remote != nil {
 		writeErr(w, 400, "这是 SSH 远程工作区里的文件，本机没有对应路径，无法在资源管理器中定位")
 		return
@@ -2889,11 +2882,11 @@ func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 	tctx := &toolContext{app: a, sess: m}
 	abs, err := tctx.resolve(want)
 	if err != nil {
-		http.NotFound(w, r)
+		writeErr(w, 400, "路径无法解析: "+want)
 		return
 	}
 	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
-		writeErr(w, 404, "交付文件不存在: "+want)
+		writeErr(w, 404, "交付文件不存在: "+abs)
 		return
 	}
 	if err := revealInExplorer(abs); err != nil {
@@ -2901,21 +2894,6 @@ func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "1"})
-}
-
-// deliveryListed 判定 path 是否在本会话的交付登记清单里（交付卡片的打开/
-// 定位入口共用；未登记路径不动作，防越权）。
-func (a *App) deliveryListed(sessionID, path string) bool {
-	dvs, err := a.Store.DeliveriesFor(sessionID)
-	if err != nil {
-		return false
-	}
-	for _, d := range dvs {
-		if d.Path == path {
-			return true
-		}
-	}
-	return false
 }
 
 // handleOpenURL 用系统默认浏览器打开一个 http(s) 链接（桌面壳右键菜单的
@@ -2953,24 +2931,22 @@ func (a *App) handleOpenURL(w http.ResponseWriter, r *http.Request) {
 
 // handleSessionOpenPath 用系统默认程序打开一个文件或目录（右键菜单「在系统
 // 中打开」与聊天文件链接的左键点击：文件走默认程序，目录等于在资源管理器里
-// 打开）。工作区外的文件要先经用户确认：首次请求回 403+outside 标记，前端
-// 弹确认框后带 confirmOutside 重发才执行。远程会话没有本机路径，明确拒绝
-// （文案同交付卡片）。
+// 打开）。用户手势链路不做任何边界拦截——调用方只有前端用户操作（call_api
+// 目录闸挡着 AI，见 callapi.go），对用户自己的点击做工作区校验/确认弹窗
+// 违背设计意图；仅保留「路径不存在」这类自然错误。
 func (a *App) handleSessionOpenPath(w http.ResponseWriter, r *http.Request) {
 	a.handleSessionOpenOrReveal(w, r, true)
 }
 
 // handleSessionRevealPath 在资源管理器里定位并选中一个文件或目录（右键菜单
-// 「在文件夹中定位」）。工作区外也放行：定位只是让资源管理器选中它，不执行
-// 任何程序，风险低——消息里提到的 D:\AI\... 这类工作区外路径同样要能定位。
+// 「在文件夹中定位」）。与 open-path 同口径：用户手势直通，无边界拦截。
 func (a *App) handleSessionRevealPath(w http.ResponseWriter, r *http.Request) {
 	a.handleSessionOpenOrReveal(w, r, false)
 }
 
 func (a *App) handleSessionOpenOrReveal(w http.ResponseWriter, r *http.Request, open bool) {
 	var body struct {
-		Path           string `json:"path"`
-		ConfirmOutside bool   `json:"confirmOutside"` // 前端确认「工作区外打开」后置真
+		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "请求体不是合法 JSON")
@@ -2995,19 +2971,10 @@ func (a *App) handleSessionOpenOrReveal(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, 400, "路径无法解析: "+want)
 		return
 	}
-	// 拒绝一律走 writeErr 且文案带完整解析路径（不裸 404）：前端能弹出明确
-	// 提示，用户也能照着路径手动前往
+	// 拒绝一律走 writeErr 且文案带完整解析路径（不裸 404）：文件真不存在时
+	// 前端能弹出明确提示，用户也能照着路径手动前往
 	if _, _, serr := tctx.envStat(abs); serr != nil {
 		writeErr(w, 404, "路径不存在: "+abs)
-		return
-	}
-	// 工作区外的「打开」要经用户确认（默认程序会执行文件，如 exe/脚本）；
-	// 「定位」只选中不执行，工作区外直接放行
-	if open && !insideWorkspace(tctx, abs) && !body.ConfirmOutside {
-		writeJSON(w, 403, map[string]any{
-			"error":   "该文件在会话工作区外，需确认后才能用系统程序打开: " + abs,
-			"outside": true,
-		})
 		return
 	}
 	var opErr error

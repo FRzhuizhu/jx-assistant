@@ -104,29 +104,22 @@ function openURLSystem(url) {
   api('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) })
     .catch((e) => alert('打开失败：' + e.message));
 }
-function openWorkspacePath(view, sid, path, confirmed) {
+function openWorkspacePath(view, sid, path) {
   const cur = view.state.cur;
   if (cur && cur.remote) { // 远程工作区没有本机路径：html 仍可在右栏浏览器流式渲染，其余直白报错
     if (deliveryOpenRoute(view, path) === 'panel') openInPanelBrowser({ session: sid, path });
     else alert('这是 SSH 远程工作区里的文件，本机没有对应路径，无法用系统程序打开。');
     return;
   }
+  // 用户手势直通（后端不做工作区校验、无确认弹窗）；仅有「路径不存在」这类
+  // 自然错误时弹提示（文案带完整路径）
   api('/api/sessions/' + encodeURIComponent(sid) + '/open-path', {
-    method: 'POST', body: JSON.stringify({ path, confirmOutside: !!confirmed }),
-  }).catch((e) => {
-    // 工作区外文件：后端退回 403+outside 待确认（默认程序会执行文件，不能
-    // 静默放过），确认后带 confirmOutside 重发才真正打开
-    if (e.outside && !confirmed) {
-      if (window.confirm('该文件在会话工作区外，仍要用系统程序打开吗？\n' + path)) openWorkspacePath(view, sid, path, true);
-      return;
-    }
-    alert('打开失败：' + e.message);
-  });
+    method: 'POST', body: JSON.stringify({ path }),
+  }).catch((e) => alert('打开失败：' + e.message));
 }
 function revealWorkspacePath(view, sid, path) {
   const cur = view.state.cur;
   if (cur && cur.remote) { alert('这是远程工作区里的文件，本机没有对应路径，无法在文件夹中定位。'); return; }
-  // 工作区外路径后端也放行：定位只是资源管理器选中，不执行文件，无需确认
   api('/api/sessions/' + encodeURIComponent(sid) + '/reveal-path', {
     method: 'POST', body: JSON.stringify({ path }),
   }).catch((e) => alert('定位失败：' + e.message));
