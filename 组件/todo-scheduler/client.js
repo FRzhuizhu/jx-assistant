@@ -85,9 +85,8 @@
     btn.id = 'btn-todo-scheduler';
     btn.className = 'side-btn';
     btn.title = '待办清单与定时任务';
-    // 文字结构与另两个入口一致（span.sb-label 全名 + data-short 短名）：
-    // 手机端窄屏一行三枚按钮时全名藏掉、亮短名，更窄只剩图标
-    btn.dataset.short = '待办';
+    // 文字结构与另两个入口一致（span.sb-label 全名）：手机端窄屏三栏分列时
+    // 塞不下的文字从右侧自然截断，与另两个入口同款同源
     btn.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
       '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M5 3L2 6M19 3l3 3"/></svg>' +

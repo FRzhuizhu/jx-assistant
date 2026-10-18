@@ -2810,19 +2810,19 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   body.sb-collapsed #sidebar { width: 100%; min-width: 100%; }
   .sb-inner { width: 100%; }
 
-  /* 顶部入口按钮并成一栏（图标 + data-short 短字）：原来竖排三行近 130px，
-     现在一行 ~40px，整段高度让给中间的会话列表。全名 .sb-label 藏掉、短字经
-     ::after 从 data-short 取（塞不下省略号截断）；更窄的 359.98 断点连短字也
-     隐掉只剩图标，title 悬停/无障碍名仍是全名。图标本身一个没动 */
+  /* 顶部入口按钮三栏分列：与桌面同一组按钮、同一份文字（.sb-label）、同一套
+     动画，只改排列与按钮长度——一行三枚等宽，图标贴左、文字跟排，塞不下的
+     文字从右侧自然裁掉（clip，不出省略号）；更窄的屏也一样，不再有换短名/
+     纯图标的特制分支。整段高度从竖排三行近 130px 收到一行 ~40px，让给会话列表 */
   #sidebar .actions { flex-direction: row; gap: 6px; padding: 6px 10px 8px; }
   #sidebar .actions .side-btn {
     flex: 1 1 0; min-width: 0;
     padding: 9px 4px; font-size: 12.5px; gap: 5px;
+    justify-content: flex-start; /* 从左往右排：图标贴左，装不下的右侧裁掉 */
   }
-  #sidebar .actions .side-btn .sb-label { display: none; }
-  #sidebar .actions .side-btn::after {
-    content: attr(data-short);
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  #sidebar .actions .side-btn > svg { flex: none; } /* 图标不参与收缩（与 .doll-wrap 既有 flex:none 一致） */
+  #sidebar .actions .side-btn .sb-label {
+    min-width: 0; overflow: hidden; white-space: nowrap; /* 一行排，右侧自然截断 */
   }
 
   /* 底部框架：设置行不变；其上市场/回收站（及以后组件按钮）三栏网格往上叠行
@@ -2835,7 +2835,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
      保住胶囊壳），实在不够整组换行到第二行（换行阈值＝右组的 min-width，
      即各按钮下限之和）。右组 grow 吸收富余空间、模型芯片顶到最右，发送键
      贴右缘。权限芯片窄屏换短名（只读/读写/完全，JS 在 syncComposer 同步
-     data-short，同左侧栏机制），箭头纯装饰隐掉；执行态（停止键在场）时
+     data-short、CSS 伪元素换显——芯片自己的机制，顶部入口按钮不走这套），箭头纯装饰隐掉；执行态（停止键在场）时
      由模型芯片缩短让位——上下文圆环保留在场（2026-10-11 用户敲定：执行中
      也要看得到上下文用量；10-10 首版曾藏圆环，不符合设计意图，已撤） */
   .composer-bar { flex-wrap: wrap; justify-content: flex-start; }
@@ -2926,14 +2926,6 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 @media (max-width: 499.98px) and (prefers-reduced-motion: reduce) {
   #sidebar, #rpanel { transition: none; }
-}
-
-/* 更窄一档（<360px：分屏半屏、折叠屏外屏等）：顶部入口连短字都排不开了，
-   收成纯图标（::after 不生成盒子，图标随 justify-content 居中），全名仍在
-   title 悬停里。断点取 359.98：常见手机最窄 320px 也能排下三个图标 */
-@media (max-width: 359.98px) {
-  #sidebar .actions .side-btn::after { content: none; }
-  #sidebar .actions .side-btn { padding: 9px 2px; }
 }
 
 /* ---------- 右栏多视图切换与 iframe 面板 ---------- */
