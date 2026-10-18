@@ -111,8 +111,6 @@ function openWorkspacePath(view, sid, path) {
     else alert('这是 SSH 远程工作区里的文件，本机没有对应路径，无法用系统程序打开。');
     return;
   }
-  // 用户手势直通（后端不做工作区校验、无确认弹窗）；仅有「路径不存在」这类
-  // 自然错误时弹提示（文案带完整路径）
   api('/api/sessions/' + encodeURIComponent(sid) + '/open-path', {
     method: 'POST', body: JSON.stringify({ path }),
   }).catch((e) => alert('打开失败：' + e.message));

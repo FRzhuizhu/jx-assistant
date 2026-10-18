@@ -31,18 +31,3 @@ setInterval(() => {
   loadApprovals();
   loadQuestions();
 }, 20000);
-
-/* ---------- 唤醒对账（见 app-chat.js 的 resyncViews）----------
-   页面回到可见 / 网络恢复时，对当前视图对齐一次服务端真相：手机锁屏、切网、
-   桌面 WebView 挂起造成的流静默死亡与事件丢失都靠这一下归位（streaming 假
-   阳性复位、后端还在跑则接上流）。500ms 去抖合并连发的 visibilitychange/online。 */
-let resyncTimer = null;
-function scheduleResync() {
-  if (resyncTimer) return;
-  resyncTimer = setTimeout(() => {
-    resyncTimer = null;
-    if (typeof resyncViews === 'function') resyncViews();
-  }, 500);
-}
-document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleResync(); });
-window.addEventListener('online', scheduleResync);

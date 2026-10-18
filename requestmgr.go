@@ -105,9 +105,6 @@ func runRequestManager(t *toolContext, args json.RawMessage) (string, error) {
 		strings.TrimSpace(p.Resource), strings.TrimSpace(p.Expectation))
 	d := t.app.deliverToSession(mgr, text, kindAiUser, "help")
 	if !d.Started {
-		if d.Held {
-			return "已发给数字经理（它刚被用户叫停：这条已落库，等用户回来处理，不自动拉起）。你继续干自己的，不用等它。", nil
-		}
 		return "已发给数字经理（它正忙，这条已进它的队列，等它本轮结束后处理）。你继续干自己的，不用等它。", nil
 	}
 	kickSessionRound(t.app, mgr, d.Run)

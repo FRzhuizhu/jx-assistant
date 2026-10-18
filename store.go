@@ -676,39 +676,6 @@ func (s *Store) ClearStopPending(id string) error {
 	return s.SetSessionData(id, stopRecordKey, string(b))
 }
 
-// ClearStopGuard 清掉「用户叫停」这个守卫依据（Kind/At/Manual 等单次事实），
-// 累计计数（UserStops/LastUserAt）保留——历史仍查得出用户停过几次。为什么
-// 要清：回报拉起守卫（runtime.go 的 stopGuardHolds）靠这条记录拦住「用户叫停
-// 后的系统自动拉起」；用户亲自发来新消息/点了重试就是新的执行意图，旧叫停
-// 状态必须作废，否则同秒内的发言（消息时间不晚于停止时间）会被误拦。
-func (s *Store) ClearStopGuard(id string) error {
-	rec := s.GetStopRecord(id)
-	if rec.Kind == "" {
-		return nil
-	}
-	rec.Kind = ""
-	rec.Actor = ""
-	rec.At = ""
-	rec.AtMs = 0
-	rec.Manual = false
-	rec.Note = ""
-	b, err := json.Marshal(rec)
-	if err != nil {
-		return err
-	}
-	return s.SetSessionData(id, stopRecordKey, string(b))
-}
-
-// LastUserChatAt 返回会话最后一条「用户亲自发言」（kind=chat 的 user 行）的
-// 落库时间，格式与 StopRecord.At 相同（秒级 "2006-01-02 15:04:05"，可直接
-// 字典序比较）。没有用户发言（或查询失败）返回空串——调用方（stopGuardHolds）
-// 把「零发言却有叫停记录」按叫停认，空串正好落在这个分支。
-func (s *Store) LastUserChatAt(id string) string {
-	var at string
-	_ = s.db.QueryRow(`SELECT created_at FROM messages WHERE session_id=? AND kind=? AND role='user' ORDER BY seq DESC LIMIT 1`, id, kindChat).Scan(&at)
-	return at
-}
-
 // ---------- 会话 ----------
 
 const sessionCols = `id, title, mode, workspace, parent_id, provider, model, permission, plan_mode, goal_mode, tools, remote, archived, unread, status, created_at, updated_at, thinking, goal_text, goal_status, goal_rounds, usage_prompt, usage_cache_hit, usage_output, usage_calls, origin, dispatched_by, expert, voice_used`

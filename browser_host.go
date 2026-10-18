@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -889,11 +890,24 @@ func fileURLFromAbs(abs string) string {
 	return "file:///" + strings.Join(segs, "/")
 }
 
-// workspaceFileForView 确认 rel 是 sid 会话里可预览的已存在文件（聊天里
-// file-link 的点击预览与交付卡 html 预览共用）：用户主动点击触发，不经模型
-// 权限门控，也不做工作区边界拦截（这些路由不在 call_api 目录里，AI 调不到
-// ——对用户自己的点击做限制违背设计意图）；只查存在性且排除目录。
-// 返回会话与解析后的绝对路径（远程会话 = 远程侧绝对路径）。
+// posixInside 判断 abs 是否落在 root 内（远程工作区是 posix 路径；path 包
+// 没有 Rel，按 / 规整后做目录段前缀比较）。
+func posixInside(root, abs string) (string, bool) {
+	r := path.Clean(strings.ReplaceAll(root, "\\", "/"))
+	a := path.Clean(strings.ReplaceAll(abs, "\\", "/"))
+	if a == r {
+		return ".", true
+	}
+	if !strings.HasPrefix(a, r+"/") {
+		return "", false
+	}
+	return strings.TrimPrefix(a, r+"/"), true
+}
+
+// workspaceFileForView 校验 rel 是 sid 会话工作区内已存在的文件（聊天里
+// file-link 的点击预览与交付卡「打开」共用）：用户主动点击触发，不经模型
+// 权限门控；边界 = 工作区包含检查 + 存在性检查（交付登记文件必然在工作区
+// 内，天然覆盖）。返回会话与解析后的绝对路径（远程会话 = 远程侧绝对路径）。
 func (a *App) workspaceFileForView(sid, rel string) (m *SessionMeta, abs string, ok bool) {
 	rel = strings.TrimSpace(rel)
 	m, err := a.Store.Get(sid)
@@ -905,17 +919,38 @@ func (a *App) workspaceFileForView(sid, rel string) (m *SessionMeta, abs string,
 	if err != nil {
 		return nil, "", false
 	}
+	if !insideWorkspace(tctx, abs) {
+		return nil, "", false
+	}
 	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
 		return nil, "", false
 	}
 	return m, abs, true
 }
 
-// handleBrowserOpenView 聊天链接点开的统一入口（用户主动操作，不经模型权限门控，
-// 也不做工作区边界拦截——本路由不在 call_api 目录里，AI 调不到）：
+// insideWorkspace 判定 abs（已解析的绝对路径）是否在会话工作区内。Windows 卷
+// 不区分大小写：小写后做 Rel 包含判定，防 d:\ 与 D:\ 误判越界；远程会话按
+// POSIX 口径（posixInside）。open-view 与右键菜单的 open-path/reveal-path 共用。
+func insideWorkspace(tctx *toolContext, abs string) bool {
+	root, err := tctx.resolve("")
+	if err != nil {
+		return false
+	}
+	if tctx.sess.Remote != nil {
+		_, inside := posixInside(root, abs)
+		return inside
+	}
+	sub, rerr := filepath.Rel(strings.ToLower(root), strings.ToLower(abs))
+	if rerr != nil || sub == ".." || strings.HasPrefix(sub, ".."+string(filepath.Separator)) || filepath.IsAbs(sub) {
+		return false
+	}
+	return true
+}
+
+// handleBrowserOpenView 聊天链接点开的统一入口（用户主动操作，不经模型权限门控）：
 //   * url：http/https 直接在内嵌实例打开；
-//   * path：已存在的文件（工作区内外均可）——本地转 file://（同目录相对
-//     资源可用），SSH 远程会话转 /api/browser/view 流式地址。
+//   * path：会话工作区内已存在的文件——本地工作区转 file://（同目录相对
+//     资源可用），SSH 远程工作区转 /api/browser/view 流式地址。
 // 一律经 browserFor(p.Session, "") 打开：内嵌实例成为该会话的工具作用目标。不注入
 // 任何对话回报（用户打开什么不经模型；需要看画面时用户会说，模型用
 // panel_screenshot 截右侧栏）。
@@ -947,7 +982,7 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 		var abs string
 		var ok bool
 		if m, abs, ok = a.workspaceFileForView(sid, viewedPath); !ok {
-			writeErr(w, http.StatusNotFound, "文件不存在: "+viewedPath)
+			writeErr(w, http.StatusNotFound, "文件不存在或不在会话工作区内: "+viewedPath)
 			return
 		}
 		if m.Remote != nil {
@@ -974,8 +1009,8 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"url": target})
 }
 
-// handleBrowserView 远程（SSH/SFTP）会话文件的流式渲染，仅供内嵌浏览器经
-// open-view 转址访问；与 open-view 同口径（用户手势链路，仅存在性检查）。
+// handleBrowserView 远程（SSH/SFTP）会话工作区文件的流式渲染，仅供内嵌
+// 浏览器经 open-view 转址访问；边界与 open-view 一致（会话工作区内已存在文件）。
 func (a *App) handleBrowserView(w http.ResponseWriter, r *http.Request) {
 	sid := strings.TrimSpace(r.URL.Query().Get("sid"))
 	rel := strings.TrimSpace(r.URL.Query().Get("path"))
@@ -985,7 +1020,7 @@ func (a *App) handleBrowserView(w http.ResponseWriter, r *http.Request) {
 	}
 	m, abs, ok := a.workspaceFileForView(sid, rel)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "文件不存在: "+rel)
+		writeErr(w, http.StatusNotFound, "文件不存在或不在会话工作区内: "+rel)
 		return
 	}
 	tctx := &toolContext{app: a, sess: m}

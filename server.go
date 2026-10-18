@@ -294,9 +294,8 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/reveal", a.handleDeliveryReveal)
 	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
 	// 桌面壳右键菜单的「在系统中打开/在文件夹中定位/在系统浏览器中打开」：
-	// 用户手势链路一律直通（无工作区校验、无确认弹窗——这些路由不在
-	// call_api 目录里，AI 调不到），仅保留「路径不存在」自然错误；
-	// open-url 只放行 http(s)
+	// 用户主动操作（同交付卡片口径），open-path/reveal-path 只放行会话工作区
+	// 内已存在的路径，open-url 只放行 http(s)
 	mux.HandleFunc("POST /api/open-url", a.handleOpenURL)
 	mux.HandleFunc("POST /api/sessions/{id}/open-path", a.handleSessionOpenPath)
 	mux.HandleFunc("POST /api/sessions/{id}/reveal-path", a.handleSessionRevealPath)
@@ -2354,9 +2353,6 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 		mode = "steer"
 	}
 	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content), kindChat, "")
-	// 用户亲自开口（哪怕是排进队列的）：作废「用户叫停」守卫——队列排水、
-	// 之后的系统投递都恢复正常拉起（见 stopGuardHolds）。
-	_ = a.Store.ClearStopGuard(m.ID)
 	if !a.IsRunning(m.ID) && !a.queuePausedOf(m.ID) {
 		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次（暂停时只排队不拉起）
 	}
@@ -2816,10 +2812,9 @@ func (a *App) handleFileVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, payload)
 }
 
-// handleDeliveryOpenFile 用系统默认程序打开一个交付文件（交付卡片整行点击/
-// 「打开」按钮）。与 open-path 同口径：用户手势链路不做边界拦截（无交付
-// 登记、无工作区校验——这些路由不在 call_api 目录里，AI 调不到），仅保留
-// 「路径不存在」这类自然错误。
+// handleDeliveryOpenFile 用系统默认程序打开一个已登记的交付文件（交付卡片
+// 整行点击/「打开」按钮）。只放行 deliveries 里登记过的路径——用户主动操作，
+// 不经模型权限审批；未登记的任意路径一律 404，防越权打开。
 func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
@@ -2837,14 +2832,18 @@ func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 path")
 		return
 	}
+	if !a.deliveryListed(m.ID, want) {
+		http.NotFound(w, r)
+		return
+	}
 	tctx := &toolContext{app: a, sess: m}
 	abs, err := tctx.resolve(want)
 	if err != nil {
-		writeErr(w, 400, "路径无法解析: "+want)
+		http.NotFound(w, r)
 		return
 	}
 	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
-		writeErr(w, 404, "交付文件不存在: "+abs)
+		writeErr(w, 404, "交付文件不存在: "+want)
 		return
 	}
 	if m.Remote != nil {
@@ -2858,9 +2857,8 @@ func (a *App) handleDeliveryOpenFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleDeliveryReveal 在系统文件资源管理器里定位一个交付文件（交付卡片的
-// 「在文件夹中查看」）。与 open 同口径：用户手势直通，无登记/工作区校验；
-// 远程会话没有本机路径，明确拒绝。
+// handleDeliveryReveal 在系统文件资源管理器里定位一个已登记的交付文件
+// （交付卡片的「在文件夹中查看」）。远程会话没有本机路径，明确拒绝。
 func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
@@ -2878,6 +2876,10 @@ func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 path")
 		return
 	}
+	if !a.deliveryListed(m.ID, want) {
+		http.NotFound(w, r)
+		return
+	}
 	if m.Remote != nil {
 		writeErr(w, 400, "这是 SSH 远程工作区里的文件，本机没有对应路径，无法在资源管理器中定位")
 		return
@@ -2885,11 +2887,11 @@ func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 	tctx := &toolContext{app: a, sess: m}
 	abs, err := tctx.resolve(want)
 	if err != nil {
-		writeErr(w, 400, "路径无法解析: "+want)
+		http.NotFound(w, r)
 		return
 	}
 	if isDir, _, serr := tctx.envStat(abs); serr != nil || isDir {
-		writeErr(w, 404, "交付文件不存在: "+abs)
+		writeErr(w, 404, "交付文件不存在: "+want)
 		return
 	}
 	if err := revealInExplorer(abs); err != nil {
@@ -2897,6 +2899,21 @@ func (a *App) handleDeliveryReveal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+// deliveryListed 判定 path 是否在本会话的交付登记清单里（交付卡片的打开/
+// 定位入口共用；未登记路径不动作，防越权）。
+func (a *App) deliveryListed(sessionID, path string) bool {
+	dvs, err := a.Store.DeliveriesFor(sessionID)
+	if err != nil {
+		return false
+	}
+	for _, d := range dvs {
+		if d.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // handleOpenURL 用系统默认浏览器打开一个 http(s) 链接（桌面壳右键菜单的
@@ -2932,17 +2949,16 @@ func (a *App) handleOpenURL(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleSessionOpenPath 用系统默认程序打开一个文件或目录（右键菜单「在系统
-// 中打开」与聊天文件链接的左键点击：文件走默认程序，目录等于在资源管理器里
-// 打开）。用户手势链路不做任何边界拦截——调用方只有前端用户操作（call_api
-// 目录闸挡着 AI，见 callapi.go），对用户自己的点击做工作区校验/确认弹窗
-// 违背设计意图；仅保留「路径不存在」这类自然错误。
+// handleSessionOpenPath 用系统默认程序打开会话工作区里的一个文件或目录
+// （右键菜单「在系统中打开」：文件走默认程序，目录等于在资源管理器里打开）。
+// 边界与 /api/browser/open-view 同口径：tctx.resolve 把路径限制在会话工作区
+// 内、envStat 确认存在；远程会话没有本机路径，明确拒绝（文案同交付卡片）。
 func (a *App) handleSessionOpenPath(w http.ResponseWriter, r *http.Request) {
 	a.handleSessionOpenOrReveal(w, r, true)
 }
 
-// handleSessionRevealPath 在资源管理器里定位并选中一个文件或目录（右键菜单
-// 「在文件夹中定位」）。与 open-path 同口径：用户手势直通，无边界拦截。
+// handleSessionRevealPath 在资源管理器里定位会话工作区里的一个文件或目录
+// （右键菜单「在文件夹中定位」），校验口径与 open-path 完全一致。
 func (a *App) handleSessionRevealPath(w http.ResponseWriter, r *http.Request) {
 	a.handleSessionOpenOrReveal(w, r, false)
 }
@@ -2970,14 +2986,12 @@ func (a *App) handleSessionOpenOrReveal(w http.ResponseWriter, r *http.Request, 
 	}
 	tctx := &toolContext{app: a, sess: m}
 	abs, err := tctx.resolve(want)
-	if err != nil {
-		writeErr(w, 400, "路径无法解析: "+want)
+	if err != nil || !insideWorkspace(tctx, abs) {
+		http.NotFound(w, r)
 		return
 	}
-	// 拒绝一律走 writeErr 且文案带完整解析路径（不裸 404）：文件真不存在时
-	// 前端能弹出明确提示，用户也能照着路径手动前往
 	if _, _, serr := tctx.envStat(abs); serr != nil {
-		writeErr(w, 404, "路径不存在: "+abs)
+		writeErr(w, 404, "路径不存在: "+want)
 		return
 	}
 	var opErr error
@@ -3410,10 +3424,6 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		_ = a.Store.SaveMeta(m)
 		opening = append(opening, Event{Type: "title", SessionID: m.ID, Title: m.Title})
 	}
-	// 用户亲自开口＝新的执行意图：作废上一轮的「用户叫停」守卫（回报拉起
-	// 拦截，见 stopGuardHolds）——之后的系统投递恢复正常拉起。放在锁内
-	// appendMessage 之后，与发言落库同序。
-	_ = a.Store.ClearStopGuard(m.ID)
 	lock.Unlock()
 	a.serveRun(w, r, m, run, opening)
 }
@@ -3446,18 +3456,6 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.stopRun(m.ID) {
-		// 轮间隙竞态：finishRun 摘表 → kickQueue/beginRun 之间点停止会扑空
-		//（执行体已不在注册表、下一轮还没挂上），停止意图就此丢失且无
-		// StopRecord。库状态仍是 running 说明新轮正在起来：等 500ms 重查一次
-		// 把它接住（此时停的是新一轮，语义正是用户要的「别再跑了」）；仍不在
-		// 执行才如实答 stopped:false。
-		if cur, err := a.Store.Get(m.ID); err == nil && cur.Status == "running" {
-			time.Sleep(500 * time.Millisecond)
-			if a.stopRun(m.ID) {
-				writeJSON(w, 200, map[string]any{"stopped": true})
-				return
-			}
-		}
 		writeJSON(w, 200, map[string]any{"stopped": false, "reason": "该会话当前没有在执行"})
 		return
 	}
@@ -3484,8 +3482,6 @@ func (a *App) handleRetry(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"started": false, "reason": "该会话正在执行中"})
 		return
 	}
-	// 用户点重试＝新的执行意图：作废上一轮的「用户叫停」守卫（见 stopGuardHolds）。
-	_ = a.Store.ClearStopGuard(m.ID)
 	a.clearRunError(m.ID)
 	a.serveRun(w, r, m, run, []Event{{Type: "retry"}})
 }

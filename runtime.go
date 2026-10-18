@@ -476,14 +476,11 @@ func (a *App) midrunMode() string {
 
 // delivery 是一次投递的结果：Started=true 表示消息已落库并已占住执行权
 // （Run 是执行权句柄，由调用方接上自己的执行体）；Started=false 表示目标会话
-// 正在执行、消息已进待生效队列，Mode 是排队还是插话；Held=true 是第三种：
-// 被用户叫停的守卫拦下（stopGuardHolds）——只落库、不拉起，调用方据此给
-// 「等用户回来处理」而不是「已进队列」的文案。
+// 正在执行、消息已进待生效队列，Mode 是排队还是插话。
 type delivery struct {
 	Started bool
 	Run     *sessionRun
 	Mode    string
-	Held    bool
 }
 
 // deliverToSession 是「往会话里投递一条用户侧消息」的统一收口：前端发消息
@@ -502,15 +499,6 @@ func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *de
 		a.pushPending(m.ID, mode, content, kind, origin)
 		return &delivery{Mode: mode}
 	}
-	// 用户叫停守卫：这个会话被用户亲手停掉、之后没人再开口时，AI 侧消息
-	// （kindAiUser：派发回报/数字助理派发/求助/待办转交）不得自动拉起它——
-	// 用户刚关掉的执行不该被任何回报悄悄叫醒（观感即「点停止没用」）。只落
-	// 库+绿点（NoKick 语义），等用户下次开口。只拦 AI 侧消息：计划批准这类
-	// 随用户显式动作投递的 report 不拦，用户的意愿优先。
-	if kind == kindAiUser && a.stopGuardHolds(m) {
-		a.landUserSide(m, content, kind, origin, nil)
-		return &delivery{Held: true}
-	}
 	run, ok := a.beginRun(m.ID)
 	if !ok { // 极小概率竞态：刚被别的入口占住，同样按排队处理
 		mode := a.midrunMode()
@@ -519,21 +507,6 @@ func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *de
 	}
 	a.landUserSide(m, content, kind, origin, nil)
 	return &delivery{Started: true, Run: run}
-}
-
-// stopGuardHolds 判断「会话被用户叫停、且此后没有新的用户发言」成立：此前
-// 到达的系统投递一律不自动拉起（见 deliverToSession 的守卫分支）。判据是
-// 落库的 StopRecord（Kind=stopByUser）与会话最后一条用户发言（LastUserChatAt）
-// 的时间先后：发言早于（或等于）停止时间＝停止后没人开口＝拦；晚于＝用户
-// 已经带着新意图回来了，放行。用户入口（handleChat/handleInterject/
-// handleRetry）还会在落库/开轮时 ClearStopGuard 把守卫主动作废——时间比较
-// 兜住清除失败的写库异常，清除兜住同秒发言的精度损失，两道互为保险。
-func (a *App) stopGuardHolds(m *SessionMeta) bool {
-	rec := a.Store.GetStopRecord(m.ID)
-	if rec.Kind != stopByUser || rec.At == "" {
-		return false
-	}
-	return a.Store.LastUserChatAt(m.ID) <= rec.At
 }
 
 // deliverToSessionNoKick 是「投递但绝不拉起执行」的变体（人为叫停的回报专用）：
