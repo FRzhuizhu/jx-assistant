@@ -1369,8 +1369,18 @@ function setupFolds() {
       }).observe(col);
     }
     if (typeof MutationObserver === 'function') {
-      // 只算状态是否变，不变就不写 DOM（见 applyFolds），所以不会自激空转
-      new MutationObserver(() => scheduleFolds()).observe(col, { childList: true, subtree: true });
+      // 只算状态是否变，不变就不写 DOM（见 applyFolds），所以不会自激空转。
+      // 短路：流式 live 气泡的内容重写（.md 每帧 innerHTML）不涉及任何折叠目标
+      //（foldTargets 明确排除 live），一批变更全部落在 live 内时直接不调度——
+      // 旧版流式期间每帧都白跑一轮全列调度
+      const liveId = view.liveId;
+      new MutationObserver((muts) => {
+        if (liveId && muts.length) {
+          const le = document.getElementById(liveId);
+          if (le && muts.every((m) => m.target === le || le.contains(m.target))) return;
+        }
+        scheduleFolds();
+      }).observe(col, { childList: true, subtree: true });
     }
     if (view.scroll) {
       // 滚动补测：增量轮跳过离屏气泡，上翻/下翻经过的等滚动停顿后补上（200ms 防抖）
@@ -2344,12 +2354,33 @@ function liveInsert(view, el) {
   if (anchor) col.insertBefore(el, anchor);
   else col.appendChild(el);
 }
+// 超长流式正文的降频档：md() 是全文重 parse + innerHTML 重建，长输出随帧数
+// 平方增长（每个 delta 帧都把累计全文再 parse 一遍）。超过 32KB 后每 150ms
+// 才重渲染一次——短输出（绝大多数）不受影响，走原来的每帧节奏。
+const LIVE_BIG = 32768;
+const LIVE_BIG_MS = 150;
+let liveLastPaint = 0;    // 上次实际重渲染 .md 的时刻（performance.now）
+let livePendingTimer = 0; // 降频档的补渲染定时器
 function liveRender(view) {
   view = view || mainView;
   if (rafPending) return;
   rafPending = true;
   requestAnimationFrame(() => {
     rafPending = false;
+    // 降频档时间窗未到：本帧不重渲染，到点后补一次（期间新帧只会顺延这个定时）
+    const txt = view.state.streamText || '';
+    if (txt.length > LIVE_BIG) {
+      const since = performance.now() - liveLastPaint;
+      if (since < LIVE_BIG_MS) {
+        clearTimeout(livePendingTimer);
+        livePendingTimer = setTimeout(() => {
+          livePendingTimer = 0;
+          if (view.state.streaming) liveRender(view); // 流已结束就别渲染（removeLive 已清场）
+        }, LIVE_BIG_MS - since);
+        return;
+      }
+    }
+    liveLastPaint = performance.now();
     let el = document.getElementById(view.liveId);
     if (!el) {
       el = document.createElement('div');
@@ -2374,7 +2405,7 @@ function liveRender(view) {
     } else {
       tk.style.display = 'none';
     }
-    el.querySelector('.md').innerHTML = md(view.state.streamText);
+    el.querySelector('.md').innerHTML = md(txt);
     followScroll(view, false); // 贴近底部才跟随：流式中上翻阅读不被拽回
   });
 }
@@ -2393,6 +2424,8 @@ function connectEvents() {
 }
 
 function removeLive(view) {
+  clearTimeout(livePendingTimer); // 降频档的补渲染定时器随 live 清场一起作废
+  livePendingTimer = 0;
   const live = document.getElementById((view || mainView).liveId);
   if (live) live.remove();
 }
