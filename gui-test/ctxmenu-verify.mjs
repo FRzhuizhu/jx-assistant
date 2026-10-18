@@ -19,7 +19,8 @@
 //   C11 空白处右键不弹
 //   C12 左栏会话项右键仍是原会话菜单（全局监听让路）
 //   C13 网页模式（无 shell=desktop）右键不弹自定义菜单
-//   C14 服务端校验：open-url 非 http(s)/缺参 400；open-path 不存在/越界 404
+//   C14 服务端校验：open-url 非 http(s)/缺参 400；open/reveal 不存在 404
+//       （文案带完整解析路径）；工作区外 open 未确认 403+outside（不执行）
 // 运行：仓库根目录 node gui-test/ctxmenu-verify.mjs
 import { newTab, read, click, typeText, shot, center, sleep, closeTab }
   from './cdp.mjs';
@@ -335,7 +336,7 @@ async function run() {
       m && m.includes('重命名') && !m.includes('粘贴'), JSON.stringify(m));
     await read(t, `closePopovers()`);
 
-    // C14 服务端校验分支（直连真实服务；全部走拒绝/404 路，不会真开系统程序）
+    // C14 服务端校验分支（直连真实服务；全部走拒绝/404/待确认路，不会真开系统程序）
     const sess = ((await (await fetch(BASE + '/api/sessions')).json()).sessions) || [];
     const sid = Array.isArray(sess) && sess.length ? (sess[0].id || sess[0].ID) : '';
     const post = async (path, body) => (await fetch(BASE + path, {
@@ -344,9 +345,21 @@ async function run() {
     const s1 = await post('/api/open-url', { url: 'file:///c:/windows' });
     const s2 = await post('/api/open-url', {});
     const s3 = await post('/api/sessions/' + sid + '/open-path', { path: '不存在的文件.txt' });
-    const s4 = await post('/api/sessions/' + sid + '/reveal-path', { path: '../../' });
-    ok('C14 服务端校验：open-url 非法 scheme/缺参 400，open-path 不存在/越界 404',
-      s1 === 400 && s2 === 400 && s3 === 404 && s4 === 404, `${s1} ${s2} ${s3} ${s4} sid=${sid}`);
+    // 不存在（绝对路径形态）：404 且文案带完整解析路径（用户可照着手动前往）
+    const r4 = await fetch(BASE + '/api/sessions/' + sid + '/reveal-path', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: join(TMP, 'ws', '不存在-绝对.txt') }),
+    });
+    const s4 = r4.status, b4 = await r4.json().catch(() => ({}));
+    // 工作区外已存在（系统临时目录）：open 未带确认 → 403+outside（待确认，不执行）
+    const r5 = await fetch(BASE + '/api/sessions/' + sid + '/open-path', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tmpdir() }),
+    });
+    const s5 = r5.status, b5 = await r5.json().catch(() => ({}));
+    ok('C14 服务端校验：open-url 非法 scheme/缺参 400，open/reveal 不存在 404（带完整路径），工作区外 open 未确认 403+outside',
+      s1 === 400 && s2 === 400 && s3 === 404 && s4 === 404 && String(b4.error || '').includes('不存在-绝对.txt') &&
+      s5 === 403 && b5.outside === true && String(b5.error || '').includes('工作区外'),
+      `${s1} ${s2} ${s3} ${s4}(${b4.error || ''}) ${s5}(outside=${b5.outside}) sid=${sid}`);
 
     await closeTab(t);
   } catch (e) {

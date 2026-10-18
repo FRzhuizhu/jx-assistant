@@ -294,8 +294,10 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{id}/delivery/reveal", a.handleDeliveryReveal)
 	mux.HandleFunc("GET /api/sessions/{id}/delivery/download", a.handleDeliveryDownload)
 	// 桌面壳右键菜单的「在系统中打开/在文件夹中定位/在系统浏览器中打开」：
-	// 用户主动操作（同交付卡片口径），open-path/reveal-path 只放行会话工作区
-	// 内已存在的路径，open-url 只放行 http(s)
+	// 用户主动操作（同交付卡片口径），open-path/reveal-path 要求路径已存在
+	// ——工作区外 reveal 直接放行（仅定位不执行），open 先回 403+outside 由
+	// 前端确认后带 confirmOutside 重发（见 handleSessionOpenOrReveal），
+	// open-url 只放行 http(s)
 	mux.HandleFunc("POST /api/open-url", a.handleOpenURL)
 	mux.HandleFunc("POST /api/sessions/{id}/open-path", a.handleSessionOpenPath)
 	mux.HandleFunc("POST /api/sessions/{id}/reveal-path", a.handleSessionRevealPath)
@@ -2949,23 +2951,26 @@ func (a *App) handleOpenURL(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleSessionOpenPath 用系统默认程序打开会话工作区里的一个文件或目录
-// （右键菜单「在系统中打开」：文件走默认程序，目录等于在资源管理器里打开）。
-// 边界与 /api/browser/open-view 同口径：tctx.resolve 把路径限制在会话工作区
-// 内、envStat 确认存在；远程会话没有本机路径，明确拒绝（文案同交付卡片）。
+// handleSessionOpenPath 用系统默认程序打开一个文件或目录（右键菜单「在系统
+// 中打开」与聊天文件链接的左键点击：文件走默认程序，目录等于在资源管理器里
+// 打开）。工作区外的文件要先经用户确认：首次请求回 403+outside 标记，前端
+// 弹确认框后带 confirmOutside 重发才执行。远程会话没有本机路径，明确拒绝
+// （文案同交付卡片）。
 func (a *App) handleSessionOpenPath(w http.ResponseWriter, r *http.Request) {
 	a.handleSessionOpenOrReveal(w, r, true)
 }
 
-// handleSessionRevealPath 在资源管理器里定位会话工作区里的一个文件或目录
-// （右键菜单「在文件夹中定位」），校验口径与 open-path 完全一致。
+// handleSessionRevealPath 在资源管理器里定位并选中一个文件或目录（右键菜单
+// 「在文件夹中定位」）。工作区外也放行：定位只是让资源管理器选中它，不执行
+// 任何程序，风险低——消息里提到的 D:\AI\... 这类工作区外路径同样要能定位。
 func (a *App) handleSessionRevealPath(w http.ResponseWriter, r *http.Request) {
 	a.handleSessionOpenOrReveal(w, r, false)
 }
 
 func (a *App) handleSessionOpenOrReveal(w http.ResponseWriter, r *http.Request, open bool) {
 	var body struct {
-		Path string `json:"path"`
+		Path           string `json:"path"`
+		ConfirmOutside bool   `json:"confirmOutside"` // 前端确认「工作区外打开」后置真
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "请求体不是合法 JSON")
@@ -2986,12 +2991,23 @@ func (a *App) handleSessionOpenOrReveal(w http.ResponseWriter, r *http.Request, 
 	}
 	tctx := &toolContext{app: a, sess: m}
 	abs, err := tctx.resolve(want)
-	if err != nil || !insideWorkspace(tctx, abs) {
-		http.NotFound(w, r)
+	if err != nil {
+		writeErr(w, 400, "路径无法解析: "+want)
 		return
 	}
+	// 拒绝一律走 writeErr 且文案带完整解析路径（不裸 404）：前端能弹出明确
+	// 提示，用户也能照着路径手动前往
 	if _, _, serr := tctx.envStat(abs); serr != nil {
-		writeErr(w, 404, "路径不存在: "+want)
+		writeErr(w, 404, "路径不存在: "+abs)
+		return
+	}
+	// 工作区外的「打开」要经用户确认（默认程序会执行文件，如 exe/脚本）；
+	// 「定位」只选中不执行，工作区外直接放行
+	if open && !insideWorkspace(tctx, abs) && !body.ConfirmOutside {
+		writeJSON(w, 403, map[string]any{
+			"error":   "该文件在会话工作区外，需确认后才能用系统程序打开: " + abs,
+			"outside": true,
+		})
 		return
 	}
 	var opErr error
