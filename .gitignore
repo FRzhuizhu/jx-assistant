@@ -40,9 +40,20 @@ ppt合并/
 android-poc/
 技能/user/
 打包/清理清单.iss
-# 本地运行残留与构建/发布产物（不入库）：jx.db=实例运行数据库；*.exe.old/.new=静默更新换装接力残留
+# 本地运行残留与构建/发布产物（不入库）：jx.db=实例运行数据库（-shm/-wal 为其 SQLite WAL 附属文件）；*.exe.old/.new=静默更新换装接力残留
 jx.db
+jx.db-shm
+jx.db-wal
 *.exe.old
 *.exe.new
 打包/输出服务端/
 打包/静默更新/
+# 2026-10 桌面工作残留：微信技能改包的根目录交付副本（技能源在 技能/user/ 不入库，副本只给人看）与验证留证
+enter_wechat.py
+enter_wechat.py.原版备份
+变更说明.md
+微信操作技能_完整包_v1.4.0_20261016.zip
+微信留证/
+# UI 方案预览草案（独立 HTML、未接真界面；真界面在 web/）与 GUI 测试截图
+*预览.html
+gui-test-screenshots/
