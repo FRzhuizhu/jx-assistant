@@ -2444,6 +2444,32 @@ function refreshCurrent() {
   if (state.cur && !state.streaming) openSession(state.cur.id);
 }
 
+// 事件驱动的整包重取节流（见《前端渲染性能分析-主对话卡顿.md》）：子对话回报/
+// 自动汇报轮期间 done/report_ready/message/session_updated 接连到达，每个都
+// 整包 GET（主对话几 MB JSON）+ 全量渲染。尾随合并 500ms：期间新事件顺延计时，
+// 最后一次事件后 500ms 才重取，状态最终一致；执行时读当下状态（cur/streaming/
+// navBusy 都在执行点检查），防抖窗口内切走会话不会误刷。
+let refreshCurrentTimer = 0;
+function refreshCurrentSoon(delay) {
+  clearTimeout(refreshCurrentTimer);
+  refreshCurrentTimer = setTimeout(() => {
+    refreshCurrentTimer = 0;
+    refreshCurrent();
+  }, delay == null ? 500 : delay);
+}
+
+// 同款节流的 reloadMessages（attachRun 跟随后台执行时，轮内每条 message 事件
+// 都整包重取——汇报轮几十条消息就是几十次全量拉取）。按视图各管各的。
+const reloadTimers = {};
+function reloadMessagesSoon(view, delay) {
+  view = view || mainView;
+  clearTimeout(reloadTimers[view.key]);
+  reloadTimers[view.key] = setTimeout(() => {
+    reloadTimers[view.key] = 0;
+    reloadMessages(view);
+  }, delay == null ? 400 : delay);
+}
+
 function refreshCurrentSub() {
   if (navBusy.sub) return;
   if (subState.cur && !subState.streaming) openSubSession(subState.cur.id);
@@ -2485,8 +2511,8 @@ function handleGlobalEvent(ev) {
       break;
     case 'message':
       // 后台落库的用户消息（todo.go 广播）与环境快照行（权限等 PATCH 后立即
-      // 落库的 env 行，role=system）：正看着这个会话就整体翻新
-      if (viewing && !state.streaming && ev.message && (ev.message.role === 'user' || ev.kind === 'env')) refreshCurrent();
+      // 落库的 env 行，role=system）：正看着这个会话就整体翻新（节流合并）
+      if (viewing && !state.streaming && ev.message && (ev.message.role === 'user' || ev.kind === 'env')) refreshCurrentSoon();
       break;
     case 'pending':
       // 插话/排队队列变化：只更新对应的那个视图（自己窗口的操作也会推回来，天然多端一致）
@@ -2496,7 +2522,7 @@ function handleGlobalEvent(ev) {
     case 'stopped':
       // 用户显式停止（runtime.go 终态广播）：不算「完成未查看」，只刷列表
       loadSessions();
-      if (viewing && !state.streaming) refreshCurrent();
+      if (viewing && !state.streaming) refreshCurrentSoon();
       break;
     case 'done':
       // 一轮执行结束（含数字助理的自动汇报轮）：没正看着这个会话就点亮绿点，
@@ -2504,7 +2530,7 @@ function handleGlobalEvent(ev) {
       if (!viewing) dotDone[ev.sessionId] = true;
       loadSessions();
       refreshDrawer();
-      if (viewing && !state.streaming) refreshCurrent();
+      if (viewing && !state.streaming) refreshCurrentSoon();
       if ((state.sessions.find((s) => s.id === ev.sessionId) || {}).mode === 'assistant') setFace('done', viewing ? 4000 : 0); // 没看着＝方案C常驻：举纸+微笑+徽章，点开才清；正看着＝4秒回待机
       break;
     case 'report_ready':
@@ -2514,7 +2540,7 @@ function handleGlobalEvent(ev) {
       if (!viewing) dotDone[ev.sessionId] = true;
       loadSessions();
       refreshDrawer();
-      if (viewing && !state.streaming) refreshCurrent();
+      if (viewing && !state.streaming) refreshCurrentSoon();
       break;
     case 'session_updated':
       loadSessions().then(() => {
@@ -2530,7 +2556,7 @@ function handleGlobalEvent(ev) {
         }
       });
       refreshDrawer();
-      if (viewing && !state.streaming) refreshCurrent();
+      if (viewing && !state.streaming) refreshCurrentSoon();
       break;
     case 'approval_required':
       pushApproval(ev);
@@ -4207,7 +4233,8 @@ function handleEvent(ev, view) {
       }
       if (view.state.attached) {
         // 跟随别的连接发起的执行：以服务端为准整体重取，避免与已落库内容重复
-        reloadMessages(view);
+        //（节流合并：汇报轮里几十条 message 事件连发，不再每条整包拉一次）
+        reloadMessagesSoon(view);
         break;
       }
       // 后端 message 事件带该步思考原文与消息 seq：
@@ -4251,8 +4278,9 @@ function handleEvent(ev, view) {
       break;
     case 'tool_end':
       // deliver_result 一落库就刷新会话轻量状态：交付卡片当轮实时出现
-      //（deliveries/checkpoints 只在打开会话时拉取过，不刷就永远不显示）
-      if (ev.name === 'deliver_result' && !view.state.attached) reloadMessages(view);
+      //（deliveries/checkpoints 只在打开会话时拉取过，不刷就永远不显示；
+      // 节流合并，与 attached 的 message 重取共用队列节奏）
+      if (ev.name === 'deliver_result' && !view.state.attached) reloadMessagesSoon(view);
       break;
     case 'sub_start':
       // 主对话 SSE 里的派发确认；后续进度统一走全局事件流
