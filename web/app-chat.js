@@ -3097,6 +3097,13 @@ function showAskAlert(ev) {
     hideAskAlert();
     askJumpTo(ev.sessionId);
   };
+  // 「此类弹窗提醒可在设置·常规里关闭或修改时长」那一行：点它打开设置·常规
+  //（设置浮层 z-index 230 盖在提醒层之上，浮窗留着，关掉设置回来接着处理）。
+  const setLink = $('ask-alert-settings');
+  if (setLink) setLink.onclick = (e) => {
+    e.stopPropagation(); // 不触发「点卡片＝关闭并跳去回答」
+    if (typeof openSettings === 'function') openSettings('general');
+  };
 }
 
 // 倒计时（数字 + 进度条）：只改文本/宽度，不重建节点。

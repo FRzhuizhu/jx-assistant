@@ -2079,6 +2079,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .aa-box b { font-size: 14px; }
 .aa-box p { margin: 8px 0; font-size: 13px; color: var(--text-2); word-break: break-all; }
 .aa-box span { font-size: 12px; color: var(--text-3); }
+/* 提醒浮窗里的设置入口（一行小字，点它打开 设置·常规）：用主题色标出可点，
+   悬停才显下划线，不喧宾夺主 */
+.aa-box .aa-tip-link { display: block; margin-top: 6px; color: var(--accent); cursor: pointer; }
+.aa-box .aa-tip-link:hover { text-decoration: underline; }
+/* 设置浮层要盖在久等提醒层（#ask-alert 的 z-index 70）之上：提醒里那行「可在设置·常规
+   里关闭或修改时长」点开设置时，用户得能正常操作设置——关掉设置，提醒还在原处
+   （.modal 默认 50；窄屏那段已单独给到 230） */
+#settings { z-index: 90; }
 /* 朗读前的 15 秒倒计时（数字 + 进度条）：用户看着它就知道还有几秒出声；
    15 秒内关掉这层或进去处理就不朗读（见 app-chat.js 的 showAskAlert）。 */
 .aa-count {
