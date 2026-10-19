@@ -1215,7 +1215,9 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   `data/webview-browsers/<会话>/`（无会话上下文用共享目录 `data/webview-browser`）
   与日常浏览器隔离。注意：新版 WebView2（Chromium 136
   起）封禁 `--remote-debugging-port`，chromedp 直连嵌入控件不可靠，官方替代
-  即控件级 CDP 调用接口。接口：`POST
+  即控件级 CDP 调用接口。地址口径：http/https 与 `file:///` 本地文件同口径
+  放开（AI 工具与用户点击不再分特权路径，NavigatePrivileged 已随语义合流
+  移除）——本地 html 交付预览是右栏浏览器的主要用途之一。接口：`POST
   /api/browser/{panel-rect,navigate,viewport,open-view,close}`、`GET
   /api/browser/{state,view}`，body/query 带 session 字段路由到该会话的实例；
  事件 `browser_nav`（工具栏地址/标题）、

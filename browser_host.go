@@ -471,18 +471,18 @@ func (h *BrowserHost) closeLocked() {
 // ---------- 导航 ----------
 
 // Navigate 打开/跳转地址，返回落定后的地址与标题，并广播 browser_nav。
-// Navigate 打开/跳转地址（http/https）。file:// 仅经 open-view 的用户点击路径
-// 进入（navigate 内部通道），模型工具 browser_open 仍只许 http/https。
+// http/https 与本地文件 file:/// 同口径放开——本地 html 交付预览的主要
+// 形态，AI 工具与用户点击不再区分特权路径。
 func (h *BrowserHost) Navigate(raw string) (string, string, error) {
-	return h.navigate(raw, false)
+	return h.navigate(raw, true)
 }
 
 func (h *BrowserHost) navigate(raw string, allowFile bool) (string, string, error) {
 	u := strings.TrimSpace(raw)
 	if allowFile && strings.HasPrefix(u, "file:///") {
-		// 本地交付文件（用户点击触发）
+		// 本地文件（file:// 每文件独立 origin，风险面与用户自己双击打开一致）
 	} else if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		return "", "", fmt.Errorf("只支持 http/https 地址，收到: %s", u)
+		return "", "", fmt.Errorf("只支持 http/https 或 file:/// 地址，收到: %s", u)
 	}
 	reopened, err := h.startIfNeeded()
 	if err != nil {
@@ -794,10 +794,6 @@ func (h *BrowserHost) BroadcastPointer(selector string) {}
 
 // ---------- browserTarget 操作面适配（工具层形态无关，见 browser_ops.go） ----------
 
-func (h *BrowserHost) NavigatePrivileged(raw string) (string, string, error) {
-	return h.navigate(raw, true)
-}
-
 func (h *BrowserHost) Content() (string, string, string, error) {
 	var url, title, body string
 	if err := h.do(func(ctx context.Context) error {
@@ -1070,7 +1066,8 @@ func (a *App) workspaceFileForView(sid, rel string) (m *SessionMeta, abs string,
 
 // handleBrowserOpenView 聊天链接点开的统一入口（用户主动操作，不经模型权限门控，
 // 也不做工作区边界拦截——本路由不在 call_api 目录里，AI 调不到）：
-//   * url：http/https 直接在内嵌实例打开；
+//   * url：http/https 与 file:/// 直接在内嵌实例打开（模型输出的本地文件
+//     链接常是 file:/// 形态，用户手势直通）；
 //   * path：已存在的文件（工作区内外均可）——本地转 file://（同目录相对
 //     资源可用），SSH 远程会话转 /api/browser/view 流式地址。
 // 一律经 browserFor(p.Session, "") 打开：内嵌实例成为该会话的工具作用目标。不注入
@@ -1090,8 +1087,10 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 	var target string
 	var m *SessionMeta
 	if u := strings.TrimSpace(p.URL); u != "" {
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			writeErr(w, http.StatusBadRequest, "只支持 http/https 地址，收到: "+u)
+		// file:/// 与 http(s) 同口径：聊天里的本地文件链接（模型常输出
+		// file:/// 形态）也要能点开，用户手势直通不做工作区校验
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "file:///") {
+			writeErr(w, http.StatusBadRequest, "只支持 http/https 或 file:/// 地址，收到: "+u)
 			return
 		}
 		target = u
@@ -1121,7 +1120,7 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := a.browserFor(p.Session, "") // 用户发起的打开：内嵌形态成为该会话的工具作用目标
-	if _, _, err := h.NavigatePrivileged(target); err != nil {
+	if _, _, err := h.Navigate(target); err != nil {
 		writeErr(w, http.StatusBadGateway, "打开失败: "+err.Error())
 		return
 	}

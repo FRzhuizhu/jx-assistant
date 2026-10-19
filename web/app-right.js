@@ -647,7 +647,8 @@ $('bpw-url').addEventListener('keydown', (e) => {
   e.preventDefault();
   let u = $('bpw-url').value.trim();
   if (!u) return;
-  if (!/^https?:\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
+  // file:/// 是合法目标（本地 html 直接在面板里看），别被裸域名补协议误伤
+  if (!/^(https?|file):\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
   bpwNav({ url: u });
 });
 // 桌面壳里 window.open 只会弹 WebView2 扄件的窗口（不是用户浏览器）；

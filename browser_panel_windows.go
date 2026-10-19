@@ -589,11 +589,9 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 
 // ---------- 导航 ----------
 
+// Navigate 打开/跳转 http(s) 与本地文件 file:/// 地址（本地 html 交付预览的
+// 主要形态，工具与用户点击同口径），返回落定地址与标题。
 func (p *browserPanel) Navigate(raw string) (string, string, error) {
-	return p.navigate(raw, false)
-}
-
-func (p *browserPanel) NavigatePrivileged(raw string) (string, string, error) {
 	return p.navigate(raw, true)
 }
 
@@ -604,7 +602,7 @@ func (p *browserPanel) navigate(raw string, allowFile bool) (string, string, err
 		ok = true
 	}
 	if !ok {
-		return "", "", fmt.Errorf("只支持 http/https 地址，收到: %s", u)
+		return "", "", fmt.Errorf("只支持 http/https 或 file:/// 地址，收到: %s", u)
 	}
 	if err := p.ensureStarted(); err != nil {
 		return "", "", err
