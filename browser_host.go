@@ -471,19 +471,19 @@ func (h *BrowserHost) closeLocked() {
 // ---------- 导航 ----------
 
 // Navigate 打开/跳转地址，返回落定后的地址与标题，并广播 browser_nav。
-// http/https 与本地文件 file:/// 同口径放开——本地 html 交付预览的主要
-// 形态，AI 工具与用户点击不再区分特权路径。
+// 不做 scheme 白名单——浏览器能开什么由浏览器/CDP 自己决定：edge://、
+// about:、view-source: 等一律放行，WebView2/chromedp 打不开会自然报错
+// （比如 WebView2 面板开不了 edge:// 内部页，是微软对控件的限制）。
 func (h *BrowserHost) Navigate(raw string) (string, string, error) {
 	return h.navigate(raw, true)
 }
 
 func (h *BrowserHost) navigate(raw string, allowFile bool) (string, string, error) {
 	u := strings.TrimSpace(raw)
-	if allowFile && strings.HasPrefix(u, "file:///") {
-		// 本地文件（file:// 每文件独立 origin，风险面与用户自己双击打开一致）
-	} else if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		return "", "", fmt.Errorf("只支持 http/https 或 file:/// 地址，收到: %s", u)
+	if u == "" {
+		return "", "", fmt.Errorf("地址为空")
 	}
+	_ = allowFile // 历史参数：白名单已拆除，保留签名免动调用点
 	reopened, err := h.startIfNeeded()
 	if err != nil {
 		return "", "", err
@@ -1066,8 +1066,8 @@ func (a *App) workspaceFileForView(sid, rel string) (m *SessionMeta, abs string,
 
 // handleBrowserOpenView 聊天链接点开的统一入口（用户主动操作，不经模型权限门控，
 // 也不做工作区边界拦截——本路由不在 call_api 目录里，AI 调不到）：
-//   * url：http/https 与 file:/// 直接在内嵌实例打开（模型输出的本地文件
-//     链接常是 file:/// 形态，用户手势直通）；
+//   * url：直接在内嵌实例打开（不做 scheme 白名单，浏览器能开什么由它
+//     自己决定）；
 //   * path：已存在的文件（工作区内外均可）——本地转 file://（同目录相对
 //     资源可用），SSH 远程会话转 /api/browser/view 流式地址。
 // 一律经 browserFor(p.Session, "") 打开：内嵌实例成为该会话的工具作用目标。不注入
@@ -1087,13 +1087,7 @@ func (a *App) handleBrowserOpenView(w http.ResponseWriter, r *http.Request) {
 	var target string
 	var m *SessionMeta
 	if u := strings.TrimSpace(p.URL); u != "" {
-		// file:/// 与 http(s) 同口径：聊天里的本地文件链接（模型常输出
-		// file:/// 形态）也要能点开，用户手势直通不做工作区校验
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "file:///") {
-			writeErr(w, http.StatusBadRequest, "只支持 http/https 或 file:/// 地址，收到: "+u)
-			return
-		}
-		target = u
+		target = u // 不做 scheme 白名单：浏览器能开什么由它自己决定（见 Navigate 注释）
 	} else if viewedPath != "" {
 		sid := strings.TrimSpace(p.Session)
 		if sid == "" {
@@ -1150,7 +1144,37 @@ func (a *App) handleBrowserView(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 按扩展名给真实 Content-Type：右栏浏览器经「预览（右栏）」打开远程
+	// 会话的图片/音视频时才能正常渲染（旧实现写死 text/html，图片直接坏）。
+	w.Header().Set("Content-Type", viewContentType(rel))
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
+}
+
+// viewContentType 远程文件流式预览的 Content-Type：浏览器原生可渲染的
+// 类型给出精确 mime（含 charset 的文本类、图片、音视频、pdf、svg），不在
+// 表内的一律 text/plain——浏览器显示源码/乱码总比错误渲染强。
+func viewContentType(name string) string {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	switch ext {
+	case "html", "htm":
+		return "text/html; charset=utf-8"
+	case "svg":
+		return "image/svg+xml"
+	case "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif":
+		return "image/" + ext
+	case "pdf":
+		return "application/pdf"
+	case "mp4", "webm":
+		return "video/" + ext
+	case "mp3", "wav", "ogg", "m4a":
+		if ext == "m4a" {
+			return "audio/mp4"
+		}
+		return "audio/" + ext
+	case "txt", "md", "json", "xml", "csv", "js", "css", "log", "yml", "yaml", "go", "py":
+		return "text/plain; charset=utf-8"
+	default:
+		return "text/plain; charset=utf-8"
+	}
 }

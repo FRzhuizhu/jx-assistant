@@ -634,6 +634,35 @@ function bpwOnNav(d) {
   $('bpw-title').textContent = (d && d.title) || '未打开页面';
   if (d && d.viewportW) $('bpw-vp').textContent = d.viewportW + '×' + d.viewportH;
   else $('bpw-vp').textContent = '';
+  bpwSyncFileButtons(d && d.url);
+}
+// 本地文件页的配套按钮（用系统应用打开 / 在文件夹中定位）：仅在当前页是
+// file:/// 且有会话上下文（open-path/reveal-path 按会话路由）时显示——图片、
+// 音视频这类在浏览器里看完常要转出去操作，配套入口就在工具栏上。
+function bpwSyncFileButtons(url) {
+  const isFile = !!(url && /^file:\/\//i.test(url));
+  const sid = bpwSession();
+  const so = $('bpw-sysopen'), rv = $('bpw-reveal');
+  if (so) so.hidden = !isFile || !sid;
+  if (rv) rv.hidden = !isFile || !sid;
+}
+// file:/// URL → 本地路径（D:/... 形态，与 open-path/reveal-path 端点口径一致）
+function bpwFilePath(url) {
+  try { return decodeURIComponent(String(url).replace(/^file:\/\/\//i, '')); } catch (e) { return ''; }
+}
+function bpwSysOpen() {
+  const p = bpwFilePath($('bpw-url').value);
+  const sid = bpwSession();
+  if (!p || !sid) return;
+  api('/api/sessions/' + encodeURIComponent(sid) + '/open-path', { method: 'POST', body: JSON.stringify({ path: p }) })
+    .catch((e) => alert('打开失败：' + e.message));
+}
+function bpwReveal() {
+  const p = bpwFilePath($('bpw-url').value);
+  const sid = bpwSession();
+  if (!p || !sid) return;
+  api('/api/sessions/' + encodeURIComponent(sid) + '/reveal-path', { method: 'POST', body: JSON.stringify({ path: p }) })
+    .catch((e) => alert('定位失败：' + e.message));
 }
 function bpwSyncState(sid) {
   const s = sid || bpwSession();
@@ -642,13 +671,15 @@ function bpwSyncState(sid) {
 $('bpw-back').onclick = () => bpwNav({ action: 'back' });
 $('bpw-fwd').onclick = () => bpwNav({ action: 'forward' });
 $('bpw-reload').onclick = () => bpwNav({ action: 'reload' });
+$('bpw-sysopen').onclick = () => bpwSysOpen();
+$('bpw-reveal').onclick = () => bpwReveal();
 $('bpw-url').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   e.preventDefault();
   let u = $('bpw-url').value.trim();
   if (!u) return;
-  // file:/// 是合法目标（本地 html 直接在面板里看），别被裸域名补协议误伤
-  if (!/^(https?|file):\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
+  // 已知 scheme（含 file:/edge:/about: 等内部页）原样放行，只有裸域名才补协议
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(u)) u = 'https://' + u;
   bpwNav({ url: u });
 });
 // 桌面壳里 window.open 只会弹 WebView2 扄件的窗口（不是用户浏览器）；

@@ -589,21 +589,18 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 
 // ---------- 导航 ----------
 
-// Navigate 打开/跳转 http(s) 与本地文件 file:/// 地址（本地 html 交付预览的
-// 主要形态，工具与用户点击同口径），返回落定地址与标题。
+// Navigate 打开/跳转地址，返回落定地址与标题。不做 scheme 白名单——
+// 浏览器（这里是 WebView2）能开什么由它自己决定，开不了自然报错。
 func (p *browserPanel) Navigate(raw string) (string, string, error) {
 	return p.navigate(raw, true)
 }
 
 func (p *browserPanel) navigate(raw string, allowFile bool) (string, string, error) {
 	u := strings.TrimSpace(raw)
-	ok := strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
-	if !ok && allowFile && strings.HasPrefix(u, "file:///") {
-		ok = true
+	if u == "" {
+		return "", "", fmt.Errorf("地址为空")
 	}
-	if !ok {
-		return "", "", fmt.Errorf("只支持 http/https 或 file:/// 地址，收到: %s", u)
-	}
+	_ = allowFile // 历史参数：白名单已拆除，保留签名免动调用点
 	if err := p.ensureStarted(); err != nil {
 		return "", "", err
 	}

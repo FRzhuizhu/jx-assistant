@@ -1230,9 +1230,13 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   `data/webview-browsers/<会话>/`（无会话上下文用共享目录 `data/webview-browser`）
   与日常浏览器隔离。注意：新版 WebView2（Chromium 136
   起）封禁 `--remote-debugging-port`，chromedp 直连嵌入控件不可靠，官方替代
-  即控件级 CDP 调用接口。地址口径：http/https 与 `file:///` 本地文件同口径
-  放开（AI 工具与用户点击不再分特权路径，NavigatePrivileged 已随语义合流
-  移除）——本地 html 交付预览是右栏浏览器的主要用途之一。接口：`POST
+  即控件级 CDP 调用接口。地址口径：**不做 scheme 白名单**——浏览器能开
+  什么由它自己决定（http/https/file:/// 照常，edge://version 这类内部页在
+  chromedp 形态可真实打开、edge://settings 等 WebUI 禁调试只能看不能读写、
+  WebView2 面板开不了 edge:// 是微软对控件的限制），未知 scheme 由浏览器层
+  自然报错。交付卡有「在右侧打开」显式按钮（任意文件进右栏），工具栏在
+  file:// 页面提供「用系统应用打开 / 在文件夹中定位」配套；远程会话流式
+  预览（/api/browser/view）按扩展名给真实 Content-Type。接口：`POST
   /api/browser/{panel-rect,navigate,viewport,open-view,close}`、`GET
   /api/browser/{state,view}`，body/query 带 session 字段路由到该会话的实例；
  事件 `browser_nav`（工具栏地址/标题）、
