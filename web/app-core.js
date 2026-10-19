@@ -723,6 +723,22 @@ function loadSessions() {
   });
 }
 
+// upsertSessionBrief 把刚创建的会话 meta（POST /fork、POST /api/sessions 的响应，
+// 与列表项同型）就地合入 state.sessions。创建→切换的链路（分支/新建数字助理会话）
+// 不能靠 await loadSessions 保证列表里有新会话：防抖窗口（120ms）内再次调用会立即
+// 假 resolve，await 拿到的还是旧列表——openSession/openSubSession 找不到 brief、
+// 乐观切换被跳过，界面停在旧会话上直到整包 GET 返回（分支瞬间闪现源会话内容、
+// 窗口期里发的消息落进旧会话都源于此）。先合入再切换，brief 必命中；随后的真实
+// 刷新整包覆盖，顺带校正排序。
+function upsertSessionBrief(s) {
+  if (!s || !s.id) return;
+  const arr = state.sessions || (state.sessions = []);
+  const i = arr.findIndex((x) => x.id === s.id);
+  if (i >= 0) arr[i] = { ...arr[i], ...s };
+  else arr.unshift(s); // 新会话此刻最活跃，置顶与列表的 updated_at DESC 排序一致
+  renderSessionList();
+}
+
 /* ---------- 本地草稿持久化：刷新不丢输入与选择 ----------
    缓存模型：输入框内容永远只属于「当前上下文」——
    首页（新对话）一份 jx.homeDraft（含选择项 + text，跨重启保留），

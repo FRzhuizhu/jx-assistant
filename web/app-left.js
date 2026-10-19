@@ -435,7 +435,8 @@ function openSessionMenu(s, rect) {
     { label: '分支对话', fn: async () => {
       try {
         const fork = await api('/api/sessions/' + s.id + '/fork', { method: 'POST' });
-        await loadSessions();
+        upsertSessionBrief(fork); // 先合入再切换：不等防抖往返，乐观切换必命中（见 app-core.js）
+        loadSessions();
         openSession(fork.id);
       } catch (e) { alert('分支失败：' + e.message); }
     } },
@@ -512,10 +513,17 @@ function sessionItem(s) {
     const name = lsGet('jx.wsalias', {})[ws] || baseName(ws) || '默认工作区';
     wsChip = `<span class="s-ws" title="${esc(ws ? name + '（' + ws + '）' : '默认工作区')}">${esc(name)}</span>`;
   }
+  // 分支标记（A2）：标题以「（分支）」结尾时拆出主标题、把后缀渲染成不收缩的
+  // 小胶囊——.s-title 单行省略会把后缀吞掉，源会话与分支在列表里几乎不可分
+  //（切回时点错行、消息发错会话的温床）。胶囊 flex:none，永远可见。
+  const rawTitle = String(s.title || '(未命名)');
+  const isFork = rawTitle.endsWith('（分支）');
+  const mainTitle = isFork ? rawTitle.slice(0, -4) : rawTitle;
   item.innerHTML =
     wsChip +
     `<span class="dot${dot}"></span>` +
-    `<span class="s-title">${esc(s.title || '(未命名)')}</span>` +
+    `<span class="s-title">${esc(mainTitle)}</span>` +
+    (isFork ? `<span class="s-fork" title="从「${esc(mainTitle)}」分支出">分支</span>` : '') +
     timeCell +
     `<span class="row-acts">` +
       (binView ? `<button class="ra-restore" title="恢复"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>` : '') +

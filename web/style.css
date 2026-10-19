@@ -253,6 +253,15 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .dot.hot { background: #2fc06a; }
 .s-title { flex: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-time { font-size: 11.5px; color: var(--text-3); flex: none; }
+/* 分支会话标记（app-left.js sessionItem 拆出「（分支）」后缀）：与 .s-ws 同族的小胶囊，
+   flex:none 永不被 .s-title 的省略号吞掉——列表里源会话与分支必须一眼可分 */
+.s-fork {
+  flex: none; height: 19px; padding: 0 5px; margin-left: 6px;
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border-2); border-radius: 5px;
+  font-size: 10.5px; line-height: 1; color: var(--text-3);
+  white-space: nowrap;
+}
 /* 时间线视图行首的工作目录小胶囊：偏方形小圆角、1px 细边框，文字左起、
    到右缘直接裁断（不用省略号）——固定宽度塞几个字算几个，一列胶囊上下对齐 */
 .s-ws {

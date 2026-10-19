@@ -77,7 +77,9 @@ async function openAssistant() {
   const list = state.sessions.filter((s) => s.mode === 'assistant');
   if (list.length) return openSession(list[0].id);
   const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ mode: 'assistant', title: '数字助理主对话' }) });
-  await loadSessions();
+  // 新建响应先合入列表再切换：与分支同一条竞态链路（见 upsertSessionBrief 注释）
+  upsertSessionBrief(s);
+  loadSessions();
   await openSession(s.id);
 }
 
@@ -1067,7 +1069,11 @@ async function forkFromAnswer(m, btn) {
       method: 'POST',
       body: JSON.stringify({ upTo: m.seq }),
     });
-    await loadSessions();
+    // 响应就是新会话 meta：先合入列表再切换，乐观切换的 brief 必命中——不等
+    // loadSessions 的防抖往返（那会给「界面还停在源会话」留窗口，窗口期发的
+    // 消息会落进源会话）
+    upsertSessionBrief(fork);
+    loadSessions(); // 后台刷新排序等最终一致，不阻塞切换
     if (mainView.state.cur && mainView.state.cur.id === m.sessionId) {
       openSession(fork.id);
     } else if (subState.cur && subState.cur.id === m.sessionId) {

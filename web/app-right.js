@@ -348,7 +348,8 @@ function openSubItemMenu(s, rect) {
     { label: '分支对话', fn: async () => {
       try {
         const fork = await api('/api/sessions/' + s.id + '/fork', { method: 'POST' });
-        await loadSessions();
+        upsertSessionBrief(fork); // 先合入再切换：openSubSession 的乐观切换同样靠列表 brief（见 app-core.js）
+        loadSessions();
         refreshDrawer();
         openSubSession(fork.id);
       } catch (e) { alert('分支失败：' + e.message); }
