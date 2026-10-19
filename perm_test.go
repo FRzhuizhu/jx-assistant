@@ -585,4 +585,26 @@ func TestBrowserLaunchBlocked(t *testing.T) {
 	if g == nil || g.Policy != permFull {
 		t.Fatalf("full 档凭证应按 full 签发，得到 %+v", g)
 	}
+
+	// 4. 「允许工作区外执行命令」= 关闭命令沙箱：勾选的会话命令默认沙箱外
+	//    执行（policy 直接 full），浏览器预拦不再适用（沙箱外浏览器可正常
+	//    启动）；此时再带 sandbox_permissions 申请升级会被「无需升级」退回
+	esc := &SessionMeta{ID: "s4", Mode: "task", Permission: permWorkspace, Workspace: ws,
+		Tools: []string{capUnsandboxed}, CreatedAt: "2026-10-19 09:00:00"}
+	mustCreateSession(t, a, esc)
+	g, err = mk(esc).authorize(permAction{Op: "exec", Tool: "run_command", Command: `msedge --version`})
+	if err != nil {
+		t.Fatalf("已开沙箱外能力：默认即沙箱外执行，不应被预拦：%v", err)
+	}
+	if g == nil || g.Policy != permFull {
+		t.Fatalf("已开沙箱外能力：凭证应按 full 签发（默认沙箱外），得到 %+v", g)
+	}
+	g, err = mk(esc).authorize(permAction{Op: "exec", Tool: "run_command", Command: `git status`})
+	if err != nil || g == nil || g.Policy != permFull {
+		t.Fatalf("已开沙箱外能力：常规命令也应按 full 签发，得到 %+v err=%v", g, err)
+	}
+	if _, err := mk(esc).authorize(permAction{Op: "exec", Tool: "run_command", Command: `msedge --version`,
+		EscalateTo: permFull, Justification: "试图升级"}); err == nil || !strings.Contains(err.Error(), "无需升级") {
+		t.Fatalf("已是命令最宽档再申请升级应被退回，得到：%v", err)
+	}
 }

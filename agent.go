@@ -507,6 +507,8 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	case permReadOnly:
 		if isAndroidRuntime {
 			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；文件工具禁止写入。本机命令无 OS 级沙箱（安卓），不要执行会产生写入副作用的命令\n")
+		} else if hasCapability(sess, capUnsandboxed) {
+			b.WriteString("- 权限模式：只读——文件工具禁止写入；但已开启「允许工作区外执行命令」：命令（run_command / run_python）默认不经沙箱、直接执行，可产生写入（用户常设授权）。文件写入请走命令或在权限芯片调整档位\n")
 		} else {
 			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
 		}
@@ -518,6 +520,8 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	default:
 		if isAndroidRuntime {
 			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在内置 Linux 运行时（Termux）里执行，始终处于安卓应用沙箱内（应用 uid + SELinux；安卓内核禁用 Landlock，无 OS 级命令沙箱，文件边界由文件工具围栏把守），联网不限\n")
+		} else if hasCapability(sess, capUnsandboxed) {
+			b.WriteString("- 权限模式：工作区内读写——文件工具（write/edit）仍只允许写工作区与临时目录；已开启「允许工作区外执行命令」：命令（run_command / run_python / 后台作业）默认不经沙箱、直接执行，可读写任意位置（用户常设授权，无需再带 sandbox_permissions 申请）；危险命令护栏仍生效。浏览器/电脑/手机工具仍按各自能力开关把守——这一档命令全开但不算完全访问\n")
 		} else {
 			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
 		}

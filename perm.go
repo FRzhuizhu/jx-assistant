@@ -1008,10 +1008,21 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 			}
 		}
 		policy := sandboxPolicyForMode(mode)
+		// 用户常设授权「允许工作区外执行命令」= 关闭命令沙箱：勾选即默认
+		// 沙箱外执行（run_command / run_python / 后台作业同一把锁），不再是
+		// 「升级时免审批」。设计意图：这一档是工作区内读写与完全访问之间的
+		// 中间档——命令通道全开（可写任意位置），但 browser_* / computer_* /
+		// device_* 仍按各自能力开关把守、不捆绑点亮，因此不叫完全访问。
+		// 危险命令护栏不受影响（它是独立于沙箱的一层，上面已检查）。
+		if hasCapability(t.sess, capUnsandboxed) {
+			policy = permFull
+		}
 
 		// 升级重试：模型因真实拒绝请求更宽档位（官方 sandbox_permissions 语义）。
-		// 已开启「允许工作区外执行命令」能力 → 视为用户已常设批准，直接放行；
-		// 未开启 → 每次升级弹审批，用户可点「始终允许」把能力勾选点亮。
+		// 已开启「允许工作区外执行命令」的会话 policy 已是 full（上方改写），
+		// 任何升级请求都会被 rank 检查以「无需升级」退回；未开启的会话每次
+		// 升级弹审批，用户点「始终允许」点亮能力——此后命令默认沙箱外（上
+		// 方改写生效），这正是该常设授权的语义。
 		if req := strings.TrimSpace(act.EscalateTo); req != "" {
 			if req == "danger-full-access" {
 				req = permFull // 官方词汇表的 full 档别名（拒绝 marker 按官方用此名）
