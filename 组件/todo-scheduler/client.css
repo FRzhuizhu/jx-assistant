@@ -26,6 +26,16 @@
 }
 .td-head-actions button.primary:hover { background: var(--accent-hover); }
 
+/* ---------- 子页签：待执行 / 已完成 ---------- */
+.td-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border-2); }
+.td-tab {
+  padding: 7px 14px 8px; border: none; background: none; cursor: pointer;
+  font-size: 13px; color: var(--text-2); border-bottom: 2px solid transparent;
+  margin-bottom: -1px; border-radius: 8px 8px 0 0;
+}
+.td-tab:hover { background: var(--hover); }
+.td-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
 .td-notice { margin: 0; font-size: 12.5px; color: #d13438; white-space: pre-wrap; }
 .td-missed {
   margin: 0; border: 1px solid var(--amber); border-radius: 10px;
@@ -42,8 +52,9 @@
 .td-foot { border-top: 1px solid var(--border-2); padding-top: 8px; font-size: 11.5px; color: var(--text-3); }
 
 /* ---------- 任务卡片 ---------- */
-/* 卡片默认折叠：上半部分（类型/时间徽标、标题、启用开关）与描述常显，
-   其余内容装在 .td-more 里由 .td-task.open 控制显隐；点卡片任意空白处切换。 */
+/* 卡片只显示前三行：徽标行、标题行、创建时间+描述摘要（.td-brief）常显，
+   其余内容装在 .td-more 里由 .td-task.open 控制显隐（默认收起，含操作按钮）；
+   点卡片任意空白处或三角切换。 */
 .td-task {
   border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
   display: flex; flex-direction: column; gap: 9px; background: var(--bg);
@@ -71,7 +82,15 @@
 .td-badge.off { color: var(--text-3); border-style: dashed; }
 .td-badge.kind { color: var(--accent); border-color: rgba(77, 107, 254, .45); }
 .td-badge.warn { color: #d13438; border-color: currentColor; }
+.td-badge.done { color: var(--green); border-color: currentColor; }
 .td-name { font-size: 14px; font-weight: 600; line-height: 1.4; word-break: break-word; }
+/* 卡片常驻第三行：创建时间（系统只读）+ 描述单行摘要；完整内容在展开区 */
+.td-brief { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.td-created { flex: none; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.td-desc-clip {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+}
 .td-cmd {
   margin: 0; font-family: Consolas, Menlo, monospace; font-size: 12px; line-height: 1.6;
   color: var(--text-2); background: var(--code-bg); border-radius: 6px; padding: 6px 10px;

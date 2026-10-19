@@ -125,6 +125,9 @@ func taskLine(v TaskView) string {
 	if !v.Enabled {
 		enabled = "停用"
 	}
+	if v.Done {
+		enabled = "已完成（调度已停）"
+	}
 	return fmt.Sprintf("- %s｜id=%s｜%s｜%s｜%s%s%s", v.Title, v.ID, describeSchedule(v.Schedule), describeExecutor(&v.TaskItem), enabled, next, status)
 }
 
@@ -140,13 +143,17 @@ func taskDetail(v TaskView, records []*RunRecord) string {
 	if v.LastStatus != "" {
 		last = map[string]string{"ok": "成功", "failed": "失败", "running": "运行中"}[v.LastStatus]
 	}
+	status := map[bool]string{true: "启用", false: "停用"}[v.Enabled] + "｜上次执行 " + last
+	if v.Done {
+		status += "｜已完成（" + formatMillis(v.DoneAt) + " 标记，调度已停）"
+	}
 	lines := []string{
 		"任务：" + v.Title,
 		"id：" + v.ID,
 		"执行方式：" + describeSchedule(v.Schedule),
 		"类型：" + describeExecutor(&v.TaskItem),
 		"执行目标：" + describeTarget(&v.TaskItem) + "（程序任务无此项）",
-		"状态：" + map[bool]string{true: "启用", false: "停用"}[v.Enabled] + "｜上次执行 " + last,
+		"状态：" + status,
 		"下次执行：" + formatMillis(v.NextRunAt),
 	}
 	if v.LastError != "" {
@@ -343,7 +350,7 @@ func runTodoTaskCreate(t *toolContext, args json.RawMessage) (string, error) {
 func todoTaskUpdateTool() Tool {
 	return Tool{
 		Spec: toolSpec("todo_task_update",
-			"修改一条待办/定时任务：只传要改的字段（未传的保持不变）。可改标题、描述、执行方式（schedule 结构与新建相同）、任务类型（executor 与 command/dir/shell/permission 配套）、执行目标（target，仅 AI 任务：manager=数字经理 / task=新的工作任务）、启用状态。",
+			"修改一条待办/定时任务：只传要改的字段（未传的保持不变）。可改标题、描述、执行方式（schedule 结构与新建相同）、任务类型（executor 与 command/dir/shell/permission 配套）、执行目标（target，仅 AI 任务：manager=数字经理 / task=新的工作任务）、启用状态、完成标记（done：true＝收进「已完成」页并停掉调度，false＝重新打开）。",
 			objSchema(map[string]any{
 				"task_id":     strProp("任务 id（来自 todo_task_list）。"),
 				"title":       strProp("新的标题。"),
@@ -363,6 +370,7 @@ func todoTaskUpdateTool() Tool {
 				"shell":      strProp("仅程序任务：powershell 或 cmd。"),
 				"permission": strProp("仅程序任务：workspace-write 或 full。"),
 				"enabled":    boolProp("启用/停用。"),
+				"done":       boolProp("标记完成 / 重新打开：true＝收进「已完成」页并停掉调度（终态归档，与停用的暂停不同）；false＝重新放回待执行。"),
 			}, "task_id")),
 		Run: runTodoTaskUpdate,
 	}
@@ -381,6 +389,7 @@ func runTodoTaskUpdate(t *toolContext, args json.RawMessage) (string, error) {
 		Shell       string        `json:"shell"`
 		Permission  string        `json:"permission"`
 		Enabled     *bool         `json:"enabled"`
+		Done        *bool         `json:"done"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -401,7 +410,7 @@ func runTodoTaskUpdate(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	req := todoRequest{
 		ID: id, Title: p.Title, Description: p.Description, Executor: p.Executor, Target: p.Target,
-		Command: p.Command, Dir: p.Dir, Shell: p.Shell, Permission: p.Permission, Enabled: p.Enabled,
+		Command: p.Command, Dir: p.Dir, Shell: p.Shell, Permission: p.Permission, Enabled: p.Enabled, Done: p.Done,
 	}
 	if p.Schedule != nil {
 		sched, serr := p.Schedule.toSchedule()

@@ -3,9 +3,11 @@
  * 侧边栏「数字助理主对话」下方插一个入口按钮（与相邻按钮同一个 .side-btn 组件），
  * 点击后把待办页渲染进主列（#msg-col）——就是对话页的同一个容器，等同级页面而非
  * 浮窗：顶栏标题改成本页名字、底部输入区收起，内容随 #messages 自然滚动。
- *   - 一条持久化的任务清单：新建 / 编辑 / 删除（两段确认）/ 启用停用 / 立即执行；
+ *   - 一条持久化的任务清单：新建 / 编辑 / 删除（两段确认）/ 启用停用 / 立即执行 /
+ *     标为完成（收进「已完成」页，调度随之停，可重新打开）；
  *   - 两类任务：AI 任务（到点按执行目标把描述发给数字经理或一个新的工作任务）
  *     与程序任务（到点运行命令）；
+ *   - 顶部子页签：待执行 / 已完成——完成的任务收进「已完成」页低频查看，切换即时生效；
  *   - 执行记录（时间、触发方式、成败、摘要、「查看会话」跳转）；
  *   - 程序没开着时错过的执行不自动补跑，页面顶部提示「补跑 / 忽略」。
  *
@@ -32,6 +34,7 @@
   /* 运行期状态：清单 + 工作目录候选 + 界面开关。 */
   const st = {
     tasks: [], records: [], missed: [], store: '',
+    tab: 'todo',      // 子页签：todo=待执行（默认，现在的页面） | done=已完成
     workspaces: [], busy: false, armedDelete: '', expanded: {}, open: {}, editing: null,
     page: false,      // 本页是否正占着主列
     prevSession: null, // 进页前正在看的会话 id（关页时回去）
@@ -115,6 +118,7 @@
             '<button type="button" id="td-new" class="primary">＋ 新建任务</button>' +
           '</div>' +
         '</div>' +
+        '<div class="td-tabs" id="td-tabs"></div>' +
         '<p id="td-notice" class="td-notice hidden"></p>' +
         '<div id="td-missed" class="td-missed hidden"></div>' +
         '<div id="td-list" class="td-list"></div>' +
@@ -225,6 +229,23 @@
     return st.records.filter((r) => r.taskId === taskId);
   }
 
+  /* 子页签：待执行 / 已完成（各带计数）。切换只重画本地列表，即时生效。 */
+  function renderTabs(root) {
+    const box = root.querySelector('#td-tabs');
+    if (!box) return;
+    const todo = st.tasks.filter((t) => !t.done).length;
+    const done = st.tasks.length - todo;
+    box.innerHTML =
+      '<button type="button" class="td-tab' + (st.tab === 'todo' ? ' active' : '') + '" data-tab="todo">待执行 (' + todo + ')</button>' +
+      '<button type="button" class="td-tab' + (st.tab === 'done' ? ' active' : '') + '" data-tab="done">已完成 (' + done + ')</button>';
+    box.onclick = (e) => {
+      const el = e.target.closest('button[data-tab]');
+      if (!el || el.dataset.tab === st.tab) return;
+      st.tab = el.dataset.tab;
+      render();
+    };
+  }
+
   function render() {
     const root = pageEl();
     if (!root) return;
@@ -235,7 +256,7 @@
     // 展开/收起只重画列表，滚动位置得自己留住，否则每点一下都回到顶部
     const keepScroll = list.scrollTop;
 
-    missedBox.classList.toggle('hidden', missed.length === 0);
+    missedBox.classList.toggle('hidden', missed.length === 0 || st.tab !== 'todo');
     if (missed.length) {
       missedBox.innerHTML = '<div class="td-missed-title">服务没开着的时候，有 ' + missed.length +
         ' 条任务错过了执行时间（只提示最近一次，不会连环补跑）：</div>' +
@@ -249,10 +270,14 @@
         }).join('');
     }
 
-    if (!st.tasks.length) {
-      list.innerHTML = '<div class="td-empty">还没有任务。点右上角「新建任务」记一条。</div>';
+    renderTabs(root);
+    const shown = st.tasks.filter((t) => (st.tab === 'done' ? t.done : !t.done));
+    if (!shown.length) {
+      list.innerHTML = '<div class="td-empty">' + (st.tab === 'done'
+        ? '还没有已完成的任务。任务做完后在卡片上点「标为完成」，它就会收进这一页。'
+        : (st.tasks.length ? '太好了，待执行的任务都清完了（已完成的收在右侧页签里）。' : '还没有任务。点右上角「新建任务」记一条。')) + '</div>';
     } else {
-      list.innerHTML = st.tasks.map(cardHTML).join('');
+      list.innerHTML = shown.map(cardHTML).join('');
     }
     list.scrollTop = keepScroll;
     root.querySelector('#td-store').textContent = st.store ? '数据位置：' + st.store : '';
@@ -262,8 +287,10 @@
     missedBox.onclick = onMissedClick;
   }
 
-  /* 卡片默认折叠：只留「类型/时间徽标 + 标题 + 描述 + 启用开关」，其余折进 .td-more。
-     折叠靠 .td-task.open 这一个类切换，展开态记在 st.open 里（重画不丢）。 */
+  /* 卡片只显示前三行：徽标行、标题行、创建时间+描述摘要行；第三行往下（完整描述、
+     命令、元信息、上次执行、操作按钮、执行记录）全部折进 .td-more，默认收起、
+     点卡片空白或三角展开。折叠靠 .td-task.open 这一个类切换，展开态记在 st.open
+     里（重画不丢）；执行记录的二级展开（st.expanded）照旧。 */
   function cardHTML(t) {
     const cmd = isCmd(t);
     const recs = recordsOf(t.id);
@@ -272,8 +299,9 @@
     const badges =
       '<span class="td-badge kind">' + (cmd ? '程序任务' : 'AI 任务') + '</span>' +
       (!cmd && t.target === 'task' ? '<span class="td-badge kind">新的工作任务</span>' : '') +
-      '<span class="td-badge' + (t.enabled ? '' : ' off') + '">' + esc(scheduleText(t.schedule)) + '</span>' +
-      (t.enabled ? '' : '<span class="td-badge off">已停用</span>') +
+      (t.done ? '<span class="td-badge done">已完成</span>' :
+        '<span class="td-badge' + (t.enabled ? '' : ' off') + '">' + esc(scheduleText(t.schedule)) + '</span>' +
+        (t.enabled ? '' : '<span class="td-badge off">已停用</span>')) +
       (cmd && t.permission === 'full' ? '<span class="td-badge warn">不受限</span>' : '');
 
     let html = '<div class="td-task' + (open ? ' open' : '') + '" data-id="' + esc(t.id) + '">';
@@ -281,13 +309,18 @@
     html += '<div class="td-badges">' + badges + '</div>';
     html += '<div class="td-name">' + esc(t.title) + '</div>';
     html += '</div><span class="td-caret" title="' + (open ? '收起' : '展开') + '详细信息">' + (open ? '▴' : '▾') + '</span>' +
-      '<label class="pr-toggle" title="启用 / 停用">' +
-      '<input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? ' checked' : '') + '>' +
-      '<span></span></label></div>';
+      (t.done ? '' :
+        '<label class="pr-toggle" title="启用 / 停用">' +
+        '<input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? ' checked' : '') + '>' +
+        '<span></span></label>') + '</div>';
 
-    if (t.description) html += '<p class="td-desc">' + esc(t.description) + '</p>';
+    // 常驻第三行：创建时间（系统生成的只读字段）+ 描述单行摘要（悬停看全文）
+    html += '<div class="td-brief"><span class="td-created" title="创建时间（自动生成）">创建于 ' + fmt(t.createdAt) + '</span>' +
+      (t.description ? '<span class="td-desc-clip" title="' + esc(t.description) + '">' + esc(t.description) + '</span>' : '') +
+      '</div>';
 
     html += '<div class="td-more">';
+    if (t.description) html += '<p class="td-desc">' + esc(t.description) + '</p>';
     if (cmd && t.command) html += '<p class="td-cmd">$ ' + esc(t.command) + '</p>';
 
     html += '<div class="td-meta">';
@@ -303,13 +336,18 @@
         esc(STATUS_LABEL[t.lastStatus] || t.lastStatus) + (t.lastError ? '：' + esc(t.lastError) : '') + '</span></div>';
     }
 
+    // 操作按钮同样折在 .td-more 里（默认收起）；已完成页换「重新打开」，不再执行/启停
+    const delBtn = '<button type="button" class="' + (st.armedDelete === t.id ? 'danger' : 'ghost') + '" data-act="delete" data-id="' + esc(t.id) + '">' +
+      (st.armedDelete === t.id ? '删除这条任务？执行记录会保留' : '删除') + '</button>';
+    const recBtn = '<button type="button" class="td-link" data-act="records" data-id="' + esc(t.id) + '">执行记录（' +
+      recs.length + '）' + (expanded ? '▴' : '▾') + '</button>';
+    const editBtn = '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>';
     html += '<div class="td-actions">' +
-      '<button type="button" class="primary" data-act="run" data-id="' + esc(t.id) + '">立即执行</button>' +
-      '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
-      '<button type="button" class="' + (st.armedDelete === t.id ? 'danger' : 'ghost') + '" data-act="delete" data-id="' + esc(t.id) + '">' +
-        (st.armedDelete === t.id ? '删除这条任务？执行记录会保留' : '删除') + '</button>' +
-      '<button type="button" class="td-link" data-act="records" data-id="' + esc(t.id) + '">执行记录（' +
-        recs.length + '）' + (expanded ? '▴' : '▾') + '</button>' +
+      (t.done
+        ? '<button type="button" class="primary" data-act="reopen" data-id="' + esc(t.id) + '">重新打开</button>' + editBtn + delBtn + recBtn
+        : '<button type="button" class="primary" data-act="run" data-id="' + esc(t.id) + '">立即执行</button>' + editBtn +
+          '<button type="button" class="ghost" data-act="done" data-id="' + esc(t.id) + '" title="任务做完：收进「已完成」页并停掉调度">标为完成</button>' +
+          delBtn + recBtn) +
       '</div>';
 
     if (expanded) {
@@ -346,6 +384,12 @@
     switch (el.dataset.act) {
       case 'toggle': void act(() => api('/api/todos/update', {
         method: 'POST', body: JSON.stringify({ id, enabled: el.checked }),
+      })); break;
+      case 'done': void act(() => api('/api/todos/update', {
+        method: 'POST', body: JSON.stringify({ id, done: true }),
+      })); break;
+      case 'reopen': void act(() => api('/api/todos/update', {
+        method: 'POST', body: JSON.stringify({ id, done: false }),
       })); break;
       case 'run': void act(() => runNow(id, task)); break;
       case 'edit': openForm(task); break;
@@ -640,7 +684,7 @@
     }
   }
 
-  /* ---------- 事件流（调度触发的执行、模型改清单都即时反映） ---------- */
+  /* ---------- 事件流（调度触发的执行、模型改清单都即时反映；页签保持当前所在） ---------- */
 
   function openStream() {
     if (sse || typeof EventSource !== 'function') return;

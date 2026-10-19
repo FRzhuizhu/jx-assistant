@@ -102,8 +102,13 @@ type TaskItem struct {
 	Command    string `json:"command,omitempty"`
 	Shell      string `json:"shell,omitempty"`      // powershell（默认） | cmd
 	Permission string `json:"permission,omitempty"` // workspace-write（默认） | full
-	CreatedAt  int64  `json:"createdAt"`
-	UpdatedAt  int64  `json:"updatedAt"`
+	// 已完成：收进页面的「已完成」页签，调度不再触发（终态归档，与「停用」的
+	// 暂停语义不同）。完成/重开由用户在卡片上标记（模型走 todo_task_update 的
+	// done 参数）；DoneAt 与 CreatedAt 一样是系统时间，不接受用户指定。
+	Done      bool  `json:"done,omitempty"`
+	DoneAt    int64 `json:"doneAt,omitempty"` // 标记完成的时刻（重开时清零）
+	CreatedAt int64 `json:"createdAt"`
+	UpdatedAt int64 `json:"updatedAt"`
 	// 最近一次（或最近一个被处理掉的）槽点；防重复触发与错过判定的基准。
 	LastRunAt     int64  `json:"lastRunAt,omitempty"`
 	LastStatus    string `json:"lastStatus,omitempty"` // running | ok | failed
@@ -668,7 +673,7 @@ func (s *todoScheduler) tick() {
 	s.mu.Lock()
 	pending := []*TaskItem{}
 	for _, t := range s.data.Tasks {
-		if !t.Enabled || s.busy[t.ID] {
+		if !t.Enabled || t.Done || s.busy[t.ID] {
 			continue
 		}
 		if _, ok := computeDueSlot(t.Schedule, now, t.LastRunAt, t.CreatedAt); ok {
@@ -730,7 +735,7 @@ func (s *todoScheduler) collectMissed() []MissedItem {
 	defer s.mu.Unlock()
 	out := []MissedItem{}
 	for _, t := range s.data.Tasks {
-		if !t.Enabled {
+		if !t.Enabled || t.Done {
 			continue
 		}
 		if slot, ok := detectMissed(t.Schedule, now, t.LastRunAt, t.CreatedAt); ok {
@@ -782,10 +787,10 @@ func (s *todoScheduler) snapshot() map[string]any {
 	}
 }
 
-// toView 给任务附上下次执行时间（停用或不自动执行的不附）。
+// toView 给任务附上下次执行时间（停用、已完成或不自动执行的不附）。
 func (s *todoScheduler) toView(t *TaskItem, now int64) TaskView {
 	v := TaskView{TaskItem: *t}
-	if !t.Enabled {
+	if !t.Enabled || t.Done {
 		return v
 	}
 	if next, ok := computeNextRunAt(t.Schedule, now, t.LastRunAt); ok {
@@ -819,6 +824,7 @@ type todoRequest struct {
 	Shell       string    `json:"shell"`
 	Permission  string    `json:"permission"`
 	Enabled     *bool     `json:"enabled"`
+	Done        *bool     `json:"done"` // 标记完成 / 重新打开（仅 update：完成是终态归档，调度随之停）
 }
 
 // normalize 把请求体收敛成一份规范化配置；只填给出的字段（create 用全量）。
@@ -923,6 +929,15 @@ func (s *todoScheduler) update(r todoRequest) (*TaskView, error) {
 	}
 	if r.Enabled != nil {
 		next.Enabled = *r.Enabled
+	}
+	// 完成/重开：完成时刻只在这里落（用户/模型都只给布尔值，时间由系统记）。
+	if r.Done != nil {
+		next.Done = *r.Done
+		if *r.Done {
+			next.DoneAt = time.Now().UnixMilli()
+		} else {
+			next.DoneAt = 0
+		}
 	}
 	resetBase := false
 	if r.Schedule != nil {
