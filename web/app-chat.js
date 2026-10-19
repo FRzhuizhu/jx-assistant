@@ -592,19 +592,22 @@ function isMatItem(it) {
 // 注意：fold（已折叠标注行）刻意不归入材料折叠——它是用户要看的状态标注，
 // 与压缩摘要行同样常显，藏进材料分组就失去「这里压缩过」的提示意义
 
-// 折叠条只报一个数：模型调用次数（步数）。口径 = 向模型发送请求的次数——
-// 一步 = 主循环一次迭代（一次模型调用，该步触发的全部工具调用——含并行——都算同一步），
-// 与后端 agent.go 的 step 计步一致（见《最大步数计步口径排查报告.md》）。
-// 消息数据里没有现成的步数字段，用「本段出现过的 assistant 行数」精确还原：
-// think/text/tool/subtask/plancard 条目都由 assistant 行拆出、同一行拆出的条目
-// seq 相同，按 seq 去重即行数（一次返回多个并行工具调用只产一条 assistant 行）；
-// 该口径含无工具调用的最终答复轮，比 assistant.go 摘要只数带 tool_calls 的行更准。
+// 折叠条标签：折起多少行是总体计数，放最前面；后面是调用 AI 几次、执行工具几次、
+// 以及上下文材料/系统通知条数。行数**永远在**（执行中与完成态同一个函数出标签，
+// 不会一处有一处没有）。
+// 步数口径 = 向模型发送请求的次数：一步 = 主循环一次迭代（一次模型调用，该步触发的
+// 全部工具调用——含并行——都算同一步），与后端 agent.go 的 step 计步一致
+// （见《最大步数计步口径排查报告.md》）。消息数据里没有现成的步数字段，用「本段
+// 出现过的 assistant 行数」精确还原：think/text/tool/subtask/plancard 条目都由
+// assistant 行拆出、同一行拆出的条目 seq 相同，按 seq 去重即行数（一次返回多个并行
+// 工具调用只产一条 assistant 行）；该口径含无工具调用的最终答复轮，比 assistant.go
+// 摘要只数带 tool_calls 的行更准。
 function foldLabel(cnt) {
-  const parts = [];
+  const parts = ['已折叠 ' + cnt.rows + ' 行消息'];
   if (cnt.steps) parts.push('调用 AI ' + cnt.steps + ' 次');
+  if (cnt.tools) parts.push(cnt.tools + ' 次工具调用');
   if (cnt.mat) parts.push(cnt.mat + ' 条上下文材料');
   if (cnt.note) parts.push(cnt.note + ' 条系统通知');
-  if (!parts.length) parts.push('已折叠 ' + cnt.rows + ' 行');
   return parts.join(' · ');
 }
 
@@ -614,10 +617,13 @@ function foldLabel(cnt) {
 // 次」= 3，而该回合真实只有 2 次调用——seq 277 在两段里都被数了）。所以整个回合
 // 共用一个 Set，本段只报**本段新增**的步数，各段合计仍等于真实调用次数。
 function secCount(items, seen) {
-  const cnt = { steps: 0, mat: 0, note: 0, rows: items.length };
+  const cnt = { steps: 0, tools: 0, mat: 0, note: 0, rows: items.length };
   const steps = seen instanceof Set ? seen : new Set();
   let added = 0; // 本段新计入的步数（前面各段已计过的不再计）
   items.forEach((it) => {
+    // 工具调用次数：派发子任务也算一次工具调用（与改版前的口径一致）；条目按段
+    // 划分，每条只出现在一段里，无需去重（步数要跨段去重，因为同一行的条目会被切段）
+    if (it.k === 'tool' || it.k === 'subtask') cnt.tools++;
     if (it.k === 'think' || it.k === 'text' || it.k === 'tool' || it.k === 'subtask' || it.k === 'plancard') {
       // 旧数据缺 seq（null）时用条目对象本身当键：同一回合的条目对象在各段间是同一份
       // 引用，跨段照样认得出「这条已经计过」，比按段内下标（跨段会撞号）更准
@@ -633,6 +639,7 @@ function secCount(items, seen) {
 }
 
 // 折叠段 = 折叠条按钮 + until-found 隐藏容器；点击只切本段显隐，不触发整列重渲（滚动位置不跳）
+// 标签一律由 foldLabel 产出——执行中与完成态长得一样，差别只在可见策略（见 renderTurnProcess）
 // opts.seen：同一回合各段共用的步数去重集（见 secCount），由渲染层逐段透传
 function foldSection(items, key, opts = {}) {
   const sec = document.createElement('div');
@@ -643,10 +650,7 @@ function foldSection(items, key, opts = {}) {
   bar.className = 'turn-fold';
   const label = document.createElement('span');
   label.className = 'tf-label';
-  const cnt = secCount(items, opts.seen);
-  label.textContent = opts.prefix
-    ? opts.prefix(cnt)
-    : foldLabel(cnt);
+  label.textContent = foldLabel(secCount(items, opts.seen));
   bar.appendChild(label);
   bar.insertAdjacentHTML('beforeend', chev('tf-chev'));
   const body = document.createElement('div');
@@ -700,7 +704,7 @@ function inheritBlock(turns, items, sid) {
     if (turn.sysHead) body.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
     if (turn.headTools) body.appendChild(toolsRow(turn.headTools, turn.headToolsSeq));
     if (turn.userMsg) body.appendChild(userBubble(turn.userMsg, viewOf(sid)));
-    renderFinishedTurn(body, turn, key + ':' + ti);
+    renderTurnProcess(body, turn, key + ':' + ti);
   });
   const open = turnOpen[key] === true;
   bar.classList.toggle('open', open);
@@ -2105,11 +2109,9 @@ function appendTurn(target, turn, key, view, isLast) {
   if (turn.headTools) target.appendChild(toolsRow(turn.headTools, turn.headToolsSeq));
   if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
   if (turn.userMsg) target.appendChild(userBubble(turn.userMsg, view));
-  if (isLast && view.state.streaming) {
-    renderStreamingTurn(target, turn, key);
-    return;
-  }
-  renderFinishedTurn(target, turn, key, !!isLast);
+  const streaming = isLast && view.state.streaming;
+  renderTurnProcess(target, turn, key, { streaming: streaming, isLast: !!isLast });
+  if (streaming) return; // 执行中不画收尾件（文件改动/交付卡片），随完成态一起出现
   const seqSet = new Set();
   turn.items.forEach((it) => { if (it.seq != null) seqSet.add(it.seq); });
   if (!seqSet.size) return;
@@ -2256,16 +2258,74 @@ function renderMessages(msgs, view, opts) {
   scheduleFolds(); // 气泡折叠：渲染完按实际高度重算（主对话与右栏子对话列都算）
 }
 
-// 已完成回合：**顶层大折叠全局统一**——回合内连续的可折叠项（思考/工具/子任务卡/
-// 上下文材料/系统通知）不分家，相邻就折进同一段（标签汇总各类计数，见 foldLabel）；
-// 段内还有各自的行级小折叠（proc-row 点开看原文、工具行点开看参数）。锚点（常显）
-// 有四类：回合收尾答案（最后一条正文且其行无伴随工具调用——打断回合的最后一条
-// 正文不算，见下方 answerIdx）、长正文（显示宽度豁免，isLongText；plancard 计划卡
-// 同理）、**孤立**的系统通知（前后都没有可折叠邻居的单条），以及**尾部通知**——
-// 最后一个回合里、下方再没有任何消息（正文/计划卡）的通知保持常显：系统中断
-// 这类提示往往就是会话的最后一条，重启后用户打开会话要靠它知道「发个继续」。
-function renderFinishedTurn(box, turn, key, isLast) {
+/* ---------- 回合过程区：一条渲染路径，两套可见策略 ---------- */
+
+// 过程区（用户气泡与收尾件之间的思考/工具/子任务卡/上下文材料/系统通知）只有这
+// 一条渲染路径：常显项就地渲染，其余相邻项攒成折叠段（foldSection）。**折叠机制
+// 只有一份**——折叠条构造、标签（foldLabel）、展开记忆（turnOpen）、步数去重集
+// （seenSteps）都在这条路径上，执行中与完成态共用，所以「折起来的样子」永远一致；
+// 两态真正的差别只在**哪些条目常显**，由下面两套策略给出：
+//   · 执行中 streamKeep：尾部窗口——最近 TAIL_ROWS 个过程条目常显（看得到最新
+//     动作），上方折成折叠条；系统通知/运行中子任务卡/计划卡/长正文/已折叠标注行
+//     钉住常显。
+//   · 完成态 finishedKeep：按内容角色钉住——收尾答案、长正文、计划卡、已折叠
+//     标注行、孤立的系统通知与末回合尾部通知。
+// 为什么不能并成一套：执行中按内容角色折会把最新动作折没；完成后还留尾部 10 行
+// 窗口，打开历史会话时中段会露出零散过程行。上下文材料行不参与常显，位置就是它
+// 在消息序列里的真实位置——两态一致，不会「流式时被搬到顶上、完成后又跑回中间」。
+function renderTurnProcess(box, turn, key, opts = {}) {
   const items = turn.items;
+  const streaming = opts.streaming === true;
+  const plan = streaming
+    ? { set: streamKeep(items), answerIdx: -1 }
+    : finishedKeep(items, opts.isLast === true);
+  // 步数去重集按**回合**共享：同一助手行的条目可能被锚点切到前后两段，
+  // 各段各建一个 Set 会把一次调用数两遍（见 secCount）
+  const seenSteps = new Set();
+  let seg = [];
+  const flush = () => {
+    if (!seg.length) return;
+    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true, seen: seenSteps }));
+    seg = [];
+  };
+  // 常显项就地渲染（必要时把折叠段切开），其余条目折进段里
+  items.forEach((it, i) => {
+    if (plan.set.has(i)) { flush(); box.appendChild(renderItem(it, { final: i === plan.answerIdx })); }
+    else seg.push(it);
+  });
+  flush();
+}
+
+// 执行中的可见策略（尾部窗口）：材料行不占窗口、也不顶掉最新动作
+function streamKeep(items) {
+  const keep = new Set();
+  const flowIdx = [];
+  items.forEach((it, i) => { if (!isMatItem(it)) flowIdx.push(i); });
+  const foldFrom = Math.max(0, flowIdx.length - TAIL_ROWS);
+  flowIdx.forEach((idx, j) => {
+    if (j >= foldFrom || streamPinned(items[idx])) keep.add(idx);
+  });
+  return keep;
+}
+
+// 执行中钉住常显的几类：系统通知（report 通道的虚线通知块——执行期间的中断/上传
+// 提示不能被折没）、运行中的子任务卡（实时进度）、计划卡、中间长正文（与完成态
+// 同一豁免：「先解释一大段、再连续十几次工具调用」的讲解段不能执行中途被折没）、
+// 以及「已折叠」标注行（它标记的就是折叠这件事本身，折进段里等于没标）。
+// 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
+function streamPinned(it) {
+  return it.k === 'note' || it.k === 'plancard' || it.k === 'fold' ||
+    (it.k === 'subtask' && !it.result) || (it.k === 'text' && isLongText(it.text));
+}
+
+// 完成态的可见策略（锚点）：回合内连续的可折叠项（思考/工具/子任务卡/上下文材料/
+// 系统通知）不分家，相邻就折进同一段；段内还有各自的行级小折叠（proc-row 点开看
+// 原文、工具行点开看参数）。锚点四类：回合收尾答案（最后一条正文且其行无伴随工具
+// 调用，见下）、长正文（isLongText，plancard 计划卡同理）、**孤立**的系统通知
+// （前后都没有可折叠邻居的单条），以及**尾部通知**——最后一个回合里、下方再没有
+// 任何消息（正文/计划卡）的通知保持常显：系统中断这类提示往往就是会话的最后一条，
+// 重启后用户打开会话要靠它知道「发个继续」。
+function finishedKeep(items, isLast) {
   // 回合的收尾答案 = 最后一条正文，且它自己所在的助手行**没有伴随工具调用**
   // （「正文+工具调用」是过程交代，不是收尾）。被打断的回合（系统中断/执行中断）
   // 停在半路，最后一条正文往往来自这种行——不能按最终输出对待：不挂操作按钮、
@@ -2277,7 +2337,6 @@ function renderFinishedTurn(box, turn, key, isLast) {
     answerIdx = (!calls || !calls.length) ? i : -1;
     break;
   }
-  const foldable = (it) => it.k !== 'text' && it.k !== 'plancard';
   const anchor = new Set();
   if (answerIdx >= 0) anchor.add(answerIdx);
   items.forEach((it, i) => {
@@ -2285,6 +2344,7 @@ function renderFinishedTurn(box, turn, key, isLast) {
   });
   // 「已折叠」标注行常显：它标记的就是折叠这件事本身，折进折叠段等于没标
   items.forEach((it, i) => { if (it.k === 'fold') anchor.add(i); });
+  const foldable = (it) => it.k !== 'text' && it.k !== 'plancard';
   items.forEach((it, i) => {
     if (it.k !== 'note') return;
     const nb = (j) => j >= 0 && j < items.length && foldable(items[j]);
@@ -2293,64 +2353,7 @@ function renderFinishedTurn(box, turn, key, isLast) {
     const tail = isLast && !items.slice(i + 1).some((x) => x.k === 'text' || x.k === 'plancard');
     if (tail || (!nb(i - 1) && !nb(i + 1))) anchor.add(i);
   });
-  let seg = [];
-  // 步数去重集按**回合**共享：同一助手行的条目可能被锚点切到前后两段，
-  // 各段各建一个 Set 会把一次调用数两遍（见 secCount）
-  const seenSteps = new Set();
-  const flushSeg = () => {
-    if (!seg.length) return;
-    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true, seen: seenSteps }));
-    seg = [];
-  };
-  items.forEach((it, i) => {
-    if (anchor.has(i)) { flushSeg(); box.appendChild(renderItem(it, { final: i === answerIdx })); }
-    else seg.push(it);
-  });
-  flushSeg();
-}
-
-// 进行中回合：过程行只露最近 TAIL_ROWS 行（尾部窗口），上方折叠成一条"已折叠 N 行"折叠条；
-// 运行中的子任务卡与系统通知钉住常显（实时进度/派发通知不中断）；上下文材料行落在回合
-// 开头、不占窗口——与完成态一致折进折叠段（否则刚发完消息满屏都是变更行）；
-// 手动展开过则全部显示
-function renderStreamingTurn(box, turn, key) {
-  const items = turn.items;
-  const mat = items.filter(isMatItem);
-  const flow = items.filter((it) => !isMatItem(it));
-  const open = turnOpen[key] === true;
-  const seenSteps = new Set(); // 步数去重集：本回合各段共享（见 secCount）
-  if (flow.length <= TAIL_ROWS) {
-    // 回合刚开头：材料行单独折成顶部一段，过程行照常显示
-    if (mat.length) box.appendChild(foldSection(mat, key, { open: open, seen: seenSteps }));
-    flow.forEach((it) => box.appendChild(renderItem(it)));
-    return;
-  }
-  const foldFrom = flow.length - TAIL_ROWS;
-  // 钉住常显、绝不折进过程段的三类：系统通知（note，report 通道的虚线通知块——
-  // 执行期间的中断/上传提示不能被折没；完成态里与材料/过程相邻的进顶层大折叠，
-  // 孤立与尾部的常显，见 renderFinishedTurn）、运行中的子任务卡（实时进度）、
-  // 以及中间长正文——与完成态（renderFinishedTurn 的 anchor）同一豁免
-  //（isLongText：≥3 非空行或显示宽度 ≥100 字）：「先解释一大段、再连续十几次
-  // 工具调用」的回合，讲解段不能在执行中途被折没。
-  // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
-  const pinned = (it) => it.k === 'note' || it.k === 'plancard' || it.k === 'fold' || (it.k === 'subtask' && !it.result)
-    || (it.k === 'text' && isLongText(it.text));
-  let seg = mat.slice(); // 材料行在回合最前，并入头部折叠段
-  const flush = () => {
-    if (!seg.length) return;
-    box.appendChild(foldSection(seg, key, {
-      open: open,
-      seen: seenSteps,
-      prefix: (c) => '已折叠 ' + c.rows + ' 行' + ((c.steps || c.mat || c.note) ? ' · ' + foldLabel(c) : ''),
-    }));
-    seg = [];
-  };
-  // 常显项就地渲染（必要时把折叠段切开），其余过程行折进段里；尾部窗口内一律常显
-  flow.forEach((it, i) => {
-    if (i >= foldFrom || pinned(it)) { flush(); box.appendChild(renderItem(it)); return; }
-    seg.push(it);
-  });
-  flush();
+  return { set: anchor, answerIdx: answerIdx };
 }
 
 let rafPending = false;

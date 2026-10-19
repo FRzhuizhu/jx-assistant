@@ -837,7 +837,10 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .turn-fold .tf-label {
   flex: 1; min-width: 0; line-height: 22px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: transparent; /* 计数文字平时隐身（融进任意主题背景，白底上即「白字」），悬停整条时才现身 */
 }
+.turn-fold:hover .tf-label { color: var(--text-2); }
+.tf-sec.inherit > .turn-fold .tf-label { color: inherit; } /* 继承段有卡片底色，文字保持常显 */
 .turn-fold .tf-chev {
   width: 14px; height: 14px; flex: none; color: var(--text-3);
   transition: transform .1s; transform: rotate(-90deg);
