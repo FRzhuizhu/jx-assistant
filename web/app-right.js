@@ -297,9 +297,11 @@ function renderSubDDPop() {
   for (const s of subKids) {
     const item = document.createElement('div');
     item.className = 'drawer-item' + (subState.cur && subState.cur.id === s.id ? ' active' : '');
-    // 状态格三态：运行中圆环 > 标为未读红点 > 平时的 '·'（与主对话列表同款优先级）
-    const stCls = s.status === 'running' ? 'run' : (s.unread ? 'unread' : '');
-    const stTxt = s.status === 'running' ? '' : (s.unread ? '' : '·'); // 运行中留空：圆环由 CSS 画，转字符会晃
+    // 状态格四态：运行中圆环 > 完成未查看绿点 > 标为未读红点 > 平时的 '·'
+    // （完成绿点 = dotDone，打开该子对话即清；父对话侧栏行的绿点同一来源，见
+    // app-chat.js 的 done/sub_end 分支）
+    const stCls = s.status === 'running' ? 'run' : (dotDone[s.id] ? 'done' : (s.unread ? 'unread' : ''));
+    const stTxt = s.status === 'running' || dotDone[s.id] || s.unread ? '' : '·'; // 圆环/绿点/红点留空：图形由 CSS 画，转字符会晃
     item.innerHTML =
       `<span class="d-status ${stCls}">${stTxt}</span>` +
       `<span class="d-title">${esc(s.title || '(未命名)')}</span>` +
@@ -418,7 +420,8 @@ async function openSubSession(id) {
     }
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
-    // 打开即视为已读（与主对话 openSession 同款）：清红点，下拉清单数据同步
+    // 打开即视为已读（与主对话 openSession 同款）：清红点与完成绿点，下拉清单数据同步
+    delete dotDone[id];
     if (subState.cur.unread) {
       subState.cur.unread = false;
       const kid = subKids.find((k) => k.id === id);

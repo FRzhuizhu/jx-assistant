@@ -1162,10 +1162,15 @@ body.rp-open .w-handle { display: none; }
 .drawer-item { position: relative; }
 .drawer-item:hover .row-acts { display: flex; }
 .drawer-item:hover .d-time { visibility: hidden; }
-/* 状态格的「标为未读」红点（运行中圆环优先级更高，见 renderSubDDPop 的三态取值） */
+/* 状态格的「标为未读」红点与「完成未查看」绿点（运行中圆环优先级更高，
+   见 renderSubDDPop 的四态取值；绿点颜色对齐主对话 .dot.done） */
 .drawer-item .d-status.unread { display: flex; align-items: center; justify-content: center; }
 .drawer-item .d-status.unread::before {
   content: ''; width: 7px; height: 7px; border-radius: 50%; background: #d33;
+}
+.drawer-item .d-status.done { display: flex; align-items: center; justify-content: center; }
+.drawer-item .d-status.done::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: #2ea043;
 }
 
 /* ---------- 首页（新建对话） ---------- */

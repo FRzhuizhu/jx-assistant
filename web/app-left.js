@@ -455,6 +455,8 @@ function openSessionMenu(s, rect) {
 const STATUS_CELLS = {
   wait: { cls: 'wait', text: '⏸ 待确认', tip: '这轮停在等你确认（审批／提问／计划），点开对话处理即继续' },
   running: { cls: 'running', text: '⟳ 运行中', tip: '正在执行（切走不影响，切回来会接上）' },
+  // 主对话自己没跑、名下有子对话在跑：同一格同一款转圈，悬停说明是谁在执行
+  subrun: { cls: 'running', text: '⟳ 运行中', tip: '名下有子对话正在执行（打开对话在右栏查看；切走不影响）' },
   step: { cls: 'stop', text: '⚠ 已中断', tip: '已达最大步数自动停止（可在设置里调大「最大步数」），可点开重试' },
   error: { cls: 'stop', text: '⚠ 已中断', tip: '本轮执行出错中断（模型／网络／网关等），点开可看原因并重试' },
   restart: { cls: 'stop', text: '⚠ 已中断', tip: '服务重启导致本轮中断，可发「继续」接续' },
@@ -470,12 +472,15 @@ function sessionPendingAsk(id) {
     || (state.questions || []).some((q) => q.sessionId === id);
 }
 
-// 会话状态标记（行末时间那一格）：待确认 > 运行中 > 已中断都从这一个函数取，
+// 会话状态标记（行末时间那一格）：待确认 > 运行中都从这一个函数取，
 // 没有标记则返回空串、由调用方回落相对时间。这里只出字符与颜色类——位置、字号、
 // 悬停行为全部交给 .s-time 那套公共规则，别给某个状态单独写位置规则（写歪了几个
-// 状态就对不齐）。
+// 状态就对不齐）。「子对话运行中」：顶层会话自己空闲但名下有子对话在跑——用户
+// 在侧栏一眼看出那个主对话有动静（数据源全量 state.sessions，some 短路够快）。
 function sessionStatusCell(s) {
-  const key = sessionPendingAsk(s.id) ? 'wait' : s.status === 'running' ? 'running' : s.lastStop;
+  const kidRun = !s.parentId && (state.sessions || [])
+    .some((k) => k.parentId === s.id && k.status === 'running' && !k.archived);
+  const key = sessionPendingAsk(s.id) ? 'wait' : s.status === 'running' ? 'running' : kidRun ? 'subrun' : s.lastStop;
   const st = STATUS_CELLS[key];
   return st ? `<span class="s-time ${st.cls}" title="${esc(st.tip)}">${st.text}</span>` : '';
 }

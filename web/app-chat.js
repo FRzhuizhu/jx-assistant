@@ -2479,6 +2479,12 @@ function handleGlobalEvent(ev) {
   const viewing = state.cur && ev.sessionId === state.cur.id;
   // 子对话视图并行接收同一事件流：右栏正看这个子对话且它没有本地流在跑（后台自动汇报）
   const subViewing = subState.cur && ev.sessionId === subState.cur.id;
+  // 会话 id -> 它的父会话 id（子对话才返回；数据源是全量 state.sessions——
+  // 子对话执行完时它早已在列表里，新建窗口期的缺失只影响一次提示，无害）
+  const parentOf = (sid) => {
+    const s = (state.sessions || []).find((x) => x.id === sid);
+    return s && s.parentId ? s.parentId : null;
+  };
   // 侧栏「⏸ 待确认」标记与橙点直接由 state.approvals / state.questions 推导（见
   // app-left.js 的 sessionPendingAsk）：下面的 push/remove 更新清单后 renderPanels
   // 会顺带刷新会话列表，不再单独维护事件驱动的 dotApproval 影子表。
@@ -2502,6 +2508,9 @@ function handleGlobalEvent(ev) {
     case 'sub_end':
       subDone[ev.sessionId] = true;
       dotDone[ev.sessionId] = true;
+      // 子对话完成且右栏没正看着它：所属主对话在侧栏那行也亮绿点——否则人工
+      // 建的子对话干完了，用户不知道是哪个主对话名下的事（打开主对话即清）
+      { const par = parentOf(ev.sessionId); if (par && !subViewing) dotDone[par] = true; }
       loadSessions();
       refreshDrawer();
       if (subViewing && !subState.streaming) refreshCurrentSub(); // 右栏子对话就地翻新
@@ -2526,8 +2535,13 @@ function handleGlobalEvent(ev) {
       break;
     case 'done':
       // 一轮执行结束（含数字助理的自动汇报轮）：没正看着这个会话就点亮绿点，
-      // 打开会话即清；正看着则就地翻新出最终结果
-      if (!viewing) dotDone[ev.sessionId] = true;
+      // 打开会话即清；正看着则就地翻新出最终结果。完成的是子对话且右栏没看着
+      // → 所属主对话侧栏行同样亮绿点（与 sub_end 同口径，两条事件幂等互备）
+      if (!viewing) {
+        dotDone[ev.sessionId] = true;
+        const par = parentOf(ev.sessionId);
+        if (par && !subViewing) dotDone[par] = true;
+      }
       loadSessions();
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrentSoon();
