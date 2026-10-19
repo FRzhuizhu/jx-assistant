@@ -1999,12 +1999,12 @@ function deliveryCard(dvs, sid, view) {
     const pv = document.createElement('button');
     pv.type = 'button';
     pv.className = 'dc-btn';
-    pv.textContent = '在右侧打开';
+    pv.textContent = '右侧打开';
     pv.title = '在右侧「浏览器」面板中打开（网页/图片/音视频可直接渲染）';
     const rv = document.createElement('button');
     rv.type = 'button';
     rv.className = 'dc-btn';
-    rv.textContent = '在文件夹中查看';
+    rv.textContent = '在文件夹中打开';
     rv.title = '在文件资源管理器中定位这个文件';
     ov.onclick = (ev) => { ev.stopPropagation(); deliveryOpenFile(view, sid, d); };
     pv.onclick = (ev) => { ev.stopPropagation(); openInPanelBrowser({ session: sid, path: d.path }); };
