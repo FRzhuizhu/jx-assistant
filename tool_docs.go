@@ -316,18 +316,31 @@ func runOfficeSkill(t *toolContext, args json.RawMessage) (string, error) {
 }
 
 // filterOfficeGuide 从 office 技能的 SKILL.md 里抽出通用纪律 + 指定分册。
+// 只带「通用纪律 + 对应分册」（### 子节随分册整体带出），避免把三种文档的
+// 指南一起塞进上下文；标题结构不认识时原样返回全文兜底，别让模型拿不到指南。
 func filterOfficeGuide(guide, kind string) string {
 	kindTitle := map[string]string{
-		"docx": "## docx 分册要点",
-		"xlsx": "## xlsx 分册要点",
-		"pptx": "## pptx 分册要点",
+		"docx": "docx 分册要点",
+		"xlsx": "xlsx 分册要点",
+		"pptx": "pptx 分册要点",
 	}[kind]
+	if kindTitle == "" {
+		return guide
+	}
 	sections := strings.Split(guide, "\n## ")
 	head := strings.TrimSpace(sections[0])
+	kept := make([]string, 0, 2)
 	for _, s := range sections[1:] {
-		if strings.HasPrefix(s, kindTitle[4:]) {
-			return head + "\n\n## " + strings.TrimSpace(s)
+		title := s
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			title = s[:i]
+		}
+		if strings.HasPrefix(title, "通用纪律") || strings.HasPrefix(title, kindTitle) {
+			kept = append(kept, "## "+strings.TrimSpace(s))
 		}
 	}
-	return guide
+	if len(kept) == 0 {
+		return guide
+	}
+	return head + "\n\n" + strings.Join(kept, "\n\n")
 }
