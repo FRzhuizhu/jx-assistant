@@ -688,19 +688,85 @@ var destructiveCmds = []struct {
 	{regexp.MustCompile(`(?i)\brm\s+(-[a-z]*r[a-z]*f*|-rf)\s+(/|~|\$HOME)(\s|/|$|\*)`), "递归删除根目录或用户主目录"},
 	{regexp.MustCompile(`(?i)\b(rd|rmdir)\b(\s+/[a-z0-9]+)*[\s"']*([a-z]):\\+["'\s]*$`), "递归删除盘根目录"},
 	{regexp.MustCompile(`(?i)\bdel\s+(/f\s+|/s\s+|/q\s+)+.*[a-z]:\\?\s*$`), "递归强删盘根目录"},
-	{regexp.MustCompile(`(?i)\breg\s+(delete|add)\s+.*hklm`), "修改系统注册表 HKLM"},
 	{regexp.MustCompile(`(?i)\b(bcdedit|diskpart|vssadmin\s+delete|wbadmin\s+delete|cipher\s+/w)\b`), "系统级破坏工具"},
 	{regexp.MustCompile(`:\(\)\s*\{`), "fork 炸弹"},
 }
 
 // destructiveCommandHit 命中危险命令时返回拦截原因，空串表示放行。
 func destructiveCommandHit(cmd string) string {
+	if why := registryNukeHit(cmd); why != "" {
+		return why
+	}
 	for _, d := range destructiveCmds {
 		if d.re.MatchString(cmd) {
 			return d.why
 		}
 	}
 	return ""
+}
+
+// regDeleteRe 捕获 reg delete 的键名参数（带引号的整段或单个无空白词）。
+var regDeleteRe = regexp.MustCompile(`(?i)\breg(?:\.exe)?\s+delete\s+("[^"]*"|\S+)`)
+
+// isSystemHive 键名是否指向系统级 hive（HKLM/HKCR，含 \\远程机\HKLM\... 形态）。
+// HKCU 是用户态（删坏可重建用户配置解决），不算系统级、不拦。
+func isSystemHive(key string) bool {
+	k := strings.ToLower(strings.Trim(key, `"`))
+	return strings.HasPrefix(k, "hklm") || strings.HasPrefix(k, "hkcr") ||
+		strings.Contains(k, `\hklm\`) || strings.Contains(k, `\hkcr\`) ||
+		strings.HasSuffix(k, `\hklm`) || strings.HasSuffix(k, `\hkcr`)
+}
+
+// registryNukeHit 注册表灾难形态：整键递归删除系统 hive（HKLM/HKCR）。
+// 拦截原则：只拦「删整棵子树」——注册表没有回收站，删错 HKLM\SYSTEM /
+// HKCR 分支是重装量级且不可逆；单值级写删可逆、有会话记录可回溯，交给
+// 沙箱/审批层。两种形态（Go regexp 是 RE2、无 (?!) 前瞻，例外只能用代码判断）：
+//   形态 1 reg delete：键名指向 HKLM/HKCR 且不带 /v|/ve（带 /v|/ve 是删
+//     单值，放行；/va 删键下全部值仍属大范围，照拦）。按 |&; 分段后逐段
+//     匹配，/v 的判断才不被同串其他命令污染。
+//   形态 2 PowerShell：Remove-Item/ri 作用于 HKLM:/HKCR: 且带 -rec* 开关。
+//     覆盖管道写法 Get-ChildItem HKLM:\... | Remove-Item -Recurse（路径与
+//     动词分居管道两侧），故按整条命令判断。已知代价：同一条命令里
+//     「删普通目录 -Recurse」又引用 HKLM:/HKCR: 路径的罕见组合会误拦，
+//     拆成两条命令即可，报错自带出路。del/rm/rd 等别名误伤面大（cmd 下
+//     是文件操作，盘根另有专门规则），不纳入。
+func registryNukeHit(cmd string) string {
+	low := strings.ToLower(cmd)
+	hasRemove, hasRecurse := false, false
+	for _, tok := range strings.Fields(low) {
+		if tok == "remove-item" || tok == "ri" {
+			hasRemove = true
+		}
+		if strings.HasPrefix(tok, "-rec") {
+			hasRecurse = true
+		}
+	}
+	if hasRemove && hasRecurse && (strings.Contains(low, "hklm:") || strings.Contains(low, "hkcr:")) {
+		return "整键递归删除系统注册表（HKLM/HKCR）"
+	}
+	for _, seg := range strings.FieldsFunc(low, func(r rune) bool { return r == '|' || r == '&' || r == ';' }) {
+		m := regDeleteRe.FindStringSubmatch(seg)
+		if m == nil {
+			continue
+		}
+		singleValue := false
+		for _, tok := range strings.Fields(seg) {
+			if tok == "/v" || tok == "/ve" {
+				singleValue = true
+			}
+		}
+		if !singleValue && isSystemHive(m[1]) {
+			return "整键递归删除系统注册表（HKLM/HKCR）"
+		}
+	}
+	return ""
+}
+
+// guardRejectError 危险命令护栏的统一拒绝文案：指明是谁拦的、为什么、
+// 人工出路，并明说「勿换写法绕过」——注册表规则的 PowerShell 等价写法
+// 已一并被拦，提前掐掉模型换写法或转写脚本文件的念头。
+func guardRejectError(why string) error {
+	return fmt.Errorf("权限拒绝：该命令被「危险命令拦截」护栏拦截（%s）。如确实需要，请让用户在设置→组件中评估该开关后手动执行。请勿尝试换写法（如 PowerShell 注册表路径）或生成脚本文件绕过", why)
 }
 
 // guardEnabled 危险命令护栏是否开启：组件缺省启用，组件缺失视为开启。
@@ -1004,7 +1070,7 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		// 不进入"先执行后升级"的流程——这类命令不该有被放行的机会。
 		if t.app.guardEnabled() {
 			if why := destructiveCommandHit(act.Command); why != "" {
-				return nil, fmt.Errorf("权限拒绝：该命令被「危险命令拦截」护栏拦截（%s）。如确实需要，请让用户在设置→组件中评估该开关后手动执行", why)
+				return nil, guardRejectError(why)
 			}
 		}
 		policy := sandboxPolicyForMode(mode)
