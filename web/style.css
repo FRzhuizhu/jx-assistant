@@ -1519,9 +1519,25 @@ body.rp-open .w-handle { display: none; }
   field-sizing: content;
 }
 .composer-input::placeholder { color: var(--text-3); }
+/* 输入框标记胶囊的背衬层（HTML 见 index.html 的 composer-input-wrap）：与输入框
+   同排版、字全透明，只在“引用N”“文件N …”标记段画灰底圆角色块——黑字仍是输入框
+   自己的（叠在最上层、正常编辑），胶囊只是精确垫底的底色，两层渲染同一段文本故
+   逐字重合。排版参数（字体/行高/内边距/换行）由 JS 从输入框复制（同语音灰字层
+   手法）；margin:-4px 抵消 padding:4px，字形位置零偏移 */
+.composer-input-wrap { position: relative; }
+.mark-backdrop {
+  position: absolute; inset: 0; overflow: hidden;
+  pointer-events: none; color: transparent;
+  white-space: pre-wrap; overflow-wrap: break-word;
+}
+.mark-backdrop .mk {
+  background: var(--chip); border-radius: 8px;
+  padding: 0 4px; margin: 0 -4px;
+}
 /* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——多条累计，
    灰底胶囊；1 条显示“某某某…”截断、多条收成「引用了N条」（悬停展开面板看逐条
-   全文）、✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（纯文本）。发送时
+   全文）、✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（背衬层画成灰底
+   胶囊，见下方 composer-input-wrap 注释）。发送时
    组装为「用户引用：」块（逐条带编号全文）+ 正文完整发给模型（app-chat.js
    「引用胶囊」节） */
 .quote-bar {

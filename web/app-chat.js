@@ -5442,12 +5442,13 @@ let selKeepText = '';
    「引用到输入框 / 在右侧辅助问答」不把全文塞进输入框——与用户自己打的字混在
    一起，模型分不清哪段是引用。引用挂到输入卡内的胶囊条上，并支持多条累计：
    · 每次引用在输入框光标处插入一个「“引用N”」纯文本标记，占位记下"在哪个位置
-     引用了第几条"；胶囊条上 1 条显示“某某某…”截断，多条收成「引用了N条」（悬停
+     引用了第几条"（输入框里由背衬层画成灰底胶囊，见「输入框标记胶囊」节）；胶囊
+     条上 1 条显示“某某某…”截断，多条收成「引用了N条」（悬停
      title 看逐条清单），✕ 一键清空。
    · 发送时组装为「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——前端看到的
      是胶囊与标记，模型收到的是带编号的完整引用，正文里的“引用N”即引用位置。
    · 对话区用户气泡：引用块逐条渲染成灰色引用行（截断 + title 全文），正文里的
-     “引用N”标记渲染成灰色胶囊（title=对应全文）。
+     “引用N”标记与“文件N 截断名”标记渲染成灰色胶囊（前者 title=对应引用全文）。
    · 引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
      jx.subq.<id>，存 JSON 数组），切走再回来、刷新页面都不丢。 */
 
@@ -5476,7 +5477,9 @@ function quotesOf(view) {
   return view.state.quotes;
 }
 
-// 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）
+// 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）。
+// 文件标记（“文件N 截断名”）原样留在正文里——后端【文件上传】注记本来就带全名
+// 与位置，模型自己能对上号；气泡里它与“引用N”同款渲染成灰胶囊（appendQuoteBodyText）
 function composeQuoted(view, text) {
   const qs = quotesOf(view || mainView).map((q) => String(q).trim()).filter(Boolean);
   const body = String(text || '').trim();
@@ -5510,11 +5513,13 @@ function splitQuoted(raw) {
   return null;
 }
 
-// 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”标记
-// 渲染成灰色胶囊（title=对应全文）
+// 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”与
+// “文件N 截断名”标记渲染成灰色胶囊（前者 title=对应引用全文）
 function appendQuotedBody(b, raw) {
   const qm = splitQuoted(raw);
-  if (!qm) { b.appendChild(document.createTextNode(raw)); return; }
+  // 没有引用块（只带文件、或什么都没带）也走标记切段：文件标记照样出胶囊，
+  // 引用标记因对不上号按普通文字放行（与有引用块时的兜底语义一致）
+  if (!qm) { appendQuoteBodyText(b, raw, []); return; }
   qm.quotes.forEach((q, i) => {
     const line = document.createElement('span');
     line.className = 'msg-quote';
@@ -5525,22 +5530,25 @@ function appendQuotedBody(b, raw) {
   appendQuoteBodyText(b, qm.rest, qm.quotes);
 }
 
-// 正文按“引用N”标记切段：命中的渲染灰胶囊，其余原样文本节点（对不上号的标记——
-// 比如引用已清掉、正文里残留——按普通文字展示，不硬猜）
+// 正文按标记切段：“引用N”与“文件N 截断名”都渲染成灰胶囊；其余原样文本节点。
+// 引用胶囊的 title 放对应引用全文（对不上号的——比如引用已清掉、正文里残留——
+// 按普通文字展示，不硬猜）；文件标记自带截短名，不需要额外查表
 function appendQuoteBodyText(b, text, quotes) {
   const src = String(text == null ? '' : text);
   if (!src) return;
-  const rx = /“引用(\d+)”/g;
+  const rx = /“(引用\d+|文件\d+ [^”\n]*)”/g;
   let last = 0, m;
   while ((m = rx.exec(src))) {
     if (m.index > last) b.appendChild(document.createTextNode(src.slice(last, m.index)));
-    const full = quotes[Number(m[1]) - 1];
-    if (full == null) b.appendChild(document.createTextNode(m[0]));
-    else {
+    const qm = m[1].match(/^引用(\d+)$/);
+    const full = qm ? quotes[Number(qm[1]) - 1] : null;
+    if (qm && full == null) {
+      b.appendChild(document.createTextNode(m[0])); // 对不上号的引用标记：按普通文字展示
+    } else {
       const chip = document.createElement('span');
       chip.className = 'quote-chip';
       chip.textContent = m[0];
-      chip.title = full;
+      if (full != null) chip.title = full;
       b.appendChild(chip);
     }
     last = rx.lastIndex;
@@ -5581,6 +5589,40 @@ function renderQuote(view) {
   }
 }
 
+// 在视图输入框光标处插入一段标记文本（“引用N”/“文件N …”共用）：输入框有焦点就
+// 插在光标处，否则追加到末尾；插完聚焦、光标跟在标记后（接着打字即续写）。
+// 落盘由调用方收口（一次插多条时只落一次）
+function insertInputMark(view, mark) {
+  const inp = view.input;
+  const p = (document.activeElement === inp && typeof inp.selectionStart === 'number')
+    ? inp.selectionStart : inp.value.length;
+  inp.value = inp.value.slice(0, p) + mark + inp.value.slice(p);
+  inp.focus();
+  inp.setSelectionRange(p + mark.length, p + mark.length);
+  autoGrow(inp);
+}
+
+// 文件名截断：主名前 6 个字符 + … + 完整扩展名（“报告final版V3.docx”→“报告fin….docx”），
+// 够短就原样返回；按码点截不劈中文
+function fileClipName(name) {
+  const s = String(name || '');
+  const i = s.lastIndexOf('.');
+  const ext = (i > 0 && i >= s.length - 7) ? s.slice(i) : '';
+  const cps = Array.from(ext ? s.slice(0, i) : s);
+  const head = cps.length <= 6 ? cps.join('') : cps.slice(0, 6).join('') + '…';
+  return head + ext;
+}
+
+// 给附件发输入框标记（“文件2 报告fin….docx”）：编号递增（区分截断后撞名的两个
+// 文件），完整标记文本存在附件对象 a.mark 上——移除附件时按它精确摘掉输入框里的
+// 胶囊；标记原样随正文发出（【文件上传】注记带全名，模型自己对上号）
+function attachMarkOf(view, a) {
+  view = view || mainView;
+  view.state.fileSeq = (view.state.fileSeq || 0) + 1;
+  a.mark = '\u201c文件' + view.state.fileSeq + ' ' + fileClipName(a.name) + '\u201d';
+  return a.mark;
+}
+
 // 挂上引用（各引用入口统一走这里）：累计进引用列表（同文再次引用不新增条目、
 // 复用原序号），在输入框光标处插入“引用N”标记，落盘并聚焦
 function setQuote(view, text) {
@@ -5592,15 +5634,7 @@ function setQuote(view, text) {
   if (idx < 0) { qs.push(t); idx = qs.length - 1; }
   renderQuote(view);
   persistQuoteLS(view);
-  const inp = view.input;
-  const mark = quoteMark(idx + 1);
-  // 标记落在"用户正在输入的位置"：输入框有焦点就插在光标处，否则追加到末尾
-  const p = (document.activeElement === inp && typeof inp.selectionStart === 'number')
-    ? inp.selectionStart : inp.value.length;
-  inp.value = inp.value.slice(0, p) + mark + inp.value.slice(p);
-  inp.focus();
-  inp.setSelectionRange(p + mark.length, p + mark.length); // 光标跟在标记后：接着打字即续写
-  autoGrow(inp);
+  insertInputMark(view, quoteMark(idx + 1));
   if (view === mainView) persistMainDraftLS(); else persistSubDraftLS(); // 程序化改值也要落盘
   syncComposerPad(view); // 胶囊出现改变输入区高度：重算悬浮垫高
 }
@@ -5669,6 +5703,122 @@ function restoreQuoteLS(view) {
     v.input.focus();
   });
 });
+
+/* ---------- 输入框标记胶囊：背衬层渲染 + 光标原子策略 ----------
+   “引用N”“文件N …”标记在输入框里是纯文本（textarea 装不下富文本），灰胶囊观感
+   由背衬层实现（HTML/CSS 见 index.html 的 composer-input-wrap 与 style.css）：
+   与输入框同排版的透明层垫在输入框底下（字体/行高/内边距/换行规则从输入框复制，
+   同语音灰字层的手法），标记段画灰底圆角色块——黑字仍是输入框自己的、叠在最上层
+   正常编辑，胶囊只是精确垫底的底色（两层渲染同一段文本，逐字重合）；
+   pointer-events:none 永不吃点击。
+   防误改中间：光标落进标记内部弹到标记末尾；退格贴着标记末尾 / Delete 贴着标记
+   开头整颗删除（优先 execCommand 保撤销栈）；选区完整落在一颗标记内扩成整颗。
+   IME 组字期间一律不干预。程序化写值（语音落字、退回回填、清空等）经 value
+   存取器拦截统一刷新背衬层，不必挨个调用点补。 */
+const INPUT_MARK_RX = /“(?:引用\d+”|文件\d+ [^”\n]*”)/g;
+
+function setupInputMarks(view) {
+  const ta = view.input;
+  const wrap = ta.closest('.composer-input-wrap');
+  const bd = wrap && wrap.querySelector('.mark-backdrop');
+  if (!bd) return;
+
+  // 排版对齐：从输入框复制 computed style（composer 字体静态，初始化与窗口缩放时同步）
+  function syncMetrics() {
+    const cs = getComputedStyle(ta);
+    ['font-size', 'font-family', 'font-weight', 'line-height', 'letter-spacing',
+      'padding', 'box-sizing', 'white-space', 'word-break', 'overflow-wrap', 'text-align']
+      .forEach((k) => { bd.style[k] = cs[k]; });
+  }
+
+  // 渲染：按标记切段，标记段灰底胶囊、其余透明文本；没有标记就整层腾空（零开销）
+  function render() {
+    const v = ta.value;
+    bd.textContent = '';
+    if (v.indexOf('“') < 0) return;
+    INPUT_MARK_RX.lastIndex = 0;
+    let last = 0, m;
+    while ((m = INPUT_MARK_RX.exec(v))) {
+      if (m.index > last) bd.appendChild(document.createTextNode(v.slice(last, m.index)));
+      const sp = document.createElement('span');
+      sp.className = 'mk';
+      sp.textContent = m[0];
+      bd.appendChild(sp);
+      last = INPUT_MARK_RX.lastIndex;
+    }
+    if (last < v.length) bd.appendChild(document.createTextNode(v.slice(last)));
+  }
+  let raf = 0;
+  function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
+
+  // value 存取器：程序化写值也触发刷新（原生键入走下方 input 事件）。拦不住的
+  // 极端环境不影响功能，只是背衬层要等下一次键入才跟上
+  try {
+    const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    Object.defineProperty(ta, 'value', {
+      get() { return desc.get.call(this); },
+      set(v) { desc.set.call(this, v); schedule(); },
+      configurable: true,
+    });
+  } catch (e) { /* 老内核：靠 input 事件兜底 */ }
+
+  ta.addEventListener('input', schedule);
+  // 内容超高时输入框自己滚：背衬层跟着上移保持对齐（同语音灰字层）
+  ta.addEventListener('scroll', () => { bd.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)'; });
+  window.addEventListener('resize', () => { syncMetrics(); render(); });
+  syncMetrics();
+  render();
+
+  // —— 光标原子策略 ——
+  function markList() {
+    const out = [], v = ta.value;
+    INPUT_MARK_RX.lastIndex = 0;
+    let m;
+    while ((m = INPUT_MARK_RX.exec(v))) out.push({ start: m.index, end: m.index + m[0].length });
+    return out;
+  }
+  let composing = false;
+  ta.addEventListener('compositionstart', () => { composing = true; });
+  ta.addEventListener('compositionend', () => { composing = false; schedule(); });
+
+  // 整颗删除（保撤销栈：选中范围后插入空串；引擎不接则回落 setRangeText）
+  function deleteRange(st, en) {
+    ta.focus();
+    ta.setSelectionRange(st, en);
+    if (!document.execCommand('insertText', false, '')) {
+      ta.setRangeText('', st, en, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+  ta.addEventListener('keydown', (e) => {
+    if (composing || e.isComposing) return;
+    if (ta.value.indexOf('“') < 0 || ta.selectionStart !== ta.selectionEnd) return;
+    const p = ta.selectionStart;
+    const list = markList();
+    if (e.key === 'Backspace') {
+      for (const mk of list) if (mk.end === p) { e.preventDefault(); deleteRange(mk.start, mk.end); return; }
+    } else if (e.key === 'Delete') {
+      for (const mk of list) if (mk.start === p) { e.preventDefault(); deleteRange(mk.start, mk.end); return; }
+    }
+  });
+  // 光标落进标记内部 → 弹到标记末尾；选区完整落在单颗内 → 扩成整颗（双击选词等）
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement !== ta || composing) return;
+    if (ta.value.indexOf('“') < 0) return;
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    if (s !== e) {
+      for (const mk of markList()) {
+        if (s >= mk.start && e <= mk.end && (s !== mk.start || e !== mk.end)) {
+          ta.setSelectionRange(mk.start, mk.end); return;
+        }
+      }
+      return;
+    }
+    for (const mk of markList()) {
+      if (s > mk.start && s < mk.end) { ta.setSelectionRange(mk.end, mk.end); return; }
+    }
+  });
+}
 
 // 仅识别主对话区与右栏子对话区里的文字选区
 function chatSelection() {
@@ -6453,17 +6603,27 @@ function pasteImageName(f) {
 function stagePaths(paths, view) {
   view = view || popView || mainView;
   const list = attachmentsOf(view);
+  const added = [];
   let dropped = 0;
   for (const p of paths) {
     if (list.length >= ATTACH_MAX_COUNT) { dropped++; continue; }
     const name = String(p).split(/[\\/]/).pop() || String(p);
-    list.push({
+    const a = {
       id: 'a' + (++attachSeq), kind: 'file', name, size: null, mime: '',
       file: null, path: p, previewUrl: '', status: 'staged',
-    });
+    };
+    list.push(a);
+    added.push(a);
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
+  // 输入框里挂上“文件N …”胶囊标记：附件区卡片照旧（图标/缩略图/✕），胶囊只记
+  // “在正文哪个位置引用了哪个文件”，发送时原样随正文发出（【文件上传】注记带全名）
+  for (const a of added) insertInputMark(view, attachMarkOf(view, a));
+  if (added.length) {
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    syncComposerPad(view);
+  }
   if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
 }
 
@@ -6488,6 +6648,12 @@ function stageFiles(files, view) {
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
+  // 输入框里挂上“文件N …”胶囊标记（同 stagePaths：附件区卡片照旧，标记只管位置）
+  for (const a of added) insertInputMark(view, attachMarkOf(view, a));
+  if (added.length) {
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    syncComposerPad(view);
+  }
   if (tooBig) attachHint(view, tooBig + ' 个文件超过 ' + fmtBytes(ATTACH_MAX_BYTES) + '，没有加入；大文件请点 ＋ 用「文件上传」选（走本机路径，不受此限）', 8000);
   else if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
   return added;
@@ -6606,6 +6772,12 @@ function removeAttachment(view, id) {
   const a = list[i];
   if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   list.splice(i, 1);
+  // 它在输入框里的胶囊标记一并摘掉（与引用 ✕ 摘“引用N”同款联动）
+  if (a.mark && view.input.value.indexOf(a.mark) >= 0) {
+    view.input.value = view.input.value.split(a.mark).join('');
+    autoGrow(view.input);
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+  }
   const box = viewEl(view, 'attachments');
   if (box) box._sig = null; // 强制重画（删到空时立刻回到零占位）
   renderAttachments(view);
@@ -6984,6 +7156,7 @@ function tuckComposer(view, on) {
 function setupScrollTuck() {
   for (const view of [mainView, subView]) {
     setupAttachDrop(view); // 附件区：粘贴图片与拖拽投放（两个视图各挂一套）
+    setupInputMarks(view); // 标记胶囊：背衬层渲染与光标原子策略（两个视图各挂一套）
     let lastY = view.scroll.scrollTop;
     // 跟随钉住的手势入口：滚轮上翻/触摸上滑立即钉住（无论离底多近——否则
     // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底

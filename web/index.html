@@ -224,7 +224,15 @@
                不用原生 title（黄色小框、触发慢）——纯 CSS :hover 即时展开（style.css .q-expand） -->
           <div class="q-expand"></div>
         </div>
-        <textarea id="input" class="composer-input" rows="3" spellcheck="false" placeholder="描述你想要构建的内容…"></textarea>
+        <!-- 输入框与标记胶囊背衬层：背衬层与输入框同排版（字体/行高/内边距/换行规则
+             由 JS 从输入框复制），字全透明，只在“引用N”“文件N …”标记段垫上灰底
+             胶囊——黑字仍是输入框自己的（最上层、正常编辑），胶囊只是精确垫底的
+             底色；pointer-events:none 永不吃点击。渲染与光标原子策略见
+             app-chat.js 的「输入框标记胶囊」节 -->
+        <div class="composer-input-wrap">
+          <div class="mark-backdrop" aria-hidden="true"></div>
+          <textarea id="input" class="composer-input" rows="3" spellcheck="false" placeholder="描述你想要构建的内容…"></textarea>
+        </div>
         <div class="composer-bar">
           <div class="composer-left">
             <span id="plugin-composer-controls"></span>
@@ -309,7 +317,11 @@
                 <!-- 悬停展开面板：与主对话区同款（id 加 sub- 前缀） -->
                 <div class="q-expand"></div>
               </div>
-              <textarea id="sub-input" class="composer-input" rows="3" spellcheck="false" placeholder="向子对话发消息…"></textarea>
+              <!-- 输入框与标记胶囊背衬层：与主对话区同款（id 加 sub- 前缀） -->
+              <div class="composer-input-wrap">
+                <div class="mark-backdrop" aria-hidden="true"></div>
+                <textarea id="sub-input" class="composer-input" rows="3" spellcheck="false" placeholder="向子对话发消息…"></textarea>
+              </div>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
               <div class="composer-bar">
                 <div class="composer-left">
