@@ -330,6 +330,7 @@ type auditRow struct {
 	Est     int         `json:"est"`             // call：发送前的 token 估算
 	Ms      int64       `json:"ms"`              // call：耗时
 	Text    int         `json:"text"`            // call：返回正文字数
+	OutMs   int64       `json:"outMs,omitempty"` // call：输出窗口耗时（首末输出事件间，吐字速度分母）
 	Tools   []string    `json:"tools"`           // call：返回的工具调用名
 	Usage   *auditUsage `json:"usage"`
 	Error   string      `json:"error"`             // call/error/overflow：错误原文（网关错误含响应摘要）
@@ -344,9 +345,14 @@ type auditRow struct {
 
 // RecordCall 在一次模型调用返回后（无论成败）落引擎日志行：调用前后的关键
 // 事实一次记全（含当次组装的前缀指纹——指纹变化即能解释缓存命中变化）。
-func (e *ContextEngine) RecordCall(sess *SessionMeta, step, msgs, est int, sysHash, envHash string, ms int64, usage *Usage, textRunes int, toolNames []string, callErr error) {
+// outMs 是输出窗口（首末输出事件间）的时长，与厂家 usage 的 completion_tokens
+// 相除即吐字速度；无输出（纯报错）的调用为 0。
+func (e *ContextEngine) RecordCall(sess *SessionMeta, step, msgs, est int, sysHash, envHash string, ms int64, usage *Usage, textRunes int, toolNames []string, callErr error, outMs int64) {
 	p := map[string]any{
 		"type": "call", "step": step, "msgs": msgs, "est": est, "ms": ms, "text": textRunes,
+	}
+	if outMs > 0 {
+		p["outMs"] = outMs
 	}
 	if sysHash != "" {
 		p["sysHash"] = sysHash

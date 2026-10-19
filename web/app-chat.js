@@ -5441,6 +5441,13 @@ function renderCtxTip(view) {
     `<div class="ctx-cat"><span class="cc-name">未缓存输入</span><span class="cc-val">${has ? tokFull(c.uncached) : '—'}</span></div>` +
     `<div class="ctx-cat"><span class="cc-name">缓存读取</span><span class="cc-val">${has ? tokFull(c.cacheHit) : '—'}</span></div>` +
     `<div class="ctx-cat"><span class="cc-name">输出</span><span class="cc-val">${has ? tokFull(c.output) : '—'}</span></div>`;
+  // 输出速度（最后一次输出的吐字速度）：厂家 usage 报的 completion_tokens ÷
+  // 输出窗口时长（首字到末字，不含首字前的等待）。网关不报 usage 或老会话的
+  // 审计行没有窗口数据时不显示
+  const sp = d.speed || {};
+  if (sp.tokPerSec > 0 && sp.ms > 0) {
+    html += `<div class="ctx-cat"><span class="cc-name">输出速度</span><span class="cc-val">${sp.tokPerSec.toFixed(1)} tok/s（${Number(sp.tokens).toLocaleString('en-US')} tok / ${(sp.ms / 1000).toFixed(1)}s）</span></div>`;
+  }
   tip.innerHTML = html;
 }
 

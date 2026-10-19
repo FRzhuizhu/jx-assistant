@@ -470,6 +470,14 @@ type ctxStats struct {
 		Rate         float64 `json:"rate"`         // 缓存命中率（hit/prompt；无数据为 0）
 		Calls        int64   `json:"calls"`        // 模型调用次数
 	} `json:"cache"`
+	// 输出速度（吐字速度）：最近一次带 token 统计的成功输出。分子=厂家 usage
+	// 报的 completion_tokens，分母=输出窗口时长（首个输出事件到末个输出事件，
+	// 不含首字前的排队等待）。
+	Speed struct {
+		TokPerSec float64 `json:"tokPerSec"`
+		Tokens    int     `json:"tokens"` // 最后一次输出的 token 数（厂家口径）
+		Ms        int64   `json:"ms"`     // 最后一次输出的窗口时长
+	} `json:"speed"`
 }
 
 // contextStats 按与 buildContext 完全相同的组装规则，把下一次请求的上下文
@@ -492,6 +500,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 		}
 	}
 
+	var out ctxStats
 	if raw, err := a.Store.RawMessagesAll(sess.ID); err == nil {
 		summaries := activeSummaries(raw)
 		boundary := int64(0)
@@ -552,6 +561,24 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 		if ruleMode && foldSeen {
 			add("消息", TextMessage("user", foldBoundaryNote))
 		}
+		// 输出速度：倒序找最近一次有效的成功输出——audit 行带输出窗口 outMs 且
+		// 厂家报了 completion_tokens。窗口过短（<100ms，瞬发完成）与纯工具调用
+		// 步没有速度意义，跳过取更早一次的真实文本输出
+		for i := len(raw) - 1; i >= 0; i-- {
+			if raw[i].Kind != kindAudit {
+				continue
+			}
+			var row auditRow
+			if json.Unmarshal([]byte(raw[i].Text()), &row) != nil ||
+				row.Type != "call" || row.Scope != "" || row.Error != "" ||
+				row.OutMs < 100 || row.Usage == nil || row.Usage.Completion <= 0 {
+				continue
+			}
+			out.Speed.Tokens = row.Usage.Completion
+			out.Speed.Ms = row.OutMs
+			out.Speed.TokPerSec = float64(row.Usage.Completion) * 1000 / float64(row.OutMs)
+			break
+		}
 	}
 
 	order := []string{"消息", "系统工具", "系统提示词", "摘要", "环境快照", "其他"}
@@ -559,7 +586,6 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 	for _, v := range cats {
 		total += v
 	}
-	var out ctxStats
 	out.Window = a.resolveTarget(sess).ContextWindow
 	out.Total = total
 	for _, name := range order {

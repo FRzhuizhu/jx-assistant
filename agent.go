@@ -1188,6 +1188,17 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			calls = nil
 			usage = nil
 			callStart := time.Now()
+			// 输出窗口计时（吐字速度口径）：首个输出事件（正文或思考）到末个
+			// 输出事件之间的时长。整次调用耗时里混着排队与思考启动等待，直接
+			// 拿总耗时除字数会把速度明显拉低，所以单独记这个窗口
+			var firstOut, lastOut time.Time
+			markOut := func() {
+				t := time.Now()
+				if firstOut.IsZero() {
+					firstOut = t
+				}
+				lastOut = t
+			}
 			err = StreamChat(ctx, target, req, StreamCallbacks{
 				// 模型流强断登记（停止看门狗硬终结用）：流建立时注册、结束时注销——
 				// 硬停止时直接断开底层连接，不依赖 ctx 取消生效
@@ -1203,10 +1214,12 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)
 				},
 				OnText: func(s string) {
+					markOut()
 					text.WriteString(s)
 					emit(Event{Type: "delta", Delta: s})
 				},
 				OnReasoning: func(s string) {
+					markOut()
 					reasoning.WriteString(s)
 					emit(Event{Type: "reasoning", Delta: s})
 				},
@@ -1222,8 +1235,12 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				},
 			})
 			// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时（重试的每次尝试各一条）
+			outMs := int64(0)
+			if !firstOut.IsZero() && lastOut.After(firstOut) {
+				outMs = lastOut.Sub(firstOut).Milliseconds()
+			}
 			a.ctxEngine().RecordCall(sess, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, time.Since(callStart).Milliseconds(),
-				usage, len([]rune(text.String())), toolNamesOf(calls), err)
+				usage, len([]rune(text.String())), toolNamesOf(calls), err, outMs)
 			if err == nil {
 				if attempt > 1 {
 					emit(Event{Type: "auto_retry"}) // 重试成功：收掉重试提示条
