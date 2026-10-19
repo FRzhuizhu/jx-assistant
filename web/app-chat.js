@@ -3045,12 +3045,14 @@ function askHoldTimer(id) {
         （组件停用时该端点 404，静默跳过：只闪不读）；
      ④ 15 秒内用户按掉/取消/关闭这层，或从任何入口进去处理（计划页/浮窗，
         见 notePlanHandled），都取消这次朗读；正在读的也一并掐断（代次作废）。
-   全层停留：朗读结束后 4 秒收起，最迟 40 秒兜底（朗读失败/被拦时不会一直挂着）。 */
-const ASK_ALERT_TTS_SEC = 15;   // 朗读前的倒计时（秒）
-const ASK_ALERT_MAX_MS = 40000; // 全层最长停留（兜底自动收起）
+   观感（用户口径）：刚弹出只是很淡的压暗＋光晕呼吸，**从这一刻起用 15 秒缓慢缓入**
+   （与倒计时同步）渐进成整屏主题色——到 15 秒才彻底变蓝，不闪入（护眼、防光敏）；
+   变成主题色后**常驻、不再自动收起**，直到用户关掉这层（点背景/点卡片/Esc）或
+   这条请求被处理（作答/进去处理），界面才恢复正常。 */
+const ASK_ALERT_TTS_SEC = 15;   // 朗读前的倒计时（秒）；也是渐变到整屏主题色的时长
+const ASK_ALERT_FADE_MS = ASK_ALERT_TTS_SEC * 1000; // 淡压暗 → 纯主题色的缓入时长
 let askAlertQid = '';
 let askAlertPayload = null;  // 本次提醒的内容（倒计时结束朗读时用）
-let askAlertHideTimer = 0;
 let askAlertSettleTimer = 0; // 呼吸 6 秒后停成静态淡光（护眼：不一直动）
 let askAlertCountTimer = 0;  // 倒计时数字/进度条刷新
 let askAlertTtsTimer = 0;    // 倒计时到点 → 开始朗读
@@ -3066,13 +3068,18 @@ function showAskAlert(ev) {
   askAlertPayload = ev;
   $('ask-alert-text').textContent =
     (ev.title ? '来自「' + ev.title + '」的提问：' : '') + (ev.summary || '有个问题需要你确认');
-  ov.classList.remove('hidden', 'settle');
+  ov.classList.remove('hidden', 'settle', 'solid'); // 从头来：先淡压暗，再慢慢渐变到主题色
   if (askAlertSettleTimer) clearTimeout(askAlertSettleTimer);
   askAlertSettleTimer = setTimeout(() => ov.classList.add('settle'), 6000);
-  if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
-  askAlertHideTimer = setTimeout(hideAskAlert, ASK_ALERT_MAX_MS);
-  // 15 秒可见倒计时：走完才朗读（点掉/进去处理连它一起取消）
+  // 整屏主题色与倒计时同步：用 15 秒缓入（时长见 style.css 的 background-color
+  // 过渡，由 .solid 触发）从「很淡的压暗」一路渐进到纯主题色，到 15 秒彻底变蓝
+  // 并保持——不闪入（用户口径：渐变换色，怕刺眼/光敏）；这里不再排任何「自动收起」。
   const gen = ++askAlertGen;
+  // 元素刚从 display:none 显出来，同帧加 .solid 不会有过渡（没有「变化前」的样式），
+  // 所以先让淡压暗这一帧落定（读一次 offsetWidth 强制重排），下一帧再加。
+  void ov.offsetWidth;
+  requestAnimationFrame(() => { if (gen === askAlertGen) ov.classList.add('solid'); });
+  // 15 秒可见倒计时：走完才朗读（点掉/进去处理连它一起取消）
   startAskAlertCount(Date.now() + ASK_ALERT_TTS_SEC * 1000);
   if (askAlertTtsTimer) clearTimeout(askAlertTtsTimer);
   askAlertTtsTimer = setTimeout(() => {
@@ -3136,8 +3143,7 @@ function speakAskAlert(gen) {
       el.onended = () => {
         URL.revokeObjectURL(u);
         if (askAlertAudioURL === u) askAlertAudioURL = '';
-        if (askAlertAudio === el) askAlertAudio = null;
-        if (gen === askAlertGen) armAskAlertHide(4000); // 读完了：几秒后自动收起
+        if (askAlertAudio === el) askAlertAudio = null; // 读完也不收起：提醒层常驻，等用户处置
       };
       el.play().catch(() => {
         if (gen === askAlertGen) $('ask-alert-tip').textContent = '未能朗读（浏览器拦截了自动播放）';
@@ -3149,19 +3155,15 @@ function speakAskAlert(gen) {
     });
 }
 
-// 重排自动收起（朗读结束用）：不动那份「最长停留」兜底以外的东西。
-function armAskAlertHide(ms) {
-  if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
-  askAlertHideTimer = setTimeout(hideAskAlert, ms);
-}
-
-// hideAskAlert 关闭提醒层并清干净定时器与音频（点击/Esc/自动收起/问题解决共用）：
+// hideAskAlert 关闭提醒层并清干净定时器与音频（点击/Esc/问题解决共用）：
 // 关掉之后在途的朗读请求一律作废（代次 +1）——15 秒内取消就不会出声。
 function hideAskAlert() {
   const ov = $('ask-alert');
-  if (ov) ov.classList.add('hidden');
-  askAlertGen++;
-  if (askAlertHideTimer) { clearTimeout(askAlertHideTimer); askAlertHideTimer = 0; }
+  if (ov) {
+    ov.classList.add('hidden');
+    ov.classList.remove('solid'); // 关掉即恢复原界面（下次重新从淡压暗慢慢渐变）
+  }
+  askAlertGen++; // 同时作废还没跑到的「加 .solid」那一帧（rAF 里比对代次）
   if (askAlertSettleTimer) { clearTimeout(askAlertSettleTimer); askAlertSettleTimer = 0; }
   if (askAlertCountTimer) { clearInterval(askAlertCountTimer); askAlertCountTimer = 0; }
   if (askAlertTtsTimer) { clearTimeout(askAlertTtsTimer); askAlertTtsTimer = 0; }
