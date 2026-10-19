@@ -4907,13 +4907,11 @@ async function prepareSend(forceContent, view) {
       refreshDrawer();
       loadSessions();
     } else {
-      // 没选中子对话：弹出下拉让用户先选/新建，输入内容保留
-      renderSubDDPop();
-      openPopover('sub-dd-pop', $('sub-dd'));
-      view.hint.textContent = '先选择或新建一个子对话';
-      setTimeout(() => { view.hint.textContent = ''; }, 2500);
-      if (armed) runHintOff(view);
-      return;
+      // 没选中子对话：懒创建（与主对话首页同款）——发出第一条消息才真正建
+      // 子对话（继承主对话上下文）并就地打开，消息照发，不提前留空会话；
+      // 无主对话可挂靠或创建失败由 newAuxChat 就地提示，输入内容保留、本轮中止
+      await newAuxChat();
+      if (!view.state.cur) { if (armed) runHintOff(view); return; }
     }
   }
   // 附件落盘：暂存的文件先写进工作区（后端照旧注入【文件上传】通知，排在用户消息

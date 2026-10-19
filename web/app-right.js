@@ -289,7 +289,7 @@ function renderSubDDPop() {
   if (!subKids.length) {
     const e = document.createElement('div');
     e.className = 'sub-dd-empty';
-    e.textContent = '还没有子对话；AI 派发或点下方新建都会出现在这里';
+    e.textContent = '还没有子对话；在下方输入框发消息会自动新建，AI 派发的也出现在这里';
     pop.appendChild(e);
   }
   for (const s of subKids) {
@@ -308,6 +308,15 @@ function renderSubDDPop() {
   neu.innerHTML = '<span class="d-status">＋</span><span class="d-title">新建子对话</span>';
   neu.onclick = () => { closePopovers(); newAuxChat(); };
   pop.appendChild(neu);
+}
+
+// 子对话输入框的 placeholder 随「是否已进入子对话」切换（空态引导直接发消息、
+// 进入后回到常态）。发送执行中时 runHintOn 已把当下 placeholder 记为提示基线
+// （idlePh），这里同步换基线，免得流式结束 runHintOff 把旧文案恢复回来。
+function setSubPlaceholder(text) {
+  const ph = $('sub-input');
+  ph.placeholder = text;
+  if (ph.dataset.runPh) ph.dataset.idlePh = text;
 }
 
 // 子对话视图回空态：当前主对话没有选中的子对话（没建过，或保存的那个已被删除）。
@@ -330,8 +339,9 @@ function subClearCurrent() {
   syncComposer(subView);     // 右栏输入区控件回空态（无会话的中性默认）
   syncComposerPad(subView);
   renderPanels();            // 子对话的待办卡随之回到主对话区/角标堆
-  subView.col.innerHTML = '<div class="empty"><h2>子对话</h2><p>顶部下拉选择或新建子对话；数字助理派发的子对话也出现在这里。</p></div>';
+  subView.col.innerHTML = '<div class="empty"><h2>子对话</h2><p>在下方输入框直接发消息，会自动新建子对话；顶部下拉可切换已有的，数字助理派发的也出现在这里。</p></div>';
   $('sub-input').value = ''; // 没有选中的子对话：不留上一个子对话的草稿
+  setSubPlaceholder('发消息自动新建子对话…'); // 空态引导：像新对话页一样直接打字就能开聊
   autoGrow($('sub-input'));
 }
 
@@ -380,6 +390,7 @@ async function openSubSession(id) {
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
+    setSubPlaceholder('向子对话发消息…'); // 已进入子对话：空态的「自动新建」引导退场
     autoGrow($('sub-input'));
     restoreQuoteLS(subView); // 这个子对话挂着的引用胶囊也一并回来
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
@@ -400,9 +411,16 @@ async function openSubSession(id) {
   }
 }
 
+// 新建子对话并就地打开：下拉「新建」与右栏直接发消息的懒创建路径（prepareSend）
+// 共用。返回创建的会话；无父可挂或失败返回 null（已就地提示，输入内容保留）。
 async function newAuxChat() {
   const fid = drawerFamilyId();
-  if (!fid) return;
+  if (!fid) {
+    // 首页态：子对话必须挂靠某个主对话，先提示用户打开对话再发
+    subView.hint.textContent = '子对话挂在当前对话名下；先打开一个对话';
+    setTimeout(() => { subView.hint.textContent = ''; }, 2500);
+    return null;
+  }
   try {
     // 子对话＝当前对话的分支：后端照抄父会话的模式/工作区/权限/能力并完整复制历史，
     // 系统提示词与上下文与主对话一致（继承段在对话里折叠成一条「来自主对话」）
@@ -413,8 +431,10 @@ async function newAuxChat() {
     await openSubSession(s.id);
     refreshDrawer();
     loadSessions();
+    return s;
   } catch (e) {
     alert('新建子对话失败：' + e.message);
+    return null;
   }
 }
 $('rp-close').onclick = () => {
