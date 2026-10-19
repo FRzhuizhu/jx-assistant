@@ -580,6 +580,7 @@ async function restoreSession(s) {
   if (s.archived) await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: false }) });
   if (wsRecycled) lsSet('jx.wskeep', [...new Set([...lsGet('jx.wskeep', []), s.id])]);
   loadSessions();
+  refreshDrawer(); // 恢复的可能是子对话：右栏下拉清单立刻回来（无父可挂时自短路）
 }
 
 // 彻底删除工作目录：删除其名下全部会话记录、注销登记并拉黑（不碰磁盘文件夹）
@@ -613,7 +614,8 @@ function unregisterWorkspace(ws) {
   const cm = lsGet('jx.wscol', {}); delete cm[ws]; lsSet('jx.wscol', cm);
 }
 
-// 清空回收站的目标集合：回收站内的全部顶层对话 + 它们的子会话
+// 清空回收站的目标集合：回收站内的全部顶层对话 + 它们的子会话，以及单独
+// 归档的子对话（父对话还在正常区、只有子对话进了回收站——renderBin 同口径）
 // （keep 保留的、正常区的都不算；目录由回收列表单独注销）
 function collectEmptyTargets() {
   const keep = new Set(lsGet('jx.wskeep', []));
@@ -623,7 +625,8 @@ function collectEmptyTargets() {
     (s.archived || recycledWs.includes(wsOf(s))));
   const topIds = new Set(tops.map((s) => s.id));
   const targets = (state.sessions || []).filter((s) =>
-    topIds.has(s.id) || (s.parentId && topIds.has(s.parentId)));
+    topIds.has(s.id) || (s.parentId && topIds.has(s.parentId))
+    || (s.parentId && s.archived && !topIds.has(s.parentId)));
   return { tops, targets, recycledWs };
 }
 
@@ -650,14 +653,32 @@ function renderBin(box) {
   const sortIt = (arr) => viewCfg.sort === 'created'
     ? [...arr].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
     : arr;
-  // 回收站里的对话：已归档的、或挂在回收目录下且未被单独恢复的
+  // 回收站里的对话：已归档的、或挂在回收目录下且未被单独恢复的。
+  // 单独归档的子对话（父对话还在正常区）同样进回收站；父也归档的不单独列，
+  // 随父整组恢复与清空（collectEmptyTargets 的连坐删除同口径）
   const keep = new Set(lsGet('jx.wskeep', []));
-  const all = (state.sessions || []).filter((s) => s.mode !== 'assistant' && !s.parentId);
+  const archivedIds = new Set((state.sessions || []).filter((x) => x.archived).map((x) => x.id));
+  const all = (state.sessions || []).filter((s) =>
+    s.mode !== 'assistant' && (!s.parentId || (s.archived && !archivedIds.has(s.parentId))));
   const inBin = all.filter((s) => !keep.has(s.id) && (s.archived || recycledWs.includes(wsOf(s))));
   if (!recycledWs.length && !inBin.length) {
     box.innerHTML = '<div class="ws-empty">回收站是空的</div>';
     return;
   }
+  // 回收站里的子对话条目：标题前加「子对话」来源标记（复用时间线视图的工作区
+  // 小胶囊样式），其余与顶层会话完全同款（恢复/重命名/彻底删除同一套菜单）
+  const binItem = (s) => {
+    const el = sessionItem(s);
+    if (s.parentId) {
+      const tag = document.createElement('span');
+      tag.className = 's-ws';
+      tag.textContent = '子对话';
+      tag.title = '挂在别的对话名下的子会话；恢复后回到原对话右栏的子对话列表';
+      const title = el.querySelector('.s-title');
+      if (title) title.parentNode.insertBefore(tag, title);
+    }
+    return el;
+  };
   if (recycledWs.length) {
     const label = document.createElement('div');
     label.className = 'bin-label';
@@ -707,7 +728,7 @@ function renderBin(box) {
     if (!collapsed) {
       const list = document.createElement('div');
       list.className = 'ws-group-list';
-      for (const s of items) list.appendChild(sessionItem(s));
+      for (const s of items) list.appendChild(binItem(s));
       if (!items.length) list.innerHTML = '<div class="ws-empty">（无对话）</div>';
       group.appendChild(list);
     }
@@ -720,7 +741,7 @@ function renderBin(box) {
     label.className = 'bin-label';
     label.textContent = '对话';
     box.appendChild(label);
-    for (const s of flat) box.appendChild(sessionItem(s));
+    for (const s of flat) box.appendChild(binItem(s));
   }
 }
 

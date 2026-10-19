@@ -1157,6 +1157,16 @@ body.rp-open .w-handle { display: none; }
   border-radius: 5px; color: var(--text-3); background: var(--chip);
 }
 .drawer-item .d-src.human { color: var(--accent); background: rgba(77, 107, 254, .09); }
+/* 下拉项的悬停「更多」（⋯）：与主对话会话行同一套 row-acts 交互（悬停显示、
+   挡住时间位）；右键菜单同一份 openSubItemMenu */
+.drawer-item { position: relative; }
+.drawer-item:hover .row-acts { display: flex; }
+.drawer-item:hover .d-time { visibility: hidden; }
+/* 状态格的「标为未读」红点（运行中圆环优先级更高，见 renderSubDDPop 的三态取值） */
+.drawer-item .d-status.unread { display: flex; align-items: center; justify-content: center; }
+.drawer-item .d-status.unread::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: #d33;
+}
 
 /* ---------- 首页（新建对话） ---------- */
 .home {

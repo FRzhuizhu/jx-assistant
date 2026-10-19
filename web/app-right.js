@@ -264,7 +264,7 @@ async function refreshDrawer() {
   try {
     const d = await api('/api/sessions?parent=' + encodeURIComponent(fid));
     subKids = (d.sessions || [])
-      .slice()
+      .filter((s) => !s.archived) // 移入回收站的不在下拉出现（回收站里恢复后回来）
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
   } catch (e) { return; /* 静默：刷新失败不打断主流程 */ }
   subRenderHeader();
@@ -295,12 +295,24 @@ function renderSubDDPop() {
   for (const s of subKids) {
     const item = document.createElement('div');
     item.className = 'drawer-item' + (subState.cur && subState.cur.id === s.id ? ' active' : '');
+    // 状态格三态：运行中圆环 > 标为未读红点 > 平时的 '·'（与主对话列表同款优先级）
+    const stCls = s.status === 'running' ? 'run' : (s.unread ? 'unread' : '');
+    const stTxt = s.status === 'running' ? '' : (s.unread ? '' : '·'); // 运行中留空：圆环由 CSS 画，转字符会晃
     item.innerHTML =
-      `<span class="d-status ${s.status === 'running' ? 'run' : ''}">${s.status === 'running' ? '' : '·'}</span>` +  // 运行中留空：圆环由 CSS 画，转字符会晃
+      `<span class="d-status ${stCls}">${stTxt}</span>` +
       `<span class="d-title">${esc(s.title || '(未命名)')}</span>` +
       (s.mode === 'aux' || s.origin === 'human' ? '<span class="d-src human">人工</span>' : '<span class="d-src">AI</span>') +
-      `<span class="d-time">${esc(relTime(s.updatedAt))}</span>`;
-    item.onclick = () => { openSubSession(s.id); closePopovers(); };
+      `<span class="d-time">${esc(relTime(s.updatedAt))}</span>` +
+      `<span class="row-acts"><button class="ra-more" title="更多"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button></span>`;
+    item.onclick = (e) => {
+      if (e.target.closest('.row-acts')) return;
+      openSubSession(s.id); closePopovers();
+    };
+    item.querySelector('.ra-more').onclick = (e) => {
+      e.stopPropagation();
+      openSubItemMenu(s, item.getBoundingClientRect());
+    };
+    item.oncontextmenu = (e) => { e.preventDefault(); openSubItemMenu(s, item.getBoundingClientRect()); };
     pop.appendChild(item);
   }
   const neu = document.createElement('button');
@@ -308,6 +320,42 @@ function renderSubDDPop() {
   neu.innerHTML = '<span class="d-status">＋</span><span class="d-title">新建子对话</span>';
   neu.onclick = () => { closePopovers(); newAuxChat(); };
   pop.appendChild(neu);
+}
+
+// 子对话下拉项的「更多/右键」菜单：与主对话会话菜单（openSessionMenu）同一套
+// 动作与语义——重命名/标为未读/分支/移入回收站；差别只在落地刷新面（下拉清单、
+// 右栏当前子对话）与「正看着的子对话被回收时右栏回空态」。分支沿用 forkFromAnswer
+// 的口径（fork 保留 parent，新会话还是这个主对话的子对话，就地打开）。
+function openSubItemMenu(s, rect) {
+  openCtxMenu([
+    { label: '重命名', fn: async () => {
+      const t = prompt('重命名子对话', s.title || '');
+      if (t === null || !t.trim()) return;
+      await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
+      s.title = t.trim(); // 清单数据就地改，重开下拉即见；顶部标题跟着换
+      if (subState.cur && subState.cur.id === s.id) subState.cur.title = s.title;
+      subRenderHeader();
+      loadSessions();
+    } },
+    { label: s.unread ? '取消未读' : '标为未读', fn: async () => {
+      await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ unread: !s.unread }) });
+      s.unread = !s.unread; // 就地翻转，重开下拉即见红点
+    } },
+    { label: '分支对话', fn: async () => {
+      try {
+        const fork = await api('/api/sessions/' + s.id + '/fork', { method: 'POST' });
+        await loadSessions();
+        refreshDrawer();
+        openSubSession(fork.id);
+      } catch (e) { alert('分支失败：' + e.message); }
+    } },
+    { label: '移入回收站', danger: true, fn: async () => {
+      await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
+      if (subState.cur && subState.cur.id === s.id) subClearCurrent(); // 回收的正是右栏看着的：回空态（后台流照旧跑完）
+      refreshDrawer();
+      loadSessions();
+    } },
+  ], rect.right - 8, rect.bottom + 4);
 }
 
 // 子对话输入框的 placeholder 随「是否已进入子对话」切换（空态引导直接发消息、
@@ -368,6 +416,13 @@ async function openSubSession(id) {
     }
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
+    // 打开即视为已读（与主对话 openSession 同款）：清红点，下拉清单数据同步
+    if (subState.cur.unread) {
+      subState.cur.unread = false;
+      const kid = subKids.find((k) => k.id === id);
+      if (kid) kid.unread = false;
+      api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ unread: false }) }).catch(() => {});
+    }
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
     subState.pendingQueue = (data.pending && data.pending.queue) || [];
     subState.queuePaused = !!(data.pending && data.pending.paused);
