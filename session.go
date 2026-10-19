@@ -76,6 +76,16 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// titlePinKey 是「会话标题被用户手动命名（钉住）」的 session data 键：
+// 钉住后 AI 自动标题（组件 session-title）对该会话停改，直到显式解除
+// （PATCH autoTitleUnpin）。对齐老 DSH session-title「user 来源标题钉住」的决策。
+const titlePinKey = "title.pinned"
+
+// titlePinned 报告会话标题是否被用户手动命名钉住。
+func (a *App) titlePinned(id string) bool {
+	return strings.TrimSpace(a.Store.GetSessionData(id, titlePinKey)) != ""
+}
+
 func now() string { return time.Now().Format("2006-01-02 15:04:05") }
 
 // truncateRunes 按字符数截断字符串，超出部分以省略号结尾。

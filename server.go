@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -260,6 +261,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "GET /api/config", a.handleGetConfig, apiMeta{Summary: "读全局配置（Key 已掩码）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/config", a.handleSetConfig, apiMeta{Summary: "改全局配置", Params: "要改的字段（providers 之外的一般项）", Perm: permFull, Danger: "修改全局配置，影响所有会话"})
 	a.apiRoute(mux, "GET /api/models", a.handleModels, apiMeta{Summary: "模型清单（全部渠道）", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/llm/ask", a.handleLLMAsk, apiMeta{Summary: "独立单轮模型调用（一次请求一次输出，不进会话上下文）", Params: "system、user、session 可选（跟随该会话的模型）", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/modes", a.handleChatModes, apiMeta{Summary: "工作模式清单（新建会话可选的模式）", Perm: permReadOnly}) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
 	mux.HandleFunc("POST /api/providers", a.handleUpsertProvider)
 	mux.HandleFunc("POST /api/providers/toggle", a.handleToggleProvider)
@@ -269,6 +271,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "GET /api/sessions", a.handleListSessions, apiMeta{Summary: "会话列表", Params: "parent=按父会话查子对话", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/sessions", a.handleCreateSession, apiMeta{Summary: "新建会话", Params: "mode/workspace/title/provider/model/permission/planMode/parent/inheritContext 等", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/sessions/{id}", a.handleGetSession, apiMeta{Summary: "会话详情（含运行态/排队/最近错误）", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/sessions/{id}/messages", a.handleSessionMessages, apiMeta{Summary: "会话消息轻量文本列表", Params: "role 过滤（如 user）、limit 从最新往回收", Perm: permReadOnly})
 	a.apiRoute(mux, "PATCH /api/sessions/{id}", a.handlePatchSession, apiMeta{Summary: "改会话设置", Params: "title/model/provider/permission/thinking/archived/unread 等", Perm: permWorkspace})
 	a.apiRoute(mux, "DELETE /api/sessions/{id}", a.handleDeleteSession, apiMeta{Summary: "删除会话（历史不可恢复）", Perm: permWorkspace, Danger: "删除会话及其全部历史，不可恢复"})
 	a.apiRoute(mux, "POST /api/sessions/{id}/chat", a.handleChat, apiMeta{Summary: "向会话发一条消息（异步执行）", Params: "content=正文", Perm: permWorkspace})
@@ -1691,7 +1694,68 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
 		"checkpoints": cps, "deliveries": dvs,
 		"error": a.runError(m.ID), // 最近一次失败原因（输入框上方报错条 + 重试）
+		"titlePinned": a.titlePinned(m.ID), // 手动命名钉住：AI 自动标题（组件 session-title）停改
 	})
+}
+
+// messageTextOf 把消息正文文本化（轻量列表用）：字符串直取；分块数组拼 text 块；
+// 其余罕见形态按 JSON 短打。完整原文仍以 GET /api/sessions/{id} 的渲染口径为准。
+func messageTextOf(m Message) string {
+	switch c := m.Content.(type) {
+	case string:
+		return c
+	case []any:
+		var sb strings.Builder
+		for _, blk := range c {
+			bm, _ := blk.(map[string]any)
+			if t, _ := bm["text"].(string); t != "" {
+				if sb.Len() > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString(t)
+			}
+		}
+		return sb.String()
+	default:
+		raw, _ := json.Marshal(m.Content)
+		return string(raw)
+	}
+}
+
+// handleSessionMessages 会话消息的轻量文本列表（组件/辅助生成场景）：只回
+// seq/role/text，支持 role 过滤（如 ?role=user——prompt/request 等系统行天然
+// 排除）与 limit（从最新往回收）。完整渲染口径仍是 GET /api/sessions/{id}，
+// 导出仍是 /export。
+func (a *App) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	m := a.sessionFromPath(w, r)
+	if m == nil {
+		return
+	}
+	role := strings.TrimSpace(r.URL.Query().Get("role"))
+	limit := 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	msgs, err := a.Store.MessagesWithSeq(m.ID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	out := []map[string]any{}
+	for _, sm := range msgs {
+		if role != "" && sm.Role != role {
+			continue
+		}
+		text := messageTextOf(sm.Message)
+		if strings.TrimSpace(text) == "" {
+			continue // 附件注记/控制行等无文本行不占列表
+		}
+		out = append(out, map[string]any{"seq": sm.Seq, "role": sm.Role, "text": text})
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	writeJSON(w, 200, map[string]any{"messages": out})
 }
 
 func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
@@ -1712,6 +1776,12 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		Tools      *[]string `json:"tools"`
 		Archived   *bool     `json:"archived"`
 		Unread     *bool     `json:"unread"`
+		// AI 自动标题（组件 session-title）的通道语义：autoTitle=true 是组件改
+		// 标题——会话被手动命名（钉住）时 409 拒绝，成功也不打钉；autoTitleUnpin
+		// =true 解除钉住（恢复自动改名）。不带这两项的普通 title 修改视为用户
+		// 手动命名，改完即钉住（对齐老 DSH「user 来源标题钉住」的决策）。
+		AutoTitle      *bool `json:"autoTitle"`
+		AutoTitleUnpin *bool `json:"autoTitleUnpin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "请求体不是合法 JSON")
@@ -1720,8 +1790,23 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	// 上下文事件收集：字段有实际变化才记，落库成功后经总线 Notify（导出时间线呈现）
 	type ctxNote struct{ kind, detail string }
 	var notes []ctxNote
+	if body.AutoTitleUnpin != nil && *body.AutoTitleUnpin {
+		_ = a.Store.SetSessionData(m.ID, titlePinKey, "")
+	}
 	if body.Title != nil {
-		m.Title = truncateRunes(*body.Title, 40)
+		title := truncateRunes(*body.Title, 40)
+		if body.AutoTitle != nil && *body.AutoTitle {
+			if a.titlePinned(m.ID) {
+				writeErr(w, 409, "标题已被用户手动命名（钉住），自动改名停用；可在 设置 → 内置组件 里恢复自动命名")
+				return
+			}
+			m.Title = title
+		} else {
+			m.Title = title
+			if strings.TrimSpace(title) != "" {
+				_ = a.Store.SetSessionData(m.ID, titlePinKey, "1") // 手动命名即钉住
+			}
+		}
 	}
 	if body.Workspace != nil {
 		oldWS := m.Workspace

@@ -1383,7 +1383,15 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   语音：语速默认 1.2、Edge 音色、试听、听写时长上限、快捷键与触发方式）；
   偏好存 `localStorage` 的 `cx:voice:` 命名空间。关掉即热卸载：语音端点 404、
   按钮隐藏、朗读按钮撤掉、快捷键引擎与占位提示一并撤掉、设置页连导航项
-  一起消失）。
+  一起消失）、`session-title`（AI 自动会话标题——C 形态第二个实例、纯
+  worker 组件（无 call 端点，只订阅 `run.end` 通知型钩子）：每轮对话结束后
+  worker 反向调主程序 API，用「截至当前的全部用户消息」经 `POST /api/llm/ask`
+  （llmapi.go，独立单轮模型调用，git 摘要同款模式，不进会话上下文）生成/修订
+  标题——增量演化规则写进组件里的提示词（保留最初核心、语义合并新主题、合不拢
+  用「＋」连接）；用户手动改名（PATCH title）即打钉（session data
+  `title.pinned`），`autoTitle` 通道对该会话 409 停改，`autoTitleUnpin` 解钉，
+  组件设置区提供状态显示与解钉按钮；轻量消息读取走 `GET /api/sessions/{id}/messages`。
+  节奏对齐老 DSH 文档决策（all-prompts：每条新用户提示词后改写一次））。
 
 ## 插件与插件兼容层
 
