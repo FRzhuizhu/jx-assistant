@@ -479,19 +479,35 @@ function timeNoteRow(text, seq) {
   return procTextRow('时间提示', '跟随上一条消息发送 · ' + short, text, seq);
 }
 
-// 压缩摘要行：摘要注入在发生位置展示（自动/手动、覆盖至第 N 条）
+// 压缩标记卡片：模型摘要压缩发生在真实位置的一枚小卡片（一两行高）——
+// 标明「此处把更早的历史压成了一份摘要、覆盖到哪一条」；完整摘要默认折在
+// 卡片里，点卡片头展开查看、再点收起。样式与交付/文件改动卡片同一族
+//（同圆角同边框），但刻意不用强调色：压缩是系统内部动作，不该像交付成果
+// 那样醒目。卡片在 streamPinned/finishedKeep 里钉住常显——它标记的就是
+// 压缩这件事本身，折进过程折叠段等于没标。
 function summaryRow(text, origin, covers, seq) {
-  const row = document.createElement('div');
-  row.className = 'proc-row';
-  if (seq != null) row.dataset.seq = seq;
-  const sub = (origin === 'auto' ? '自动' : '手动') + (covers ? ' · 覆盖至第 ' + covers + ' 条' : '');
-  row.innerHTML =
-    '<div class="proc-head">' + chev('p-chev') +
-    '<span class="p-name">压缩摘要</span><span class="p-sub">· ' + sub + '</span></div>' +
-    '<div class="proc-body"><div class="tk-text"></div></div>';
-  row.querySelector('.tk-text').textContent = text;
-  bindProcToggle(row);
-  return row;
+  const card = document.createElement('div');
+  card.className = 'compact-card';
+  if (seq != null) card.dataset.seq = seq;
+  const sub = (origin === 'auto' ? '自动' : '手动') + (covers ? ' · 覆盖至第 ' + covers + ' 条' : '') +
+    ' · 摘要 ' + fmtCount(String(text || '').length) + ' 字 · 点开查看';
+  card.innerHTML =
+    '<div class="cc-head" role="button" tabindex="0" aria-expanded="false">' +
+    '<svg class="cc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>' +
+    '<span class="cc-title">此处发生了一次压缩</span><span class="cc-sub">' + sub + '</span>' + chev('cc-chev') +
+    '</div><div class="cc-body" hidden><div class="tk-text"></div></div>';
+  card.querySelector('.tk-text').textContent = String(text || '');
+  const head = card.querySelector('.cc-head');
+  const body = card.querySelector('.cc-body');
+  const toggle = () => {
+    const open = body.hidden;
+    body.hidden = !open;
+    card.classList.toggle('open', open);
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  head.onclick = toggle;
+  head.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+  return card;
 }
 
 // 规则压缩折叠行：在压缩真实发生的位置（连续折叠段的末尾）标注「此处及更早
@@ -803,14 +819,15 @@ const ROW_ITEM_BUILDERS = {
   },
   // 系统注入通知：归入当前回合常显
   report(m, st) {
+    // 压缩通知（origin=compact）不再显示为通知块：压缩发生的位置已有常显的
+    // 压缩卡片标注，两处都画会重复；这条通知本身仍会发给模型，只是界面不画
+    if (m.origin === 'compact') return;
     st.ensure();
     st.cur.items.push({ k: 'note', m });
   },
-  // 压缩摘要：在发生位置展示折叠行
-  summary(m, st) {
-    st.ensure();
-    st.cur.items.push({ k: 'summary', seq: m.seq, text: String(m.content ?? ''), origin: m.origin, covers: m.coversUpTo });
-  },
+  // 压缩摘要：不按落库位置产条目——卡片由 groupTurns 的 sumAt 归位到覆盖
+  // 边界（最后一条被压缩的消息之后）就地插入，位置才是压缩真实发生的地方
+  summary() {},
   // 运行环境快照：与最近一次已知环境相同则跳过；有真实变化（权限提升、
   // 模式切换、能力开关、技能增减、用户新发了一条消息等）才在发生位置显示
   // 「运行环境更新」折叠行
@@ -891,12 +908,26 @@ function groupTurns(msgs, resultOf, base) {
     for (let j = i + 1; j < msgs.length && !nextVisible; j++) if (foldVisible(msgs[j])) nextVisible = msgs[j];
     if (!nextVisible || !nextVisible.compact) foldEndSeq.set(m.seq, foldRounds);
   }
+  // 压缩摘要按覆盖边界归位：摘要行落库在会话末尾，但卡片要显示在压缩真实
+  // 发生的地方——最后一条被压缩的消息（coversUpTo）之后、保留的原文之前，
+  // 几乎总是恰好落在下一条用户消息上方。先扫一遍建 seq→摘要 的映射，
+  // 主循环处理完那条消息后就地插卡片（summary 构造器因此不再产条目）。
+  const sumAt = new Map();
+  for (const m of msgs) {
+    if (displayKindOf(m) !== 'summary' || !m.coversUpTo) continue;
+    sumAt.set(m.coversUpTo, m);
+  }
   for (const m of msgs) {
     const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
     if (build) build(m, st);
     if (foldEndSeq.has(m.seq)) {
       st.ensure();
       st.cur.items.push({ k: 'fold', seq: m.seq, rounds: foldEndSeq.get(m.seq) });
+    }
+    if (sumAt.has(m.seq)) {
+      const s = sumAt.get(m.seq);
+      st.ensure();
+      st.cur.items.push({ k: 'summary', seq: s.seq, text: String(s.content ?? ''), origin: s.origin, covers: s.coversUpTo });
     }
   }
   st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv };
@@ -2314,7 +2345,7 @@ function streamKeep(items) {
 // 以及「已折叠」标注行（它标记的就是折叠这件事本身，折进段里等于没标）。
 // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
 function streamPinned(it) {
-  return it.k === 'note' || it.k === 'plancard' || it.k === 'fold' ||
+  return it.k === 'note' || it.k === 'plancard' || it.k === 'fold' || it.k === 'summary' ||
     (it.k === 'subtask' && !it.result) || (it.k === 'text' && isLongText(it.text));
 }
 
@@ -2342,8 +2373,9 @@ function finishedKeep(items, isLast) {
   items.forEach((it, i) => {
     if (it.k === 'plancard' || (it.k === 'text' && isLongText(it.text))) anchor.add(i);
   });
-  // 「已折叠」标注行常显：它标记的就是折叠这件事本身，折进折叠段等于没标
-  items.forEach((it, i) => { if (it.k === 'fold') anchor.add(i); });
+  // 「已折叠」标注行与压缩卡片常显：它们标记的就是压缩/折叠这件事本身，
+  // 折进折叠段等于没标——用户要靠它们知道对话在哪儿被压过
+  items.forEach((it, i) => { if (it.k === 'fold' || it.k === 'summary') anchor.add(i); });
   const foldable = (it) => it.k !== 'text' && it.k !== 'plancard';
   items.forEach((it, i) => {
     if (it.k !== 'note') return;

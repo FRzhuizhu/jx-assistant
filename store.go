@@ -1136,6 +1136,24 @@ func (s *Store) MessagesWithSeq(id string) ([]*StoredMessage, error) {
 	return out, rows.Err()
 }
 
+// SummariesOf 取会话全部压缩摘要行（kind=summary，按 seq 升序）。会话详情接口
+// 用它把摘要行并入 UI 下发副本——前端要在压缩真实发生的位置显示常显的压缩
+// 卡片（覆盖到哪一条 + 展开看完整摘要）。MessagesWithSeq 的过滤口径不动
+//（历史读取工具等仍拿不到摘要行），只给界面这一份补齐。
+func (s *Store) SummariesOf(id string) ([]*StoredMessage, error) {
+	rows, err := s.db.Query(`SELECT ` + messageCols + ` FROM messages WHERE session_id=? AND kind='summary' ORDER BY seq`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*StoredMessage{}
+	for rows.Next() {
+		if sm, err := scanMessage(rows); err == nil {
+			out = append(out, sm)
+		}
+	}
+	return out, rows.Err()
+}
 // RawMessages 分页读取原生历史（含摘要行，未做任何折叠），供历史查询工具与压缩使用。
 func (s *Store) RawMessages(id string, offset, limit int) ([]*StoredMessage, int, error) {
 	var total int

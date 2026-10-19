@@ -889,6 +889,34 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   white-space: pre-wrap; word-break: break-word; color: var(--text-3);
   font-size: 1em; line-height: 1.65; max-height: 260px; overflow-y: auto;
 }
+/* 压缩标记卡片：模型摘要压缩发生在真实位置的一枚小卡片（一两行高），
+   完整摘要默认折在卡片里，点卡片头展开/收起；钉住常显、不参与过程折叠。
+   样式与交付/文件改动卡片同一族（同圆角、同边框、同底色），但刻意不带
+   强调色（无彩色左边条、图标与标题都是中性灰）——压缩是系统内部动作，
+   不该像交付成果那样醒目误导 */
+.compact-card {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--code-bg); margin: 6px 0; overflow: hidden;
+}
+.compact-card .cc-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 13px;
+  cursor: pointer; user-select: none; color: var(--text-2); line-height: 1.5;
+}
+.compact-card .cc-head:hover { background: var(--hover); }
+.compact-card .cc-head .cc-ico { width: 14px; height: 14px; color: var(--text-3); flex: none; }
+.compact-card .cc-head .cc-chev {
+  width: 12px; height: 12px; flex: none; color: var(--text-3);
+  transition: transform .1s; transform: rotate(-90deg); margin-left: auto;
+}
+.compact-card.open .cc-chev { transform: rotate(0); }
+.compact-card .cc-title { font-weight: 500; font-size: .93em; }
+.compact-card .cc-sub { font-size: .93em; color: var(--text-3); }
+.compact-card .cc-body { padding: 4px 13px 10px; }
+.compact-card .cc-body .tk-text {
+  white-space: pre-wrap; word-break: break-word; color: var(--text-2);
+  font-size: .93em; line-height: 1.6; max-height: 320px; overflow-y: auto;
+  border-top: 1px dashed var(--border-2); padding-top: 8px; margin-top: 2px;
+}
 .proc-body .tc-imgs { margin: 4px 0 2px; }
 
 /* 模式选择下拉（新建对话，同目录胶囊交互） */
