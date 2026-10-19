@@ -2144,8 +2144,8 @@ func wsOr(a *App, m *SessionMeta) string {
 	return a.Cfg.Workspace
 }
 
-// handleUpload 接收文件上传：保存进会话工作区，并注入一条上传记录消息
-// （模型在后续上下文里能看到，可用只读工具查看文件内容）。
+// handleUpload 接收文件上传：保存进会话工作区，注记文本随响应返回——由调用方
+// 拼进用户消息开头的「用户附件：」块（ATTACH_HEAD），随用户消息一起被模型看到。
 // 两种载荷：multipart（浏览器/手机，只复制字节，原件路径拿不到）与
 // JSON {path}（桌面端经 /api/pick-file 采集到的本机真实路径，会登记
 // uploads 表并告知模型该路径可用作交付目标，见 handleUploadByPath）。
@@ -2230,11 +2230,8 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 	note := lead +
 		"这次上传没有登记原件路径（浏览器、手机、远程、粘贴只送文件内容，拿不到本机路径），交付工具（deliver_file）无法把成品送回原处；" +
 		"确实要交回原位置时，请让用户在桌面端把原文件直接拖进输入框、或用「＋→文件上传」选一次（那条路会登记原件位置）。"
-	_ = a.Store.AppendRow(m.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
-	m.UpdatedAt = now()
-	_ = a.Store.SaveMeta(m)
-	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
-	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(dst), "size": len(data)})
+	// 注记不独立落库：随响应交回，由前端拼进用户消息的「用户附件：」块
+	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(dst), "size": len(data), "note": note})
 }
 
 // handleUploadByPath 桌面端路径上传：前端经 /api/pick-file 拿到本机真实
@@ -2257,8 +2254,8 @@ func (a *App) handleUploadByPath(w http.ResponseWriter, r *http.Request, m *Sess
 		writeErr(w, uploadErrCode(err), err.Error())
 		return
 	}
-	a.landUploadNote(m, note)
-	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(u.CopyPath), "orig": filepath.ToSlash(u.OrigPath), "uid": u.UID, "size": u.Size})
+	// 注记不独立落库：随响应交回，由前端拼进用户消息的「用户附件：」块
+	writeJSON(w, 200, map[string]any{"ok": 1, "path": filepath.ToSlash(u.CopyPath), "orig": filepath.ToSlash(u.OrigPath), "uid": u.UID, "size": u.Size, "note": note})
 }
 
 // handleOpenFolder 在系统资源管理器中打开一个目录（工作区行的快捷入口）。

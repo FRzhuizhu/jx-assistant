@@ -252,25 +252,33 @@ func TestRunDispatchTaskAppliesNewParams(t *testing.T) {
 	if _, err := os.Stat(ups[0].CopyPath); err != nil {
 		t.Fatalf("附件应已复制进工作区：%v", err)
 	}
-	// 注记与任务正文都落进新会话（注记在前，与人工「先传文件再发消息」同序）
+	// 注记拼进任务消息开头的「用户附件：」块（不再落独立注记行）——同一消息
+	// 同时带块与任务正文，顺序天然一致
 	msgs, err := a.Store.RawMessagesAll(sub.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	noteAt, taskAt := -1, -1
-	for i, m := range msgs {
-		if m.Kind == kindReport && m.Origin == "upload" && strings.Contains(m.Text(), "【文件上传】") {
-			noteAt = i
+	taskMsg := ""
+	standaloneNote := false
+	for _, m := range msgs {
+		if m.Kind == kindReport && m.Origin == "upload" {
+			standaloneNote = true
 		}
 		if strings.Contains(m.Text(), "【数字助理派发】") {
-			taskAt = i
+			taskMsg = m.Text()
 		}
 	}
-	if noteAt < 0 || taskAt < 0 {
-		t.Fatalf("新会话里应同时有【文件上传】注记与【数字助理派发】正文（note=%d task=%d）", noteAt, taskAt)
+	if standaloneNote {
+		t.Fatal("不应再有独立的【文件上传】注记行（已并入用户附件块）")
 	}
-	if noteAt > taskAt {
-		t.Fatalf("上传注记应排在任务正文之前（note=%d task=%d）", noteAt, taskAt)
+	if taskMsg == "" {
+		t.Fatal("新会话里应有【数字助理派发】正文")
+	}
+	if !strings.HasPrefix(taskMsg, ATTACH_HEAD) || !strings.Contains(taskMsg, "【文件上传】") {
+		t.Fatalf("任务消息开头应是「用户附件：」块且含注记文本: %.80s", taskMsg)
+	}
+	if !strings.Contains(taskMsg, "【数字助理派发】") {
+		t.Fatal("任务消息应含任务正文")
 	}
 }
 

@@ -4673,7 +4673,8 @@ function renderQueueDock(view) {
     if (list.length > 1) li.appendChild(qdGrip(pm, li));
     const txt = document.createElement('span');
     txt.className = 'qd-text';
-    txt.textContent = pm.content.length > 200 ? pm.content.slice(0, 200) + '…' : pm.content;
+    const qdPrev = qdPreviewText(pm.content); // 摘要跳过块开头，直接显示用户正文
+    txt.textContent = qdPrev.length > 200 ? qdPrev.slice(0, 200) + '…' : qdPrev;
     txt.title = pm.content;
     li.appendChild(txt);
     li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '', '立即插话'));
@@ -4687,6 +4688,22 @@ function renderQueueDock(view) {
   });
   panel.appendChild(ul);
   box.appendChild(panel);
+}
+
+// 排队坞摘要用：剥离开头的「用户附件：」「用户引用：」块，直接显示用户正文
+// （纯展示层——排队项内容本身不动，悬停 title 仍看全文）
+function qdPreviewText(c) {
+  let s = String(c || '');
+  for (;;) {
+    let head = -1;
+    if (s.indexOf(ATTACH_HEAD) === 0 && s.charAt(ATTACH_HEAD.length) === '\n') head = ATTACH_HEAD.length;
+    else if (s.indexOf(QUOTE_HEAD) === 0 && s.charAt(QUOTE_HEAD.length) === '\n') head = QUOTE_HEAD.length;
+    else break;
+    const after = s.slice(head + 1);
+    const blank = after.indexOf('\n\n');
+    s = blank >= 0 ? after.slice(blank + 2) : '';
+  }
+  return s;
 }
 
 // 拖拽把手（HTML5 DnD，桌面用；触屏拖拽浏览器不支持，排序走桌面端）
@@ -4875,9 +4892,10 @@ function userChatLanded(msgs, content) {
   return false;
 }
 
-// prepareSend 是 send 的准备段：发送前钩子（可等待）→ 组装正文 → 懒建会话 →
-// 附件落盘 → 清草稿 → 置流式态。返回 null = 本次发送已处理或中止（重复触发 /
-// 空正文 / 插话排队 / 未选子对话 / 附件失败），send 就此返回；返回上下文 =
+// prepareSend 是 send 的准备段：发送前钩子（可等待）→ 空文案守卫 → 懒建会话 →
+// 附件落盘（收集注记）→ 组装正文（附件块+引用块+正文）→ 清草稿 → 置流式态。
+// 返回 null = 本次发送已处理或中止（重复触发 / 空正文 / 插话排队 / 未选子对话 /
+// 附件失败），send 就此返回；返回上下文 =
 // 进入流式阶段。_sendBusy 闸门防重入：准备段有多个 await 点（钩子/建会话/附件
 // 落盘），快速连按回车会重入——闸门期间的重复触发直接忽略；进入流式态后由
 // streaming 标志分流（改走插话/排队），闸门随即放行，任何出口都不会卡死发送。
@@ -4903,20 +4921,24 @@ async function prepareSend(forceContent, view) {
   // 本条消息含语音听写转写文字（组件听写落框时在输入框上打的标记 jxVoice）：
   // 随消息上报后端置位会话粘性标记，环境快照自此每轮带同音错字提示（server.go）
   const voiceUsed = fromInput && input.dataset.jxVoice === '1';
-  // 从输入框发出的消息组装引用段（引用胶囊 →「用户引用：\n“引用1” 全文…」块）；forceContent
-  // 路径（编辑重发/降级补发）内容已完整，不再叠加当前胶囊
-  const content = (fromInput ? composeQuoted(view, input.value) : forceContent).trim();
   const staged = attachmentsOf(view);
-  if (!content) {
-    // 只挂了附件、没写字：不替用户编消息，提示补齐再发（附件留在输入框上方）
+  // 只挂了附件、没写字：不替用户编消息，提示补齐再发（附件留在输入框上方）
+  if (fromInput && !input.value.trim()) {
     if (staged.length) attachHint(view, '写一句要让数字助理做什么，' + staged.length + ' 个附件会随这条消息一起上传');
     if (armed) runHintOff(view);
     return;
   }
   if (view._attachFlush) { if (armed) runHintOff(view); return; } // 附件正在落盘：忽略重复点发送
   if (view.state.streaming) {
-    // 执行中插话/排队：附件先在当前会话落盘（通知照旧），再按原路插话或排队
-    if (staged.length && !(await flushAttachments(view))) return;
+    // 执行中插话/排队：先传附件（返回注记），组装后的内容进插话/排队队列——
+    // 模型在消息真正生效那一刻才看到附件块与正文，文件信息不再先于消息到达
+    let midNotes = [];
+    if (staged.length) {
+      midNotes = await flushAttachments(view);
+      if (midNotes === null) { if (armed) runHintOff(view); return; }
+      clearAttachments(view); // 已上传并将并入内容：附件区退场
+    }
+    const content = (fromInput ? composeQuoted(view, input.value, midNotes) : forceContent).trim();
     await sendMidrun(content, fromInput, view, voiceUsed);
     return;
   }
@@ -4955,15 +4977,22 @@ async function prepareSend(forceContent, view) {
       if (!view.state.cur) { if (armed) runHintOff(view); return; }
     }
   }
-  // 附件落盘：暂存的文件先写进工作区（后端照旧注入【文件上传】通知，排在用户消息
-  // 之前）；有失败就中止本轮——输入内容与失败项都留着，让用户重试或移除
+  // 附件先落盘：注记要拼进消息头（真实落盘文件名/uid/判重说明上传完才知道），
+  // 内容在落盘之后组装；有失败就中止本轮——输入内容与附件区都留着（全量保留，
+  // 重试时判重幂等，见 flushAttachments）
+  let attNotes = [];
   if (attachmentsOf(view).length) {
     view.state.attachSid = view.state.cur.id;
-    if (!(await flushAttachments(view))) { if (armed) runHintOff(view); return; }
+    attNotes = await flushAttachments(view);
+    if (attNotes === null) { if (armed) runHintOff(view); return; }
+    clearAttachments(view); // 已上传并将并入内容：附件区退场
   }
+  // 组装：附件块（注记原样）+ 引用块 + 正文；forceContent 路径（编辑重发/降级
+  // 补发）内容已完整，不再叠加
+  const content = (fromInput ? composeQuoted(view, input.value, attNotes) : forceContent).trim();
 
   if (fromInput) {
-    input.value = ''; clearQuote(view); // 引用已组装进这条消息：输入框与胶囊一起退场
+    input.value = ''; clearQuote(view); // 引用/附件已组装进这条消息：输入框与胶囊一起退场
     delete input.dataset.jxVoice; // 语音标记已随本条消息上报，随之退场
     autoGrow(input);
     // 发出即清：首页清 homeDraft 的 text，主对话清 jx.st.<id>，子对话清 jx.subst.<id>
@@ -5465,14 +5494,17 @@ let selKeepText = '';
      引用了第几条"（输入框里由背衬层画成灰底胶囊，见「输入框标记胶囊」节）；胶囊
      条上 1 条显示“某某某…”截断，多条收成「引用了N条」（悬停
      title 看逐条清单），✕ 一键清空。
-   · 发送时组装为「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——前端看到的
-     是胶囊与标记，模型收到的是带编号的完整引用，正文里的“引用N”即引用位置。
-   · 对话区用户气泡：引用块逐条渲染成灰色引用行（截断 + title 全文），正文里的
-     “引用N”标记与文件名形态的引号串渲染成灰色胶囊（前者 title=对应引用全文）。
+   · 发送时组装为「用户附件：\n<注记行>」块（附件上传返回的注记逐字原样，见
+     flushAttachments）+「用户引用：\n“引用1” 全文\n“引用2” 全文」块 + 正文——
+     前端看到的是胶囊与标记，模型收到的是注记与带编号的完整引用，正文里的
+     “引用N”/文件标记即引用位置。
+   · 对话区用户气泡：附件块与引用块逐条渲染成灰色行（截断 + title 全文），正文里
+     的“引用N”标记与对得上号的文件标记渲染成灰色胶囊（title=对应全文/注记）。
    · 引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
      jx.subq.<id>，存 JSON 数组），切走再回来、刷新页面都不丢。 */
 
 const QUOTE_HEAD = '用户引用：';
+const ATTACH_HEAD = '用户附件：'; // 与后端 uploadpath.go 的同名常量一致
 const QUOTE_SNIP = 10; // 胶囊与气泡里最多显示的字符数（按 Unicode 码点截，不劈中文）
 
 // 按码点截断：前 N 字符 + 省略号（够短就原样返回）
@@ -5497,49 +5529,73 @@ function quotesOf(view) {
   return view.state.quotes;
 }
 
-// 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）。
-// 文件标记（“报告fina….docx”这样的截短名引号串）原样留在正文里——后端【文件上传】注记本来就带全名
-// 与位置，模型自己能对上号；气泡里它与“引用N”同款渲染成灰胶囊（appendQuoteBodyText）
-function composeQuoted(view, text) {
+// 发送时组装：附件块在前（注记行逐字原样，来自上传接口返回——uid/判重/顺延
+// 真实文件名/交付说明一字不改，随用户消息一起到达）、引用块次之、正文最后，
+// 空行隔开。正文里的文件标记（“报告fina….docx”）原样留在正文里；forceContent
+// 路径（编辑重发/降级补发）内容已完整，不经过本函数
+function composeQuoted(view, text, attNotes) {
+  const notes = (attNotes || []).filter(Boolean);
   const qs = quotesOf(view || mainView).map((q) => String(q).trim()).filter(Boolean);
   const body = String(text || '').trim();
-  if (!qs.length) return body;
-  const head = QUOTE_HEAD + '\n' + qs.map((q, i) => quoteMark(i + 1) + ' ' + q).join('\n');
-  return body ? head + '\n\n' + body : head;
+  const parts = [];
+  if (notes.length) parts.push(ATTACH_HEAD + '\n' + notes.join('\n'));
+  if (qs.length) parts.push(QUOTE_HEAD + '\n' + qs.map((q, i) => quoteMark(i + 1) + ' ' + q).join('\n'));
+  if (body) parts.push(body);
+  return parts.join('\n\n');
 }
 
 // 反向拆解（渲染用户气泡用）：
-// · 新版多条：「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——引用全文可含
-//   换行，不带编号前缀的行是上一条的续行；
-// · 旧版单条：「用户引用：“…”\n\n正文」——历史消息兼容
+// · 附件块 + 引用块 + 正文：「用户附件：\n<注记行>…\n\n用户引用：…\n\n正文」
+//   （附件块与引用块可各自缺席，注记行不跨行）；
+// · 旧版单条引用：「用户引用：“…”\n\n正文」——历史消息兼容
 function splitQuoted(raw) {
-  if (typeof raw !== 'string' || raw.indexOf(QUOTE_HEAD) !== 0) return null;
-  const after = raw.slice(QUOTE_HEAD.length);
-  if (after.charAt(0) === '\n') {
+  if (typeof raw !== 'string') return null;
+  const out = { attNotes: [], quotes: [], rest: '' };
+  let s = raw, hit = false;
+  // 附件块在最先：逐行收注记，到空行为止（没有正文就整块都是注记）
+  if (s.indexOf(ATTACH_HEAD) === 0 && s.charAt(ATTACH_HEAD.length) === '\n') {
+    const after = s.slice(ATTACH_HEAD.length + 1);
     const cut = after.indexOf('\n\n');
-    const block = cut >= 0 ? after.slice(0, cut) : after; // 没有正文：整块都是引用
-    const rest = cut >= 0 ? after.slice(cut + 2) : '';
-    const quotes = [];
-    block.split('\n').forEach((line) => {
-      const m = line.match(/^“引用\d+” /);
-      if (m) quotes.push(line.slice(m[0].length));
-      else if (quotes.length) quotes[quotes.length - 1] += '\n' + line; // 全文里的换行
-    });
-    return quotes.length ? { quotes, rest } : null;
+    out.attNotes = (cut >= 0 ? after.slice(0, cut) : after).split('\n').filter(Boolean);
+    out.rest = cut >= 0 ? after.slice(cut + 2) : '';
+    hit = true;
+    s = out.rest;
   }
-  const cut = after.indexOf('”\n\n');
-  if (cut >= 0) return { quotes: [after.slice(1, cut)], rest: after.slice(cut + 3) };
-  if (after.slice(-1) === '”') return { quotes: [after.slice(1, -1)], rest: '' };
-  return null;
+  if (s.indexOf(QUOTE_HEAD) === 0) {
+    const after = s.slice(QUOTE_HEAD.length);
+    if (after.charAt(0) === '\n') {
+      const cut = after.indexOf('\n\n');
+      const block = cut >= 0 ? after.slice(0, cut) : after; // 没有正文：整块都是引用
+      out.rest = cut >= 0 ? after.slice(cut + 2) : '';
+      block.split('\n').forEach((line) => {
+        const m = line.match(/^“引用\d+” /);
+        if (m) out.quotes.push(line.slice(m[0].length));
+        else if (out.quotes.length) out.quotes[out.quotes.length - 1] += '\n' + line; // 全文里的换行
+      });
+      hit = out.quotes.length > 0 || hit;
+    } else {
+      const cut = after.indexOf('”\n\n');
+      if (cut >= 0) { out.quotes = [after.slice(1, cut)]; out.rest = after.slice(cut + 3); hit = true; }
+      else if (after.slice(-1) === '”') { out.quotes = [after.slice(1, -1)]; out.rest = ''; hit = true; }
+    }
+  }
+  return hit ? out : null;
 }
 
-// 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”与
-// “引用N”标记与文件名形态的引号串渲染成灰色胶囊（前者 title=对应引用全文）
+// 气泡正文渲染：附件块逐行渲染灰色附件行（与引用行同款：CSS 截断 + title 全文），
+// 引用块拆成灰色引用行（截断 + title 全文），正文里“引用N”与对得上号的文件标记
+// 渲染成灰色胶囊
 function appendQuotedBody(b, raw) {
   const qm = splitQuoted(raw);
-  // 没有引用块（只带文件、或什么都没带）也走标记切段：文件标记照样出胶囊，
-  // 引用标记因对不上号按普通文字放行（与有引用块时的兜底语义一致）
-  if (!qm) { appendQuoteBodyText(b, raw, []); return; }
+  // 没有任何块也走标记切段：文件标记因对不上号按普通文字放行（兜底语义一致）
+  if (!qm) { appendQuoteBodyText(b, raw, [], []); return; }
+  qm.attNotes.forEach((n) => {
+    const line = document.createElement('span');
+    line.className = 'msg-quote';
+    line.textContent = n;
+    line.title = n;
+    b.appendChild(line);
+  });
   qm.quotes.forEach((q, i) => {
     const line = document.createElement('span');
     line.className = 'msg-quote';
@@ -5547,30 +5603,50 @@ function appendQuotedBody(b, raw) {
     line.title = q;
     b.appendChild(line);
   });
-  appendQuoteBodyText(b, qm.rest, qm.quotes);
+  appendQuoteBodyText(b, qm.rest, qm.quotes, qm.attNotes);
 }
 
 // 正文按标记切段：引用标记与文件名形态的引号串（以 .扩展名 结尾，如“报告fina….docx”）
-// 都渲染成灰胶囊；其余原样文本节点。引用胶囊的 title 放对应引用全文（对不上号的
-// ——比如引用已清掉、正文里残留——按普通文字展示，不硬猜）；文件标记自带截短名，
-// 不需要额外查表（气泡渲染只看消息文本，无法回查当时的附件，这里是纯视觉层）
-function appendQuoteBodyText(b, text, quotes) {
+// 都渲染成灰胶囊；其余原样文本节点。两类都走“形状命中 + 对号”两步：引用对引用块
+// 的第 N 条；文件对附件块里《全名》的截短（fileClipName(全名) === 标记内文）。
+// 对不上号的（引用已清掉、附件块缺失、用户手打的文件名引号）一律按普通文字
+// 展示，不硬猜——气泡渲染只看消息文本，这里是纯视觉层
+function appendQuoteBodyText(b, text, quotes, attNotes) {
   const src = String(text == null ? '' : text);
   if (!src) return;
+  const notes = attNotes || [];
   const rx = /“(引用\d+|[^”\n]*\.[A-Za-z]{1,8})”/g;
   let last = 0, m;
   while ((m = rx.exec(src))) {
     if (m.index > last) b.appendChild(document.createTextNode(src.slice(last, m.index)));
     const qm = m[1].match(/^引用(\d+)$/);
-    const full = qm ? quotes[Number(qm[1]) - 1] : null;
-    if (qm && full == null) {
-      b.appendChild(document.createTextNode(m[0])); // 对不上号的引用标记：按普通文字展示
+    if (qm) {
+      const full = quotes[Number(qm[1]) - 1];
+      if (full == null) {
+        b.appendChild(document.createTextNode(m[0])); // 对不上号的引用标记：按普通文字展示
+      } else {
+        const chip = document.createElement('span');
+        chip.className = 'quote-chip';
+        chip.textContent = m[0];
+        chip.title = full;
+        b.appendChild(chip);
+      }
     } else {
-      const chip = document.createElement('span');
-      chip.className = 'quote-chip';
-      chip.textContent = m[0];
-      if (full != null) chip.title = full;
-      b.appendChild(chip);
+      // 文件标记：在附件块里找《全名》截短后与标记内文一致的那条注记
+      const inner = m[1];
+      let matched = null;
+      for (const n of notes) {
+        const nm = n.match(/《([^》]+)》/);
+        if (nm && fileClipName(nm[1]) === inner) { matched = n; break; }
+      }
+      if (!matched) b.appendChild(document.createTextNode(m[0]));
+      else {
+        const chip = document.createElement('span');
+        chip.className = 'quote-chip';
+        chip.textContent = m[0];
+        chip.title = matched;
+        b.appendChild(chip);
+      }
     }
     last = rx.lastIndex;
   }
@@ -6920,17 +6996,21 @@ async function uploadErrText(r) {
   return t.trim() || ('HTTP ' + r.status);
 }
 
-/* 发送时落盘：把暂存的附件逐个写进工作区（后端照旧注入【文件上传】通知，顺序在
-   用户消息之前）。有失败就中止本轮发送——不留"文件没带进去、消息却发出去了"的
-   糊涂账：成功的那几个已经在工作区里（后端已发通知），失败的留在附件区可重试或移除。 */
+/* 发送时落盘：把暂存的附件逐个写进工作区，收集每个附件返回的【文件上传】注记
+   文本（后端不再独立落注记行），由调用方拼进消息开头的「用户附件：」块——注记
+   随用户消息一起到达（插话/排队同样，块随内容走）。有失败就中止本轮发送，返回
+   null：全部附件（含已成功的）都留在附件区——重试时一起重传，判重会把重复上传
+   当同一次处理（幂等），注记块因此永远完整；旧版"成功项清走"会在中止后丢掉
+   它们的注记（独立注记行已不存在），不再可行。 */
 async function flushAttachments(view) {
   const list = attachmentsOf(view);
   const sid = view.state.cur && view.state.cur.id;
-  if (!list.length || !sid) return true;
+  if (!list.length || !sid) return [];
   view._attachFlush = true; // 上传期间忽略重复点发送（见 send 的入口守卫）
   const box = viewEl(view, 'attachments');
   if (box) box.classList.add('busy');
   let failed = 0, firstErr = '';
+  const notes = [];
   try {
     for (const a of list) {
       a.status = 'uploading';
@@ -6946,7 +7026,10 @@ async function flushAttachments(view) {
           r = await fetch(url, { method: 'POST', body: fd });
         }
         if (!r.ok) throw new Error(await uploadErrText(r));
+        const d = await r.json().catch(() => ({}));
         a.status = 'staged';
+        a.note = (d && d.note) || '';
+        if (a.note) notes.push(a.note);
       } catch (e) {
         a.status = 'error';
         a.error = String((e && e.message) || e);
@@ -6959,18 +7042,13 @@ async function flushAttachments(view) {
     if (box) box.classList.remove('busy');
   }
   if (failed) {
-    const keep = list.filter((a) => a.status === 'error');
-    for (const a of list) if (a.status !== 'error' && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-    list.length = 0;
-    for (const a of keep) list.push(a);
     const bx = viewEl(view, 'attachments');
     if (bx) bx._sig = null;
     renderAttachments(view);
-    attachHint(view, failed + ' 个附件上传失败，本轮没有发送（点 ✕ 移除后可重发）：' + firstErr.slice(0, 80), 8000);
-    return false;
+    attachHint(view, failed + ' 个附件上传失败，本轮没有发送（全部留在附件区，可重试或 ✕ 移除）：' + firstErr.slice(0, 80), 8000);
+    return null;
   }
-  clearAttachments(view);
-  return true;
+  return notes; // 每份附件的注记行（拼进消息头）；全成功才非 null
 }
 
 // 加号菜单「上传文件」：只把文件加进附件区（不再立刻写工作区），落盘交给发送那一步

@@ -577,26 +577,32 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	// 附件：与桌面端 /api/upload 的 JSON {path} 走同一套登记（registerUploadPath）
-	// ——复制进新任务工作区 + 落 uploads 表 + 一条【文件上传】注记。注记先于任务
-	// 描述落库（与人工「先传文件、再发消息」的顺序一致），新任务开轮就知道
-	// 有哪些现成文件、在哪、能当交付目标。
+	// ——复制进新任务工作区 + 落 uploads 表。注记拼进任务消息开头的「用户附件：」
+	// 块（与用户消息同形态），随任务描述一起到达——新任务开轮就知道有哪些现成
+	// 文件、在哪、能当交付目标。
 	attached := 0
+	attNotes := make([]string, 0, len(attPaths))
 	for _, src := range attPaths {
 		_, note, err := t.app.registerUploadPath(sub, src)
 		if err != nil {
 			return "", fmt.Errorf("附件 %s 登记失败：%w", src, err)
 		}
-		t.app.landUploadNote(sub, note)
+		attNotes = append(attNotes, note)
 		attached++
 	}
 	// 工作任务永远不带上下文：像用户发消息一样，只收到一段自足的任务描述，
 	// 与派发方的聊天记录完全隔离（要上下文的场景用 dispatch_sub 的继承模式）
-	// 需求正文（【数字助理派发】+ task）由 deliverSub 走统一投递落库
+	// 需求正文（【数字助理派发】+ task）由 deliverSub 走统一投递落库；带附件时
+	// 正文最前是「用户附件：」块（注记逐字原样，模型收到的与用户消息同形态）
 	remoteDisp := ""
 	if dispRemote != nil {
 		remoteDisp = dispRemote.Display()
 	}
-	return t.deliverSub(sub, "【数字助理派发】\n\n"+p.Task, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp)), nil
+	taskMsg := "【数字助理派发】\n\n" + p.Task
+	if len(attNotes) > 0 {
+		taskMsg = ATTACH_HEAD + "\n" + strings.Join(attNotes, "\n") + "\n\n" + taskMsg
+	}
+	return t.deliverSub(sub, taskMsg, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp)), nil
 }
 func sendToSessionTool() Tool {
 	return Tool{

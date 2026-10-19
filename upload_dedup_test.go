@@ -173,6 +173,7 @@ func postMultipart(t *testing.T, a *App, sess *SessionMeta, name, content string
 		OK   int    `json:"ok"`
 		Path string `json:"path"`
 		Size int    `json:"size"`
+		Note string `json:"note"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("响应解析失败: %v", err)
@@ -180,20 +181,8 @@ func postMultipart(t *testing.T, a *App, sess *SessionMeta, name, content string
 	if resp.OK != 1 {
 		t.Fatalf("响应 ok!=1: %s", w.Body.String())
 	}
-	// 注记是 handler 落库的，从库里取最后一条 origin=upload 的行
-	rows, err := a.Store.RawMessagesAll(sess.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	note := ""
-	for _, m := range rows {
-		if m.Origin == "upload" {
-			if s, ok := m.Content.(string); ok {
-				note = s
-			}
-		}
-	}
-	return resp.Path, note
+	// 注记随响应返回（不再独立落库），由调用方拼进用户消息的「用户附件：」块
+	return resp.Path, resp.Note
 }
 
 // TestUploadMultipartDedupAndRegister multipart 路：判重、顺延、登记与注记口径。

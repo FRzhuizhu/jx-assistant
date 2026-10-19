@@ -3,9 +3,9 @@ package main
 // 桌面端「按本机路径登记上传」的公共实现。/api/upload 的 JSON {path} 路径
 // （handleUploadByPath）与数字助理派发的附件（dispatch_task 的 attachments）
 // 走的是同一套动作——校验路径 → 判重去重或复制进 .jxai/uploads → 写 uploads
-// 表（deliver_file 的交付目标来源）→ 回落一条【文件上传】系统注记，让模型
-// 知道文件在哪、能当交付目标。两个入口共用本函数，行为与文案永远一致：
-// 人工上传是什么效果，派发附件就是什么效果。
+// 表（deliver_file 的交付目标来源）→ 返回【文件上传】注记文本，由调用方拼进
+// 用户消息开头的「用户附件：」块，让模型知道文件在哪、能当交付目标。两个入口
+// 共用本函数，行为与文案永远一致：人工上传是什么效果，派发附件就是什么效果。
 //
 // 上传落位与判重（与 server.go handleUpload 的 multipart 分支同一套规矩）：
 //   - 用户上传的文件统一存 <工作区>/.jxai/uploads/，不占工作区根目录；
@@ -29,6 +29,10 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+// ATTACH_HEAD 用户消息里附件块的头（与前端 app-chat.js 的同名常量一致）：
+// 「用户附件：\n<注记行逐字原样>\n\n」拼在消息最前，注记随用户消息一起到达
+const ATTACH_HEAD = "用户附件："
 
 // uploadPathError 是附件登记失败的错误：带建议的 HTTP 状态码（客户端给的
 // 路径有问题=400，本地复制/落库出问题=500），HTTP 处理器照原样回状态码；
@@ -214,7 +218,7 @@ func (a *App) uploadDupRef(sess *SessionMeta, dupPath string) string {
 }
 
 // registerUploadPath 把本机文件路径 p 登记为会话 sess 的一次上传，返回登记
-// 记录与【文件上传】注记正文（注记由调用方决定何时落库，见 landUploadNote）。
+// 记录与【文件上传】注记正文（注记由调用方拼进用户消息的「用户附件：」块）。
 // 原件已在工作区内时不做复制（避免自己覆盖自己），只登记；其余情况按文件头
 // 注释的判重/顺延规矩落位 .jxai/uploads。
 func (a *App) registerUploadPath(sess *SessionMeta, p string) (*Upload, string, error) {
@@ -282,12 +286,6 @@ func (a *App) registerUploadPath(sess *SessionMeta, p string) (*Upload, string, 
 	return u, note, nil
 }
 
-// landUploadNote 把一条【文件上传】注记落进会话（report/origin=upload，模型
-// 读得到），并按上传的口径刷新会话更新时间、广播刷新——与用户手动上传后的
-// 表现完全一致。
-func (a *App) landUploadNote(sess *SessionMeta, note string) {
-	_ = a.Store.AppendRow(sess.ID, &StoredMessage{Message: TextMessage("user", note), Kind: kindReport, Origin: "upload", CreatedAt: now()})
-	sess.UpdatedAt = now()
-	_ = a.Store.SaveMeta(sess)
-	a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
-}
+// landUploadNote 已删除：上传注记不再作为独立消息落库，一律随上传响应返回，
+// 由调用方（前端发送链路 / dispatch_task 派发）拼进用户消息开头的「用户附件：」
+// 块——注记随用户消息一起到达模型，插话/排队场景不再出现注记先到、消息后到。
