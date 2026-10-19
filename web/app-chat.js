@@ -2641,16 +2641,20 @@ function handleGlobalEvent(ev) {
       if (ev.title) toast('组件已更新：' + ev.title);
       if (typeof refreshUpdateBox === 'function') refreshUpdateBox();
       break;
-    // 浏览器面板（桌面原生 WebView2）：browser_nav 同步工具栏地址/标题
-    // （AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
+    // 浏览器面板（桌面原生 WebView2，每会话独立实例）：browser_nav 同步工具栏
+    // 地址/标题（AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
     // （X/Y 复用为宽高），两个处理函数都在 app-right.js。nav 事件顺带强制
     // 重报矩形：面板曾因矩形上报失联被留在隐藏态（地址已填、舞台空白），
-    // 每次导航到达都补一次上报，让面板自愈显示
+    // 每次导航到达都补一次上报，让面板自愈显示。带 sessionId 的事件只作用于
+    // 本会话的面板——别的会话（含后台子对话的 AI）在导航，不刷本会话工具栏、
+    // 不动本会话布局；不带 sessionId 的（Electron 壳/共享面板）维持全局口径。
     case 'browser_nav':
+      if (ev.sessionId && (!state.cur || ev.sessionId !== state.cur.id)) break;
       bpwOnNav(ev);
       if (typeof bpwDesktop === 'function' && bpwDesktop() && typeof bpwActive === 'function' && bpwActive()) bpwReport(true, true);
       break;
     case 'browser_resize':
+      if (ev.sessionId && (!state.cur || ev.sessionId !== state.cur.id)) break;
       bpwApplyViewport(ev.x);
       break;
     // 说明：delta/reasoning 不上全局总线（流式增量只走会话自己的 SSE）；

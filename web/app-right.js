@@ -560,7 +560,7 @@ function bpwDragPause(on) {
   if (on) {
     if (bpwElectron() || !bpwDesktop() || !bpwActive() || bpwDragHide) return;
     bpwDragHide = true;
-    api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true }) }).catch(() => {});
+    api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true, session: bpwSession() }) }).catch(() => {});
   } else {
     if (!bpwDragHide) return;
     bpwDragHide = false;
@@ -571,6 +571,13 @@ function bpwDragPause(on) {
 function bpwActive() {
   const panel = $('rpanel');
   return !!panel && !panel.classList.contains('hidden') && rpActive === 'browser';
+}
+
+// 浏览器上报与工具栏操作统一携带的会话身份：右栏浏览器每会话一个独立面板
+// （后端 App.panels），矩形/导航/状态都按它路由；首页态（无会话）为空串，
+// 后端归并到共享面板（兼容旧口径）。
+function bpwSession() {
+  return (state.cur && state.cur.id) || '';
 }
 
 let bpwRectTimer = null, bpwLastKey = '';
@@ -593,7 +600,7 @@ function bpwReport(immediate, force) {
     if (!bpwActive()) {
       if (bpwLastKey !== 'hidden') { // 只在从可见转隐藏时通知一次
         bpwLastKey = 'hidden';
-        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true }) }).catch(() => {});
+        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true, session: bpwSession() }) }).catch(() => {});
       }
       return;
     }
@@ -604,7 +611,7 @@ function bpwReport(immediate, force) {
     }
     // 左缘内缩 BPW_EDGE（见常量注释）：把手完整留给 HTML
     const payload = { x: r.x + BPW_EDGE, y: r.y, w: r.width - BPW_EDGE, h: r.height,
-      dpr: window.devicePixelRatio || 1, visible: true, desktop: true,
+      dpr: window.devicePixelRatio || 1, visible: true, desktop: true, session: bpwSession(),
       iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 }; // 临时诊断字段
     const key = JSON.stringify(payload);
     if (key === bpwLastKey && !force) return; // 尺寸没变不上报（强制补报除外）
@@ -614,8 +621,10 @@ function bpwReport(immediate, force) {
   if (immediate) run(0); else bpwRectTimer = setTimeout(() => run(0), 80);
 }
 
-// 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开
+// 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开。
+// 导航与状态读取都带会话身份（bpwSession）：操作的是本会话的面板。
 function bpwNav(body) {
+  body.session = bpwSession();
   api('/api/browser/navigate', { method: 'POST', body: JSON.stringify(body) })
     .then((st) => { bpwOnNav(st); })
     .catch((e) => { $('bpw-title').textContent = '导航失败：' + e.message; });
@@ -626,8 +635,9 @@ function bpwOnNav(d) {
   if (d && d.viewportW) $('bpw-vp').textContent = d.viewportW + '×' + d.viewportH;
   else $('bpw-vp').textContent = '';
 }
-function bpwSyncState() {
-  api('/api/browser/state').then(bpwOnNav).catch(() => {});
+function bpwSyncState(sid) {
+  const s = sid || bpwSession();
+  api('/api/browser/state' + (s ? '?session=' + encodeURIComponent(s) : '')).then(bpwOnNav).catch(() => {});
 }
 $('bpw-back').onclick = () => bpwNav({ action: 'back' });
 $('bpw-fwd').onclick = () => bpwNav({ action: 'forward' });
@@ -672,6 +682,31 @@ rpRegister('browser', {
   onOpen: () => {
     bpwSyncState();
     bpwReport(true); // 打开即上报矩形：宿主据此显示并定位原生控件
+  },
+  // 右栏浏览器按会话隔离（后端每会话一个原生面板实例）：切换对话时在恢复
+  // 阶段就把「该显示哪个会话的面板」上报给后端。restoreSession 早于
+  // rpOpen/rpClose 跑，此刻 DOM 激活态还是上一个对话的，不能依赖 bpwReport
+  // 的实时判断（它读 rpActive）——直接按本会话的记忆上报：记着浏览器视图
+  // 开着就按当前舞台矩形落位本会话的面板（后端同时把其他会话的面板收屏
+  // 外），没开就发隐藏上报把上一会话的面板收掉。面板实例与登录态都在
+  // 后端保留，切回来即恢复，这里没有需要保存的会话态。
+  saveSession: () => null,
+  restoreSession: (saved, sid) => {
+    bpwSyncState(sid); // 工具栏先就位本会话面板的地址/标题
+    const st = sid ? rpSessionOf(sid) : null;
+    const want = !!(st && st.open && st.view === 'browser');
+    const stage = $('bpw-stage');
+    const r = stage && stage.getBoundingClientRect();
+    if (want && r && r.width > 8 && r.height > 8) {
+      const payload = { x: r.x + BPW_EDGE, y: r.y, w: r.width - BPW_EDGE, h: r.height,
+        dpr: window.devicePixelRatio || 1, visible: true, desktop: true, session: sid || '',
+        iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 };
+      bpwLastKey = JSON.stringify(payload); // 记下去重键：随后 rpOpen 的常规上报同矩形不再重发
+      api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify(payload) }).catch(() => {});
+    } else {
+      bpwLastKey = 'hidden';
+      api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true, session: sid || '' }) }).catch(() => {});
+    }
   },
 });
 

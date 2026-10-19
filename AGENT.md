@@ -1204,16 +1204,23 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   共操；**网页版后台无头**（chromedp 纯 Go CDP 优先驱动系统 Edge，异常缺失
   兜底 Chrome，仅供 AI 工具使用）；`mode=headed` 弹**独立可见窗口**（旧版
   行为）。其余工具作用于最近一次 `browser_open` 选定的实例，`browser_close`
-  关当前实例并自动回退到仍在运行的另一个。点击/输入前在目标页面内注入 AI
+  关当前实例并自动回退到仍在运行的另一个。**内嵌形态按会话隔离**（与有头
+  独立窗口同款约定）：桌面右栏每个会话一个独立 WebView2 面板实例
+  （`App.panels`，矩形上报按 session 路由，同一时刻只显示当前会话的面板、
+  其余收屏外但实例保留，切回即恢复），网页形态每会话一个无头 chromedp
+  实例；`browser_nav`/`browser_resize` 事件带 sessionId，前端只让本会话的
+  事件刷工具栏/调布局。点击/输入前在目标页面内注入 AI
   位置标记（原生面板 HTML 无法浮于原生子窗口之上）；文本输入统一走
-  `Input.insertText`（中文/输入法正确）；桌面面板登录态落
-  `data/webview-browser` 与日常浏览器隔离。注意：新版 WebView2（Chromium 136
+  `Input.insertText`（中文/输入法正确）；桌面面板登录态按会话落
+  `data/webview-browsers/<会话>/`（无会话上下文用共享目录 `data/webview-browser`）
+  与日常浏览器隔离。注意：新版 WebView2（Chromium 136
   起）封禁 `--remote-debugging-port`，chromedp 直连嵌入控件不可靠，官方替代
   即控件级 CDP 调用接口。接口：`POST
   /api/browser/{panel-rect,navigate,viewport,open-view,close}`、`GET
-  /api/browser/{state,view}`；全局事件 `browser_nav`（工具栏地址/标题）、
+  /api/browser/{state,view}`，body/query 带 session 字段路由到该会话的实例；
+ 事件 `browser_nav`（工具栏地址/标题）、
   `browser_resize`（AI 的视口宽度请求，前端让对话区让位调宽面板）。右栏收起
-  只是隐藏面板（AI 继续操作）；右栏浏览器视图的 ✕ 是**真关闭**（POST /api/browser/close，userstops.go：销毁内嵌实例、打「用户关闭」标记、向该会话投 report 注记；activeHost 据此把之后的报错说成用户主动关闭）；顶栏开合按钮仍只是收起。工具条的「在系统浏览器打开」把当前网址跳到
+  只是隐藏面板（AI 继续操作）；右栏浏览器视图的 ✕ 是**真关闭**（POST /api/browser/close，userstops.go：销毁该会话的内嵌实例、打「用户关闭」标记（按会话记账）、向该会话投 report 注记；activeHost 据此把之后的报错说成用户主动关闭）；顶栏开合按钮仍只是收起。工具条的「在系统浏览器打开」把当前网址跳到
   用户日常浏览器（跳转后不受 AI 控制）。
 - **聊天链接点开（人机共看）**：对话正文里的 markdown 链接与裸 http(s) 网址
   渲染为可点链接——桌面版左键点击一律在右栏浏览器面板打开（Ctrl/中键走

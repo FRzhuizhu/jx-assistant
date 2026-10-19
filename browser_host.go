@@ -15,8 +15,9 @@ package main
 // 之后三次 browser_open 全秒报 context canceled，重启引擎才恢复。
 // 安全：服务仅本机监听（既定边界）；AI 侧工具照旧经 capBrowser 能力门控；
 // 页面登录态落在 data/browser-profile*（有头按会话隔离在
-// data/browser-profiles-headed/<会话>/），与用户日常浏览器隔离；助手进程退出
-// 由顶层 kill-on-close Job Object 清场（processguard_windows.go）。
+// data/browser-profiles-headed/<会话>/，网页形态无头与桌面右栏面板同样按
+// 会话隔离——右栏面板见 data/webview-browsers/<会话>/），与用户日常浏览器
+// 隔离；助手进程退出由顶层 kill-on-close Job Object 清场（processguard_windows.go）。
 
 import (
 	"context"
@@ -100,14 +101,28 @@ func findBrowserExe() string {
 	return ""
 }
 
-// Browser 返回（惰性创建）无头宿主：网页形态的内嵌目标（桌面形态是原生面板）。
-func (a *App) Browser() *BrowserHost {
+// Browser 返回（惰性创建）该会话的无头宿主：网页形态的内嵌目标（桌面原生
+// 壳的会话面板见 panelFor；Electron 壳见 nativePanel）。每会话一个实例、
+// 独立 profile（data/browser-profiles/<会话>/）——A 会话 AI 开的页面不会被
+// B 会话的导航顶掉，登录态互不串台；无会话上下文（空键）退回共享目录
+// browser-profile（旧行为）。
+func (a *App) embeddedBrowser(sid string) *BrowserHost {
+	key := browserProfileKey(sid)
 	a.browserMu.Lock()
 	defer a.browserMu.Unlock()
-	if a.browserEmbedded == nil {
-		a.browserEmbedded = newBrowserHost(a, true, "")
+	if a.browsersEmbedded == nil {
+		a.browsersEmbedded = map[string]*BrowserHost{}
 	}
-	return a.browserEmbedded
+	if h, ok := a.browsersEmbedded[key]; ok {
+		return h
+	}
+	profile := filepath.Join(a.Cfg.DataDir, "browser-profile") // 共享（旧版目录）
+	if key != "" {
+		profile = filepath.Join(a.Cfg.DataDir, "browser-profiles", key)
+	}
+	h := newBrowserHost(a, true, profile)
+	a.browsersEmbedded[key] = h
+	return h
 }
 
 // browserProfileKey 会话 id → 有头实例/active 记账键（兼配置目录名）：仅放行
@@ -152,12 +167,126 @@ func (a *App) headedBrowser(sid string) *BrowserHost {
 	return h
 }
 
-// embeddedTarget 内嵌形态目标：桌面=右栏原生 WebView2 面板；网页=无头 chromedp。
-func (a *App) embeddedTarget() browserTarget {
+// embeddedTarget 内嵌形态目标：Electron 壳=右栏 <webview> 单例面板；原生
+// 桌面壳=该会话的右栏 WebView2 面板（panelFor）；网页形态=该会话的无头
+// chromedp 实例。sid 为会话 id（空=无会话上下文的共享实例）。
+func (a *App) embeddedTarget(sid string) browserTarget {
 	if a.nativePanel != nil {
 		return a.nativePanel
 	}
-	return a.Browser()
+	a.panelMu.Lock()
+	dispatch := a.panelDispatch
+	a.panelMu.Unlock()
+	if dispatch != nil {
+		return a.panelFor(sid)
+	}
+	return a.embeddedBrowser(sid)
+}
+
+// ---------- 原生桌面壳的会话面板集合 ----------
+
+// panelFor 返回（惰性创建壳，WebView2 控件仍由首个矩形/导航触发）该会话的
+// 右栏面板。每会话独立实例与 profile（data/webview-browsers/<会话>/，空键
+// 沿用旧共享目录 data/webview-browser）：页面与登录态互不串台，切会话只是
+// 换显示的面板，实例保留。仅原生桌面壳（panelDispatch 已就位）可达。
+func (a *App) panelFor(sid string) browserTarget {
+	key := browserProfileKey(sid)
+	a.panelMu.Lock()
+	defer a.panelMu.Unlock()
+	if a.panels == nil {
+		a.panels = map[string]browserTarget{}
+	}
+	if p, ok := a.panels[key]; ok {
+		return p
+	}
+	p := newBrowserPanel(a, a.panelDispatch, a.panelMainWnd, sid)
+	a.panels[key] = p
+	return p
+}
+
+// panelEach 遍历当前面板集合（快照后锁外回调，避免回调里的 COM 投递与锁交叉）。
+func (a *App) panelEach(fn func(p browserTarget)) {
+	a.panelMu.Lock()
+	list := make([]browserTarget, 0, len(a.panels))
+	for _, p := range a.panels {
+		list = append(list, p)
+	}
+	a.panelMu.Unlock()
+	for _, p := range list {
+		fn(p)
+	}
+}
+
+// panelSetVisible 记录当前显示中的面板键（互斥显示的记账；隐藏上报据此路由）。
+func (a *App) panelSetVisible(key string) {
+	a.panelMu.Lock()
+	a.panelVisible = key
+	a.panelMu.Unlock()
+}
+
+// panelVisibleKey 读当前显示中的面板键。
+func (a *App) panelVisibleKey() string {
+	a.panelMu.Lock()
+	defer a.panelMu.Unlock()
+	return a.panelVisible
+}
+
+// panelHideCurrent 把当前显示中的面板收屏外（隐藏上报的路由目标）。返回是否动过。
+func (a *App) panelHideCurrent() bool {
+	key := a.panelVisibleKey()
+	if key == "" {
+		return false
+	}
+	a.panelMu.Lock()
+	p := a.panels[key]
+	a.panelVisible = ""
+	a.panelMu.Unlock()
+	if bp, ok := p.(interface {
+		SetRect(x, y, w, h int, dpr float64, visible bool) error
+	}); ok && bp != nil {
+		_ = bp.SetRect(0, 0, 0, 0, 1, false)
+		return true
+	}
+	return false
+}
+
+// panelHideOthers 除 key 外的面板全部收屏外（换显示面时的互斥收场：它们是
+// 同一主窗口的兄弟子窗口，不收会叠在当前面板上）。只动已创建的控件。
+func (a *App) panelHideOthers(key string) {
+	a.panelMu.Lock()
+	var list []browserTarget
+	for k, p := range a.panels {
+		if k == key {
+			continue
+		}
+		list = append(list, p)
+	}
+	a.panelMu.Unlock()
+	for _, p := range list {
+		if bp, ok := p.(interface {
+			SetRect(x, y, w, h int, dpr float64, visible bool) error
+		}); ok && bp != nil {
+			_ = bp.SetRect(0, 0, 0, 0, 1, false)
+		}
+	}
+}
+
+// panelFrontendReset 每轮桌面前端（热重启/重建）换新时重置面板宿主：旧窗口
+// 的面板全部兜底释放（消息泵已停，Dispatch 投递不再到达），新面板用新窗口
+// 的 UI 线程与 HWND 重建。仅 UI 线程调用（desktop_windows.go 的前端循环）。
+func (a *App) panelFrontendReset(dispatch func(f func()), mainWnd uintptr) {
+	a.panelMu.Lock()
+	old := a.panels
+	a.panels = nil
+	a.panelDispatch = dispatch
+	a.panelMainWnd = mainWnd
+	a.panelVisible = ""
+	a.panelMu.Unlock()
+	for _, p := range old {
+		if lp, ok := p.(interface{ releaseAfterMainLoopGone() }); ok {
+			lp.releaseAfterMainLoopGone()
+		}
+	}
 }
 
 // browserFor 按 browser_open 的 mode 取目标（headless 缺省=内嵌形态），并记为
@@ -168,7 +297,7 @@ func (a *App) browserFor(sid, mode string) browserTarget {
 	if mode == "headed" {
 		t = a.headedBrowser(sid)
 	} else {
-		t = a.embeddedTarget()
+		t = a.embeddedTarget(sid)
 	}
 	key := browserProfileKey(sid)
 	a.browserMu.Lock()
@@ -176,7 +305,10 @@ func (a *App) browserFor(sid, mode string) browserTarget {
 		a.browserActive = map[string]browserTarget{}
 	}
 	a.browserActive[key] = t
-	a.browserUserClosedAt = time.Time{} // 重新打开：用户关闭标记作废（此后的「未在运行」另有原因）
+	if a.browserUserClosedAt == nil {
+		a.browserUserClosedAt = map[string]time.Time{}
+	}
+	delete(a.browserUserClosedAt, key) // 重新打开：用户关闭标记作废（此后的「未在运行」另有原因）
 	a.browserMu.Unlock()
 	return t
 }
@@ -201,7 +333,7 @@ func (a *App) activeBrowser(sid string) browserTarget {
 		return nil
 	}
 	// active 已关（显式 Close）：回退到仍在运行的实例，并更新 active
-	for _, cand := range []browserTarget{a.embeddedTarget(), a.headedBrowser(sid)} {
+	for _, cand := range []browserTarget{a.embeddedTarget(sid), a.headedBrowser(sid)} {
 		if cand != nil && cand.Started() {
 			a.browserMu.Lock()
 			a.browserActive[key] = cand
@@ -746,14 +878,15 @@ func (h *BrowserHost) Where() string {
 
 func (a *App) handleBrowserNavigate(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		URL    string `json:"url"`
-		Action string `json:"action"` // back|forward|reload
+		Session string `json:"session"` // 右栏所属会话：工具栏操作的是该会话的面板
+		URL     string `json:"url"`
+		Action  string `json:"action"` // back|forward|reload
 	}
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
 		return
 	}
-	h := a.browserFor("", "") // 面板地址栏也是用户发起：内嵌形态随之成为工具作用目标
+	h := a.browserFor(p.Session, "") // 面板地址栏也是用户发起：该会话的内嵌形态随之成为工具作用目标
 	if p.Action != "" {
 		if err := h.NavAction(p.Action); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -773,9 +906,10 @@ func (a *App) handleBrowserNavigate(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleBrowserViewport(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		Width  int  `json:"width"`
-		Height int  `json:"height"`
-		Reset  bool `json:"reset"`
+		Session string `json:"session"`
+		Width   int    `json:"width"`
+		Height  int    `json:"height"`
+		Reset   bool   `json:"reset"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeErr(w, http.StatusBadRequest, "参数解析失败: "+err.Error())
@@ -784,7 +918,7 @@ func (a *App) handleBrowserViewport(w http.ResponseWriter, r *http.Request) {
 	if p.Reset {
 		p.Width, p.Height = 0, 0
 	}
-	h := a.embeddedTarget()
+	h := a.embeddedTarget(p.Session)
 	if err := h.SetViewport(p.Width, p.Height); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -793,11 +927,16 @@ func (a *App) handleBrowserViewport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleBrowserState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.embeddedTarget().State())
+	writeJSON(w, http.StatusOK, a.embeddedTarget(r.URL.Query().Get("session")).State())
 }
 
 // handleBrowserPanelRect 桌面右栏原生面板的矩形同步端点：前端把网页占位区
 // 的矩形上报，宿主移动 WebView2 子窗口。网页模式没有原生面板，忽略。
+//
+// 会话路由（右栏浏览器每会话一个独立面板）：上报带 session——可见上报
+// 落位到该会话的面板（顺带把其余会话的面板收屏外，同一时刻只显示一个）；
+// 隐藏上报作用于「当前显示中的面板」（前端只有桌面壳一个写者，隐藏语义
+// 就是把显示着的那个收起来）。老前端不带 session：归并到共享面板（""键）。
 //
 // 写者纪律：面板可见性的状态机只允许桌面壳前端一个写者——历史上出过两类
 // 事故：网页形态的页面（手机/浏览器里开的同一 UI）加载时发一次隐藏上报，
@@ -808,6 +947,7 @@ func (a *App) handleBrowserState(w http.ResponseWriter, r *http.Request) {
 // 一个字节都不发。
 func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 	var p struct {
+		Session string  `json:"session"`
 		X       float64 `json:"x"`
 		Y       float64 `json:"y"`
 		W       float64 `json:"w"`
@@ -836,29 +976,43 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
-	log.Printf("[panel-rect-diag] 收到 x=%.1f y=%.1f w=%.1f h=%.1f dpr=%.2f visible=%v iw=%.0f ih=%.0f oz=%.0f desktop=%v",
-		p.X, p.Y, p.W, p.H, p.Dpr, p.Visible, p.IW, p.IH, p.OZ, p.Desktop) // 临时诊断日志
-	ps, ok := a.nativePanel.(interface {
-		SetRect(x, y, w, h int, dpr float64, visible bool) error
-	})
-	if !ok || ps == nil {
+	// 原生桌面壳未就位（网页形态/Electron 壳/启动间隙）：没有原生面板可动
+	a.panelMu.Lock()
+	dispatch := a.panelDispatch
+	a.panelMu.Unlock()
+	if dispatch == nil {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
+	log.Printf("[panel-rect-diag] 收到 x=%.1f y=%.1f w=%.1f h=%.1f dpr=%.2f visible=%v session=%s iw=%.0f ih=%.0f oz=%.0f desktop=%v",
+		p.X, p.Y, p.W, p.H, p.Dpr, p.Visible, p.Session, p.IW, p.IH, p.OZ, p.Desktop) // 临时诊断日志
 	dpr := p.Dpr
 	if dpr <= 0 {
 		dpr = 1
+	}
+	// 隐藏上报：作用于当前显示中的面板（见函数头注释的会话路由说明）
+	if !p.Visible {
+		a.panelHideCurrent()
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
 	}
 	// 坐标换算：前端 x/y/w/h 是相对主 WebView2 视口的 CSS px。主 WebView2
 	// 精确铺满主窗口客户区（绑定库 WM_SIZE → GetClientRect → PutBounds），
 	// 于是「客户区窗口单位 ÷ 上报视口宽高」= CSS px → 子窗口坐标的实测
 	// 比例：100% 缩放下为 1，非 100% 缩放/多屏异 DPI 自我校准。此前两代
 	// 实现（先乘 dpr、后假设 1:1）都在部分机器上翻过车——比例是量出来的，
-	// 不再是假设。隐藏上报（iw=0）跳过校准，反正矩形不生效。
+	// 不再是假设。
 	sx, sy := 1.0, 1.0
 	if cw, ch := mainClientSize(); cw > 0 && ch > 0 && p.IW > 0 && p.IH > 0 {
 		sx = clampFloat(float64(cw)/p.IW, 0.5, 3)
 		sy = clampFloat(float64(ch)/p.IH, 0.5, 3)
+	}
+	ps, ok := a.panelFor(p.Session).(interface {
+		SetRect(x, y, w, h int, dpr float64, visible bool) error
+	})
+	if !ok || ps == nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
 	}
 	if err := ps.SetRect(
 		int(p.X*sx+0.5), int(p.Y*sy+0.5), int(p.W*sx+0.5), int(p.H*sy+0.5),
@@ -866,6 +1020,9 @@ func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 该会话面板落位成为当前显示：记账 + 其余面板收屏外（互斥显示）
+	a.panelSetVisible(browserProfileKey(p.Session))
+	a.panelHideOthers(browserProfileKey(p.Session))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

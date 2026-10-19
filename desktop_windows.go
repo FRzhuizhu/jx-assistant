@@ -341,20 +341,32 @@ func runDesktopLoop(app *App, url string) error {
 		// 当前主窗口登记（原子）：restartFrontendNow 从任意 goroutine 取
 		// 「此刻活着的那扇窗」投递关窗，热重启的重建间隙里重试等待新句柄。
 		mainWndHwnd.Store(uintptr(w.Window()))
-		// 右栏原生浏览器面板：COM 调用一律经 Dispatch 投递到本窗口的 UI 线程
-		app.nativePanel = newBrowserPanel(app, w.Dispatch, uintptr(w.Window()))
-		if bp, ok := app.nativePanel.(*browserPanel); ok {
-			panelReassertHook.Store(func() { bp.reassertTopOnUI() })
-			// 主窗口被用户拖动/缩放（含最大化还原拖动）时让面板暂停落位：系统的
-			// 模态移动循环里不再碰 WebView2 子窗口（详见 holdForWindowDrag）。
-			panelDragHoldHook.Store(func(hold bool) {
-				if hold {
+		// 右栏原生浏览器面板（每会话一个实例，App.panels）：先登记本轮前端
+		// 窗口的 UI 线程投递与 HWND——旧窗口的面板已随上一轮收尾释放，本轮
+		// 的面板由此后的矩形上报/导航按会话惰性创建。COM 调用一律经 Dispatch
+		// 投递到本窗口的 UI 线程。Z 序重申与拖动让路的钩子作用于全部面板
+		//（各自内部按可见性早退，屏外面板零动作）。
+		app.panelFrontendReset(w.Dispatch, uintptr(w.Window()))
+		panelReassertHook.Store(func() {
+			app.panelEach(func(p browserTarget) {
+				if bp, ok := p.(*browserPanel); ok {
+					bp.reassertTopOnUI()
+				}
+			})
+		})
+		// 主窗口被用户拖动/缩放（含最大化还原拖动）时让面板暂停落位：系统的
+		// 模态移动循环里不再碰 WebView2 子窗口（详见 holdForWindowDrag）。
+		panelDragHoldHook.Store(func(hold bool) {
+			app.panelEach(func(p browserTarget) {
+				if bp, ok := p.(*browserPanel); !ok {
+					return
+				} else if hold {
 					bp.holdForWindowDrag()
 				} else {
 					bp.releaseAfterWindowDrag()
 				}
 			})
-		}
+		})
 		// 右侧栏截图（panel_screenshot 工具）的通道：shellEval 注入主界面 JS，
 		// 探针把右栏矩形 POST /api/shell/panel-view 回到 panelViewCh。
 		// ExecuteScript 是 COM 调用，必须发生在 UI 线程——工具侧从任意 goroutine
@@ -504,9 +516,13 @@ func newDesktopFrontend(prev *panelRect) webview2.WebView {
 // 其内部 *edge.Chromium（go.mod 已锁定版本；字段变动时 NewAt 抛错由 recover
 // 兜住，退化为「进程退出时由 Job Object 回收」，功能不受影响）。
 func releaseFrontend(app *App, w webview2.WebView) {
-	if bp, ok := app.nativePanel.(*browserPanel); ok {
-		bp.releaseAfterMainLoopGone()
-	}
+	// 右栏的面板集合逐个兜底释放（窗口将亡、消息泵将停；下一轮前端循环
+	// 的 panelFrontendReset 会整体重建集合）
+	app.panelEach(func(p browserTarget) {
+		if bp, ok := p.(*browserPanel); ok {
+			bp.releaseAfterMainLoopGone()
+		}
+	})
 	func() {
 		defer func() { _ = recover() }()
 		rv := reflect.ValueOf(w)

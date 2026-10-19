@@ -93,12 +93,24 @@ type App struct {
 	selfOnce        sync.Once
 	selfExe         string // 引擎程序绝对路径（os.Executable，探测一次缓存；系统提示词用）
 	skillRTPrompt   string // 内置技能运行时段（技能/_runtime/python 绝对路径，探测一次缓存；系统提示词用）
-	browserMu       sync.Mutex
-	browserEmbedded *BrowserHost             // 无头 chromedp 宿主：网页形态的内嵌目标（browser_host.go，惰性创建）
-	browsersHeaded  map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
-	nativePanel     browserTarget            // 桌面右栏原生 WebView2 面板（browser_panel_windows.go；网页模式为 nil）
-	browserActive   map[string]browserTarget // 工具作用目标：每会话最近一次 browser_open 选定的实例（键=browserProfileKey）
-	browserUserClosedAt time.Time            // 用户在右栏 ✕ 关闭浏览器页面的时刻（0=无，browserMu 保护）：browser_* 报「未在运行」时据此区分为用户主动关闭（非崩溃）；browserFor 重新打开时清零
+	browserMu         sync.Mutex
+	browsersEmbedded  map[string]*BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标，按会话隔离（""=共享；browser_host.go，惰性创建）
+	browsersHeaded    map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
+	nativePanel       browserTarget            // Electron 壳的右栏 <webview> 面板（单例，browser_panel_electron.go）；原生桌面壳/网页形态为 nil
+	browserActive     map[string]browserTarget // 工具作用目标：每会话最近一次 browser_open 选定的实例（键=browserProfileKey）
+	browserUserClosedAt map[string]time.Time     // 用户在右栏 ✕ 关闭浏览器页面的时刻，按会话记账（键=browserProfileKey，browserMu 保护）：browser_* 报「未在运行」时据此区分为用户主动关闭（非崩溃）；browserFor 重新打开时清零
+
+	// 原生桌面壳（desktop_windows.go）的会话面板集合：右栏浏览器每个会话
+	// 一个独立 WebView2 实例与 profile（登录态/页面互不串台，与有头独立
+	// 窗口的会话隔离同款约定）。panelDispatch/panelMainWnd 是当前前端窗口
+	// 的 UI 线程投递与 HWND（每轮前端热重启时整体换新）；panelVisible 记
+	// 当前显示中的面板键——同一时刻只显示一个会话的面板，其余收屏外。
+	// 非桌面形态（网页/Electron）这些字段全为零值，不参与路由。
+	panelMu       sync.Mutex
+	panelDispatch func(f func())
+	panelMainWnd  uintptr
+	panels        map[string]browserTarget // 键=browserProfileKey（""=共享面板，兼容无会话上下文的入口）
+	panelVisible  string
 
 	// 桌面壳（runDesktop）注入的右侧栏截图通道（panelshot_windows.go）：
 	// shellEval 往主界面注入 JS、panelViewCh 收回右栏矩形回传，shellWnd 是
