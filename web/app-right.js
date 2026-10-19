@@ -17,10 +17,12 @@ const RP_CONTENT_MIN = 640;  // 对话区最小宽（与拖把手一致）
 /* 视图注册表：id → { title, onOpen, saveSession, restoreSession }（计划/
    浏览器…以后往这加）。容器一律是 index.html 里的静态 DOM（id=rp-view-<id>），
    行为代码挂在本仓 js（旧「文件」查看页用过的 iframe 型视图已随该功能移除）。
-   saveSession()/restoreSession(saved)：右栏跟会话走的统一挂点——每个视图把
+   saveSession()/restoreSession(saved, sid)：右栏跟会话走的统一挂点——每个视图把
    「属于哪个会话的选择」（子对话选中、计划选中、Git 仓库…）
    交给这里，切换对话时由 rpSnapshot / rpRestoreSession 统一快照与恢复，
-   视图自己不再各自监听会话切换（browser 这类全局态视图不挂，行为不变）。 */
+   视图自己不再各自监听会话切换（browser 这类全局态视图不挂，行为不变）。
+   restoreSession 的第二参就是目标会话 id（回首页为空串）——视图直接用它，
+   不要去读 state.cur：挂点被调的时机并不保证 cur 已就位（懒创建等路径）。 */
 const rpViews = {};
 let rpActive = null;
 
@@ -61,7 +63,7 @@ function rpRestoreSession(sid) {
   const st = sid ? rpSessionOf(sid) : { open: false, view: '', views: {} };
   for (const [id, def] of Object.entries(rpViews)) {
     if (typeof def.restoreSession !== 'function') continue;
-    try { def.restoreSession(st.views[id]); } catch (e) { /* 单视图失败不拖累整体 */ }
+    try { def.restoreSession(st.views[id], sid); } catch (e) { /* 单视图失败不拖累整体 */ }
   }
   if (st.view) rpLastView = st.view; // 收着展开时回到本会话上次看的视图
   if (st.open && st.view && rpViews[st.view]) rpOpen(st.view);
@@ -75,7 +77,7 @@ function rpRegister(id, def) {
   // 否则它带着初始（或上一次）的会话选择直到下次切换
   const sid = state.cur && state.cur.id;
   if (sid && rpSess[sid] && typeof def.restoreSession === 'function') {
-    try { def.restoreSession(rpSess[sid].views[id]); } catch (e) { /* 单视图失败不拖累整体 */ }
+    try { def.restoreSession(rpSess[sid].views[id], sid); } catch (e) { /* 单视图失败不拖累整体 */ }
   }
 }
 

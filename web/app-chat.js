@@ -4911,6 +4911,7 @@ async function prepareSend(forceContent, view) {
         }),
       });
       state.cur = s;
+      rpRestoreSession(s.id); // 懒创建也切了会话：右栏各视图跟上（否则 Git 面板还停在首页态，显示默认工作区）
       placeComposer();
       syncComposer();
       refreshDrawer();
