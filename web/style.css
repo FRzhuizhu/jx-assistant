@@ -1520,7 +1520,7 @@ body.rp-open .w-handle { display: none; }
 }
 .composer-input::placeholder { color: var(--text-3); }
 /* 输入框标记胶囊的背衬层（HTML 见 index.html 的 composer-input-wrap）：与输入框
-   同排版、字全透明，只在“引用N”“文件N …”标记段画灰底圆角色块——黑字仍是输入框
+   同排版、字全透明，只在“引用N”与附件截短名等标记段画灰底圆角色块——黑字仍是输入框
    自己的（叠在最上层、正常编辑），胶囊只是精确垫底的底色，两层渲染同一段文本故
    逐字重合。排版参数（字体/行高/内边距/换行）由 JS 从输入框复制（同语音灰字层
    手法）；margin:-4px 抵消 padding:4px，字形位置零偏移 */

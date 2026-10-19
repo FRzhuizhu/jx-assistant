@@ -735,16 +735,10 @@ function loadSessions() {
 function sessionDraftKey(id) { return 'jx.st.' + id; }
 function subDraftKey(id) { return 'jx.subst.' + id; }
 
-// 文件标记（“文件2 报告fin….docx”，生成与用途见 app-chat.js「文件标记」与「输入框
-// 标记胶囊」节）只活在输入框与本次暂存的附件之间：附件不随草稿持久化，落盘前把
-// 标记摘掉——否则恢复出来的草稿里会留着指向早已不存在附件的空胶囊
-const FILE_MARK_RX = /“文件\d+ [^”\n]*”/g;
-function stripFileMarks(t) { return String(t || '').replace(FILE_MARK_RX, ''); }
-
 function persistHomeDraftLS() {
   if (state.cur) return; // 只在首页上下文保存
   try {
-    homeDraft.text = stripFileMarks($('input').value);
+    homeDraft.text = $('input').value;
     localStorage.setItem('jx.homeDraft', JSON.stringify({ ...homeDraft, text: homeDraft.text }));
   } catch (e) { /* 隐私模式下忽略 */ }
 }
@@ -752,7 +746,7 @@ function persistHomeDraftLS() {
 function persistSessionDraftLS() {
   if (!state.cur) return;
   try {
-    const v = stripFileMarks($('input').value);
+    const v = $('input').value;
     if (v) localStorage.setItem(sessionDraftKey(state.cur.id), v);
     else localStorage.removeItem(sessionDraftKey(state.cur.id));
   } catch (e) {}
@@ -761,7 +755,7 @@ function persistSessionDraftLS() {
 function persistSubDraftLS() {
   if (!subState.cur) return;
   try {
-    const v = stripFileMarks($('sub-input').value);
+    const v = $('sub-input').value;
     if (v) localStorage.setItem(subDraftKey(subState.cur.id), v);
     else localStorage.removeItem(subDraftKey(subState.cur.id));
   } catch (e) {}

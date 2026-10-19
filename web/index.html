@@ -225,7 +225,7 @@
           <div class="q-expand"></div>
         </div>
         <!-- 输入框与标记胶囊背衬层：背衬层与输入框同排版（字体/行高/内边距/换行规则
-             由 JS 从输入框复制），字全透明，只在“引用N”“文件N …”标记段垫上灰底
+             由 JS 从输入框复制），字全透明，只在“引用N”与附件截短名等标记段垫上灰底
              胶囊——黑字仍是输入框自己的（最上层、正常编辑），胶囊只是精确垫底的
              底色；pointer-events:none 永不吃点击。渲染与光标原子策略见
              app-chat.js 的「输入框标记胶囊」节 -->
@@ -416,7 +416,9 @@
           <button id="bpw-back" title="后退">◀</button>
           <button id="bpw-fwd" title="前进">▶</button>
           <button id="bpw-reload" title="刷新">⟳</button>
-          <input id="bpw-url" type="text" placeholder="输入网址回车打开（http/https）" spellcheck="false" autocomplete="off">
+          <input id="bpw-url" type="text" placeholder="输入网址回车打开" spellcheck="false" autocomplete="off">
+          <button id="bpw-sysopen" title="用系统默认应用打开这个文件" hidden>打开方式</button>
+          <button id="bpw-reveal" title="在文件资源管理器中定位这个文件" hidden>📁</button>
           <button id="bpw-external" title="在系统浏览器打开当前页">↗</button>
         </div>
         <div class="bpw-stage" id="bpw-stage">

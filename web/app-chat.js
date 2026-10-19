@@ -1958,14 +1958,24 @@ function deliveryCard(dvs, sid, view) {
     ov.textContent = '打开';
     ov.title = route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
       : '用系统默认程序打开这个文件';
+    // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
+    // 音视频、svg 这些浏览器能渲染的交付物，点它就在右栏看；默认「打开」
+    // 仍按类型自动路由（html 进右栏，其余系统应用），MD 走 md-viewer 单窗口
+    const pv = document.createElement('button');
+    pv.type = 'button';
+    pv.className = 'dc-btn';
+    pv.textContent = '在右侧打开';
+    pv.title = '在右侧「浏览器」面板中打开（网页/图片/音视频可直接渲染）';
     const rv = document.createElement('button');
     rv.type = 'button';
     rv.className = 'dc-btn';
     rv.textContent = '在文件夹中查看';
     rv.title = '在文件资源管理器中定位这个文件';
     ov.onclick = (ev) => { ev.stopPropagation(); deliveryOpenFile(view, sid, d); };
+    pv.onclick = (ev) => { ev.stopPropagation(); openInPanelBrowser({ session: sid, path: d.path }); };
     rv.onclick = (ev) => { ev.stopPropagation(); deliveryRevealFile(view, sid, d); };
     acts.appendChild(ov);
+    acts.appendChild(pv);
     acts.appendChild(rv);
     row.appendChild(acts);
     // 整行可点击（含行内空白）：与「打开」等效
@@ -5448,7 +5458,7 @@ let selKeepText = '';
    · 发送时组装为「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——前端看到的
      是胶囊与标记，模型收到的是带编号的完整引用，正文里的“引用N”即引用位置。
    · 对话区用户气泡：引用块逐条渲染成灰色引用行（截断 + title 全文），正文里的
-     “引用N”标记与“文件N 截断名”标记渲染成灰色胶囊（前者 title=对应引用全文）。
+     “引用N”标记与文件名形态的引号串渲染成灰色胶囊（前者 title=对应引用全文）。
    · 引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
      jx.subq.<id>，存 JSON 数组），切走再回来、刷新页面都不丢。 */
 
@@ -5478,7 +5488,7 @@ function quotesOf(view) {
 }
 
 // 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）。
-// 文件标记（“文件N 截断名”）原样留在正文里——后端【文件上传】注记本来就带全名
+// 文件标记（“报告fina….docx”这样的截短名引号串）原样留在正文里——后端【文件上传】注记本来就带全名
 // 与位置，模型自己能对上号；气泡里它与“引用N”同款渲染成灰胶囊（appendQuoteBodyText）
 function composeQuoted(view, text) {
   const qs = quotesOf(view || mainView).map((q) => String(q).trim()).filter(Boolean);
@@ -5514,7 +5524,7 @@ function splitQuoted(raw) {
 }
 
 // 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”与
-// “文件N 截断名”标记渲染成灰色胶囊（前者 title=对应引用全文）
+// “引用N”标记与文件名形态的引号串渲染成灰色胶囊（前者 title=对应引用全文）
 function appendQuotedBody(b, raw) {
   const qm = splitQuoted(raw);
   // 没有引用块（只带文件、或什么都没带）也走标记切段：文件标记照样出胶囊，
@@ -5530,13 +5540,14 @@ function appendQuotedBody(b, raw) {
   appendQuoteBodyText(b, qm.rest, qm.quotes);
 }
 
-// 正文按标记切段：“引用N”与“文件N 截断名”都渲染成灰胶囊；其余原样文本节点。
-// 引用胶囊的 title 放对应引用全文（对不上号的——比如引用已清掉、正文里残留——
-// 按普通文字展示，不硬猜）；文件标记自带截短名，不需要额外查表
+// 正文按标记切段：引用标记与文件名形态的引号串（以 .扩展名 结尾，如“报告fina….docx”）
+// 都渲染成灰胶囊；其余原样文本节点。引用胶囊的 title 放对应引用全文（对不上号的
+// ——比如引用已清掉、正文里残留——按普通文字展示，不硬猜）；文件标记自带截短名，
+// 不需要额外查表（气泡渲染只看消息文本，无法回查当时的附件，这里是纯视觉层）
 function appendQuoteBodyText(b, text, quotes) {
   const src = String(text == null ? '' : text);
   if (!src) return;
-  const rx = /“(引用\d+|文件\d+ [^”\n]*)”/g;
+  const rx = /“(引用\d+|[^”\n]*\.[A-Za-z]{1,8})”/g;
   let last = 0, m;
   while ((m = rx.exec(src))) {
     if (m.index > last) b.appendChild(document.createTextNode(src.slice(last, m.index)));
@@ -5589,7 +5600,7 @@ function renderQuote(view) {
   }
 }
 
-// 在视图输入框光标处插入一段标记文本（“引用N”/“文件N …”共用）：输入框有焦点就
+// 在视图输入框光标处插入一段标记文本（“引用N”/附件截短名引号串共用）：输入框有焦点就
 // 插在光标处，否则追加到末尾；插完聚焦、光标跟在标记后（接着打字即续写）。
 // 落盘由调用方收口（一次插多条时只落一次）
 function insertInputMark(view, mark) {
@@ -5613,13 +5624,13 @@ function fileClipName(name) {
   return head + ext;
 }
 
-// 给附件发输入框标记（“文件2 报告fin….docx”）：编号递增（区分截断后撞名的两个
-// 文件），完整标记文本存在附件对象 a.mark 上——移除附件时按它精确摘掉输入框里的
-// 胶囊；标记原样随正文发出（【文件上传】注记带全名，模型自己对上号）
-function attachMarkOf(view, a) {
-  view = view || mainView;
-  view.state.fileSeq = (view.state.fileSeq || 0) + 1;
-  a.mark = '\u201c文件' + view.state.fileSeq + ' ' + fileClipName(a.name) + '\u201d';
+// 附件的输入框标记（“报告fina….docx”，主名前 6 字 + … + 扩展名）：完整标记文本
+// 存在附件对象 a.mark 上——背衬层按它精确高亮、卡片 ✕ 按它从输入框摘掉。不带
+// “文件N”编号：用户自己传的文件认得名字，胶囊越短越好（同名两份的极端情形
+// ✕ 会把两处一起摘掉，可接受）。标记原样随正文发出（【文件上传】注记带全名，
+// 模型自己对上号）
+function attachMarkOf(a) {
+  a.mark = '\u201c' + fileClipName(a.name) + '\u201d';
   return a.mark;
 }
 
@@ -5705,18 +5716,19 @@ function restoreQuoteLS(view) {
 });
 
 /* ---------- 输入框标记胶囊：背衬层渲染 + 光标原子策略 ----------
-   “引用N”“文件N …”标记在输入框里是纯文本（textarea 装不下富文本），灰胶囊观感
-   由背衬层实现（HTML/CSS 见 index.html 的 composer-input-wrap 与 style.css）：
-   与输入框同排版的透明层垫在输入框底下（字体/行高/内边距/换行规则从输入框复制，
-   同语音灰字层的手法），标记段画灰底圆角色块——黑字仍是输入框自己的、叠在最上层
-   正常编辑，胶囊只是精确垫底的底色（两层渲染同一段文本，逐字重合）；
-   pointer-events:none 永不吃点击。
+   引用标记（“引用N”）与附件标记（“报告fina….docx”）在输入框里是纯文本（textarea
+   装不下富文本），灰胶囊观感由背衬层实现（HTML/CSS 见 index.html 的
+   composer-input-wrap 与 style.css）：与输入框同排版的透明层垫在输入框底下（字体/
+   行高/内边距/换行规则从输入框复制，同语音灰字层的手法），标记段画灰底圆角色块
+   ——黑字仍是输入框自己的、叠在最上层正常编辑，胶囊只是精确垫底的底色（两层渲染
+   同一段文本，逐字重合）；pointer-events:none 永不吃点击。
+   标记区间怎么认：引用标记按 /“引用\d+”/ 正则；附件标记按暂存附件的完整标记文本
+   （a.mark）精确匹配——不猜格式，用户自己打的形如文件名的引号不会被误当成胶囊
+   （也所以草稿恢复后没有对应附件就自然不高亮，只是普通文字）。
    防误改中间：光标落进标记内部弹到标记末尾；退格贴着标记末尾 / Delete 贴着标记
    开头整颗删除（优先 execCommand 保撤销栈）；选区完整落在一颗标记内扩成整颗。
    IME 组字期间一律不干预。程序化写值（语音落字、退回回填、清空等）经 value
    存取器拦截统一刷新背衬层，不必挨个调用点补。 */
-const INPUT_MARK_RX = /“(?:引用\d+”|文件\d+ [^”\n]*”)/g;
-
 function setupInputMarks(view) {
   const ta = view.input;
   const wrap = ta.closest('.composer-input-wrap');
@@ -5731,20 +5743,38 @@ function setupInputMarks(view) {
       .forEach((k) => { bd.style[k] = cs[k]; });
   }
 
+  // 标记区间：引用标记按正则，附件标记按暂存附件的 a.mark 精确出现位置（升序）
+  function markList() {
+    const v = ta.value;
+    const out = [];
+    const qr = /“引用\d+”/g;
+    let m;
+    while ((m = qr.exec(v))) out.push({ start: m.index, end: m.index + m[0].length });
+    for (const a of attachmentsOf(view)) {
+      if (!a.mark) continue;
+      let i = v.indexOf(a.mark);
+      while (i >= 0) {
+        out.push({ start: i, end: i + a.mark.length });
+        i = v.indexOf(a.mark, i + a.mark.length);
+      }
+    }
+    out.sort((x, y) => x.start - y.start);
+    return out;
+  }
+
   // 渲染：按标记切段，标记段灰底胶囊、其余透明文本；没有标记就整层腾空（零开销）
   function render() {
     const v = ta.value;
     bd.textContent = '';
-    if (v.indexOf('“') < 0) return;
-    INPUT_MARK_RX.lastIndex = 0;
-    let last = 0, m;
-    while ((m = INPUT_MARK_RX.exec(v))) {
-      if (m.index > last) bd.appendChild(document.createTextNode(v.slice(last, m.index)));
+    const list = markList();
+    let last = 0;
+    for (const mk of list) {
+      if (mk.start > last) bd.appendChild(document.createTextNode(v.slice(last, mk.start)));
       const sp = document.createElement('span');
       sp.className = 'mk';
-      sp.textContent = m[0];
+      sp.textContent = v.slice(mk.start, mk.end);
       bd.appendChild(sp);
-      last = INPUT_MARK_RX.lastIndex;
+      last = mk.end;
     }
     if (last < v.length) bd.appendChild(document.createTextNode(v.slice(last)));
   }
@@ -5769,14 +5799,7 @@ function setupInputMarks(view) {
   syncMetrics();
   render();
 
-  // —— 光标原子策略 ——
-  function markList() {
-    const out = [], v = ta.value;
-    INPUT_MARK_RX.lastIndex = 0;
-    let m;
-    while ((m = INPUT_MARK_RX.exec(v))) out.push({ start: m.index, end: m.index + m[0].length });
-    return out;
-  }
+  // —— 光标原子策略（markList 见上） ——
   let composing = false;
   ta.addEventListener('compositionstart', () => { composing = true; });
   ta.addEventListener('compositionend', () => { composing = false; schedule(); });
@@ -6617,9 +6640,9 @@ function stagePaths(paths, view) {
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
-  // 输入框里挂上“文件N …”胶囊标记：附件区卡片照旧（图标/缩略图/✕），胶囊只记
+  // 输入框里挂上“报告fina….docx”胶囊标记：附件区卡片照旧（图标/缩略图/✕），胶囊只记
   // “在正文哪个位置引用了哪个文件”，发送时原样随正文发出（【文件上传】注记带全名）
-  for (const a of added) insertInputMark(view, attachMarkOf(view, a));
+  for (const a of added) insertInputMark(view, attachMarkOf(a));
   if (added.length) {
     if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
     syncComposerPad(view);
@@ -6648,8 +6671,8 @@ function stageFiles(files, view) {
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
-  // 输入框里挂上“文件N …”胶囊标记（同 stagePaths：附件区卡片照旧，标记只管位置）
-  for (const a of added) insertInputMark(view, attachMarkOf(view, a));
+  // 输入框里挂上“报告fina….docx”胶囊标记（同 stagePaths：附件区卡片照旧，标记只管位置）
+  for (const a of added) insertInputMark(view, attachMarkOf(a));
   if (added.length) {
     if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
     syncComposerPad(view);
