@@ -113,6 +113,17 @@ type LLMTarget struct {
 	AltBaseURL string
 }
 
+// AuditModel 返回审计行（call/request）里记的模型标识：provider/model 形式。
+// 设计意图：将来按模型拆账算成本——sessions 表只有当前 model，中途换模型/
+// 换渠道的会话拆不开；provider 前缀还能区分不同渠道的同名模型。旧单模型
+// 配置兜底路径没有 provider，退回裸模型名。
+func (t LLMTarget) AuditModel() string {
+	if t.ProviderID == "" {
+		return t.Model
+	}
+	return t.ProviderID + "/" + t.Model
+}
+
 func (a *App) providerByID(id string) *ProviderCfg {
 	for i := range a.Cfg.Providers {
 		if a.Cfg.Providers[i].ID == id {

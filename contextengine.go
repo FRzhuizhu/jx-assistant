@@ -200,7 +200,7 @@ func (e *ContextEngine) CallSummarizer(sess *SessionMeta, input string) (string,
 			usage = &uu
 		},
 	})
-	p := map[string]any{"type": "call", "scope": "summarize",
+	p := map[string]any{"type": "call", "scope": "summarize", "model": target.AuditModel(),
 		"msgs": len(msgs), "est": estimateTokens(msgs),
 		"ms": time.Since(start).Milliseconds(), "text": len([]rune(sb.String()))}
 	if usage != nil {
@@ -324,6 +324,7 @@ type auditUsage struct {
 // auditRow 是 kind=audit 行正文的解析形态；各 type 只用自己那几个字段。
 type auditRow struct {
 	Type    string      `json:"type"`
+	Model   string      `json:"model,omitempty"` // call：本次请求实际使用的模型（provider/model；改动前的旧行留空）
 	Scope   string      `json:"scope,omitempty"` // call：调用方域（summarize=引擎侧路摘要调用；空=主循环）
 	Step    int         `json:"step"`            // call：本轮第几步（从 1 起）
 	Msgs    int         `json:"msgs"`            // call：发送的消息条数
@@ -345,11 +346,16 @@ type auditRow struct {
 
 // RecordCall 在一次模型调用返回后（无论成败）落引擎日志行：调用前后的关键
 // 事实一次记全（含当次组装的前缀指纹——指纹变化即能解释缓存命中变化）。
+// model 是本次请求实际使用的模型（provider/model，见 LLMTarget.AuditModel）——
+// 按模型拆账靠它，历史旧行没有该字段、解析后为空即不补。
 // outMs 是输出窗口（首末输出事件间）的时长，与厂家 usage 的 completion_tokens
 // 相除即吐字速度；无输出（纯报错）的调用为 0。
-func (e *ContextEngine) RecordCall(sess *SessionMeta, step, msgs, est int, sysHash, envHash string, ms int64, usage *Usage, textRunes int, toolNames []string, callErr error, outMs int64) {
+func (e *ContextEngine) RecordCall(sess *SessionMeta, model string, step, msgs, est int, sysHash, envHash string, ms int64, usage *Usage, textRunes int, toolNames []string, callErr error, outMs int64) {
 	p := map[string]any{
 		"type": "call", "step": step, "msgs": msgs, "est": est, "ms": ms, "text": textRunes,
+	}
+	if model != "" {
+		p["model"] = model
 	}
 	if outMs > 0 {
 		p["outMs"] = outMs
@@ -384,6 +390,7 @@ func toolNamesOf(calls []ToolCall) []string {
 
 // lastRequestRec 是 kind=request 行的正文：一次发给模型的请求全量记录。
 // Body 与线上逐字节同源（发送前捕获）；URL/Model 只记元信息，绝不含 API Key。
+// Model 为 provider/model 形式（LLMTarget.AuditModel），与 call 审计行同口径。
 // Sys/Env 指纹与 audit 行同源，导出对比用。
 type lastRequestRec struct {
 	URL       string          `json:"url"`

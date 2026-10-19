@@ -1211,7 +1211,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				},
 				// 请求发出前捕获全量请求体，经引擎缓存（环形保留最近三轮，「导出原始数据」数据源）
 				OnRequest: func(u string, body []byte) {
-					a.ctxEngine().RecordRequest(sess, u, target.Model, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)
+					a.ctxEngine().RecordRequest(sess, u, target.AuditModel(), step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, body)
 				},
 				OnText: func(s string) {
 					markOut()
@@ -1234,12 +1234,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					_ = a.Store.TouchRunMeta(sess) // 只回写用量列，不覆盖并发的权限等配置改动
 				},
 			})
-			// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时（重试的每次尝试各一条）
+			// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时、
+			// 本次实际使用的模型（重试的每次尝试各一条；中途换模型的会话按行即可拆账）
 			outMs := int64(0)
 			if !firstOut.IsZero() && lastOut.After(firstOut) {
 				outMs = lastOut.Sub(firstOut).Milliseconds()
 			}
-			a.ctxEngine().RecordCall(sess, step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, time.Since(callStart).Milliseconds(),
+			a.ctxEngine().RecordCall(sess, target.AuditModel(), step+1, len(msgs), pack.EstTokens, pack.SysHash, pack.EnvHash, time.Since(callStart).Milliseconds(),
 				usage, len([]rune(text.String())), toolNamesOf(calls), err, outMs)
 			if err == nil {
 				if attempt > 1 {
