@@ -541,17 +541,26 @@ func subQueueNote(sub *SessionMeta, mode, note string) string {
 }
 
 // landUserSide 是「用户侧消息落库」的唯一收口：chat（真实用户发言）走
-// appendMessage——锚定本轮环境时间、刷新会话活动时间，与用户自己发完全一致；
-// aiuser（AI 发出的用户消息）与注入类（report 等）走 appendRow，并按 AGENT.md
-// 的约定显式刷新会话时间（touchesActivity 的口径不含这两类行，不能去改它）。
-// 落库后广播同型 message 事件：emit 非空时走本轮订阅通道（执行体内部），否则走全局广播。
+// appendMessage——锚定本轮环境时间、刷新会话活动时间，与用户自己发完全一致
+//（chat 带 origin 时——如插话 origin=interject——按同口径落库，只是多存一个
+// 来源标记）；aiuser（AI 发出的用户消息）与注入类（report 等）走 appendRow，
+// 并按 AGENT.md 的约定显式刷新会话时间（touchesActivity 的口径不含这两类行，
+// 不能去改它）。落库后广播同型 message 事件：emit 非空时走本轮订阅通道
+//（执行体内部），否则走全局广播。
 func (a *App) landUserSide(m *SessionMeta, content, kind, origin string, emit func(Event)) *StoredMessage {
 	if kind == "" {
 		kind = kindChat
 	}
 	var sm *StoredMessage
-	if kind == kindChat {
+	if kind == kindChat && origin == "" {
 		sm = a.appendMessage(m, TextMessage("user", content))
+	} else if kind == kindChat {
+		sm = &StoredMessage{Message: TextMessage("user", content), Kind: kindChat, Origin: origin, CreatedAt: now()}
+		_ = a.Store.AppendRow(m.ID, sm)
+		if sm.touchesActivity() {
+			m.UpdatedAt = now()
+		}
+		_ = a.Store.TouchRunMeta(m) // 与 appendMessage 同口径回写运行列
 	} else {
 		sm = a.appendRow(m, StoredMessage{Message: TextMessage("user", content), Kind: kind, Origin: origin, CreatedAt: now()})
 		m.UpdatedAt = now()
@@ -630,6 +639,9 @@ func (a *App) updatePending(sessionID, msgID, action string) bool {
 			delete(a.pendingQueue, sessionID)
 		}
 		if action == "steer" {
+			if pm.Origin == "" {
+				pm.Origin = "interject" // 排队项提前为插话：同样打插话标记（派发注入的 origin 非空，不动）
+			}
 			moved = pm
 		}
 		break

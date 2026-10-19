@@ -1723,9 +1723,10 @@ func messageTextOf(m Message) string {
 }
 
 // handleSessionMessages 会话消息的轻量文本列表（组件/辅助生成场景）：只回
-// seq/role/text，支持 role 过滤（如 ?role=user——prompt/request 等系统行天然
-// 排除）与 limit（从最新往回收）。完整渲染口径仍是 GET /api/sessions/{id}，
-// 导出仍是 /export。
+// seq/role/text/origin，支持 role 过滤（如 ?role=user——prompt/request 等系统
+// 行天然排除）与 limit（从最新往回收）。插话消息（origin=interject，执行中
+// 插入的用户发言）默认排除——辅助场景按「正常轮次」计数时不应把插话算进去。
+// 完整渲染口径仍是 GET /api/sessions/{id}，导出仍是 /export。
 func (a *App) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
@@ -1746,11 +1747,14 @@ func (a *App) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		if role != "" && sm.Role != role {
 			continue
 		}
+		if sm.Origin == "interject" {
+			continue // 插话不计入轮次类场景（AI 自动标题的口径）
+		}
 		text := messageTextOf(sm.Message)
 		if strings.TrimSpace(text) == "" {
 			continue // 附件注记/控制行等无文本行不占列表
 		}
-		out = append(out, map[string]any{"seq": sm.Seq, "role": sm.Role, "text": text})
+		out = append(out, map[string]any{"seq": sm.Seq, "role": sm.Role, "text": text, "origin": sm.Origin})
 	}
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
@@ -2456,7 +2460,11 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 	if body.Mode == "steer" && a.IsRunning(m.ID) {
 		mode = "steer"
 	}
-	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content), kindChat, "")
+	origin := ""
+	if mode == "steer" {
+		origin = "interject" // 插话来源标记：随消息落库，AI 自动标题等场景据此把插话与正常轮次区分开
+	}
+	pm := a.pushPending(m.ID, mode, strings.TrimSpace(body.Content), kindChat, origin)
 	if !a.IsRunning(m.ID) && !a.queuePausedOf(m.ID) {
 		a.kickQueue(m) // 本轮已经结束：排队消息自己开一轮，不依赖用户再点一次（暂停时只排队不拉起）
 	}

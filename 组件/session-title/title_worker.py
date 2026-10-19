@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
 """title_worker.py —— 「AI 自动会话标题」组件的后端 worker（C 形态，帧协议）。
 
-机制（对齐老 DSH session-title 的文档决策，节奏 = all-prompts：每条新用户
-提示词处理完后改写一次）：
-  · 每轮对话结束（run.end 通知型钩子，一轮 = 一条用户消息触发的执行含排队
-    续跑）后，取「截至当前的全部用户消息」，经主程序 POST /api/llm/ask
-    独立调一次模型生成/修订标题——一次发送、一次输出（单轮，不与模型多轮
-    对话），不进会话上下文；worker 经反向调用主程序 API 干活，自身不持有
-    任何模型密钥；
-  · 标题增量演化：保留最初核心，语义合并旧标题与新主题，合不拢用「＋」连接，
-    开头保留最初主题代表词、结尾保留最新主题代表词——规则写进系统提示词
-    TITLE_SYSTEM_PROMPT；
-  · 用户手动改过标题的会话（主程序 PATCH 打钉）不再自动改：改标题请求带
-    autoTitle 标记，主程序对钉住会话回 409，本 worker 静默跳过。
+节奏（用户拍板：起码 3 轮一改）：
+  · 第 1 轮结束（首条用户消息处理完）命名一次；
+  · 之后每满 3 轮（第 4、7、10…轮结束）修订一次——按用户消息条数 n 判定，
+    n % 3 == 1 才动手；中间的轮次完全不动标题，也不调模型（省 token）。
+
+输入极简：每次只送「当前标题 + 最近一轮的用户消息」（各截 400 字）——旧标题
+本身就是累积状态的载体（最初核心在开头、最新主题在结尾），每步只看增量。
+
+模型请求是组件机制的通用服务：worker 经组件桥的反向调用（host 帧）调主程序
+POST /api/llm/ask——一次发送、一次输出（单轮，不与模型多轮对话），不进会话
+上下文；worker 自身不持有任何模型密钥（密钥与路由由主程序统一管理，该端点
+向全部组件开放，git 面板摘要同款路径）。
+
+钉住：用户手动改过标题的会话（主程序 PATCH 打钉）不再自动改：改标题请求带
+autoTitle 标记，主程序对钉住会话回 409，本 worker 静默跳过。
 
 帧协议（见 组件/README.md）——stdin 逐行收：
   {"type":"event","id":..,"event":"run.end","data":{"sessionID":..,"status":..}}  钩子事件
@@ -35,23 +38,24 @@ except Exception:
 
 # ---------- 提示词（增量演化规则在这里，改规则只改本组件） ----------
 
-TITLE_SYSTEM_PROMPT = """你是会话标题撰写员。根据一个会话的用户消息列表（按时间先后）与当前标题，输出该会话的新标题。
+TITLE_SYSTEM_PROMPT = """你是会话标题撰写员。根据一个会话的当前标题与最近一轮的用户消息，输出该会话的新标题。
 规则：
 - 用用户消息的主要语言书写（中文为主时写中文标题）。
 - 标题保持简短：中文不超过 20 个字，英文不超过 12 个单词。
-- 当前标题为空（首次命名）：概括会话的核心意图，优先反映第一条用户消息的主题。
+- 当前标题为空（首次命名）：概括这条用户消息的核心意图。
 - 已有标题（增量修订）：在旧标题的基础上演化，不要推倒重来——
   · 旧标题中仍然成立的核心要保留，尤其是最初的主题词（保持标题开头的延续）；
-  · 后续对话引入了新主题时，把新主题合并进标题：能自然合并成一句就合并成一句；
+  · 这条消息引入了新主题时，把新主题合并进标题：能自然合并成一句就合并成一句；
   · 无法自然合并的，用全角加号「＋」连接，如「旧主题＋新主题」；
   · 无论哪种写法，开头保留最初主题的代表词，结尾保留最新主题的代表词；
   · 已被合并表述覆盖的旧内容可以删去，控制总长不超上限。
 - 只输出标题本身：不要引号、不要书名号、不要句末标点、不要解释、不要任何多余文字。"""
 
-# 输入预算：单条用户消息截断（字符）、全部消息总预算（字符）。超总预算时
-# 丢中间的旧消息——首条（最初主题）与最新的若干条必须保留。
+# 改写节奏：用户消息条数 n 满足 n % CADENCE == 1 才动手——
+# 首轮（n=1）命名，之后第 4、7、10…轮（间隔恰 3 轮）修订。
+CADENCE = 3
+# 输入截断（字符）：当前标题与最近一条用户消息各按此截断。
 PER_MSG_CHARS = 400
-TOTAL_BUDGET_CHARS = 9000
 # 标题清洗上限：与主程序 PATCH 的 truncateRunes(_, 40) 同口径。
 TITLE_MAX_CHARS = 40
 
@@ -144,51 +148,51 @@ def clean_title(raw):
     return t[:TITLE_MAX_CHARS]
 
 
-def build_user_prompt(old_title, texts):
-    def cut(t):
-        t = " ".join(t.split())
-        return t if len(t) <= PER_MSG_CHARS else t[:PER_MSG_CHARS] + "…"
+def build_user_prompt(old_title, latest):
+    """输入极简：当前标题 + 最近一轮的用户消息（标题本身是累积状态的载体）。"""
+    t = " ".join(latest.split())
+    if len(t) > PER_MSG_CHARS:
+        t = t[:PER_MSG_CHARS] + "…"
+    return "\n".join([
+        "当前标题：" + (old_title or "（无）"),
+        "最近一轮的用户消息（过长已截断）：",
+        t,
+    ])
 
-    first = cut(texts[0])
-    rest = [cut(t) for t in texts[1:]]
-    chosen = []
-    budget = TOTAL_BUDGET_CHARS - len(first)
-    for t in reversed(rest):  # 从最新往回装，装不下即止
-        if budget - len(t) < 0:
-            break
-        chosen.insert(0, t)
-        budget -= len(t) + 4
-    dropped = len(rest) - len(chosen)
-    seq = [first] + (["（中间 %d 条较早消息省略）" % dropped] if dropped > 0 else []) + chosen
-    lines = ["当前标题：" + (old_title or "（无）"),
-             "用户消息（按时间先后，过长的已截断）："]
-    lines += ["[%d] %s" % (i + 1, t) for i, t in enumerate(seq)]
-    return "\n".join(lines)
+
+_generated_at = {}  # sessionID -> 上次生成标题时的（非插话）用户消息条数：同 n 不重复生成
+_gen_lock = threading.Lock()
 
 
 def process_session(sid):
     try:
+        mr = host_call("GET", "/api/sessions/%s/messages?role=user" % sid)
+        if not mr or mr.get("status") != 200:
+            return  # 会话不存在/服务忙：静默（下一轮会再试）
+        texts = [m.get("text") or "" for m in ((mr.get("body") or {}).get("messages") or [])]
+        texts = [t for t in texts if t.strip()]
+        n = len(texts)  # 正常轮数（messages 端点已排除插话）
+        if n == 0 or n % CADENCE != 1:
+            return  # 未到改写轮：首轮（n=1）命名，之后每满 3 轮（n=4,7,…）修订
+        with _gen_lock:
+            if _generated_at.get(sid) == n:
+                return  # 该轮已生成过（期间只有插话进来）：不重复调模型
+            _generated_at[sid] = n
+
         info = host_call("GET", "/api/sessions/" + sid)
         if not info or info.get("status") != 200:
-            return  # 会话不存在/服务忙：静默（下一轮会再试）
-        body = info.get("body") or {}
-        meta = body.get("meta") or {}
+            return
+        meta = (info.get("body") or {}).get("meta") or {}
         if meta.get("titlePinned"):
             return  # 用户手动命名钉住：不自动改（主程序侧 409 也会兜底）
         old_title = (meta.get("title") or "").strip()
 
-        mr = host_call("GET", "/api/sessions/%s/messages?role=user" % sid)
-        if not mr or mr.get("status") != 200:
-            return
-        texts = [m.get("text") or "" for m in ((mr.get("body") or {}).get("messages") or [])]
-        texts = [t for t in texts if t.strip()]
-        if not texts:
-            return  # 还没有可概括的用户消息
-
         ar = host_call("POST", "/api/llm/ask", {
             "session": sid, "system": TITLE_SYSTEM_PROMPT,
-            "user": build_user_prompt(old_title, texts)})
+            "user": build_user_prompt(old_title, texts[-1])})
         if not ar or ar.get("status") != 200:
+            with _gen_lock:
+                _generated_at.pop(sid, None)  # 失败回退：这一轮下次还能重试
             log("生成标题失败: %s" % (ar and ar.get("status")))
             return
         title = clean_title((ar.get("body") or {}).get("text") or "")
@@ -198,7 +202,7 @@ def process_session(sid):
         pr = host_call("PATCH", "/api/sessions/" + sid,
                        {"title": title, "autoTitle": True})
         if pr and pr.get("status") == 200:
-            log("会话 %s 标题 → %s" % (sid, title))
+            log("会话 %s 标题 → %s（第 %d 轮）" % (sid, title, n))
         elif pr and pr.get("status") == 409:
             pass  # 钉住拒绝：正常静默
         else:

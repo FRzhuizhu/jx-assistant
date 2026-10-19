@@ -114,6 +114,16 @@ manifest 顶层声明 `workers` 数组，主程序通用桥按声明拉起子进
 - **反向调用**：worker 处理 req/event 时可向主程序要数据（读会话、查状态……），
   仅限 `/api/` 前缀，权限同前端（本地信任模型——能调的 API 与页面里的一样）；
   需要收紧时再加 manifest 权限声明。桥侧 60 秒兜底。
+- **桥向组件提供的通用服务**（反向调用即可用，全部组件共享）：
+  - `POST /api/llm/ask`（llmapi.go）——**独立单轮模型调用**：body
+    `{session?, system?, user}`，一次发送一次输出；不进任何会话上下文、不落
+    消息表、不带工具。调用目标跟随 `session` 指定的会话（缺省全局默认），
+    密钥与路由由主程序统一管理——**worker 组件不需要也不应该持有模型密钥**。
+    浏览器半边（client.js）也可直接 fetch 同一端点。首个使用方：session-title
+    （会话标题生成）；先例：git 面板提交摘要（gitSummarize 同模式）。
+  - `GET /api/sessions/{id}/messages`——会话消息轻量文本列表
+    （`role` 过滤如 `user`、`limit` 从最新往回收；插话消息 origin=interject
+    默认排除——按「正常轮次」计数的辅助场景用）。
 - **超时与 fail-open**：拦截型等决定上限 `hooksTimeoutMs`（缺省 5000、上限
   30000）；超时/进程死/帧解析错一律**按放行处理**并记日志——组件故障不能
   拦住发送等主流程。
