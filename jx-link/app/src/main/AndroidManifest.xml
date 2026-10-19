@@ -40,6 +40,35 @@
             android:name=".ScanActivity"
             android:exported="false" />
 
+        <!-- 系统分享入口：微信（文件「用其他应用打开」/图片视频「其他应用」）、
+             文件管理器、浏览器等 → 复制到私有缓存后送进设备页输入框附件区 -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:theme="@style/AppTheme.Translucent">
+            <!-- 分享（单个）：mime 全类型 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- 分享（多选）：相册多选分享等 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- 打开方式：微信文件预览页「用其他应用打开」走 ACTION_VIEW -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
         <!-- 电脑页：全屏 WebView（每台电脑独立 Profile） -->
         <activity
             android:name=".DeviceActivity"

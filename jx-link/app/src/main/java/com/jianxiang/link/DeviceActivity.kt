@@ -9,6 +9,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -80,6 +82,123 @@ class DeviceActivity : Activity() {
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
+    // ---------- 系统分享送入（来自 ShareActivity） ----------
+    // 分享的文件已复制到私有缓存目录；页面（远程外壳）就绪后分块注入：
+    // base64 → atob → File → JX.receiveFiles/stageFiles（与 SAF 选择同通路），
+    // 文件落进输入框附件区。READY 探测轮询：gate.html 是先加载再异步拉起外壳，
+    // onPageFinished ≠ 页面就绪，必须等到 stageFiles 存在为止。
+    private var shareDir: java.io.File? = null
+    private var shareText: String? = null
+    private var shareNames: String = ""   // 仅日志/提示用
+    private var shareBusy = false         // 一个轮询循环在跑
+    private val shareH = Handler(Looper.getMainLooper())
+    private var shareDeadline = 0L
+
+    private fun takeShareExtras(i: Intent?) {
+        val dirPath = i?.getStringExtra(EXTRA_SHARE_DIR)
+        val txt = i?.getStringExtra(EXTRA_SHARE_TEXT)
+        if (dirPath != null) {
+            val d = java.io.File(dirPath)
+            if (d.isDirectory && d.listFiles()?.isNotEmpty() == true) shareDir = d
+        }
+        if (!txt.isNullOrBlank()) shareText = txt
+        shareNames = i?.getStringExtra("share_names") ?: shareNames
+        if (shareDir != null || shareText != null) armShareDelivery()
+    }
+
+    /** 页面就绪轮询（每次页面加载完成都续一轮窗口） */
+    private fun armShareDelivery() {
+        if (shareDir == null && shareText == null) return
+        shareDeadline = SystemClock.elapsedRealtime() + SHARE_WAIT_MS
+        if (shareBusy) return
+        shareBusy = true
+        stepShare()
+    }
+
+    private fun stepShare() {
+        if (shareDir == null && shareText == null) { shareBusy = false; return }
+        if (SystemClock.elapsedRealtime() > shareDeadline) {
+            shareBusy = false
+            Toast.makeText(this, "电脑页迟迟未就绪，本次分享没有送入（页面恢复后请重新分享）", Toast.LENGTH_LONG).show()
+            return
+        }
+        web.evaluateJavascript(JS_SHARE_READY) { res ->
+            if (isFinishing || isDestroyed) return@evaluateJavascript
+            if ("ready" == (res ?: "").trim('"')) deliverShare()
+            else shareH.postDelayed({ if (shareBusy) stepShare() }, 700)
+        }
+    }
+
+    /** 注入：文件分块喂 base64，全部入队后一次性 commit（evaluateJavascript 按
+     *  调用顺序串行执行，无需逐块等回调） */
+    private fun deliverShare() {
+        val dir = shareDir
+        val txt = shareText
+        shareDir = null
+        shareText = null
+        Thread {
+            val files = dir?.listFiles()?.sortedBy { it.name } ?: emptyList()
+            var readable = 0
+            val chunks = ArrayList<String>(files.size * 2 + 4)
+            chunks.add("window.__jxsh={q:[],cur:null};")
+            for (f in files) {
+                val bytes = try { f.readBytes() } catch (e: Exception) { null }
+                if (bytes == null || bytes.isEmpty()) continue
+                readable++
+                val ext = f.name.substringAfterLast('.', "").lowercase()
+                val mime = android.webkit.MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+                val quotedName = org.json.JSONObject.quote(f.name)
+                val quotedMime = org.json.JSONObject.quote(mime)
+                var off = 0
+                var first = true
+                while (off < bytes.size) {
+                    val len = minOf(SHARE_CHUNK_BYTES, bytes.size - off)
+                    val b64 = android.util.Base64.encodeToString(bytes, off, len, android.util.Base64.NO_WRAP)
+                    chunks.add(
+                        if (first) "window.__jxsh.cur={name:$quotedName,mime:$quotedMime,size:${bytes.size},b64:\"$b64\"};"
+                        else "if(window.__jxsh&&window.__jxsh.cur)window.__jxsh.cur.b64+=\"$b64\";",
+                    )
+                    first = false
+                    off += len
+                }
+                chunks.add(JS_SHARE_PUSH_FILE)
+            }
+            val commit = if (txt != null && txt.isNotBlank()) {
+                JS_SHARE_COMMIT.replace("__JX_TXT__", org.json.JSONObject.quote(txt))
+            } else JS_SHARE_COMMIT.replace("__JX_TXT__", "null")
+            chunks.add(commit)
+            for (c in chunks) {
+                val js = c
+                shareH.post { if (!isFinishing && !isDestroyed) web.evaluateJavascript(js, null) }
+            }
+            // commit 的回执在最后一块上拿：单独 post 一段带回调的执行
+            shareH.post {
+                if (isFinishing || isDestroyed) return@post
+                web.evaluateJavascript(JS_SHARE_COUNT) { res ->
+                    val n = (res ?: "").trim().trim('"').toIntOrNull() ?: -1
+                    android.util.Log.d("JxLink", "share delivered: files=$readable ret=$n")
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        when {
+                            n >= 0 && (readable > 0 || !txt.isNullOrBlank()) -> {
+                                val parts = ArrayList<String>()
+                                if (readable > 0) parts.add("${if (n > 0) n else readable} 个文件已放进输入框")
+                                if (!txt.isNullOrBlank()) parts.add("分享的文字已放进输入框")
+                                Toast.makeText(this, parts.joinToString("，"), Toast.LENGTH_LONG).show()
+                            }
+                            else -> Toast.makeText(this, "分享送入失败（电脑端页面异常）", Toast.LENGTH_LONG).show()
+                        }
+                        // 清掉缓存目录；若期间又来了新分享，接着送
+                        Thread { dir?.deleteRecursively() }.start()
+                        if (shareDir != null || shareText != null) { shareBusy = false; armShareDelivery() }
+                        else shareBusy = false
+                    }
+                }
+            }
+        }.start()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val id = intent.getStringExtra(EXTRA_ID)
@@ -133,7 +252,13 @@ class DeviceActivity : Activity() {
             loadEntry()
         }
         findViewById<Button>(R.id.btn_back_home).setOnClickListener { finish() }
+        takeShareExtras(intent) // 系统分享送入（冷启动路径）
         loadEntry()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeShareExtras(intent) // 已在设备页时分享直达（不重载网页）
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -165,6 +290,9 @@ class DeviceActivity : Activity() {
             override fun onPageFinished(v: WebView, url: String?) {
                 super.onPageFinished(v, url)
                 if (url != null && url.startsWith("https://")) httpsOk = true
+                // gate.html 还要经中继异步拉起应用外壳：onPageFinished 只是窗口续期，
+                // 真正就绪由 READY 探测（stageFiles 出现）判定
+                armShareDelivery()
             }
 
             override fun onReceivedSslError(v: WebView, handler: android.webkit.SslErrorHandler, error: android.net.http.SslError) {
@@ -180,7 +308,7 @@ class DeviceActivity : Activity() {
 
             override fun onReceivedError(v: WebView, req: WebResourceRequest, err: WebResourceError) {
                 super.onReceivedError(v, req, err)
-                if (req.isForMainFrame && req.url.toString() == loadUrlNow) {
+                if (req.isForMainFrame && sameEntry(req.url, loadUrlNow)) {
                     fallbackOrFail()
                 }
             }
@@ -303,6 +431,17 @@ class DeviceActivity : Activity() {
     private fun portOf(u: Uri): Int =
         if (u.port > 0) u.port else (if (u.scheme == "https") 443 else 80)
 
+    /** 主 frame 失败判定：Chromium 会把无路径 URL 规范化成带尾斜杠、剥掉
+     *  fragment——字符串全等会漏判（LAN 直连入口无路径，WebView 124 实测
+     *  ERR_SSL_PROTOCOL_ERROR 后回落不触发），按 host+port+路径判 */
+    private fun sameEntry(u: Uri, entry: String): Boolean {
+        val e = try { Uri.parse(entry) } catch (ex: Exception) { return false }
+        if ((u.host ?: "") != (e.host ?: "") || portOf(u) != portOf(e)) return false
+        val up = u.path ?: "/"
+        val ep = (e.path ?: "/").ifEmpty { "/" }
+        return up.trimEnd('/') == ep.trimEnd('/')
+    }
+
     private fun loadEntry() {
         // HTTPS 优先：语音输入需要安全上下文；网关多为自签证书——onReceivedSslError
         // 对已配对 host 自动放行。不支持 https（握手/连接失败）由 onReceivedError 回落
@@ -392,6 +531,7 @@ class DeviceActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        shareH.removeCallbacksAndMessages(null)
         // 全屏视频残留兜底（正在全屏时退出页面）
         fullscreenView?.let {
             (window.decorView as? android.widget.FrameLayout)?.removeView(it)
@@ -463,9 +603,58 @@ class DeviceActivity : Activity() {
 
     companion object {
         const val EXTRA_ID = "id"
+        const val EXTRA_SHARE_DIR = "share_dir"   // ShareActivity → 待送入的缓存目录
+        const val EXTRA_SHARE_TEXT = "share_text" // ShareActivity → 待送入的分享文本
         private const val REQ_FILE = 3
         private const val REQ_AUDIO = 4
         private const val REQ_AUDIO_PRE = 5 // 进设备页预申请（结果与网页请求共用一段处理）
+        private const val SHARE_WAIT_MS = 120_000L // 页面就绪等待窗口（中继拉起外壳可能要十几秒）
+        private const val SHARE_CHUNK_BYTES = 384 * 1024 // base64 分块：每块注入 ~512KB 字符串
+
+        /** 就绪探测：远程外壳把它俩之一暴露出来才算页面可用（gate 先载、外壳后到） */
+        private const val JS_SHARE_READY = """
+            (function(){try{
+              if(window.JX&&typeof JX.receiveFiles==='function')return 'ready';
+              if(typeof stageFiles==='function')return 'ready';
+              return 'wait';
+            }catch(e){return 'wait'}})()
+        """
+
+        /** 单文件收尾：cur 的 base64 解码成 File 入队 */
+        private const val JS_SHARE_PUSH_FILE = """
+            (function(){var s=window.__jxsh;if(!s||!s.cur)return -1;var c=s.cur;s.cur=null;
+            try{var bin=atob(c.b64);c.b64=null;var u=new Uint8Array(bin.length);
+            for(var i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
+            s.q.push(new File([u],c.name,{type:c.mime||'application/octet-stream'}));
+            return u.length}catch(e){return -2}})()
+        """
+
+        /** 提交：文件走 JX.receiveFiles（老网页回退全局 stageFiles），文本追加进主输入框 */
+        private const val JS_SHARE_COMMIT = """
+            (function(){var s=window.__jxsh;window.__jxsh=null;window.__jxshDone={n:-9};if(!s)return -1;
+            var q=s.q||[];var n=0;
+            if(q.length){
+              var f=(window.JX&&typeof JX.receiveFiles==='function')?JX.receiveFiles:
+                    (typeof stageFiles==='function'?stageFiles:null);
+              if(!f)return -2;
+              var r=f(q);n=r?r.length:0;
+            }
+            var t=__JX_TXT__;
+            if(t){
+              var g=(window.JX&&typeof JX.receiveText==='function')?JX.receiveText:null;
+              if(g){g(t)}
+              else{var ta=document.getElementById('input');
+                if(ta){ta.value=(ta.value?ta.value+'\n':'')+t;
+                  ta.dispatchEvent(new Event('input',{bubbles:true}));}}
+            }
+            window.__jxshDone={n:n};
+            return n})()
+        """
+
+        /** 入队计数（commit 后查询回执用） */
+        private const val JS_SHARE_COUNT = """
+            (function(){return (window.__jxshDone&&window.__jxshDone.n)||0})()
+        """
 
         /**
          * 返回键分派脚本（每次即时注入，不驻留——换页/路由重建都不怕）。

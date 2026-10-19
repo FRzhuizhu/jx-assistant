@@ -9,4 +9,12 @@
         <item name="android:colorPrimary">@color/accent</item>
         <item name="android:colorPrimaryDark">@color/bg</item>
     </style>
+
+    <!-- 系统分享入口：透明无窗（只弹对话框，背后仍是原应用的画面） -->
+    <style name="AppTheme.Translucent">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

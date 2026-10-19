@@ -6857,6 +6857,26 @@ function applyNativeDropPaths(reply) {
 }
 JX.onNativeDrop = applyNativeDropPaths;
 
+/* ---------- 手机壳分享入口（jx-link 的系统分享桥） ----------
+   Android 壳（jx-link）收到其他应用（微信「用其他应用打开」/分享、文件管理器、
+   浏览器分享文本）的 ACTION_SEND / ACTION_VIEW 后，把内容注入到这里：
+   - 文件走 stageFiles（与拖拽/粘贴/SAF 选择完全同一条通路）——落进输入框
+     附件区：跨会话切换保留、最终发送时才上送；
+   - 文字追加进主输入框（触发 input 事件，草稿/量高照常跟上）。
+   壳子注入时优先找 JX.receiveFiles（本入口），电脑端未更新时回退全局
+   stageFiles / 直接写 #input，两不误。 */
+JX.receiveFiles = function (files) {
+  return stageFiles(Array.prototype.slice.call(files), mainView);
+};
+JX.receiveText = function (text) {
+  const ta = viewEl(mainView, 'input');
+  if (!ta) return false;
+  const cur = ta.value;
+  ta.value = (cur ? cur.replace(/\s+$/, '') + '\n' : '') + String(text);
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+};
+
 // 清空附件（换会话 / 发送完毕）：缩略图的 objectURL 一并释放
 function clearAttachments(view) {
   const list = attachmentsOf(view);

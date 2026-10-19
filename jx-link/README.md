@@ -11,6 +11,16 @@
 - **扫码连接多台电脑**：扫电脑端 设置 · 网络访问 的入口二维码
   （`http://网关:端口/a/设备号#pk=配对密钥`），也支持局域网直连地址（`http://ip:端口`）。
   首页列表显示每台电脑的在线/离线（离线灰字），点击进入。
+- **系统分享送入输入框（2026-10-19 v0.1.6）**：微信（文件「用其他应用打开」、
+  图片/视频「其他应用」）、文件管理器、浏览器等任何 `ACTION_SEND` /
+  `SEND_MULTIPLE` / `ACTION_VIEW` 都能发给本壳。流程：透明 `ShareActivity`
+  在授权存活期内把 content:// 复制进私有缓存（应用零存储权限）→ 单台电脑直送、
+  多台弹选择框（默认上次所在）→ 设备页等远程外壳把 `stageFiles` 准备好后，
+  文件按 base64 分块注入，落进**输入框附件区**（与 SAF 选择完全同一条 multipart
+  通路——跨会话切换保留、最终发送时才上送）；文字分享追加进主输入框。
+  已在设备页里时经 `onNewIntent` 原地送达（模拟器实测 83ms，不重载网页）；
+  单文件上限 128MB（网页端 multipart 上限 256MB，手机内存取半），超大文件
+  跳过并提示。电脑端旧版本无 `JX.receiveFiles` 时自动回退全局 `stageFiles`。
 - **电脑页**：WebView 打开入口，gate.html 自动经加密中继拉起应用外壳，与浏览器里
   的远程体验一致。顶部浮一条**应用级「⌂ 设备名」胶囊**（原生控件浮在网页之上、
   屏幕水平绝对居中，像浏览器菜单栏；不参与网页布局，网页顶栏怎么排都不受影响——
@@ -72,13 +82,24 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 app/src/main/java/com/jianxiang/link/
 ├── MainActivity.kt      首页：两行按钮（扫码连接/设置）+ 设备列表 + 长按菜单 + 二次确认
 ├── ScanActivity.kt      CameraX + ZXing 扫码（四向旋转解码，屏幕码横放也能认）
-├── DeviceActivity.kt    WebView 电脑页：独立 Profile、应用级首页浮条、边缘手势、失败浮层
+├── ShareActivity.kt     系统分享入口（SEND/SEND_MULTIPLE/VIEW）：复制到私有缓存 → 选电脑 → 送设备页
+├── DeviceActivity.kt    WebView 电脑页：独立 Profile、应用级首页浮条、边缘手势、失败浮层、分享注入
 ├── DeviceStore.kt       设备列表与「上次所在」记忆（SharedPreferences JSON）；Cache 清理
 ├── Relay.kt             中继协议客户端：入口解析、AES-GCM 封包、探活、反馈发送
 └── SettingsActivity.kt  设置页：清空应用缓存 + 反馈意见
 ```
 
 ## 已在模拟器（AVD jx-test，Android 15 / WebView 124）点验
+
+系统分享送入（2026-10-19，v0.1.6，宿主机 8443 挂模拟远程外壳页按真实契约暴露
+stageFiles/#input 做端到端）：微信三通道对应的 intent 全走通——`ACTION_SEND`
+文件（名/大小/MIME 全对入列）、`ACTION_SEND` 纯文本（落进输入框、input 事件
+触发）、`ACTION_VIEW`（微信「用其他应用打开」同款）；多台电脑弹选择框（默认
+上次所在）、「送入/取消」；已在设备页时 `onNewIntent` 原地送达不重载（实测
+83ms）；连续两次分享（文字+文件）同页共存；顺带修了 LAN 直连入口在 WebView 124
+上 https 回落失效的既有 bug（Chromium 给无路径 URL 补尾斜杠导致全等比对漏判，
+改按 host+port+路径判）。真实微信 content:// 与 SEND_MULTIPLE 走同一收集/复制
+代码路径，未单独实测。
 
 首页两行按钮与设备列表（在线/离线灰字）、点击进电脑页（经真实 210 网关中继拉起
 完整远程外壳）、应用级「⌂ 设备名」浮条（水平绝对居中、网页顶栏一行不被挤）、
