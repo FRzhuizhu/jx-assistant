@@ -17,10 +17,12 @@ const RP_CONTENT_MIN = 640;  // 对话区最小宽（与拖把手一致）
 /* 视图注册表：id → { title, onOpen, saveSession, restoreSession }（计划/
    浏览器…以后往这加）。容器一律是 index.html 里的静态 DOM（id=rp-view-<id>），
    行为代码挂在本仓 js（旧「文件」查看页用过的 iframe 型视图已随该功能移除）。
-   saveSession()/restoreSession(saved)：右栏跟会话走的统一挂点——每个视图把
+   saveSession()/restoreSession(saved, sid)：右栏跟会话走的统一挂点——每个视图把
    「属于哪个会话的选择」（子对话选中、计划选中、Git 仓库…）
    交给这里，切换对话时由 rpSnapshot / rpRestoreSession 统一快照与恢复，
-   视图自己不再各自监听会话切换（browser 这类全局态视图不挂，行为不变）。 */
+   视图自己不再各自监听会话切换（browser 这类全局态视图不挂，行为不变）。
+   restoreSession 的第二参就是目标会话 id（回首页为空串）——视图直接用它，
+   不要去读 state.cur：挂点被调的时机并不保证 cur 已就位（懒创建等路径）。 */
 const rpViews = {};
 let rpActive = null;
 
@@ -61,7 +63,7 @@ function rpRestoreSession(sid) {
   const st = sid ? rpSessionOf(sid) : { open: false, view: '', views: {} };
   for (const [id, def] of Object.entries(rpViews)) {
     if (typeof def.restoreSession !== 'function') continue;
-    try { def.restoreSession(st.views[id]); } catch (e) { /* 单视图失败不拖累整体 */ }
+    try { def.restoreSession(st.views[id], sid); } catch (e) { /* 单视图失败不拖累整体 */ }
   }
   if (st.view) rpLastView = st.view; // 收着展开时回到本会话上次看的视图
   if (st.open && st.view && rpViews[st.view]) rpOpen(st.view);
@@ -75,7 +77,7 @@ function rpRegister(id, def) {
   // 否则它带着初始（或上一次）的会话选择直到下次切换
   const sid = state.cur && state.cur.id;
   if (sid && rpSess[sid] && typeof def.restoreSession === 'function') {
-    try { def.restoreSession(rpSess[sid].views[id]); } catch (e) { /* 单视图失败不拖累整体 */ }
+    try { def.restoreSession(rpSess[sid].views[id], sid); } catch (e) { /* 单视图失败不拖累整体 */ }
   }
 }
 
@@ -264,7 +266,7 @@ async function refreshDrawer() {
   try {
     const d = await api('/api/sessions?parent=' + encodeURIComponent(fid));
     subKids = (d.sessions || [])
-      .slice()
+      .filter((s) => !s.archived) // 移入回收站的不在下拉出现（回收站里恢复后回来）
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
   } catch (e) { return; /* 静默：刷新失败不打断主流程 */ }
   subRenderHeader();
@@ -289,18 +291,32 @@ function renderSubDDPop() {
   if (!subKids.length) {
     const e = document.createElement('div');
     e.className = 'sub-dd-empty';
-    e.textContent = '还没有子对话；AI 派发或点下方新建都会出现在这里';
+    e.textContent = '还没有子对话；在下方输入框发消息会自动新建，AI 派发的也出现在这里';
     pop.appendChild(e);
   }
   for (const s of subKids) {
     const item = document.createElement('div');
     item.className = 'drawer-item' + (subState.cur && subState.cur.id === s.id ? ' active' : '');
+    // 状态格四态：运行中圆环 > 完成未查看绿点 > 标为未读红点 > 平时的 '·'
+    // （完成绿点 = dotDone，打开该子对话即清；父对话侧栏行的绿点同一来源，见
+    // app-chat.js 的 done/sub_end 分支）
+    const stCls = s.status === 'running' ? 'run' : (dotDone[s.id] ? 'done' : (s.unread ? 'unread' : ''));
+    const stTxt = s.status === 'running' || dotDone[s.id] || s.unread ? '' : '·'; // 圆环/绿点/红点留空：图形由 CSS 画，转字符会晃
     item.innerHTML =
-      `<span class="d-status ${s.status === 'running' ? 'run' : ''}">${s.status === 'running' ? '' : '·'}</span>` +  // 运行中留空：圆环由 CSS 画，转字符会晃
+      `<span class="d-status ${stCls}">${stTxt}</span>` +
       `<span class="d-title">${esc(s.title || '(未命名)')}</span>` +
       (s.mode === 'aux' || s.origin === 'human' ? '<span class="d-src human">人工</span>' : '<span class="d-src">AI</span>') +
-      `<span class="d-time">${esc(relTime(s.updatedAt))}</span>`;
-    item.onclick = () => { openSubSession(s.id); closePopovers(); };
+      `<span class="d-time">${esc(relTime(s.updatedAt))}</span>` +
+      `<span class="row-acts"><button class="ra-more" title="更多"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button></span>`;
+    item.onclick = (e) => {
+      if (e.target.closest('.row-acts')) return;
+      openSubSession(s.id); closePopovers();
+    };
+    item.querySelector('.ra-more').onclick = (e) => {
+      e.stopPropagation();
+      openSubItemMenu(s, item.getBoundingClientRect());
+    };
+    item.oncontextmenu = (e) => { e.preventDefault(); openSubItemMenu(s, item.getBoundingClientRect()); };
     pop.appendChild(item);
   }
   const neu = document.createElement('button');
@@ -308,6 +324,51 @@ function renderSubDDPop() {
   neu.innerHTML = '<span class="d-status">＋</span><span class="d-title">新建子对话</span>';
   neu.onclick = () => { closePopovers(); newAuxChat(); };
   pop.appendChild(neu);
+}
+
+// 子对话下拉项的「更多/右键」菜单：与主对话会话菜单（openSessionMenu）同一套
+// 动作与语义——重命名/标为未读/分支/移入回收站；差别只在落地刷新面（下拉清单、
+// 右栏当前子对话）与「正看着的子对话被回收时右栏回空态」。分支沿用 forkFromAnswer
+// 的口径（fork 保留 parent，新会话还是这个主对话的子对话，就地打开）。
+function openSubItemMenu(s, rect) {
+  openCtxMenu([
+    { label: '重命名', fn: async () => {
+      const t = prompt('重命名子对话', s.title || '');
+      if (t === null || !t.trim()) return;
+      await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
+      s.title = t.trim(); // 清单数据就地改，重开下拉即见；顶部标题跟着换
+      if (subState.cur && subState.cur.id === s.id) subState.cur.title = s.title;
+      subRenderHeader();
+      loadSessions();
+    } },
+    { label: s.unread ? '取消未读' : '标为未读', fn: async () => {
+      await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ unread: !s.unread }) });
+      s.unread = !s.unread; // 就地翻转，重开下拉即见红点
+    } },
+    { label: '分支对话', fn: async () => {
+      try {
+        const fork = await api('/api/sessions/' + s.id + '/fork', { method: 'POST' });
+        await loadSessions();
+        refreshDrawer();
+        openSubSession(fork.id);
+      } catch (e) { alert('分支失败：' + e.message); }
+    } },
+    { label: '移入回收站', danger: true, fn: async () => {
+      await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ archived: true }) });
+      if (subState.cur && subState.cur.id === s.id) subClearCurrent(); // 回收的正是右栏看着的：回空态（后台流照旧跑完）
+      refreshDrawer();
+      loadSessions();
+    } },
+  ], rect.right - 8, rect.bottom + 4);
+}
+
+// 子对话输入框的 placeholder 随「是否已进入子对话」切换（空态引导直接发消息、
+// 进入后回到常态）。发送执行中时 runHintOn 已把当下 placeholder 记为提示基线
+// （idlePh），这里同步换基线，免得流式结束 runHintOff 把旧文案恢复回来。
+function setSubPlaceholder(text) {
+  const ph = $('sub-input');
+  ph.placeholder = text;
+  if (ph.dataset.runPh) ph.dataset.idlePh = text;
 }
 
 // 子对话视图回空态：当前主对话没有选中的子对话（没建过，或保存的那个已被删除）。
@@ -330,8 +391,9 @@ function subClearCurrent() {
   syncComposer(subView);     // 右栏输入区控件回空态（无会话的中性默认）
   syncComposerPad(subView);
   renderPanels();            // 子对话的待办卡随之回到主对话区/角标堆
-  subView.col.innerHTML = '<div class="empty"><h2>子对话</h2><p>顶部下拉选择或新建子对话；数字助理派发的子对话也出现在这里。</p></div>';
+  subView.col.innerHTML = '<div class="empty"><h2>子对话</h2><p>在下方输入框直接发消息，会自动新建子对话；顶部下拉可切换已有的，数字助理派发的也出现在这里。</p></div>';
   $('sub-input').value = ''; // 没有选中的子对话：不留上一个子对话的草稿
+  setSubPlaceholder('发消息自动新建子对话…'); // 空态引导：像新对话页一样直接打字就能开聊
   autoGrow($('sub-input'));
 }
 
@@ -358,6 +420,14 @@ async function openSubSession(id) {
     }
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
+    // 打开即视为已读（与主对话 openSession 同款）：清红点与完成绿点，下拉清单数据同步
+    delete dotDone[id];
+    if (subState.cur.unread) {
+      subState.cur.unread = false;
+      const kid = subKids.find((k) => k.id === id);
+      if (kid) kid.unread = false;
+      api('/api/sessions/' + id, { method: 'PATCH', body: JSON.stringify({ unread: false }) }).catch(() => {});
+    }
     subState.pendingSteer = (data.pending && data.pending.steer) || [];
     subState.pendingQueue = (data.pending && data.pending.queue) || [];
     subState.queuePaused = !!(data.pending && data.pending.paused);
@@ -380,6 +450,7 @@ async function openSubSession(id) {
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
+    setSubPlaceholder('向子对话发消息…'); // 已进入子对话：空态的「自动新建」引导退场
     autoGrow($('sub-input'));
     restoreQuoteLS(subView); // 这个子对话挂着的引用胶囊也一并回来
     // 这个子对话正在后台执行：接上它的流，右栏就地实时跟随
@@ -400,9 +471,16 @@ async function openSubSession(id) {
   }
 }
 
+// 新建子对话并就地打开：下拉「新建」与右栏直接发消息的懒创建路径（prepareSend）
+// 共用。返回创建的会话；无父可挂或失败返回 null（已就地提示，输入内容保留）。
 async function newAuxChat() {
   const fid = drawerFamilyId();
-  if (!fid) return;
+  if (!fid) {
+    // 首页态：子对话必须挂靠某个主对话，先提示用户打开对话再发
+    subView.hint.textContent = '子对话挂在当前对话名下；先打开一个对话';
+    setTimeout(() => { subView.hint.textContent = ''; }, 2500);
+    return null;
+  }
   try {
     // 子对话＝当前对话的分支：后端照抄父会话的模式/工作区/权限/能力并完整复制历史，
     // 系统提示词与上下文与主对话一致（继承段在对话里折叠成一条「来自主对话」）
@@ -413,8 +491,10 @@ async function newAuxChat() {
     await openSubSession(s.id);
     refreshDrawer();
     loadSessions();
+    return s;
   } catch (e) {
     alert('新建子对话失败：' + e.message);
+    return null;
   }
 }
 $('rp-close').onclick = () => {
@@ -480,7 +560,7 @@ function bpwDragPause(on) {
   if (on) {
     if (bpwElectron() || !bpwDesktop() || !bpwActive() || bpwDragHide) return;
     bpwDragHide = true;
-    api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true }) }).catch(() => {});
+    api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true, session: bpwSession() }) }).catch(() => {});
   } else {
     if (!bpwDragHide) return;
     bpwDragHide = false;
@@ -491,6 +571,13 @@ function bpwDragPause(on) {
 function bpwActive() {
   const panel = $('rpanel');
   return !!panel && !panel.classList.contains('hidden') && rpActive === 'browser';
+}
+
+// 浏览器上报与工具栏操作统一携带的会话身份：右栏浏览器每会话一个独立面板
+// （后端 App.panels），矩形/导航/状态都按它路由；首页态（无会话）为空串，
+// 后端归并到共享面板（兼容旧口径）。
+function bpwSession() {
+  return (state.cur && state.cur.id) || '';
 }
 
 let bpwRectTimer = null, bpwLastKey = '';
@@ -513,7 +600,7 @@ function bpwReport(immediate, force) {
     if (!bpwActive()) {
       if (bpwLastKey !== 'hidden') { // 只在从可见转隐藏时通知一次
         bpwLastKey = 'hidden';
-        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true }) }).catch(() => {});
+        api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true, session: bpwSession() }) }).catch(() => {});
       }
       return;
     }
@@ -524,7 +611,7 @@ function bpwReport(immediate, force) {
     }
     // 左缘内缩 BPW_EDGE（见常量注释）：把手完整留给 HTML
     const payload = { x: r.x + BPW_EDGE, y: r.y, w: r.width - BPW_EDGE, h: r.height,
-      dpr: window.devicePixelRatio || 1, visible: true, desktop: true,
+      dpr: window.devicePixelRatio || 1, visible: true, desktop: true, session: bpwSession(),
       iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 }; // 临时诊断字段
     const key = JSON.stringify(payload);
     if (key === bpwLastKey && !force) return; // 尺寸没变不上报（强制补报除外）
@@ -534,8 +621,10 @@ function bpwReport(immediate, force) {
   if (immediate) run(0); else bpwRectTimer = setTimeout(() => run(0), 80);
 }
 
-// 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开
+// 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开。
+// 导航与状态读取都带会话身份（bpwSession）：操作的是本会话的面板。
 function bpwNav(body) {
+  body.session = bpwSession();
   api('/api/browser/navigate', { method: 'POST', body: JSON.stringify(body) })
     .then((st) => { bpwOnNav(st); })
     .catch((e) => { $('bpw-title').textContent = '导航失败：' + e.message; });
@@ -546,8 +635,9 @@ function bpwOnNav(d) {
   if (d && d.viewportW) $('bpw-vp').textContent = d.viewportW + '×' + d.viewportH;
   else $('bpw-vp').textContent = '';
 }
-function bpwSyncState() {
-  api('/api/browser/state').then(bpwOnNav).catch(() => {});
+function bpwSyncState(sid) {
+  const s = sid || bpwSession();
+  api('/api/browser/state' + (s ? '?session=' + encodeURIComponent(s) : '')).then(bpwOnNav).catch(() => {});
 }
 $('bpw-back').onclick = () => bpwNav({ action: 'back' });
 $('bpw-fwd').onclick = () => bpwNav({ action: 'forward' });
@@ -557,7 +647,8 @@ $('bpw-url').addEventListener('keydown', (e) => {
   e.preventDefault();
   let u = $('bpw-url').value.trim();
   if (!u) return;
-  if (!/^https?:\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
+  // file:/// 是合法目标（本地 html 直接在面板里看），别被裸域名补协议误伤
+  if (!/^(https?|file):\/\//i.test(u)) u = 'https://' + u; // 裸域名补协议
   bpwNav({ url: u });
 });
 // 桌面壳里 window.open 只会弹 WebView2 扄件的窗口（不是用户浏览器）；
@@ -592,6 +683,31 @@ rpRegister('browser', {
   onOpen: () => {
     bpwSyncState();
     bpwReport(true); // 打开即上报矩形：宿主据此显示并定位原生控件
+  },
+  // 右栏浏览器按会话隔离（后端每会话一个原生面板实例）：切换对话时在恢复
+  // 阶段就把「该显示哪个会话的面板」上报给后端。restoreSession 早于
+  // rpOpen/rpClose 跑，此刻 DOM 激活态还是上一个对话的，不能依赖 bpwReport
+  // 的实时判断（它读 rpActive）——直接按本会话的记忆上报：记着浏览器视图
+  // 开着就按当前舞台矩形落位本会话的面板（后端同时把其他会话的面板收屏
+  // 外），没开就发隐藏上报把上一会话的面板收掉。面板实例与登录态都在
+  // 后端保留，切回来即恢复，这里没有需要保存的会话态。
+  saveSession: () => null,
+  restoreSession: (saved, sid) => {
+    bpwSyncState(sid); // 工具栏先就位本会话面板的地址/标题
+    const st = sid ? rpSessionOf(sid) : null;
+    const want = !!(st && st.open && st.view === 'browser');
+    const stage = $('bpw-stage');
+    const r = stage && stage.getBoundingClientRect();
+    if (want && r && r.width > 8 && r.height > 8) {
+      const payload = { x: r.x + BPW_EDGE, y: r.y, w: r.width - BPW_EDGE, h: r.height,
+        dpr: window.devicePixelRatio || 1, visible: true, desktop: true, session: sid || '',
+        iw: window.innerWidth, ih: window.innerHeight, oz: (window.visualViewport && Math.round(window.visualViewport.scale * 100)) || 0 };
+      bpwLastKey = JSON.stringify(payload); // 记下去重键：随后 rpOpen 的常规上报同矩形不再重发
+      api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify(payload) }).catch(() => {});
+    } else {
+      bpwLastKey = 'hidden';
+      api('/api/browser/panel-rect', { method: 'POST', body: JSON.stringify({ visible: false, desktop: true, session: sid || '' }) }).catch(() => {});
+    }
   },
 });
 

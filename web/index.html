@@ -224,7 +224,15 @@
                不用原生 title（黄色小框、触发慢）——纯 CSS :hover 即时展开（style.css .q-expand） -->
           <div class="q-expand"></div>
         </div>
-        <textarea id="input" class="composer-input" rows="3" spellcheck="false" placeholder="描述你想要构建的内容…"></textarea>
+        <!-- 输入框与标记胶囊背衬层：背衬层与输入框同排版（字体/行高/内边距/换行规则
+             由 JS 从输入框复制），字全透明，只在“引用N”与附件截短名等标记段垫上灰底
+             胶囊——黑字仍是输入框自己的（最上层、正常编辑），胶囊只是精确垫底的
+             底色；pointer-events:none 永不吃点击。渲染与光标原子策略见
+             app-chat.js 的「输入框标记胶囊」节 -->
+        <div class="composer-input-wrap">
+          <div class="mark-backdrop" aria-hidden="true"></div>
+          <textarea id="input" class="composer-input" rows="3" spellcheck="false" placeholder="描述你想要构建的内容…"></textarea>
+        </div>
         <div class="composer-bar">
           <div class="composer-left">
             <span id="plugin-composer-controls"></span>
@@ -309,7 +317,11 @@
                 <!-- 悬停展开面板：与主对话区同款（id 加 sub- 前缀） -->
                 <div class="q-expand"></div>
               </div>
-              <textarea id="sub-input" class="composer-input" rows="3" spellcheck="false" placeholder="向子对话发消息…"></textarea>
+              <!-- 输入框与标记胶囊背衬层：与主对话区同款（id 加 sub- 前缀） -->
+              <div class="composer-input-wrap">
+                <div class="mark-backdrop" aria-hidden="true"></div>
+                <textarea id="sub-input" class="composer-input" rows="3" spellcheck="false" placeholder="向子对话发消息…"></textarea>
+              </div>
               <!-- 底部控件与主对话区同款（id 加 sub- 前缀，行为由同一批函数按视图处理） -->
               <div class="composer-bar">
                 <div class="composer-left">
@@ -404,7 +416,9 @@
           <button id="bpw-back" title="后退">◀</button>
           <button id="bpw-fwd" title="前进">▶</button>
           <button id="bpw-reload" title="刷新">⟳</button>
-          <input id="bpw-url" type="text" placeholder="输入网址回车打开（http/https）" spellcheck="false" autocomplete="off">
+          <input id="bpw-url" type="text" placeholder="输入网址回车打开" spellcheck="false" autocomplete="off">
+          <button id="bpw-sysopen" title="用系统默认应用打开这个文件" hidden>打开方式</button>
+          <button id="bpw-reveal" title="在文件资源管理器中定位这个文件" hidden>📁</button>
           <button id="bpw-external" title="在系统浏览器打开当前页">↗</button>
         </div>
         <div class="bpw-stage" id="bpw-stage">
@@ -1131,12 +1145,13 @@
 <!-- 轻提示（toast）：静默组件更新完成等不打扰用户的通知，自动消失 -->
 <div id="app-toast" class="app-toast hidden"></div>
 
-<!-- 询问声光提醒层：提问久等未答时全屏淡压暗＋光晕呼吸。时序见 app-chat.js 的
-     showAskAlert——叮声在事件到达那一刻由后端系统音效立即响（前端不重复响）；
-     浮窗上走 15 秒可见倒计时，倒计时结束才开始朗读提醒内容；15 秒内用户关掉这层、
-     或从任何入口进去处理（计划页/浮窗，见 notePlanHandled），一律取消朗读。
+<!-- 询问声光提醒层：提问久等未答时先淡压暗＋光晕呼吸，随后缓慢渐进成整屏主题色并
+     常驻不收起（远远看到屏幕变色就知道有东西要点）。时序见 app-chat.js 的 showAskAlert——
+     叮声在事件到达那一刻由后端系统音效立即响（前端不重复响）；浮窗上走 15 秒可见倒计时，
+     倒计时结束才开始朗读提醒内容；15 秒内用户关掉这层、或从任何入口进去处理（计划页/浮窗，
+     见 notePlanHandled），一律取消朗读。
      关闭永远一步到位：点背景＝只关闭不打扰当前操作，点中央卡片＝关闭并跳去回答，Esc 同效；
-     朗读结束后几秒收起，最迟 40 秒兜底 -->
+     关掉或被处理即恢复原界面（不再有超时自动收起） -->
 <div id="ask-alert" class="hidden" title="点击关闭提醒">
   <div class="aa-box">
     <b>⏰ 有个提问在等你确认</b>
@@ -1147,6 +1162,9 @@
       <span class="aa-count-bar"><i id="ask-alert-bar"></i></span>
     </div>
     <span>点这张卡片前往回答 · 点其他任意处或按 Esc 关闭</span>
+    <!-- 提醒的开关与触发时长都在「设置 · 常规 · 询问提醒」：这里给一行直达入口，
+         点它打开设置（浮窗留着，回来接着处理），不触发「点卡片＝跳去回答」 -->
+    <span class="aa-tip-link" id="ask-alert-settings" title="打开「设置 · 常规 · 询问提醒」：关闭此类提醒或修改触发时长">此类弹窗提醒可在「设置 · 常规」里关闭或修改时长</span>
   </div>
 </div>
 

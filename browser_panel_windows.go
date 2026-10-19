@@ -8,6 +8,11 @@ package main
 // MJPEG 截图流镜像」方案（browser_host.go 原实现，人机交互体验与原生差距
 // 无法靠补丁弥合）。AI 的 browser_* 工具驱动同一控件：人机共操天然成立。
 //
+// 会话隔离：右栏浏览器每个会话一个独立面板实例（App.panels，键=会话 id），
+// 各自独立 WebView2 环境与 profile（登录态/页面互不串台，与有头独立窗口的
+// per-session 约定一致）；同一时刻只显示当前会话的面板，其余收屏外（实例
+// 保留，切回即恢复）。矩形上报按 session 路由（handleBrowserPanelRect）。
+//
 // AI 驱动通道：控件级官方 CDP 接口 ICoreWebView2.CallDevToolsProtocolMethod
 // （evaluate/输入注入/截图全部可表达）。不走 --remote-debugging-port——新版
 // WebView2（Chromium 136 起）已封禁该参数，chromedp 直连不可靠。
@@ -263,6 +268,7 @@ type browserPanel struct {
 	app      *App
 	dispatch func(f func()) // 桌面壳 WebView.Dispatch：投递到 UI 线程
 	mainWnd  uintptr        // 桌面壳主窗口 HWND
+	sid      string         // 面板归属的会话 id（空=共享面板）：profile 目录与 browser_nav 广播的 SessionID 用
 
 	createMu  sync.Mutex // 生命周期串行化（创建/关闭），不跨 UI 等待持锁于 UI 线程
 	createErr error
@@ -289,13 +295,16 @@ type browserPanel struct {
 	titleHandler  *evtHandler
 }
 
-func newBrowserPanel(app *App, dispatch func(f func()), mainWnd uintptr) browserTarget {
-	return &browserPanel{app: app, dispatch: dispatch, mainWnd: mainWnd}
+func newBrowserPanel(app *App, dispatch func(f func()), mainWnd uintptr, sid string) browserTarget {
+	return &browserPanel{app: app, dispatch: dispatch, mainWnd: mainWnd, sid: sid}
 }
 
 // ensureStarted 惰性创建面板控件（首个矩形同步或首次导航触发）。创建在
 // UI 线程执行（Embed 内部靠消息泵等环境就绪），HTTP 侧等 channel。
 func (p *browserPanel) ensureStarted() error {
+	if p.dispatch == nil {
+		return fmt.Errorf("桌面窗口尚未就绪（可能正在热重启），稍后重试")
+	}
 	p.createMu.Lock()
 	defer p.createMu.Unlock()
 	p.stateMu.Lock()
@@ -363,9 +372,9 @@ func withPanelBrowserArgs(f func()) {
 	f()
 }
 
-// createOnUI 在 UI 线程创建子窗口与第二个 WebView2 控件（独立环境与
-// profile：data/webview-browser，与主界面 data/webview 隔离，同浏览器模型
-// 于旧方案的 data/browser-profile）。
+// createOnUI 在 UI 线程创建子窗口与该会话的 WebView2 控件（独立环境与
+// profile：data/webview-browsers/<会话>，与主界面 data/webview 隔离，同浏览器
+// 模型于旧方案的 data/browser-profile）。
 func (p *browserPanel) createOnUI() error {
 	p.stateMu.Lock()
 	x, y, w, h := p.rectX, p.rectY, p.rectW, p.rectH
@@ -387,7 +396,14 @@ func (p *browserPanel) createOnUI() error {
 		return fmt.Errorf("CreateWindowExW 失败")
 	}
 	ch := edge.NewChromium()
+	// 每会话独立 profile（data/webview-browsers/<会话>/）：页面与登录态互不
+	// 串台；空会话（首页态点链接等无会话上下文的入口）沿用旧共享目录。
+	// 不同 user-data-folder 的多个 WebView2 环境在同一进程共存，各带一组
+	// 独立浏览器进程——惰性创建（首个矩形/导航才建），不用浏览器的会话零开销。
 	ch.DataPath = filepath.Join(p.app.Cfg.DataDir, "webview-browser")
+	if key := browserProfileKey(p.sid); key != "" {
+		ch.DataPath = filepath.Join(p.app.Cfg.DataDir, "webview-browsers", key)
+	}
 	ch.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		p.onNavCompleted()
 	}
@@ -573,11 +589,9 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 
 // ---------- 导航 ----------
 
+// Navigate 打开/跳转 http(s) 与本地文件 file:/// 地址（本地 html 交付预览的
+// 主要形态，工具与用户点击同口径），返回落定地址与标题。
 func (p *browserPanel) Navigate(raw string) (string, string, error) {
-	return p.navigate(raw, false)
-}
-
-func (p *browserPanel) NavigatePrivileged(raw string) (string, string, error) {
 	return p.navigate(raw, true)
 }
 
@@ -588,7 +602,7 @@ func (p *browserPanel) navigate(raw string, allowFile bool) (string, string, err
 		ok = true
 	}
 	if !ok {
-		return "", "", fmt.Errorf("只支持 http/https 地址，收到: %s", u)
+		return "", "", fmt.Errorf("只支持 http/https 或 file:/// 地址，收到: %s", u)
 	}
 	if err := p.ensureStarted(); err != nil {
 		return "", "", err
@@ -680,7 +694,7 @@ func (p *browserPanel) onNavCompleted() {
 	p.stateMu.Lock()
 	p.url, p.title = u, t
 	p.stateMu.Unlock()
-	p.app.broadcast(Event{Type: "browser_nav", URL: u, Title: t})
+	p.app.broadcast(Event{Type: "browser_nav", URL: u, Title: t, SessionID: p.sid})
 	// 后端自 kick：导航完成即按缓存矩形重排一次（applyRectOnUI 带 1px 强制
 	// 位移，能唤醒偶发停帧的合成器）。前端在 browser_nav 事件上也会补报，
 	// 这里不依赖它——双保险，任何一端到即可恢复画面。
@@ -716,7 +730,7 @@ func (p *browserPanel) onTitleChanged() {
 	p.title = t
 	u := p.url
 	p.stateMu.Unlock()
-	p.app.broadcast(Event{Type: "browser_nav", URL: u, Title: t})
+	p.app.broadcast(Event{Type: "browser_nav", URL: u, Title: t, SessionID: p.sid})
 }
 
 // onNewWindow 弹窗请求（target=_blank / window.open）：原地导航，不弹新窗。
@@ -986,7 +1000,7 @@ func (p *browserPanel) SetViewport(w, h int) error {
 	}
 	w = clampInt(w, browserMinSide, browserMaxW)
 	h = clampInt(h, browserMinSide, browserMaxH)
-	p.app.broadcast(Event{Type: "browser_resize", X: float64(w), Y: float64(h)})
+	p.app.broadcast(Event{Type: "browser_resize", X: float64(w), Y: float64(h), SessionID: p.sid})
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		p.stateMu.Lock()
@@ -1086,7 +1100,7 @@ func (p *browserPanel) Close() {
 			})
 		})
 	}
-	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: ""})
+	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid})
 }
 
 // releaseAfterMainLoopGone 主窗口消息循环已退出后的兜底释放（前端热重启用，

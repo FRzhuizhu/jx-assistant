@@ -16,20 +16,21 @@ import (
 	"time"
 )
 
-// browserUserClosed 用户是否在右栏主动关闭过浏览器页面（且此后未再打开）：
-// activeHost（tool_browser.go）据此把「浏览器未在运行」区分为用户主动关闭
-// （非崩溃），避免模型把用户操作误判成异常。
-func (a *App) browserUserClosed() bool {
+// browserUserClosed 该会话的用户是否在右栏主动关闭过浏览器页面（且此后未
+// 再打开）：activeHost（tool_browser.go）据此把「浏览器未在运行」区分为用户
+// 主动关闭（非崩溃），避免模型把用户操作误判成异常。按会话记账——A 会话
+// 关掉自己的面板不该影响 B 会话的报错口径。
+func (a *App) browserUserClosed(sid string) bool {
 	a.browserMu.Lock()
 	defer a.browserMu.Unlock()
-	return !a.browserUserClosedAt.IsZero()
+	return !a.browserUserClosedAt[browserProfileKey(sid)].IsZero()
 }
 
-// handleBrowserClose 右栏浏览器视图 ✕ 的「真关闭」端点：只作用于内嵌实例
-// （桌面原生面板 / Electron webview / 网页形态共享无头），有头独立窗口不碰
-// ——它自带关闭按钮，用户自己管。与 AI 的 browser_close 工具同走 Close()
-// （销毁实例、释放资源，重开时地址与登录态仍在），但这里是用户发起：
-//   · 打「用户关闭」标记（browserUserClosedAt，browserFor 重新打开时清零）；
+// handleBrowserClose 右栏浏览器视图 ✕ 的「真关闭」端点：只作用于该会话的
+// 内嵌实例（桌面原生面板 / Electron webview / 网页形态共享无头），有头独立
+// 窗口不碰——它自带关闭按钮，用户自己管。与 AI 的 browser_close 工具同走
+// Close()（销毁实例、释放资源，重开时地址与登录态仍在），但这里是用户发起：
+//   · 打「用户关闭」标记（browserUserClosed，browserFor 重新打开时清零）；
 //   · 给该会话投 report 注记——只投给真正在用浏览器的会话（browserActive
 //     有记账）；没开过浏览器的对话收到「用户关了浏览器」只会一头雾水。
 func (a *App) handleBrowserClose(w http.ResponseWriter, r *http.Request) {
@@ -37,17 +38,24 @@ func (a *App) handleBrowserClose(w http.ResponseWriter, r *http.Request) {
 		Session string `json:"session"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&p) // body 可省：没有会话上下文就只关实例
-	emb := a.embeddedTarget()              // 锁外取：Browser() 内部拿 browserMu，持锁调用会死锁
+	key := browserProfileKey(p.Session)
+	emb := a.embeddedTarget(p.Session) // 锁外取：panelFor/Browser 内部拿锁，持锁调用会死锁
 	if emb == nil || !emb.Started() {
 		writeJSON(w, http.StatusOK, map[string]any{"closed": false}) // 本来就没开：幂等成功
 		return
 	}
 	a.browserMu.Lock()
-	a.browserUserClosedAt = time.Now()
-	_, used := a.browserActive[browserProfileKey(p.Session)]
+	if a.browserUserClosedAt == nil {
+		a.browserUserClosedAt = map[string]time.Time{}
+	}
+	a.browserUserClosedAt[key] = time.Now()
+	_, used := a.browserActive[key]
 	a.browserMu.Unlock()
 	emb.Close()
-	a.broadcast(Event{Type: "browser_nav", URL: "", Title: ""}) // 工具栏地址/标题复位（面板形态 Close 自带广播，无头形态这里统一补）
+	if a.panelVisibleKey() == key { // 关的是当前显示中的面板：显示记账一并清空
+		a.panelSetVisible("")
+	}
+	a.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.Session}) // 工具栏地址/标题复位（面板形态 Close 自带广播，无头形态这里统一补）
 	if sid := strings.TrimSpace(p.Session); sid != "" && used {
 		if m, err := a.Store.Get(sid); err == nil {
 			a.deliverToSessionNoKick(m, "【用户关闭浏览器】用户在右栏浏览器面板点 ✕ 关闭了页面（用户主动关闭，非崩溃）。"+

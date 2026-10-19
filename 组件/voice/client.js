@@ -743,10 +743,14 @@
     }
     if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
     const cs = getComputedStyle(inp);
-    sh.style.left = inp.offsetLeft + 'px';
-    sh.style.top = inp.offsetTop + 'px';
-    sh.style.width = inp.offsetWidth + 'px';
-    sh.style.height = inp.offsetHeight + 'px';
+    // 相对卡片定位（灰字层挂在卡片上）：用视口坐标相减，不依赖 offsetParent——
+    // 输入框后来包进了 composer-input-wrap（position:relative，见标记胶囊背衬层），
+    // offsetLeft/Top 的参照变成了 wrapper，会差出附件区/引用胶囊条的高度
+    const r = inp.getBoundingClientRect(), cr = card.getBoundingClientRect();
+    sh.style.left = (r.left - cr.left) + 'px';
+    sh.style.top = (r.top - cr.top) + 'px';
+    sh.style.width = r.width + 'px';
+    sh.style.height = r.height + 'px';
     ['font-size', 'font-family', 'font-weight', 'line-height', 'letter-spacing',
       'padding', 'box-sizing', 'white-space', 'word-break', 'overflow-wrap', 'text-align']
       .forEach((k) => { sh.style[k] = cs[k]; });

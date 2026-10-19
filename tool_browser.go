@@ -32,7 +32,7 @@ func sessionBrowserKey(t *toolContext) string {
 func activeHost(t *toolContext) (browserTarget, error) {
 	h := t.app.activeBrowser(sessionBrowserKey(t))
 	if h == nil {
-		if t.app.browserUserClosed() {
+		if t.app.browserUserClosed(sessionBrowserKey(t)) {
 			return nil, fmt.Errorf("浏览器页面已被用户在右栏关闭（用户主动关闭，非崩溃）：如需继续浏览请重新 browser_open（各实例保留的地址与登录态仍在）")
 		}
 		return nil, fmt.Errorf("浏览器未在运行（可能已被用户关闭窗口，或尚未打开）：请调用 browser_open（重新）打开")
@@ -46,12 +46,12 @@ const capNoteBrowser = "需会话开启「操作浏览器」能力：未开启�
 func browserOpenTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_open",
-			"打开或导航到指定网页（各实例各自保留地址与登录态，重开会回到之前的页面）。mode 选打开方式："+
-				"headless（默认）在内嵌浏览器打开——桌面版显示在右栏「浏览器」面板（原生 Edge 网页，用户可旁观并随时直接操作），网页版在后台运行；"+
+			"打开或导航到指定网页或本地文件（各实例各自保留地址与登录态，重开会回到之前的页面）。url 接受 http/https 网址与 file:/// 本地文件路径（本地 html 预览页用它打开）。mode 选打开方式："+
+				"headless（默认）在内嵌浏览器打开——桌面版显示在右栏「浏览器」面板（原生 Edge 网页，用户可旁观并随时直接操作），网页版在后台运行；两种形态都是每个会话一个独立实例（页面与登录态互不串台，用户切到别的对话时面板跟着切走，切回来即恢复）；"+
 				"headed 弹一个独立的浏览器窗口，用户在真实窗口里查看和操作，适合演示给用户、需要用户配合填写的场景（各会话独立窗口与登录态、互不干扰；窗口被手动关闭后再次 open 会自动重开新窗口）。"+
-				"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。只接受 http/https 地址。返回页面标题与最终地址。"+capNoteBrowser,
+				"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。返回页面标题与最终地址。"+capNoteBrowser,
 			objSchema(withCapRequest(map[string]any{
-				"url":  strProp("完整网址，http 或 https"),
+				"url":  strProp("完整网址（http/https）或本地文件路径（file:///）"),
 				"mode": strProp("headless（默认，内嵌形态）或 headed（独立窗口）"),
 			}), "url")),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {

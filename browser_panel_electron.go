@@ -120,14 +120,9 @@ func (p *electronPanel) setNav(u, t string) {
 
 // ---------- browserTarget 操作面 ----------
 
-// Navigate 打开/跳转 http(s) 地址（与旧壳同校验口径），返回落定地址与标题。
+// Navigate 打开/跳转 http(s) 与本地文件 file:/// 地址（本地 html 交付预览的
+// 主要形态，工具与用户点击同口径），返回落定地址与标题。
 func (p *electronPanel) Navigate(raw string) (string, string, error) {
-	return p.navigate(raw, false)
-}
-
-// NavigatePrivileged 放宽到 file:///（仅 open-view 的用户点击路径进入，
-// 工作区包含校验在 handleBrowserOpenView 上游完成）。
-func (p *electronPanel) NavigatePrivileged(raw string) (string, string, error) {
 	return p.navigate(raw, true)
 }
 
@@ -138,7 +133,7 @@ func (p *electronPanel) navigate(raw string, allowFile bool) (string, string, er
 		ok = true
 	}
 	if !ok {
-		return "", "", fmt.Errorf("只支持 http/https 地址，收到: %s", u)
+		return "", "", fmt.Errorf("只支持 http/https 或 file:/// 地址，收到: %s", u)
 	}
 	br, err := p.callReady("navigate", map[string]any{"url": u, "privileged": allowFile})
 	if err != nil {

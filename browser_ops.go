@@ -9,10 +9,9 @@ package main
 // 其余 browser_* 工具一律作用于最近一次选定的实例。
 
 type browserTarget interface {
-	// Navigate 打开 http/https 地址，返回落定后的地址与标题（工具路径）。
+	// Navigate 打开地址（http/https 与本地文件 file:///），返回落定后的地址
+	// 与标题。file:// 本地 html 是交付预览的主要形态，工具与用户点击同口径。
 	Navigate(raw string) (string, string, error)
-	// NavigatePrivileged 同 Navigate 但放宽到 file:///（仅用户点击 open-view 路径）。
-	NavigatePrivileged(raw string) (string, string, error)
 	// NavAction 后退/前进/刷新（面板地址栏与工具共用）。
 	NavAction(action string) error
 	// Content 读当前页地址、标题与可见正文（innerText）。

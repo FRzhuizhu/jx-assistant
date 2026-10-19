@@ -1157,6 +1157,21 @@ body.rp-open .w-handle { display: none; }
   border-radius: 5px; color: var(--text-3); background: var(--chip);
 }
 .drawer-item .d-src.human { color: var(--accent); background: rgba(77, 107, 254, .09); }
+/* 下拉项的悬停「更多」（⋯）：与主对话会话行同一套 row-acts 交互（悬停显示、
+   挡住时间位）；右键菜单同一份 openSubItemMenu */
+.drawer-item { position: relative; }
+.drawer-item:hover .row-acts { display: flex; }
+.drawer-item:hover .d-time { visibility: hidden; }
+/* 状态格的「标为未读」红点与「完成未查看」绿点（运行中圆环优先级更高，
+   见 renderSubDDPop 的四态取值；绿点颜色对齐主对话 .dot.done） */
+.drawer-item .d-status.unread { display: flex; align-items: center; justify-content: center; }
+.drawer-item .d-status.unread::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: #d33;
+}
+.drawer-item .d-status.done { display: flex; align-items: center; justify-content: center; }
+.drawer-item .d-status.done::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: #2ea043;
+}
 
 /* ---------- 首页（新建对话） ---------- */
 .home {
@@ -1504,9 +1519,25 @@ body.rp-open .w-handle { display: none; }
   field-sizing: content;
 }
 .composer-input::placeholder { color: var(--text-3); }
+/* 输入框标记胶囊的背衬层（HTML 见 index.html 的 composer-input-wrap）：与输入框
+   同排版、字全透明，只在“引用N”与附件截短名等标记段画灰底圆角色块——黑字仍是输入框
+   自己的（叠在最上层、正常编辑），胶囊只是精确垫底的底色，两层渲染同一段文本故
+   逐字重合。排版参数（字体/行高/内边距/换行）由 JS 从输入框复制（同语音灰字层
+   手法）；margin:-4px 抵消 padding:4px，字形位置零偏移 */
+.composer-input-wrap { position: relative; }
+.mark-backdrop {
+  position: absolute; inset: 0; overflow: hidden;
+  pointer-events: none; color: transparent;
+  white-space: pre-wrap; overflow-wrap: break-word;
+}
+.mark-backdrop .mk {
+  background: var(--chip); border-radius: 8px;
+  padding: 0 4px; margin: 0 -4px;
+}
 /* 引用胶囊：对话区选文「引用到输入框」挂在输入卡内的暂存条——多条累计，
    灰底胶囊；1 条显示“某某某…”截断、多条收成「引用了N条」（悬停展开面板看逐条
-   全文）、✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（纯文本）。发送时
+   全文）、✕ 清空。每次引用还会在输入框光标处插入“引用N”标记（背衬层画成灰底
+   胶囊，见下方 composer-input-wrap 注释）。发送时
    组装为「用户引用：」块（逐条带编号全文）+ 正文完整发给模型（app-chat.js
    「引用胶囊」节） */
 .quote-bar {
@@ -2034,22 +2065,31 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 }
 .q-stop svg { width: 9px; height: 9px; }
 .q-stop:hover { color: #d93a3a; border-color: #d93a3a; }
-/* 询问声光提醒层（#ask-alert）：淡压暗整屏 + 蓝色光晕温和呼吸，点击跳去作答。
+/* 询问声光提醒层（#ask-alert）：淡压暗整屏 + 主题色光晕温和呼吸 → 缓慢渐进成
+   **整屏主题色**（远远看到屏幕变色就知道有东西要点），成色后常驻、不再自动收起，
+   用户关掉/处理完才恢复原界面（时序见 app-chat.js 的 showAskAlert）。
    护眼设计：光晕在 ::before 上动（中央卡片不闪）；2 秒一个呼吸周期、明暗差
-   收窄（.45–1，不整屏大开大合）；6 秒后 JS 加 .settle 停成静态淡光，
-   15 秒无操作或问题解决即整层收起。叮声走系统音效、朗读走语音组件。 */
+   收窄（.45–1，不整屏大开大合）；6 秒后 JS 加 .settle 停成静态淡光。
+   .solid 由 JS 在弹出后下一帧就加上，真正的「慢」交给过渡时长：background-color
+   用 **15 秒**缓入缓出（与 15 秒倒计时同步）从很淡的压暗一路走到整屏纯主题色——
+   不闪入、前段变化极缓（护眼、防光敏），到 15 秒才彻底变蓝；此后保持不动。
+   成色后光晕已无意义（整屏同色），淡出藏掉。 */
 #ask-alert {
   position: fixed; inset: 0; z-index: 70; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(31, 35, 40, .12); /* 很淡的整屏压暗：一眼有提醒感，不遮内容 */
+  background-color: rgba(31, 35, 40, .12); /* 刚弹出：很淡的整屏压暗，一眼有提醒感、不遮内容 */
+  transition: background-color 15s ease-in-out; /* 15 秒缓入缓出：与倒计时同步，到 15 秒才彻底变蓝 */
 }
 #ask-alert.hidden { display: none; }
+#ask-alert.solid { background-color: var(--accent); } /* 彻底变成整屏主题色并保持 */
 #ask-alert::before {
   content: ''; position: absolute; inset: 0; pointer-events: none;
   background: radial-gradient(ellipse at center, rgba(77, 107, 254, .28), rgba(77, 107, 254, .10) 60%, transparent);
   animation: aa-breathe 2s ease-in-out infinite;
+  transition: opacity 1.2s ease;
 }
 #ask-alert.settle::before { animation: none; opacity: .55; }
+#ask-alert.solid::before { animation: none; opacity: 0; } /* 整屏已是主题色：光晕藏掉 */
 @keyframes aa-breathe { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 .aa-box {
   position: relative; /* 压过 ::before 的光晕，卡片保持清晰不闪 */
@@ -2060,6 +2100,14 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .aa-box b { font-size: 14px; }
 .aa-box p { margin: 8px 0; font-size: 13px; color: var(--text-2); word-break: break-all; }
 .aa-box span { font-size: 12px; color: var(--text-3); }
+/* 提醒浮窗里的设置入口（一行小字，点它打开 设置·常规）：用主题色标出可点，
+   悬停才显下划线，不喧宾夺主 */
+.aa-box .aa-tip-link { display: block; margin-top: 6px; color: var(--accent); cursor: pointer; }
+.aa-box .aa-tip-link:hover { text-decoration: underline; }
+/* 设置浮层要盖在久等提醒层（#ask-alert 的 z-index 70）之上：提醒里那行「可在设置·常规
+   里关闭或修改时长」点开设置时，用户得能正常操作设置——关掉设置，提醒还在原处
+   （.modal 默认 50；窄屏那段已单独给到 230） */
+#settings { z-index: 90; }
 /* 朗读前的 15 秒倒计时（数字 + 进度条）：用户看着它就知道还有几秒出声；
    15 秒内关掉这层或进去处理就不朗读（见 app-chat.js 的 showAskAlert）。 */
 .aa-count {

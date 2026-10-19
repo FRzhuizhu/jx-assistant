@@ -1958,14 +1958,24 @@ function deliveryCard(dvs, sid, view) {
     ov.textContent = '打开';
     ov.title = route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
       : '用系统默认程序打开这个文件';
+    // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
+    // 音视频、svg 这些浏览器能渲染的交付物，点它就在右栏看；默认「打开」
+    // 仍按类型自动路由（html 进右栏，其余系统应用），MD 走 md-viewer 单窗口
+    const pv = document.createElement('button');
+    pv.type = 'button';
+    pv.className = 'dc-btn';
+    pv.textContent = '在右侧打开';
+    pv.title = '在右侧「浏览器」面板中打开（网页/图片/音视频可直接渲染）';
     const rv = document.createElement('button');
     rv.type = 'button';
     rv.className = 'dc-btn';
     rv.textContent = '在文件夹中查看';
     rv.title = '在文件资源管理器中定位这个文件';
     ov.onclick = (ev) => { ev.stopPropagation(); deliveryOpenFile(view, sid, d); };
+    pv.onclick = (ev) => { ev.stopPropagation(); openInPanelBrowser({ session: sid, path: d.path }); };
     rv.onclick = (ev) => { ev.stopPropagation(); deliveryRevealFile(view, sid, d); };
     acts.appendChild(ov);
+    acts.appendChild(pv);
     acts.appendChild(rv);
     row.appendChild(acts);
     // 整行可点击（含行内空白）：与「打开」等效
@@ -2479,6 +2489,12 @@ function handleGlobalEvent(ev) {
   const viewing = state.cur && ev.sessionId === state.cur.id;
   // 子对话视图并行接收同一事件流：右栏正看这个子对话且它没有本地流在跑（后台自动汇报）
   const subViewing = subState.cur && ev.sessionId === subState.cur.id;
+  // 会话 id -> 它的父会话 id（子对话才返回；数据源是全量 state.sessions——
+  // 子对话执行完时它早已在列表里，新建窗口期的缺失只影响一次提示，无害）
+  const parentOf = (sid) => {
+    const s = (state.sessions || []).find((x) => x.id === sid);
+    return s && s.parentId ? s.parentId : null;
+  };
   // 侧栏「⏸ 待确认」标记与橙点直接由 state.approvals / state.questions 推导（见
   // app-left.js 的 sessionPendingAsk）：下面的 push/remove 更新清单后 renderPanels
   // 会顺带刷新会话列表，不再单独维护事件驱动的 dotApproval 影子表。
@@ -2502,6 +2518,9 @@ function handleGlobalEvent(ev) {
     case 'sub_end':
       subDone[ev.sessionId] = true;
       dotDone[ev.sessionId] = true;
+      // 子对话完成且右栏没正看着它：所属主对话在侧栏那行也亮绿点——否则人工
+      // 建的子对话干完了，用户不知道是哪个主对话名下的事（打开主对话即清）
+      { const par = parentOf(ev.sessionId); if (par && !subViewing) dotDone[par] = true; }
       loadSessions();
       refreshDrawer();
       if (subViewing && !subState.streaming) refreshCurrentSub(); // 右栏子对话就地翻新
@@ -2526,8 +2545,13 @@ function handleGlobalEvent(ev) {
       break;
     case 'done':
       // 一轮执行结束（含数字助理的自动汇报轮）：没正看着这个会话就点亮绿点，
-      // 打开会话即清；正看着则就地翻新出最终结果
-      if (!viewing) dotDone[ev.sessionId] = true;
+      // 打开会话即清；正看着则就地翻新出最终结果。完成的是子对话且右栏没看着
+      // → 所属主对话侧栏行同样亮绿点（与 sub_end 同口径，两条事件幂等互备）
+      if (!viewing) {
+        dotDone[ev.sessionId] = true;
+        const par = parentOf(ev.sessionId);
+        if (par && !subViewing) dotDone[par] = true;
+      }
       loadSessions();
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrentSoon();
@@ -2627,16 +2651,20 @@ function handleGlobalEvent(ev) {
       if (ev.title) toast('组件已更新：' + ev.title);
       if (typeof refreshUpdateBox === 'function') refreshUpdateBox();
       break;
-    // 浏览器面板（桌面原生 WebView2）：browser_nav 同步工具栏地址/标题
-    // （AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
+    // 浏览器面板（桌面原生 WebView2，每会话独立实例）：browser_nav 同步工具栏
+    // 地址/标题（AI 在面板未开时也会导航），browser_resize 是 AI 的 viewport 请求
     // （X/Y 复用为宽高），两个处理函数都在 app-right.js。nav 事件顺带强制
     // 重报矩形：面板曾因矩形上报失联被留在隐藏态（地址已填、舞台空白），
-    // 每次导航到达都补一次上报，让面板自愈显示
+    // 每次导航到达都补一次上报，让面板自愈显示。带 sessionId 的事件只作用于
+    // 本会话的面板——别的会话（含后台子对话的 AI）在导航，不刷本会话工具栏、
+    // 不动本会话布局；不带 sessionId 的（Electron 壳/共享面板）维持全局口径。
     case 'browser_nav':
+      if (ev.sessionId && (!state.cur || ev.sessionId !== state.cur.id)) break;
       bpwOnNav(ev);
       if (typeof bpwDesktop === 'function' && bpwDesktop() && typeof bpwActive === 'function' && bpwActive()) bpwReport(true, true);
       break;
     case 'browser_resize':
+      if (ev.sessionId && (!state.cur || ev.sessionId !== state.cur.id)) break;
       bpwApplyViewport(ev.x);
       break;
     // 说明：delta/reasoning 不上全局总线（流式增量只走会话自己的 SSE）；
@@ -3045,12 +3073,14 @@ function askHoldTimer(id) {
         （组件停用时该端点 404，静默跳过：只闪不读）；
      ④ 15 秒内用户按掉/取消/关闭这层，或从任何入口进去处理（计划页/浮窗，
         见 notePlanHandled），都取消这次朗读；正在读的也一并掐断（代次作废）。
-   全层停留：朗读结束后 4 秒收起，最迟 40 秒兜底（朗读失败/被拦时不会一直挂着）。 */
-const ASK_ALERT_TTS_SEC = 15;   // 朗读前的倒计时（秒）
-const ASK_ALERT_MAX_MS = 40000; // 全层最长停留（兜底自动收起）
+   观感（用户口径）：刚弹出只是很淡的压暗＋光晕呼吸，**从这一刻起用 15 秒缓慢缓入**
+   （与倒计时同步）渐进成整屏主题色——到 15 秒才彻底变蓝，不闪入（护眼、防光敏）；
+   变成主题色后**常驻、不再自动收起**，直到用户关掉这层（点背景/点卡片/Esc）或
+   这条请求被处理（作答/进去处理），界面才恢复正常。 */
+const ASK_ALERT_TTS_SEC = 15;   // 朗读前的倒计时（秒）；也是渐变到整屏主题色的时长
+const ASK_ALERT_FADE_MS = ASK_ALERT_TTS_SEC * 1000; // 淡压暗 → 纯主题色的缓入时长
 let askAlertQid = '';
 let askAlertPayload = null;  // 本次提醒的内容（倒计时结束朗读时用）
-let askAlertHideTimer = 0;
 let askAlertSettleTimer = 0; // 呼吸 6 秒后停成静态淡光（护眼：不一直动）
 let askAlertCountTimer = 0;  // 倒计时数字/进度条刷新
 let askAlertTtsTimer = 0;    // 倒计时到点 → 开始朗读
@@ -3066,13 +3096,18 @@ function showAskAlert(ev) {
   askAlertPayload = ev;
   $('ask-alert-text').textContent =
     (ev.title ? '来自「' + ev.title + '」的提问：' : '') + (ev.summary || '有个问题需要你确认');
-  ov.classList.remove('hidden', 'settle');
+  ov.classList.remove('hidden', 'settle', 'solid'); // 从头来：先淡压暗，再慢慢渐变到主题色
   if (askAlertSettleTimer) clearTimeout(askAlertSettleTimer);
   askAlertSettleTimer = setTimeout(() => ov.classList.add('settle'), 6000);
-  if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
-  askAlertHideTimer = setTimeout(hideAskAlert, ASK_ALERT_MAX_MS);
-  // 15 秒可见倒计时：走完才朗读（点掉/进去处理连它一起取消）
+  // 整屏主题色与倒计时同步：用 15 秒缓入（时长见 style.css 的 background-color
+  // 过渡，由 .solid 触发）从「很淡的压暗」一路渐进到纯主题色，到 15 秒彻底变蓝
+  // 并保持——不闪入（用户口径：渐变换色，怕刺眼/光敏）；这里不再排任何「自动收起」。
   const gen = ++askAlertGen;
+  // 元素刚从 display:none 显出来，同帧加 .solid 不会有过渡（没有「变化前」的样式），
+  // 所以先让淡压暗这一帧落定（读一次 offsetWidth 强制重排），下一帧再加。
+  void ov.offsetWidth;
+  requestAnimationFrame(() => { if (gen === askAlertGen) ov.classList.add('solid'); });
+  // 15 秒可见倒计时：走完才朗读（点掉/进去处理连它一起取消）
   startAskAlertCount(Date.now() + ASK_ALERT_TTS_SEC * 1000);
   if (askAlertTtsTimer) clearTimeout(askAlertTtsTimer);
   askAlertTtsTimer = setTimeout(() => {
@@ -3089,6 +3124,13 @@ function showAskAlert(ev) {
     notePlanHandled(ev.sessionId, ev.questionId); // 点卡片去处理：提醒计时一起停
     hideAskAlert();
     askJumpTo(ev.sessionId);
+  };
+  // 「此类弹窗提醒可在设置·常规里关闭或修改时长」那一行：点它打开设置·常规
+  //（设置浮层 z-index 230 盖在提醒层之上，浮窗留着，关掉设置回来接着处理）。
+  const setLink = $('ask-alert-settings');
+  if (setLink) setLink.onclick = (e) => {
+    e.stopPropagation(); // 不触发「点卡片＝关闭并跳去回答」
+    if (typeof openSettings === 'function') openSettings('general');
   };
 }
 
@@ -3136,8 +3178,7 @@ function speakAskAlert(gen) {
       el.onended = () => {
         URL.revokeObjectURL(u);
         if (askAlertAudioURL === u) askAlertAudioURL = '';
-        if (askAlertAudio === el) askAlertAudio = null;
-        if (gen === askAlertGen) armAskAlertHide(4000); // 读完了：几秒后自动收起
+        if (askAlertAudio === el) askAlertAudio = null; // 读完也不收起：提醒层常驻，等用户处置
       };
       el.play().catch(() => {
         if (gen === askAlertGen) $('ask-alert-tip').textContent = '未能朗读（浏览器拦截了自动播放）';
@@ -3149,19 +3190,15 @@ function speakAskAlert(gen) {
     });
 }
 
-// 重排自动收起（朗读结束用）：不动那份「最长停留」兜底以外的东西。
-function armAskAlertHide(ms) {
-  if (askAlertHideTimer) clearTimeout(askAlertHideTimer);
-  askAlertHideTimer = setTimeout(hideAskAlert, ms);
-}
-
-// hideAskAlert 关闭提醒层并清干净定时器与音频（点击/Esc/自动收起/问题解决共用）：
+// hideAskAlert 关闭提醒层并清干净定时器与音频（点击/Esc/问题解决共用）：
 // 关掉之后在途的朗读请求一律作废（代次 +1）——15 秒内取消就不会出声。
 function hideAskAlert() {
   const ov = $('ask-alert');
-  if (ov) ov.classList.add('hidden');
-  askAlertGen++;
-  if (askAlertHideTimer) { clearTimeout(askAlertHideTimer); askAlertHideTimer = 0; }
+  if (ov) {
+    ov.classList.add('hidden');
+    ov.classList.remove('solid'); // 关掉即恢复原界面（下次重新从淡压暗慢慢渐变）
+  }
+  askAlertGen++; // 同时作废还没跑到的「加 .solid」那一帧（rAF 里比对代次）
   if (askAlertSettleTimer) { clearTimeout(askAlertSettleTimer); askAlertSettleTimer = 0; }
   if (askAlertCountTimer) { clearInterval(askAlertCountTimer); askAlertCountTimer = 0; }
   if (askAlertTtsTimer) { clearTimeout(askAlertTtsTimer); askAlertTtsTimer = 0; }
@@ -4902,18 +4939,17 @@ async function prepareSend(forceContent, view) {
         }),
       });
       state.cur = s;
+      rpRestoreSession(s.id); // 懒创建也切了会话：右栏各视图跟上（否则 Git 面板还停在首页态，显示默认工作区）
       placeComposer();
       syncComposer();
       refreshDrawer();
       loadSessions();
     } else {
-      // 没选中子对话：弹出下拉让用户先选/新建，输入内容保留
-      renderSubDDPop();
-      openPopover('sub-dd-pop', $('sub-dd'));
-      view.hint.textContent = '先选择或新建一个子对话';
-      setTimeout(() => { view.hint.textContent = ''; }, 2500);
-      if (armed) runHintOff(view);
-      return;
+      // 没选中子对话：懒创建（与主对话首页同款）——发出第一条消息才真正建
+      // 子对话（继承主对话上下文）并就地打开，消息照发，不提前留空会话；
+      // 无主对话可挂靠或创建失败由 newAuxChat 就地提示，输入内容保留、本轮中止
+      await newAuxChat();
+      if (!view.state.cur) { if (armed) runHintOff(view); return; }
     }
   }
   // 附件落盘：暂存的文件先写进工作区（后端照旧注入【文件上传】通知，排在用户消息
@@ -5416,12 +5452,13 @@ let selKeepText = '';
    「引用到输入框 / 在右侧辅助问答」不把全文塞进输入框——与用户自己打的字混在
    一起，模型分不清哪段是引用。引用挂到输入卡内的胶囊条上，并支持多条累计：
    · 每次引用在输入框光标处插入一个「“引用N”」纯文本标记，占位记下"在哪个位置
-     引用了第几条"；胶囊条上 1 条显示“某某某…”截断，多条收成「引用了N条」（悬停
+     引用了第几条"（输入框里由背衬层画成灰底胶囊，见「输入框标记胶囊」节）；胶囊
+     条上 1 条显示“某某某…”截断，多条收成「引用了N条」（悬停
      title 看逐条清单），✕ 一键清空。
    · 发送时组装为「用户引用：\n“引用1” 全文\n“引用2” 全文\n\n正文」——前端看到的
      是胶囊与标记，模型收到的是带编号的完整引用，正文里的“引用N”即引用位置。
    · 对话区用户气泡：引用块逐条渲染成灰色引用行（截断 + title 全文），正文里的
-     “引用N”标记渲染成灰色胶囊（title=对应全文）。
+     “引用N”标记与文件名形态的引号串渲染成灰色胶囊（前者 title=对应引用全文）。
    · 引用跟随输入草稿落盘（首页 jx.homeDraft / 主对话 jx.q.<id> / 子对话
      jx.subq.<id>，存 JSON 数组），切走再回来、刷新页面都不丢。 */
 
@@ -5450,7 +5487,9 @@ function quotesOf(view) {
   return view.state.quotes;
 }
 
-// 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）
+// 发送时组装：引用块在前（逐条带编号）、正文在后，空行隔开（正文为空就只有引用块）。
+// 文件标记（“报告fina….docx”这样的截短名引号串）原样留在正文里——后端【文件上传】注记本来就带全名
+// 与位置，模型自己能对上号；气泡里它与“引用N”同款渲染成灰胶囊（appendQuoteBodyText）
 function composeQuoted(view, text) {
   const qs = quotesOf(view || mainView).map((q) => String(q).trim()).filter(Boolean);
   const body = String(text || '').trim();
@@ -5484,11 +5523,13 @@ function splitQuoted(raw) {
   return null;
 }
 
-// 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”标记
-// 渲染成灰色胶囊（title=对应全文）
+// 气泡正文渲染：引用块拆成灰色引用行（截断 + title 全文），正文里的“引用N”与
+// “引用N”标记与文件名形态的引号串渲染成灰色胶囊（前者 title=对应引用全文）
 function appendQuotedBody(b, raw) {
   const qm = splitQuoted(raw);
-  if (!qm) { b.appendChild(document.createTextNode(raw)); return; }
+  // 没有引用块（只带文件、或什么都没带）也走标记切段：文件标记照样出胶囊，
+  // 引用标记因对不上号按普通文字放行（与有引用块时的兜底语义一致）
+  if (!qm) { appendQuoteBodyText(b, raw, []); return; }
   qm.quotes.forEach((q, i) => {
     const line = document.createElement('span');
     line.className = 'msg-quote';
@@ -5499,22 +5540,26 @@ function appendQuotedBody(b, raw) {
   appendQuoteBodyText(b, qm.rest, qm.quotes);
 }
 
-// 正文按“引用N”标记切段：命中的渲染灰胶囊，其余原样文本节点（对不上号的标记——
-// 比如引用已清掉、正文里残留——按普通文字展示，不硬猜）
+// 正文按标记切段：引用标记与文件名形态的引号串（以 .扩展名 结尾，如“报告fina….docx”）
+// 都渲染成灰胶囊；其余原样文本节点。引用胶囊的 title 放对应引用全文（对不上号的
+// ——比如引用已清掉、正文里残留——按普通文字展示，不硬猜）；文件标记自带截短名，
+// 不需要额外查表（气泡渲染只看消息文本，无法回查当时的附件，这里是纯视觉层）
 function appendQuoteBodyText(b, text, quotes) {
   const src = String(text == null ? '' : text);
   if (!src) return;
-  const rx = /“引用(\d+)”/g;
+  const rx = /“(引用\d+|[^”\n]*\.[A-Za-z]{1,8})”/g;
   let last = 0, m;
   while ((m = rx.exec(src))) {
     if (m.index > last) b.appendChild(document.createTextNode(src.slice(last, m.index)));
-    const full = quotes[Number(m[1]) - 1];
-    if (full == null) b.appendChild(document.createTextNode(m[0]));
-    else {
+    const qm = m[1].match(/^引用(\d+)$/);
+    const full = qm ? quotes[Number(qm[1]) - 1] : null;
+    if (qm && full == null) {
+      b.appendChild(document.createTextNode(m[0])); // 对不上号的引用标记：按普通文字展示
+    } else {
       const chip = document.createElement('span');
       chip.className = 'quote-chip';
       chip.textContent = m[0];
-      chip.title = full;
+      if (full != null) chip.title = full;
       b.appendChild(chip);
     }
     last = rx.lastIndex;
@@ -5555,6 +5600,40 @@ function renderQuote(view) {
   }
 }
 
+// 在视图输入框光标处插入一段标记文本（“引用N”/附件截短名引号串共用）：输入框有焦点就
+// 插在光标处，否则追加到末尾；插完聚焦、光标跟在标记后（接着打字即续写）。
+// 落盘由调用方收口（一次插多条时只落一次）
+function insertInputMark(view, mark) {
+  const inp = view.input;
+  const p = (document.activeElement === inp && typeof inp.selectionStart === 'number')
+    ? inp.selectionStart : inp.value.length;
+  inp.value = inp.value.slice(0, p) + mark + inp.value.slice(p);
+  inp.focus();
+  inp.setSelectionRange(p + mark.length, p + mark.length);
+  autoGrow(inp);
+}
+
+// 文件名截断：主名前 6 个字符 + … + 完整扩展名（“报告final版V3.docx”→“报告fin….docx”），
+// 够短就原样返回；按码点截不劈中文
+function fileClipName(name) {
+  const s = String(name || '');
+  const i = s.lastIndexOf('.');
+  const ext = (i > 0 && i >= s.length - 7) ? s.slice(i) : '';
+  const cps = Array.from(ext ? s.slice(0, i) : s);
+  const head = cps.length <= 6 ? cps.join('') : cps.slice(0, 6).join('') + '…';
+  return head + ext;
+}
+
+// 附件的输入框标记（“报告fina….docx”，主名前 6 字 + … + 扩展名）：完整标记文本
+// 存在附件对象 a.mark 上——背衬层按它精确高亮、卡片 ✕ 按它从输入框摘掉。不带
+// “文件N”编号：用户自己传的文件认得名字，胶囊越短越好（同名两份的极端情形
+// ✕ 会把两处一起摘掉，可接受）。标记原样随正文发出（【文件上传】注记带全名，
+// 模型自己对上号）
+function attachMarkOf(a) {
+  a.mark = '\u201c' + fileClipName(a.name) + '\u201d';
+  return a.mark;
+}
+
 // 挂上引用（各引用入口统一走这里）：累计进引用列表（同文再次引用不新增条目、
 // 复用原序号），在输入框光标处插入“引用N”标记，落盘并聚焦
 function setQuote(view, text) {
@@ -5566,15 +5645,7 @@ function setQuote(view, text) {
   if (idx < 0) { qs.push(t); idx = qs.length - 1; }
   renderQuote(view);
   persistQuoteLS(view);
-  const inp = view.input;
-  const mark = quoteMark(idx + 1);
-  // 标记落在"用户正在输入的位置"：输入框有焦点就插在光标处，否则追加到末尾
-  const p = (document.activeElement === inp && typeof inp.selectionStart === 'number')
-    ? inp.selectionStart : inp.value.length;
-  inp.value = inp.value.slice(0, p) + mark + inp.value.slice(p);
-  inp.focus();
-  inp.setSelectionRange(p + mark.length, p + mark.length); // 光标跟在标记后：接着打字即续写
-  autoGrow(inp);
+  insertInputMark(view, quoteMark(idx + 1));
   if (view === mainView) persistMainDraftLS(); else persistSubDraftLS(); // 程序化改值也要落盘
   syncComposerPad(view); // 胶囊出现改变输入区高度：重算悬浮垫高
 }
@@ -5643,6 +5714,134 @@ function restoreQuoteLS(view) {
     v.input.focus();
   });
 });
+
+/* ---------- 输入框标记胶囊：背衬层渲染 + 光标原子策略 ----------
+   引用标记（“引用N”）与附件标记（“报告fina….docx”）在输入框里是纯文本（textarea
+   装不下富文本），灰胶囊观感由背衬层实现（HTML/CSS 见 index.html 的
+   composer-input-wrap 与 style.css）：与输入框同排版的透明层垫在输入框底下（字体/
+   行高/内边距/换行规则从输入框复制，同语音灰字层的手法），标记段画灰底圆角色块
+   ——黑字仍是输入框自己的、叠在最上层正常编辑，胶囊只是精确垫底的底色（两层渲染
+   同一段文本，逐字重合）；pointer-events:none 永不吃点击。
+   标记区间怎么认：引用标记按 /“引用\d+”/ 正则；附件标记按暂存附件的完整标记文本
+   （a.mark）精确匹配——不猜格式，用户自己打的形如文件名的引号不会被误当成胶囊
+   （也所以草稿恢复后没有对应附件就自然不高亮，只是普通文字）。
+   防误改中间：光标落进标记内部弹到标记末尾；退格贴着标记末尾 / Delete 贴着标记
+   开头整颗删除（优先 execCommand 保撤销栈）；选区完整落在一颗标记内扩成整颗。
+   IME 组字期间一律不干预。程序化写值（语音落字、退回回填、清空等）经 value
+   存取器拦截统一刷新背衬层，不必挨个调用点补。 */
+function setupInputMarks(view) {
+  const ta = view.input;
+  const wrap = ta.closest('.composer-input-wrap');
+  const bd = wrap && wrap.querySelector('.mark-backdrop');
+  if (!bd) return;
+
+  // 排版对齐：从输入框复制 computed style（composer 字体静态，初始化与窗口缩放时同步）
+  function syncMetrics() {
+    const cs = getComputedStyle(ta);
+    ['font-size', 'font-family', 'font-weight', 'line-height', 'letter-spacing',
+      'padding', 'box-sizing', 'white-space', 'word-break', 'overflow-wrap', 'text-align']
+      .forEach((k) => { bd.style[k] = cs[k]; });
+  }
+
+  // 标记区间：引用标记按正则，附件标记按暂存附件的 a.mark 精确出现位置（升序）
+  function markList() {
+    const v = ta.value;
+    const out = [];
+    const qr = /“引用\d+”/g;
+    let m;
+    while ((m = qr.exec(v))) out.push({ start: m.index, end: m.index + m[0].length });
+    for (const a of attachmentsOf(view)) {
+      if (!a.mark) continue;
+      let i = v.indexOf(a.mark);
+      while (i >= 0) {
+        out.push({ start: i, end: i + a.mark.length });
+        i = v.indexOf(a.mark, i + a.mark.length);
+      }
+    }
+    out.sort((x, y) => x.start - y.start);
+    return out;
+  }
+
+  // 渲染：按标记切段，标记段灰底胶囊、其余透明文本；没有标记就整层腾空（零开销）
+  function render() {
+    const v = ta.value;
+    bd.textContent = '';
+    const list = markList();
+    let last = 0;
+    for (const mk of list) {
+      if (mk.start > last) bd.appendChild(document.createTextNode(v.slice(last, mk.start)));
+      const sp = document.createElement('span');
+      sp.className = 'mk';
+      sp.textContent = v.slice(mk.start, mk.end);
+      bd.appendChild(sp);
+      last = mk.end;
+    }
+    if (last < v.length) bd.appendChild(document.createTextNode(v.slice(last)));
+  }
+  let raf = 0;
+  function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
+
+  // value 存取器：程序化写值也触发刷新（原生键入走下方 input 事件）。拦不住的
+  // 极端环境不影响功能，只是背衬层要等下一次键入才跟上
+  try {
+    const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    Object.defineProperty(ta, 'value', {
+      get() { return desc.get.call(this); },
+      set(v) { desc.set.call(this, v); schedule(); },
+      configurable: true,
+    });
+  } catch (e) { /* 老内核：靠 input 事件兜底 */ }
+
+  ta.addEventListener('input', schedule);
+  // 内容超高时输入框自己滚：背衬层跟着上移保持对齐（同语音灰字层）
+  ta.addEventListener('scroll', () => { bd.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)'; });
+  window.addEventListener('resize', () => { syncMetrics(); render(); });
+  syncMetrics();
+  render();
+
+  // —— 光标原子策略（markList 见上） ——
+  let composing = false;
+  ta.addEventListener('compositionstart', () => { composing = true; });
+  ta.addEventListener('compositionend', () => { composing = false; schedule(); });
+
+  // 整颗删除（保撤销栈：选中范围后插入空串；引擎不接则回落 setRangeText）
+  function deleteRange(st, en) {
+    ta.focus();
+    ta.setSelectionRange(st, en);
+    if (!document.execCommand('insertText', false, '')) {
+      ta.setRangeText('', st, en, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+  ta.addEventListener('keydown', (e) => {
+    if (composing || e.isComposing) return;
+    if (ta.value.indexOf('“') < 0 || ta.selectionStart !== ta.selectionEnd) return;
+    const p = ta.selectionStart;
+    const list = markList();
+    if (e.key === 'Backspace') {
+      for (const mk of list) if (mk.end === p) { e.preventDefault(); deleteRange(mk.start, mk.end); return; }
+    } else if (e.key === 'Delete') {
+      for (const mk of list) if (mk.start === p) { e.preventDefault(); deleteRange(mk.start, mk.end); return; }
+    }
+  });
+  // 光标落进标记内部 → 弹到标记末尾；选区完整落在单颗内 → 扩成整颗（双击选词等）
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement !== ta || composing) return;
+    if (ta.value.indexOf('“') < 0) return;
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    if (s !== e) {
+      for (const mk of markList()) {
+        if (s >= mk.start && e <= mk.end && (s !== mk.start || e !== mk.end)) {
+          ta.setSelectionRange(mk.start, mk.end); return;
+        }
+      }
+      return;
+    }
+    for (const mk of markList()) {
+      if (s > mk.start && s < mk.end) { ta.setSelectionRange(mk.end, mk.end); return; }
+    }
+  });
+}
 
 // 仅识别主对话区与右栏子对话区里的文字选区
 function chatSelection() {
@@ -6427,17 +6626,27 @@ function pasteImageName(f) {
 function stagePaths(paths, view) {
   view = view || popView || mainView;
   const list = attachmentsOf(view);
+  const added = [];
   let dropped = 0;
   for (const p of paths) {
     if (list.length >= ATTACH_MAX_COUNT) { dropped++; continue; }
     const name = String(p).split(/[\\/]/).pop() || String(p);
-    list.push({
+    const a = {
       id: 'a' + (++attachSeq), kind: 'file', name, size: null, mime: '',
       file: null, path: p, previewUrl: '', status: 'staged',
-    });
+    };
+    list.push(a);
+    added.push(a);
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
+  // 输入框里挂上“报告fina….docx”胶囊标记：附件区卡片照旧（图标/缩略图/✕），胶囊只记
+  // “在正文哪个位置引用了哪个文件”，发送时原样随正文发出（【文件上传】注记带全名）
+  for (const a of added) insertInputMark(view, attachMarkOf(a));
+  if (added.length) {
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    syncComposerPad(view);
+  }
   if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
 }
 
@@ -6462,6 +6671,12 @@ function stageFiles(files, view) {
   }
   if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
+  // 输入框里挂上“报告fina….docx”胶囊标记（同 stagePaths：附件区卡片照旧，标记只管位置）
+  for (const a of added) insertInputMark(view, attachMarkOf(a));
+  if (added.length) {
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+    syncComposerPad(view);
+  }
   if (tooBig) attachHint(view, tooBig + ' 个文件超过 ' + fmtBytes(ATTACH_MAX_BYTES) + '，没有加入；大文件请点 ＋ 用「文件上传」选（走本机路径，不受此限）', 8000);
   else if (dropped) attachHint(view, '一条消息最多带 ' + ATTACH_MAX_COUNT + ' 个附件，' + dropped + ' 个没有加入');
   return added;
@@ -6580,6 +6795,12 @@ function removeAttachment(view, id) {
   const a = list[i];
   if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   list.splice(i, 1);
+  // 它在输入框里的胶囊标记一并摘掉（与引用 ✕ 摘“引用N”同款联动）
+  if (a.mark && view.input.value.indexOf(a.mark) >= 0) {
+    view.input.value = view.input.value.split(a.mark).join('');
+    autoGrow(view.input);
+    if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
+  }
   const box = viewEl(view, 'attachments');
   if (box) box._sig = null; // 强制重画（删到空时立刻回到零占位）
   renderAttachments(view);
@@ -6958,6 +7179,7 @@ function tuckComposer(view, on) {
 function setupScrollTuck() {
   for (const view of [mainView, subView]) {
     setupAttachDrop(view); // 附件区：粘贴图片与拖拽投放（两个视图各挂一套）
+    setupInputMarks(view); // 标记胶囊：背衬层渲染与光标原子策略（两个视图各挂一套）
     let lastY = view.scroll.scrollTop;
     // 跟随钉住的手势入口：滚轮上翻/触摸上滑立即钉住（无论离底多近——否则
     // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底

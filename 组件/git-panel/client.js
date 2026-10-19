@@ -1097,8 +1097,10 @@
   /* ---------- 数据加载 ---------- */
 
   async function loadStatus() {
+    const sess = S.session, repo = S.repo; // 请求发出时的会话/仓库：晚归响应据此作废
     try {
       const d = await gitGet('status');
+      if (sess !== S.session || repo !== S.repo) return; // 期间已切会话/换仓库：旧响应不落地
       S.repos = d.repos || [];
       S.repo = d.repo || '';
       S.branch = d.branch || '';
@@ -1127,8 +1129,10 @@
   async function loadGraph(reset) {
     if (S.commitsLoading) return;
     S.commitsLoading = true;
+    const sess = S.session, repo = S.repo; // 请求发出时的会话/仓库：晚归响应据此作废
     try {
       const d = await gitGet('graph', reset ? {} : { skip: String(S.commits.length), limit: '60' });
+      if (sess !== S.session || repo !== S.repo) return; // 期间已切会话/换仓库：旧响应不落地
       if (reset) S.commits = d.commits || [];
       else {
         const seen = new Set(S.commits.map((c) => c.hash));
@@ -1137,15 +1141,20 @@
       S.commitsMore = !!d.more;
       renderGraph();
     } catch (e) {
+      if (sess !== S.session || repo !== S.repo) return;
       if (reset) S.commits = [];
       renderGraph();
+    } finally {
+      S.commitsLoading = false;
     }
-    S.commitsLoading = false;
   }
 
   async function loadBranches() {
+    const sess = S.session, repo = S.repo; // 请求发出时的会话/仓库：晚归响应据此作废
     try {
-      S.branches = await gitGet('branches');
+      const d = await gitGet('branches');
+      if (sess !== S.session || repo !== S.repo) return; // 期间已切会话/换仓库：旧响应不落地
+      S.branches = d;
       renderTop();
       renderGraph();
     } catch (e) { /* 分支清单失败不拦主流程 */ }
@@ -1191,8 +1200,10 @@
         title: 'Git',
         onOpen() { refreshAll(); },
         saveSession() { return { repo: S.repo }; },
-        restoreSession(d) {
-          S.session = (typeof state !== 'undefined' && state.cur && state.cur.id) || '';
+        restoreSession(d, sid) {
+          // sid 是挂点传来的目标会话 id（回首页为空串）；不读 state.cur——
+          // 挂点被调的时机不保证 cur 已就位
+          S.session = sid || (typeof state !== 'undefined' && state.cur && state.cur.id) || '';
           S.repo = (d && d.repo) || ''; // 会话换了，工作区多半也换了：恢复它选过的仓库，没有就默认
           S.commits = []; S.branches = null; S.detail = null; S.commit = null;
           S.commitMsg = ''; // 同上：跟着工作区一起换的还有提交信息框
