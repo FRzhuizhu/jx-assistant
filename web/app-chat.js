@@ -1965,8 +1965,29 @@ function deliveryRevealFile(view, sid, d) {
   }).catch((e) => alert('打开所在文件夹失败：' + e.message));
 }
 
-// 交付成果卡片：deliver_result 登记的最终交付文件。每行两个动作（「打开」与
-// 「在文件夹中查看」），整行都是点击热区——点行内任何位置（含空白）都等同
+/* 交付卡行的折叠判定：文件名区与按钮区地位对等——文件名区的最小宽就取按钮区
+   的实际宽，两块宽 + 中间间距塞不进行内可用宽，就把按钮挪到下一行（上一行
+   = 文件名 + 灰色说明，下一行 = 按钮）。按钮宽现场实测（文案、字号变了自动
+   跟随，不写死像素），判据只看行自身实际宽、不看视口：手机窄屏、右栏挤窄的
+   对话区、桌面宽屏同一套；CSS 只描述两种形态，折与不折由这里切 .dc-stacked。
+   行会随尾部重画反复重建，离了 DOM 立即取消观察。 */
+const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => {
+  for (const en of entries) {
+    const row = en.target;
+    const acts = row.isConnected ? row.querySelector('.dc-acts') : null;
+    if (!acts) { dcStackRO.unobserve(row); continue; }
+    const rcs = getComputedStyle(row);
+    const avail = row.clientWidth - (parseFloat(rcs.paddingLeft) || 0) - (parseFloat(rcs.paddingRight) || 0);
+    const btnGap = parseFloat(getComputedStyle(acts).columnGap) || 0;
+    let actsW = 0; // 按钮区实际宽 = 各按钮宽之和 + 按钮间距
+    for (let i = 0; i < acts.children.length; i++) actsW += acts.children[i].offsetWidth + (i ? btnGap : 0);
+    // 两块等宽：可用宽要装得下「文件名区（= 按钮区宽）+ 间距 + 按钮区」，否则折
+    row.classList.toggle('dc-stacked', avail < actsW * 2 + (parseFloat(rcs.columnGap) || 0));
+  }
+}) : null;
+
+// 交付成果卡片：deliver_result 登记的最终交付文件。每行三个动作（「打开」「右侧
+// 打开」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）都等同
 // 「打开」该文件，悬停有高亮反馈。不再提供「下载」按钮。
 function deliveryCard(dvs, sid, view) {
   view = view || mainView;
@@ -1982,17 +2003,20 @@ function deliveryCard(dvs, sid, view) {
     row.className = 'dc-file';
     row.dataset.path = d.path; // 右键菜单取路径用（app-ctxmenu.js）
     row.title = d.path + '\n点击打开这个文件';
+    const main = document.createElement('span'); // 文件名 + 灰色说明同属一块（.dc-main 只缩不折）
+    main.className = 'dc-main';
     const nm = document.createElement('span');
     nm.className = 'dc-name';
     nm.title = d.path;
     nm.textContent = d.path.split('/').pop();
-    row.appendChild(nm);
+    main.appendChild(nm);
     if (d.note) {
       const note = document.createElement('span');
       note.className = 'dc-note';
       note.textContent = d.note;
-      row.appendChild(note);
+      main.appendChild(note);
     }
+    row.appendChild(main);
     const acts = document.createElement('span');
     acts.className = 'dc-acts';
     const route = deliveryOpenRoute(view, d.path);
@@ -2024,6 +2048,7 @@ function deliveryCard(dvs, sid, view) {
     row.appendChild(acts);
     // 整行可点击（含行内空白）：与「打开」等效
     row.onclick = () => deliveryOpenFile(view, sid, d);
+    if (dcStackRO) dcStackRO.observe(row); // 折不折成上下两行，按行自身实际宽判断
     card.appendChild(row);
   });
   return card;

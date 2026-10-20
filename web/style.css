@@ -738,8 +738,8 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 
 /* 交付成果卡片：deliver_result 登记的最终交付文件。
-   每行两个动作（打开 / 在文件夹中查看），整行可点击并打开文件，悬停高亮；
-   没有「下载」按钮。字号同样 em 继承 --chat-fs。 */
+   每行三个动作（打开 / 右侧打开 / 在文件夹中打开），整行可点击并打开文件，
+   悬停高亮；没有「下载」按钮。字号同样 em 继承 --chat-fs。 */
 .delivery-card {
   border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: 10px; background: var(--code-bg); margin: 6px 0 18px; overflow: hidden;
@@ -749,24 +749,28 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .dc-title { font-weight: 600; font-size: .93em; }
 .dc-count { font-size: .93em; color: var(--text-3); }
 /* 行内动作按钮（打开 / 右侧打开 / 在文件夹中打开）：整行也可点，按钮各自独立。
-   宽度全部用布局角色表达（无写死像素）：按钮组=内容实际宽（flex:none）、
-   说明=行内剩余（flex:1 可缩成省略号）、文件名=自然宽可压缩（word-break
-   折行）。行窄时灰色说明先退场——容器查询按本行自身实际宽生效（不按视口，
-   不分手机/电脑：左右栏挤窄对话区、手机窄屏同样触发）。 */
+   文件名区与按钮区**地位对等**：两块的宽（文件名区最小宽 = 按钮区实际宽）
+   加起来还塞不进行内可用宽时，就折成上下两行——上面「文件名 + 灰色说明」，
+   下面「按钮」；塞得下就并在一行（名/说明靠左、按钮靠右）。
+   判定本身由 app-chat.js 的 dcStackRO 按行自身实际宽算（按钮宽实测、不写死
+   像素，也不按视口——左右栏挤窄对话区、手机窄屏、桌面宽屏同一套）。
+   文件名始终单行省略：以前用 word-break 逐字折行，窄屏会被挤成好几行。 */
 .dc-file { cursor: pointer; }
 .dc-file:hover { background: var(--hover); }
 .dc-file:active { background: var(--chip); }
 .dc-file {
   display: flex; align-items: center; gap: 10px; padding: 6px 13px;
   border-top: 1px solid var(--border-2);
-  container-type: inline-size;
 }
-.dc-name { font-family: Consolas, "Courier New", monospace; font-size: 1em; flex: 0 1 auto; min-width: 0; word-break: break-all; }
-.dc-note { flex: 1; min-width: 0; font-size: .93em; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 文件名 + 灰色说明是同一块（.dc-main）：两者之间只缩不折，保证「一行文件名
+   + 一行灰字」的观感；折叠时这一块独占上面一行。 */
+.dc-main { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.dc-name { font-family: Consolas, "Courier New", monospace; font-size: 1em; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-note { flex: 0 1 auto; min-width: 0; max-width: 100%; font-size: .93em; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-acts { flex: none; display: flex; gap: 6px; }
-@container (max-width: 480px) {
-  .dc-note { display: none; }
-}
+/* 折叠态（行宽不足两块等宽 + 间距）：按钮组独占第二行 */
+.dc-file.dc-stacked { flex-wrap: wrap; row-gap: 6px; }
+.dc-file.dc-stacked .dc-acts { flex: 1 0 100%; }
 .dc-btn {
   flex: none; font: inherit; font-size: .93em; color: var(--accent);
   background: none; cursor: pointer; white-space: nowrap;
