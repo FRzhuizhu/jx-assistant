@@ -8,6 +8,11 @@
 #              默认不发组件——大多数版本只更新主程序）
 #   -安装包    附带完整安装包的路径（可选；同时保留整包更新路）
 #   -ExeSource 使用已构建好的发行 exe（默认现场 go build）
+#   -Runtime   同时发共享运行时块（技能\_runtime 整目录包，压缩后约 100+ MB；
+#              版本串默认取 python.exe -V，如 py3.14.8）
+#   -Skills    同时发内置技能块（只压 pdf/ocr/office/downloader/apkinfo；
+#              用户技能 技能\user 永不入包）
+#   -RuntimeVersion 手工指定运行时版本串（缺省自动取）
 #
 # 产出：打包\静默更新\<版本>\ 目录——
 #   engine-<版本>.zip       主程序块（zip 内单个 exe，客户端换名落位）
@@ -22,7 +27,14 @@ param(
   [string]$Version = "",
   [string]$组件 = "",
   [string]$安装包 = "",
-  [string]$ExeSource = ""
+  [string]$ExeSource = "",
+  # 技能区两块（客户端 update_runtime.go 消费）：
+  #   -Runtime 发共享便携 Python 运行时（技能\_runtime 整目录包）
+  #   -Skills  发内置技能包（只压白名单内置技能目录，用户技能永不入包）
+  # 都不传 = 本版不动这两块（快照沿用上一版）。
+  [switch]$Runtime,
+  [switch]$Skills,
+  [string]$RuntimeVersion = ""
 )
 if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "V1" }
 
@@ -66,6 +78,58 @@ if ($组件 -ne "") {
   }
 }
 
+# ---- 技能区块 1：共享运行时（技能\_runtime 整目录包）----
+$runtimeArgs = @()
+if ($Runtime) {
+  $rtDir = Join-Path $root "技能\_runtime"
+  if (-not (Test-Path $rtDir)) { throw "运行时目录不存在：$rtDir" }
+  $pyExe = Join-Path $rtDir "python\python.exe"
+  if (-not (Test-Path $pyExe)) { throw "运行时里没有 python.exe：$pyExe" }
+  # 版本串以解释器自报为准（pythonVersion 常量改了、运行时没换时这里会暴露）
+  if (-not $RuntimeVersion) {
+    $v = (& $pyExe -V 2>&1) -replace '^Python\s+', ''
+    $v = $v.Trim()
+    if ($v -notmatch '^\d+\.\d+') { throw "读不出运行时版本：$v" }
+    $RuntimeVersion = "py" + $v
+  }
+  Write-Host "== 打包运行时块 $RuntimeVersion（$rtDir）"
+  # 版本标记写进包内：客户端据此判断"已经是最新，不必重下几百兆"
+  Set-Content -Path (Join-Path $rtDir ".version") -Value $RuntimeVersion -Encoding ASCII
+  $runtimeZip = Join-Path $outDir "runtime-$RuntimeVersion.zip"
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  # 用 .NET 压缩（Compress-Archive 会漏掉 .version 这种点开头的文件）
+  [IO.Compression.ZipFile]::CreateFromDirectory($rtDir, $runtimeZip,
+    [IO.Compression.CompressionLevel]::Optimal, $false)
+  $runtimeArgs += "-runtime", (Split-Path -Leaf $runtimeZip), "-runtime-version", $RuntimeVersion
+}
+
+# ---- 技能区块 2：内置技能（白名单目录；用户技能绝不入包）----
+$skillsArgs = @()
+if ($Skills) {
+  # 与客户端内置技能白名单一致（skill_manager.go: builtinSkillIDs）
+  $builtin = @("pdf", "ocr", "office", "downloader", "apkinfo")
+  $stageSkills = Join-Path $outDir "_skills_stage"
+  New-Item -ItemType Directory -Path $stageSkills -Force | Out-Null
+  $packed = @()
+  foreach ($name in $builtin) {
+    $src = Join-Path $root "技能\$name"
+    if (-not (Test-Path $src)) { throw "内置技能目录不存在：$src" }
+    Copy-Item $src (Join-Path $stageSkills $name) -Recurse -Force
+    $packed += $name
+  }
+  # 防呆：暂存区里绝不能出现 user / _runtime（白名单之外的目录一律不入包）
+  Get-ChildItem $stageSkills -Directory | Where-Object { $builtin -notcontains $_.Name } | ForEach-Object {
+    throw "暂存区出现非内置技能目录：$($_.Name)（拒绝入包）"
+  }
+  $skillsZip = Join-Path $outDir "skills-builtin.zip"
+  Write-Host ("== 打包内置技能块（{0}）" -f ($packed -join "、"))
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [IO.Compression.ZipFile]::CreateFromDirectory($stageSkills, $skillsZip,
+    [IO.Compression.CompressionLevel]::Optimal, $false)
+  Remove-Item $stageSkills -Recurse -Force
+  $skillsArgs += "-skills", (Split-Path -Leaf $skillsZip)
+}
+
 # ---- 完整安装包（可选，整包路与静默更新并存） ----
 $installerArg = @()
 if ($安装包 -ne "") {
@@ -79,6 +143,8 @@ $lines = @()
 $lines += "# 在服务器上（jxai-server 数据目录旁、上传本目录全部文件后）执行："
 $cmd = "jxai-server publish-update -version $Version -engine engine-$Version.zip"
 if ($compArgs.Count -gt 0) { $cmd += " " + ($compArgs -join " ") }
+if ($runtimeArgs.Count -gt 0) { $cmd += " " + ($runtimeArgs -join " ") }
+if ($skillsArgs.Count -gt 0) { $cmd += " " + ($skillsArgs -join " ") }
 if ($installerArg.Count -gt 0) { $cmd += " " + ($installerArg -join " ") }
 $lines += $cmd
 $lines += ""

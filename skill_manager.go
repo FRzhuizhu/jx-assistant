@@ -23,6 +23,17 @@ import (
 // 内置技能 id：只读展示、不可删除、不可关闭。
 var builtinSkillIDs = map[string]bool{"pdf": true, "ocr": true, "office": true, "downloader": true, "apkinfo": true}
 
+// isBuiltinSkillName 判断一个目录名是不是「随包分发的内置技能」。
+// 分块更新（skills 块）用它做白名单：只有名单内的目录允许整目录替换，
+// user、_runtime 以及任何别的名字一律拒绝——用户技能永远不在热更范围内。
+func isBuiltinSkillName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return builtinSkillIDs[name]
+}
+
 const (
 	userSkillBodyMax = 6000 // read_skill 返回的单个技能说明上限（字符）
 	// userSkillDescPromptMax 环境快照里一句话描述的截断上限：快照每个会话都

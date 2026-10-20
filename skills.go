@@ -270,11 +270,18 @@ func ensureTermuxSkillRuntime(modules, wheels []string, emit func(string)) (*pyt
 	return py, nil
 }
 
+// pythonVersion 便携运行时的版本（唯一事实来源）。升级运行时只改这一处：
+// 装配下载的 embeddable 包、启动自检的"本地版本该是多少"、分块更新的
+// runtime 块版本标记，全都由它推导。改这里之后记得发一版 runtime 分块
+// （打包\发布静默更新.ps1 -Runtime），否则客户端启动自检会把旧运行时删掉
+// 再按联网装配。
+const pythonVersion = "3.14.8"
+
 // pythonEmbedURLs 便携 Python embeddable 的下载源，依次回退：官方源在国内
 // 经常超时（2026-10 实测 HEAD 挂起），华为云镜像托管同一文件、秒下。
 var pythonEmbedURLs = []string{
-	"https://www.python.org/ftp/python/3.14.8/python-3.14.8-embed-amd64.zip",
-	"https://mirrors.huaweicloud.com/python/3.14.8/python-3.14.8-embed-amd64.zip",
+	"https://www.python.org/ftp/python/" + pythonVersion + "/python-" + pythonVersion + "-embed-amd64.zip",
+	"https://mirrors.huaweicloud.com/python/" + pythonVersion + "/python-" + pythonVersion + "-embed-amd64.zip",
 }
 
 const (

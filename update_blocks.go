@@ -43,6 +43,11 @@ const updateBlocksFile = "blocks.json"
 type updateBlocks struct {
 	Engine     *updateBlock           `json:"engine,omitempty"`
 	Components map[string]updateBlock `json:"components,omitempty"`
+	// Runtime 共享便携 Python 运行时（技能\_runtime 整目录替换）；
+	// Skills 内置技能包（白名单内技能整目录替换）。两者都只动技能区里
+	// 写死的路径，用户技能（技能\user）永不参与——见 update_runtime.go。
+	Runtime *updateBlock `json:"runtime,omitempty"`
+	Skills  *updateBlock `json:"skills,omitempty"`
 }
 
 // updateBlock 单个块：file 是 release 附件名（按名在 assets 里查下载直链）。
@@ -58,6 +63,8 @@ type updateBlockState struct {
 	EngineArgv    []string          `json:"engineArgv,omitempty"`    // 交换时的启动参数（立即重启时沿用）
 	SwappedAt     string            `json:"swappedAt,omitempty"`
 	Applied       map[string]string `json:"applied,omitempty"` // 已应用的组件块：id → 版本
+	Runtime       string            `json:"runtime,omitempty"` // 已应用的运行时块版本（py3.14.8）
+	Skills        string            `json:"skills,omitempty"`  // 已应用的内置技能包版本
 }
 
 var (
@@ -214,7 +221,11 @@ func (a *App) applyBlocksPlan(blocks *updateBlocks, rel releaseInfo, sourceURL s
 	updateApplying = true
 	defer func() { updateApplyMu.Unlock(); updateApplying = false }()
 
-	// 组件块先行：各自独立，失败不影响 engine
+	// 技能区两块先行：runtime（共享运行时）与 skills（内置技能）。
+	// 只动 <技能库>\_runtime 与白名单内置技能目录，用户技能永不参与。
+	a.applyRuntimeBlock(blocks.Runtime, rel, sourceURL)
+	a.applySkillsBlock(blocks.Skills, rel, sourceURL)
+	// 组件块：各自独立，失败不影响 engine
 	if len(blocks.Components) > 0 {
 		a.applyComponentBlocks(blocks.Components, rel, sourceURL)
 	}
