@@ -11,8 +11,8 @@ android {
         applicationId = "com.jianxiang.link"
         minSdk = 26          // 与主壳一致（Android 8.0 起）
         targetSdk = 34       // 无 W^X 需求，锚新一些；35 会强制 edge-to-edge，34 免处理
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 8
+        versionName = "0.1.7"
     }
 
     signingConfigs {

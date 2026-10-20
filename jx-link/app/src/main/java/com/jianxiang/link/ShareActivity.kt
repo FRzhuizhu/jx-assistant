@@ -55,7 +55,11 @@ class ShareActivity : Activity() {
             Toast.makeText(this, "还没有连接电脑：先扫码连接一台，再回原应用重新分享", Toast.LENGTH_LONG).show()
             startActivity(
                 Intent(this, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    ),
             )
             finish()
             return

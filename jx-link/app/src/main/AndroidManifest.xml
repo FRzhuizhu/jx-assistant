@@ -24,11 +24,15 @@
         android:usesCleartextTraffic="true"
         android:allowBackup="false">
 
-        <!-- 首页：设备列表 + 扫码连接/设置；冷启动按记忆直达设备页 -->
+        <!-- 首页：设备列表 + 扫码连接/设置；冷启动按记忆直达设备页。
+             launchMode 用默认（standard）：点桌面图标回应用时任务栈整体前移，
+             停在原来的页面（此前是 singleTask——图标重启会把栈上的设备页全部清掉、
+             永远回首页，2026-10-20 用户实测）。alwaysRetainTaskState 再兜一层：
+             长时间在后台后图标重启也不重置到首页。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:alwaysRetainTaskState="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

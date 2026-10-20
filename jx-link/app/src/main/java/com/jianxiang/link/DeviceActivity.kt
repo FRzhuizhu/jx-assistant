@@ -529,6 +529,18 @@ class DeviceActivity : Activity() {
         }
     }
 
+    /**
+     * 冷路径（进程被杀、系统按 saved state 重建本页）故意不保存任何实例状态：
+     * WebView 默认会把自己的整页状态塞进 Activity 的 saved state，重建时「原页直出」
+     * ——等于跳过 gate 中转页裸进网页（远程外壳的最终 URL 挂在 blob origin 上，
+     * 直出的页面没经过中继握手，待办/语音等组件会随机初始化不全，2026-10-20 用户实测）。
+     * 这里连 super 都不调：重建时 onCreate 照常 loadEntry() 走中转页完整初始化，
+     * 那是已知的好路径——宁走中转页，不裸进网页。
+     */
+    override fun onSaveInstanceState(outState: Bundle) {
+        // 有意留空（详见上方注释）
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         shareH.removeCallbacksAndMessages(null)

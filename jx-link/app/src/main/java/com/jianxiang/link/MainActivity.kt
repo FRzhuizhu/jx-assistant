@@ -48,8 +48,10 @@ class MainActivity : Activity() {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
-        // 记忆位置：上次退出时停留在某台电脑里 → 直接进那台
-        val last = DeviceStore.lastDevice(this)
+        // 记忆位置：上次退出时停留在某台电脑里 → 直接进那台。
+        // 只在「全新启动」时做：进程被杀后系统恢复任务栈时 savedInstanceState
+        // 非空、栈上本来就有设备页，再拉一个会叠出两层设备页
+        val last = if (savedInstanceState == null) DeviceStore.lastDevice(this) else null
         if (last != null && DeviceStore.byId(this, last) != null) {
             suppressClear = true
             startActivity(Intent(this, DeviceActivity::class.java).putExtra(DeviceActivity.EXTRA_ID, last))
