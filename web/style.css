@@ -1266,6 +1266,24 @@ body.rp-open .w-handle { display: none; }
 .pill.preview { font-size: .93em; padding: 3px 10px; border-radius: 999px; background: var(--chip); color: var(--text-3); border: 1px solid var(--border); }
 .home-sub { margin-top: 14px; font-size: 1em; color: var(--text-3); }
 #home-composer { width: min(var(--content-w), 96%); margin-top: 30px; }
+/* 首页输入框的视口高度上限：窗口过矮（笔记本高 DPI 缩放后可视高 ≈500px 一档）
+   时，超长输入不再把胶囊与输入卡顶出可视区、拖成 #messages 的页面级滚动——
+   问候区＋胶囊＋输入卡整列始终装得进消息区，装不下的正文走输入框自身滚动。
+   min() 在正常高度窗口仍取 200px，短输入布局零变化；带附件轨道（卡片再高
+   一截）时经 :has 单独收紧一档，老内核不认 :has 则忽略、退回基础档
+   （:has/dvh 均为样式表既有用法，见 .jx-select:has 与 #app 的 100dvh）。 */
+#home-composer .composer-input { max-height: min(200px, calc(100dvh - 365px)); }
+#home-composer .composer-card:has(.attach-rail:not(.hidden)) .composer-input {
+  max-height: min(200px, calc(100dvh - 425px));
+}
+/* 极矮视口（横屏手机 / 极小窗口）：输入框被压到 min-height 下限后仍可能差
+   一截装不下，首页纵向装饰间距再收缩一档（问候区上方让位 20px、输入框
+   下限放到 56px），把「胶囊＋发送行」完整留在可视区。只作用于首页输入卡，
+   对话页与正常高度窗口不受影响。 */
+@media (max-height: 500px) {
+  #home-composer { margin-top: 10px; }
+  #home-composer .composer-input { min-height: 56px; }
+}
 .composer-bar { flex-wrap: wrap; gap: 8px; }
 .composer-left { flex-wrap: wrap; }
 
