@@ -981,7 +981,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 | 模式 | 说明 | 工具 |
 |---|---|---|
 | `task` | 任务会话，实际干活 | 读/写/编辑/glob/grep/shell（含后台作业 job_*）/web_fetch/**web_search（联网搜索，经服务端搜索网关，见 websearch.go；服务端半边是 jxaiserver 的 search.go，协议改动需双侧同步）** + ask_user_question / exit_plan_mode / progress_write + **dispatch_sub（派子对话）** + **call_api（与前端同接口的通用直调，见 callapi.go）** + **request_manager（找数字经理协调，见 requestmgr.go）** + 历史查询 |
-| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（补需求，可选 permission 只能同等或降权）/ stop_session（按用户指示分级停止：协作取消→3 秒未收口自动强制终结，与人工停止按钮同一停止函数、仅触发者不同）/ **call_api（与前端同接口的通用直调，见 callapi.go）** + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ **只读四件套 read/list_dir/glob/grep + web_fetch（答小问题：约十步内的查看自己看文件回答，大文件通读与批量分析仍派任务；写与执行类工具绝不给总控——纪律见 agent.go 的 assistantPrompt）**+ 历史查询 |
+| `assistant` | 数字助理总控（左上角唯一入口，不占侧栏） | 编排：list_sessions / read_session_summary / **dispatch_task（派顶层工作任务）** / send_to_session（给已有会话发话：执行中＝**插话**注入当前轮、空闲＝直接开跑，可选 permission 只能同等或降权）/ stop_session（按用户指示分级停止：协作取消→3 秒未收口自动强制终结，与人工停止按钮同一停止函数、仅触发者不同）/ **call_api（与前端同接口的通用直调，见 callapi.go）** + deliver_result（把派发产出的成果文件登记为本对话的交付卡片，只展示不搬文件）+ **只读四件套 read/list_dir/glob/grep + web_fetch（答小问题：约十步内的查看自己看文件回答，大文件通读与批量分析仍派任务；写与执行类工具绝不给总控——纪律见 agent.go 的 assistantPrompt）**+ 历史查询 |
 | `aux` | 辅助对话：早期的只读答疑小会话（右栏可见；新建子对话自 0007 起改为分支克隆，见下节） | 只读文件 + web_fetch/web_search + 历史查询 |
 | `skill-create` | 创建技能：把「怎么做」沉淀成给后续 AI 照做的 SKILL.md 教程——用户点按钮录演示让 AI 分析，或直接派活让 AI 探路总结；**默认完全访问**（演示记录与亲自验证都刚需电脑/浏览器）；提示词核心是「顿悟操作逻辑 + 写大致步骤不写死细节」（推荐/避免方式、快捷键、抗界面变化，见 agent.go `skillPrompt`） | task 全量工具 + **register_skill（注册/覆盖技能）**；演示录制归用户直控（界面按钮经 `/api/demo-record/*`，材料以【演示记录】通知进对话） |
 
@@ -991,9 +991,12 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 
 **派发关系**：数字助理（总控）只有一个派发工具——`dispatch_task` 派出**顶层工作
 任务**（进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
-像用户发消息一样只给一段自足描述；`send_to_session` 给已有会话补需求（可选
-`permission`，与派发同一套规则：只能同等或降权，且不得高于目标会话自己的档位——
-给已有会话提权会被拒绝，见 assistant.go 的 `runSendToSession`）。
+像用户发消息一样只给一段自足描述；`send_to_session` 给已有会话发话，默认语义是
+**插话**——目标执行中就把话注入它正在执行的这一轮（`deliverSub` 带 mode=steer，
+等价 call_api 调 interject mode=steer，不看 jx.midrun 偏好），目标空闲则直接作为
+新需求开跑；中途发话一律立即生效，想等对方干完再派下一个活就等【派发回报】来了
+再发（可选 `permission`，与派发同一套规则：只能同等或降权，且不得高于目标会话
+自己的档位——给已有会话提权会被拒绝，见 assistant.go 的 `runSendToSession`）。
 **子对话（`dispatch_sub`）不在总控手里**：它是任务会话的并行手段——挂在当前会话下、
 右栏抽屉可见，完成后回报并触发父会话继续，按专家预设决定是否继承上下文
 （`expert=名称`，默认标准子对话不带）；子对话只有一级，对所有子对话生效。此外总控
@@ -1077,7 +1080,7 @@ report_ready / done / stopped），前端常驻订阅：父对话里的子任务
   落库并占住它这一轮（`kickSessionRound` 唤醒，与【派发回报】【待办任务派发】
   同一套机制），正忙就进它的排队/插话队列。**工具立即返回，任务不等答复**：
   没有阻塞等待，就不存在「任务停在那等经理、经理又在等任务」的互相等死。
-- **经理侧没有新工具**：它用既有的 `send_to_session`（插话/追加需求）、
+- **经理侧没有新工具**：它用既有的 `send_to_session`（中途发话默认插话）、
   `dispatch_task`（派新任务）、`list_sessions` / `read_session_summary`（看谁在跑、
   改了哪些文件）处理——回不回、什么时候回都由它按全局情况定（比如先不动，
   等另一个会话的【派发回报】到了、资源空出来再派测试任务）。

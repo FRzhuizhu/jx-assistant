@@ -485,23 +485,34 @@ type delivery struct {
 
 // deliverToSession 是「往会话里投递一条用户侧消息」的统一收口：前端发消息
 // （handleChat / handleInterject）与数字助理派发注入共用同一套语义——
-// 空闲就落库并占住执行权，执行中就走同一套排队/插话队列（按 jx.midrun 偏好），
-// 不再另开一条特殊通道。kind/origin 决定消息身份（chat=用户气泡，
-// aiuser=AI 发出的用户消息，report=系统通知），语义上的差异只体现在这里，
-// 投递行为完全一致。
+// 空闲就落库并占住执行权，执行中就走同一套排队/插话队列，不再另开一条
+// 特殊通道。执行中的模式由 deliverToSessionMode 的 forcedMode 决定：默认按
+// jx.midrun 偏好，send_to_session 强制插话。kind/origin 决定消息身份
+//（chat=用户气泡，aiuser=AI 发出的用户消息，report=系统通知），语义上的
+// 差异只体现在这里，投递行为完全一致。
 func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *delivery {
+	return a.deliverToSessionMode(m, content, kind, origin, "")
+}
+
+// deliverToSessionMode 是投递的核心实现：forcedMode 为空＝执行中按 jx.midrun
+// 偏好排队/插话（原行为，回报/待办/求助等系统投递沿用）；"steer"＝执行中强制
+// 插话（send_to_session 的默认语义——数字助理中途发话一律插进对方正在执行的
+// 这一轮，不看前端偏好）；空闲时两者行为相同（落库并直接开跑）。
+func (a *App) deliverToSessionMode(m *SessionMeta, content, kind, origin, forcedMode string) *delivery {
 	lock := a.sessLock(m.ID)
 	lock.Lock()
 	defer lock.Unlock()
-	// 执行中：按偏好排队/插话（与 handleInterject 同一套队列与落库时机）
+	// 执行中：按偏好（或强制 steer）排队/插话（与 handleInterject 同一套队列与落库时机）
+	mode := forcedMode
+	if mode == "" {
+		mode = a.midrunMode()
+	}
 	if a.IsRunning(m.ID) {
-		mode := a.midrunMode()
 		a.pushPending(m.ID, mode, content, kind, origin)
 		return &delivery{Mode: mode}
 	}
 	run, ok := a.beginRun(m.ID)
-	if !ok { // 极小概率竞态：刚被别的入口占住，同样按排队处理
-		mode := a.midrunMode()
+	if !ok { // 极小概率竞态：刚被别的入口占住，同样按排队/插话处理
 		a.pushPending(m.ID, mode, content, kind, origin)
 		return &delivery{Mode: mode}
 	}
@@ -529,11 +540,11 @@ func (a *App) deliverToSessionNoKick(m *SessionMeta, content, kind, origin strin
 }
 
 // subQueueNote 组织「目标会话正在执行，派发需求已进队列」时回给模型的文案：
-// 插话（steer）下一步注入，排队（queue）本轮结束后作为独立一轮发送。
+// 插话（steer）下一步注入生效，排队（queue）本轮结束后作为独立一轮发送。
 func subQueueNote(sub *SessionMeta, mode, note string) string {
 	how := "已排队：目标会话正在执行，这条需求排进队列，等本轮结束后作为独立一轮自动执行"
 	if mode == "steer" {
-		how = "已插话：目标会话正在执行，这条需求会在它下一次调用模型前注入生效"
+		how = "已插话：目标会话正在执行，这句话会在它下一次调用模型前注入生效——对方立刻就能看到"
 	}
 	return fmt.Sprintf("%s（会话 %s「%s」）。%s本工具立即返回，不要等待；"+
 		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。",

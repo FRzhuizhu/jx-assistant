@@ -3,7 +3,7 @@ package main
 // 「数据助理编排体系」改造的验收测试：
 //   A 回报重构（完整最终答复 + 结尾消息 + 无工具统计 + 路径核对 + 过程折叠两态）
 //   B 数字助理工具清单去掉 dispatch_sub / list_experts，提示词规则同步
-//   C send_to_session 的 permission（同等或降权、不给已有会话提权）
+//   C send_to_session 的 permission（同等或降权、不给已有会话提权）与默认插话语义
 //   D 环境快照「可用模型清单」+ 裸模型名走错渠道的提示兜底
 //   E 步数默认 100 → 200（旧默认随升级提升，用户自己设的值不动）
 //   F read_session_messages 单条长消息完整读取（窗口 + seq + from_char 续读）
@@ -275,6 +275,45 @@ func TestSendToSessionPermission(t *testing.T) {
 	}
 	if m, _ := a.Store.Get("t-narrow"); permModeOf(m) != permReadOnly {
 		t.Fatalf("不传 permission 不该改动目标会话权限, got %s", permModeOf(m))
+	}
+}
+
+// C2：send_to_session 默认语义＝插话——目标会话正在执行时，话进**插话**队列
+// （下一次调用模型前注入），不是排队；且强制插话不看 jx.midrun 偏好（偏好显式
+// 压成 queue 也照样插话）。空闲目标直接开跑的路径已在 C 的 ③④ 覆盖。
+func TestSendToSessionSteersRunningSession(t *testing.T) {
+	a, main := newDispatchTestApp(t)
+	target := &SessionMeta{ID: "t-busy", Title: "正在干活的任务", Mode: "task",
+		Workspace: a.Cfg.Workspace, CreatedAt: now(), UpdatedAt: now()}
+	if err := a.Store.Create(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.beginRun(target.ID); !ok { // 占住执行权＝目标「正在执行」
+		t.Fatal("占住目标会话执行权失败")
+	}
+	defer a.finishRun(target.ID)
+
+	a.setMidrunMode("queue") // 偏好显式压成排队：强制插话必须压过它
+	out, err := runSendToSession(dispatchCtx(a, main), mustArgs(t, map[string]any{
+		"session_id": "t-busy", "task": "先别动，等 B 完事",
+	}))
+	if err != nil {
+		t.Fatalf("向执行中的会话发话应成功：%v", err)
+	}
+	if !strings.Contains(out, "已插话") {
+		t.Fatalf("工具返回应说明已插话：%s", out)
+	}
+	p := a.pendingOf(target.ID)
+	if len(p.Steer) != 1 || len(p.Queue) != 0 {
+		t.Fatalf("话应进插话队列（Steer=1、Queue=0），got Steer=%d Queue=%d", len(p.Steer), len(p.Queue))
+	}
+	if pm := p.Steer[0]; pm.Kind != kindAiUser || pm.Origin != "task" ||
+		!strings.HasPrefix(pm.Content, "【数字助理转达】") {
+		t.Fatalf("插话身份不对：kind=%q origin=%q content=%.20q", pm.Kind, pm.Origin, pm.Content)
+	}
+	// 执行中的目标没有被这条话抢占：执行权仍在原一轮手里
+	if !a.IsRunning(target.ID) {
+		t.Fatal("插话不该打断目标正在执行的这一轮")
 	}
 }
 

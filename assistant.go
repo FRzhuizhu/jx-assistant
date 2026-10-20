@@ -130,11 +130,13 @@ func dispatchTaskTool() Tool {
 }
 
 // deliverSub 把派发需求投递进目标会话——走与用户发消息同一套投递（见 runtime.go
-// 的 deliverToSession）：目标空闲=落库并起 runSubAgent；正在执行=按 jx.midrun 偏好排队/插话。
+// 的 deliverToSessionMode）：目标空闲=落库并起 runSubAgent；正在执行=mode 为空按
+// jx.midrun 偏好排队/插话，mode="steer" 强制插话（send_to_session 的默认语义；
+// dispatch_task / dispatch_sub 派发的是新会话、必然空闲，传空即可）。
 // 落库身份是 kind=aiuser（AI 发出的用户消息）：系统按用户消息同等对待（开新回合、
 // 组装时后面跟一条时间提示词），前端是右对齐偏白的「AI 用户」气泡。
-func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
-	d := t.app.deliverToSession(sub, text, kindAiUser, "task")
+func (t *toolContext) deliverSub(sub *SessionMeta, text, note, mode string) string {
+	d := t.app.deliverToSessionMode(sub, text, kindAiUser, "task", mode)
 	if !d.Started {
 		return subQueueNote(sub, d.Mode, note)
 	}
@@ -489,7 +491,7 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	if len(hints) > 0 {
 		note = "（" + strings.Join(hints, "；") + "）"
 	}
-	return t.deliverSub(sub, "【派发子对话】\n\n"+p.Task, note), nil
+	return t.deliverSub(sub, "【派发子对话】\n\n"+p.Task, note, ""), nil
 }
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
@@ -602,11 +604,11 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if len(attNotes) > 0 {
 		taskMsg = ATTACH_HEAD + "\n" + strings.Join(attNotes, "\n") + "\n\n" + taskMsg
 	}
-	return t.deliverSub(sub, taskMsg, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp)), nil
+	return t.deliverSub(sub, taskMsg, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp), ""), nil
 }
 func sendToSessionTool() Tool {
 	return Tool{
-		Spec: toolSpec("send_to_session", "把新需求追加给一个已有会话并后台执行（新需求与该会话明显相关且不复杂时优先用它，上下文连续效率最高）。本工具立即返回，该会话完成后你会自动收到【派发回报】。可选 permission 指定这条需求用哪个权限档跑，只能同等或降权（绝不高于本会话权限，也不能给已有会话提权）。",
+		Spec: toolSpec("send_to_session", "把话发给一个已有会话（新需求与该会话明显相关时优先用它，上下文连续效率最高）：对方**正在执行**时作为**插话**注入它当前这一轮——它下一次调用模型就能看到，当场生效（纠偏、答疑、补要求都直接发）；对方**空闲**时作为新需求直接开跑。本工具立即返回，它这一轮完成后你会自动收到【派发回报】；想等它干完当前活再派下一个任务的，就等回报来了再发，不要提前占位。可选 permission 指定这条需求用哪个权限档跑，只能同等或降权（绝不高于本会话权限，也不能给已有会话提权）。",
 			objSchema(map[string]any{
 				"session_id": strProp("目标会话 id，来自 list_sessions"),
 				"task":       strProp("完整、自足的一段需求"),
@@ -616,7 +618,9 @@ func sendToSessionTool() Tool {
 	}
 }
 
-// runSendToSession 把新需求追加给已有会话：权限档与 dispatch_task / dispatch_sub
+// runSendToSession 把话发给已有会话，默认语义是**插话**：对方执行中就注入它
+// 当前这一轮（等价 call_api 调 interject mode=steer），空闲则直接作为新需求开跑
+// ——中途发话一律立即生效，不排队占位。权限档与 dispatch_task / dispatch_sub
 // 同一套规则（只能同等或降权）。此处比派发工具多挡一道——已有会话**自己的**权限
 // 也不能被这条需求抬高（那个会话可能本就比本会话更窄，比如只读调研会话）。不传
 // permission 时原样沿用该会话的档位，不改动任何配置。
@@ -665,8 +669,10 @@ func runSendToSession(t *toolContext, args json.RawMessage) (string, error) {
 		}
 		note = "（权限档：「" + permModeLabel(perm) + "」（" + perm + "，只能同等或降权））"
 	}
-	// 需求正文（【数字助理转达】+ task）由 deliverSub 走统一投递落库
-	return t.deliverSub(m, "【数字助理转达】\n\n"+p.Task, note), nil
+	// 需求正文（【数字助理转达】+ task）由 deliverSub 走统一投递落库；mode="steer"：
+	// 中途发话一律插话——目标执行中就注入它当前这一轮（下一次调用模型前生效），
+	// 空闲则由 deliverToSessionMode 直接落库开跑（两种情况都立即生效，不排队占位）
+	return t.deliverSub(m, "【数字助理转达】\n\n"+p.Task, note, "steer"), nil
 }
 
 func stopSessionTool() Tool {
