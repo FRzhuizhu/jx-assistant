@@ -1548,6 +1548,8 @@ body.rp-open .w-handle { display: none; }
 }
 .composer-card:focus-within { border-color: #c9cfda; }
 .composer-input {
+  position: relative; z-index: 1; /* 盖回背衬层（.mark-backdrop，绝对定位）之上：
+     没有这条，绝对定位的胶囊底色会按绘制顺序压住静态定位的输入框文字 */
   width: 100%; border: none; outline: none; resize: none;
   font-size: 14px; font-family: inherit; color: var(--text);
   line-height: 1.6; padding: 2px 4px; min-height: 72px; max-height: 200px;
