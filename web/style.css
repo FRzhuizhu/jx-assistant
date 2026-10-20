@@ -2689,26 +2689,17 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 :root[data-theme='dark'] .jx-sel-pop { box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
 :root[data-theme='dark'] .pv-dot.no { background: #4a5158; }
 
-/* ---------- 等待队列：排队中的消息气泡 ---------- */
-.msg.user.queued { opacity: .85; }
-.msg.user.queued .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; border-width: 1px; }
-.msg.user.queued .q-badge {
-  flex: none; font-size: .93em; color: var(--amber); border: 1px solid currentColor;
-  border-radius: 999px; padding: 0 7px; line-height: 17px; white-space: nowrap;
-}
-.msg.user.queued .q-x {
-  flex: none; border: none; background: none; color: var(--text-3); cursor: pointer;
-  font-size: .93em; padding: 0 2px; align-self: center;
-}
-.msg.user.queued .q-x:hover { color: #c22f2f; }
-
 /* ---------- 执行中发消息：已插话气泡 + 输入框上方的排队坞 ---------- */
 
-/* 已插话、等下一次调用模型生效：与已发送的用户气泡同款，只加一个「插话中」角标 */
-.msg.user.pending-steer .bubble { display: flex; align-items: baseline; gap: 8px; border-style: dashed; border-width: 1px; }
+/* 已插话、等下一次调用模型生效：与已发送的用户气泡同款（块状布局——附件注记/
+   引用的灰色行、正文都按正式气泡堆叠渲染，长注记折成一行省略号），只加一个
+   「插话中」角标行；虚线边框标临时态。旧版是 flex 单行（当年正文只是纯文本），
+   附件块上线后会把灰色行摊成一坨长文，2026-10-20 改块状 */
+.msg.user.pending-steer .bubble { display: block; border-style: dashed; border-width: 1px; }
 .msg.user.pending-steer .q-badge {
-  flex: none; font-size: .93em; color: var(--accent); border: 1px solid currentColor;
-  border-radius: 999px; padding: 0 7px; line-height: 17px; white-space: nowrap;
+  display: inline-block; margin: 0 0 4px; font-size: .93em; color: var(--accent);
+  border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; line-height: 17px;
+  white-space: nowrap;
 }
 
 .queue-dock { max-width: var(--content-w); margin: 0 auto 6px; }

@@ -1213,8 +1213,8 @@ function subTaskCard(tc, result) {
      - 用户手动展开过的（data-fold-open=1）重算后保持展开，只是按钮变成「收起」。
    作用域（2026-10-14 放开）：主对话与右栏子对话两个视图都生效，不再看会话
    mode——按《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」，任务会话、
-   子对话与主对话一致；仍不折叠的只有流式输出中的那半句与编辑/排队/插话占位
-   （临时形态），它们不是定稿消息。 */
+   子对话与主对话一致；仍不折叠的只有流式输出中的那半句与编辑态气泡
+   （2026-10-20 起，发送中/插话占位同样折叠，见 foldTargets）。 */
 const FOLD_LINES = 6;   // 折叠阈值（行）
 const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取整误差误判
 
@@ -1233,8 +1233,11 @@ function foldEnabled() {
 // 用户气泡与 AI 用户气泡（kind=aiuser，同样可能是长任务描述）、系统通知气泡。
 // **数字助理的正文（.msg.assistant > .md）刻意不在目标里**：那是模型给出的
 // 正常回复，多长都完整显示，不裁剪、不出折叠控件（用户气泡的折叠效果保持不变）。
-// 跳过流式中的那块（边流边折叠会一直遮住最新输出）与编辑态/排队态占位气泡
-//（临时形态，带虚线边框）。
+// 跳过流式中的那块（边流边折叠会一直遮住最新输出）与编辑态气泡（正文在输入框
+// 里改着）。发送中/插话中的占位气泡（pending-steer，虚线框临时形态）**同样
+// 折叠**（2026-10-20）：附件注记块让占位气泡动辄百余字，不折就是一大坨；注意
+// 尾部每次重渲染都会重建占位气泡，手动展开会随之重置回默认折叠——临时形态，
+// 可接受。
 function foldTargets(view) {
   view = view || mainView;
   const col = view.col;
@@ -1243,7 +1246,7 @@ function foldTargets(view) {
   const out = [];
   col.querySelectorAll('.msg.user > .bubble, .msg.sysnote > .bubble').forEach((el) => {
     const msg = el.parentElement;
-    if (!msg || msg.classList.contains('editing') || msg.classList.contains('queued') || msg.classList.contains('pending-steer')) return;
+    if (!msg || msg.classList.contains('editing')) return;
     if (live && (msg === live || live.contains(msg))) return; // 流式实时块不折
     out.push(el);
   });
@@ -2263,7 +2266,7 @@ function renderMessages(msgs, view, opts) {
     badge.className = 'q-badge q-badge-steer';
     badge.textContent = '插话中';
     b.appendChild(badge);
-    b.appendChild(document.createTextNode(pm.content));
+    appendQuotedBody(b, pm.content); // 附件块/引用块与正式气泡同款拆行渲染（含折叠，长注记不再是一大坨原文）
     wrap.appendChild(b);
     // 悬停操作行：与正式用户气泡同一套样式，只有「编辑」（退回输入框改完重发）。
     // 只给自己发的插话（kind 空/chat）；派发注入的其他形态不参与。
