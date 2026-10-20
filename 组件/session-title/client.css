@@ -1,0 +1,17 @@
+/* 组件 session-title 的设置区样式（设置 → 内置组件 → AI 自动会话标题）。
+ * 视觉语言对齐 voice 组件的 sp-*（设置页统一的行/按钮/说明排版），类名
+ * 前缀 stt- 防与主程序及其他组件相撞；色值走宿主 CSS 变量，随主题联动。 */
+
+.stt-note { font-size: 12px; color: var(--text-3); margin: 6px 0; line-height: 1.7; }
+.stt-note:first-child { margin-top: 2px; }
+.stt-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 12.5px; }
+.stt-row .stt-label { flex: 0 0 64px; color: var(--text-2); }
+.stt-row .stt-status { flex: 1; min-width: 0; color: var(--text-3); }
+.stt-btn {
+  font-size: 12px; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+  flex-shrink: 0;
+}
+.stt-btn:disabled { opacity: .55; cursor: default; }
+.stt-btn:hover { color: var(--accent); border-color: var(--accent); }
+.stt-btn:disabled:hover { color: var(--text-2); border-color: var(--border); }
