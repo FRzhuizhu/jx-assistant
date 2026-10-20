@@ -1208,9 +1208,10 @@ function subTaskCard(tc, result) {
 
 /* ---------- 长消息折叠（作用于**所有会话、所有视图**的用户位气泡：
    主对话、工作任务会话、右栏子对话抽屉里的用户气泡，以及 AI 发出的用户消息
-   气泡（.msg.user.ai，偏白）与系统通知气泡——同一套 6 行规则、同一套交互。
-   **数字助理的正文回复（.msg.assistant 的 .md）不在折叠目标里**——那是模型给出的
-   正常回复，多长都完整展开显示，不裁剪、不出「展开 / 收起」控件（见 applyFolds）。 ----------
+   气泡（.msg.user.ai，偏白）——同一套 6 行规则、同一套交互。
+   **系统通知气泡（.msg.sysnote）与数字助理的正文回复（.msg.assistant 的 .md）
+   都不在折叠目标里**：通知内容直接全量显示，不裁剪、不出「展开 / 收起」控件
+   （见 foldTargets）；模型回复多长都完整展开显示。 ----------
    需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
    短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区宽度、
    字号一变，同一段文字换行出的行数就变，所以：
@@ -1240,9 +1241,12 @@ function foldEnabled() {
 }
 
 // 折叠目标（按视图取：主对话列与右栏子对话列各算各的）：该视图里已定稿的
-// 用户气泡与 AI 用户气泡（kind=aiuser，同样可能是长任务描述）、系统通知气泡。
+// 用户气泡与 AI 用户气泡（kind=aiuser，同样可能是长任务描述）。
 // **数字助理的正文（.msg.assistant > .md）刻意不在目标里**：那是模型给出的
 // 正常回复，多长都完整显示，不裁剪、不出折叠控件（用户气泡的折叠效果保持不变）。
+// **系统通知气泡（.msg.sysnote > .bubble）同样不在目标里**（2026-10-21 移出）：
+// 通知是给用户看的提示（中断/上传/交付/转达），内容直接全量显示——超 6 行的
+// 长通知也不折，框内「展开 / 收起」按钮对一两行的通知完全多余。
 // 跳过流式中的那块（边流边折叠会一直遮住最新输出）与编辑态气泡（正文在输入框
 // 里改着）。发送中/插话中的占位气泡（pending-steer，虚线框临时形态）**同样
 // 折叠**（2026-10-20）：附件注记块让占位气泡动辄百余字，不折就是一大坨；注意
@@ -1254,7 +1258,7 @@ function foldTargets(view) {
   if (!col) return [];
   const live = view.liveId ? document.getElementById(view.liveId) : null;
   const out = [];
-  col.querySelectorAll('.msg.user > .bubble, .msg.sysnote > .bubble').forEach((el) => {
+  col.querySelectorAll('.msg.user > .bubble').forEach((el) => {
     const msg = el.parentElement;
     if (!msg || msg.classList.contains('editing')) return;
     if (live && (msg === live || live.contains(msg))) return; // 流式实时块不折
