@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -127,5 +128,61 @@ func TestAskAlertDueGate(t *testing.T) {
 	}
 	if a.askAlertDue(q.ID) {
 		t.Fatal("已作答（从等待清单里消失）之后不该响")
+	}
+}
+
+// 到点提醒要「把提醒顶到用户眼前」：fireAskAlert 必须唤窗口 + 叮声 + 广播
+// ask_alert（前端据此变色/倒计时/朗读）。两个副作用入口换成桩：断言调用与文案，
+// 不动用户真实窗口、也不真响。
+func TestAskAlertWakesWindowAndBeeps(t *testing.T) {
+	st := testPlanStore(t)
+	a := newPlanTestApp(t, st)
+
+	type frontCall struct{ title, text string }
+	front := make(chan frontCall, 4)
+	oldFront, oldBeep := alertFrontHook, askAlertBeep
+	alertFrontHook = func(title, text string) { front <- frontCall{title, text} }
+	beeps := 0
+	askAlertBeep = func() { beeps++ }
+	defer func() { alertFrontHook, askAlertBeep = oldFront, oldBeep }()
+
+	ch, unsub := a.subscribe()
+	defer unsub()
+
+	q := &UserQuestion{ID: "q-wake", SessionID: "s1", SessionTitle: "会话一",
+		Kind: askKindPlan, Question: "请审批以下执行计划"}
+	a.fireAskAlert(q)
+
+	select {
+	case got := <-front:
+		if !strings.Contains(got.title, "坚祥数字助理") {
+			t.Fatalf("唤起窗口的标题不对: %q", got.title)
+		}
+		if !strings.Contains(got.text, "会话一") || !strings.Contains(got.text, "请审批") {
+			t.Fatalf("唤起窗口/通知的文案应含会话标题与问题摘要，实际 %q", got.text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("提醒到点没有去唤起窗口（用户最小化/在后台时就是「看不见」的那个 bug）")
+	}
+	if beeps != 1 {
+		t.Fatalf("到点应叮一声，实际 %d 次", beeps)
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == "ask_alert" {
+				if ev.QuestionID != "q-wake" || ev.SessionID != "s1" {
+					t.Fatalf("ask_alert 事件字段不对: %+v", ev)
+				}
+				if ev.Output == "" {
+					t.Fatal("ask_alert 该带朗读文案")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("到点没有广播 ask_alert（前端就不会变色/倒计时/朗读）")
+		}
 	}
 }

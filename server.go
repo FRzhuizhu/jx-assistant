@@ -299,6 +299,9 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/webrtc-offer", a.handleWebRTCOffer) // P2P 直连信令：SDP 换 answer（p2pdirect.go，DataChannel 鉴权另过 auth 帧）
 	mux.HandleFunc("POST /api/feedback", a.handleFeedbackCreate)
 	mux.HandleFunc("POST /api/open-folder", a.handleOpenFolder)
+	// 把主窗口顶到用户眼前（提醒触发时后端已直接调用同一实现；这个入口给
+	// 前端/自测用，flashOnly=true 只走任务栏闪烁 + 托盘通知那条兜底路径）
+	mux.HandleFunc("POST /api/desktop/front", a.handleDesktopFront)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)
 	a.apiRoute(mux, "POST /api/sessions/{id}/fork", a.handleFork, apiMeta{Summary: "从某条消息分支新会话", Params: "seq=分支点", Perm: permWorkspace})
