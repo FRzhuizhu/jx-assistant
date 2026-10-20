@@ -35,11 +35,15 @@ type ToolCall struct {
 type Message struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
-	// 思考模式历史回传：DeepSeek V4/flash 等要求带 tools 的请求把此前
-	// assistant 回合的思考原文原样传回（否则 400「reasoning_content in
-	// the thinking mode must be passed back」）。仅 DeepSeek/GLM 系端点读取，
-	// 其余 OpenAI 兼容端点忽略消息上的未知字段。
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	// 思考模式历史回传：DeepSeek V4/flash、智谱 GLM-5.x 等要求带 tools 的请求
+	// 把此前 assistant 回合的思考原文原样传回（否则 400「reasoning_content in
+	// the thinking mode must be passed back」/ 智谱的保留式思考校验）。仅
+	// DeepSeek/GLM 系端点读取，其余 OpenAI 兼容端点忽略消息上的未知字段。
+	//
+	// 用指针是必需的：nil = 这条消息没有该字段（省略）；非 nil 指向 "" = 显式
+	// 空思考。二者对上游不等价——带 tools 时字段整个缺失会 400，而空串合法
+	// （模型当轮确实没产生思考，也要把字段带上）。见 fillReasoningStub。
+	ReasoningContent *string    `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
@@ -234,6 +238,7 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 	req.Model = target.Model
 	req.Stream = true
 	req.StreamOptions = &StreamOptionsCfg{IncludeUsage: true}
+	fillReasoningStub(&req)
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -265,6 +270,29 @@ func StreamChat(ctx context.Context, target LLMTarget, req ChatRequest, cb Strea
 		return nil
 	}
 	return err2
+}
+
+// fillReasoningStub 给历史里「当轮没产生思考」的 assistant 消息补一个空
+// reasoning_content。DeepSeek（thinking 模式）与智谱 GLM-5.x（交错式/保留式
+// 思考）在带 tools 的请求里硬校验这个字段：字段整个缺失直接 400（「思考内容
+// 没有带上」），空串则合法。而客户端只在落库思考非空时才写该字段，模型某些
+// 轮次（尤其连续机械工具轮：连着读文件、截图）本身不产生思考，历史里就留下
+// 一个个"缺字段"的洞，下一轮必然 400——且此后每轮都 400，直到换模型或清历史。
+//
+// 只对带 tools 的请求补：无 tools 时两家都不校验，补了反而给不认识的兼容端点
+// 添噪音。已带思考的消息一律原样保留——智谱要求 reasoning_content 与原始序列
+// 逐字一致，不能改写、裁剪或重排。
+func fillReasoningStub(req *ChatRequest) {
+	if len(req.Tools) == 0 {
+		return
+	}
+	for i := range req.Messages {
+		m := &req.Messages[i]
+		if m.Role == "assistant" && m.ReasoningContent == nil {
+			empty := ""
+			m.ReasoningContent = &empty
+		}
+	}
 }
 
 // markAltPreferred 记住本次成功的地址形态；没有备用地址的提供方不参与。

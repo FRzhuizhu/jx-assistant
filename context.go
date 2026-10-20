@@ -172,7 +172,8 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		// 思考模式历史回传：DeepSeek V4/flash 带 tools 的请求要求此前回合的
 		// reasoning_content 原样传回（见 Message 结构注释），落库的 thinking 正是它
 		if m.Role == "assistant" && m.Thinking != "" {
-			msg.ReasoningContent = m.Thinking
+			t := m.Thinking
+			msg.ReasoningContent = &t
 		}
 		out = append(out, msg)
 		// 时间提示词（独立时间通道）：每条用户侧对话消息——真人用户（chat）与
