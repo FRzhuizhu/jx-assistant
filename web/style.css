@@ -34,6 +34,31 @@
   /* 小人手里的纸（#da-face 方案三动画）：底色随主题、描边走 currentColor、字线中性灰 */
   --da-paper: #ffffff;
   --da-paper-line: #9aa0a8;
+
+  /* ---------- 全局层级阶梯（z-index 只许引用这里的常量，禁止再散落魔数） ----------
+     秩序铁律：一切浮窗/弹窗永远在一切页面之上；同带浮窗不并存（锚定弹层点外
+     即收、确认框全局唯一），无须动态调序。页面层（panel/topbar/page）与
+     弹窗层（dialog/pop/confirm）之间留空档，插新层往空档里放。
+       70   久等声光提醒层：压聊天区；有意让位给设置页（--z-page）——提醒里那行
+            「可在设置·常规里关闭」的入口要点得动（见 #settings 处注释）
+     200   动画幽灵层：加号吞卡片的飞行动画（app-chat.js vanishIntoPlus 内联引用）
+     210   窄屏整屏页面：左/右栏
+     220   窄屏顶栏（页面层）
+     230   全屏页面：设置（盖住提醒层；其余一切浮层都须盖住它）
+     235   居中业务弹窗：接入向导/市场上传——一切弹窗在一切页面之上
+     240   锚定弹层：popover/右键菜单/跨对话待办角标堆/斜杠命令——压过全部页面层
+     250   居中确认框：可能叠在任何页面与弹窗之上（设置内删技能等），弹窗里永远最高
+    10000  更新横幅 / 10001 轻提示：全局最上，不受页面弹窗影响 */
+  --z-ask-alert: 70;
+  --z-ghost: 200;
+  --z-panel: 210;
+  --z-topbar: 220;
+  --z-page: 230;
+  --z-dialog: 235;
+  --z-pop: 240;
+  --z-confirm: 250;
+  --z-banner: 10000;
+  --z-toast: 10001;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -374,7 +399,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 
 /* 更新横幅：置顶常驻可关，强调色描边；「确认更新」直接下载安装包 */
 .update-banner {
-  position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 10000;
+  position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: var(--z-banner);
   display: flex; align-items: center; gap: 10px;
   max-width: min(92vw, 720px); margin-top: 10px; padding: 9px 14px;
   background: var(--card, #fff); color: var(--text);
@@ -406,7 +431,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 
 /* 轻提示（toast）：右下角短暂浮出，非阻塞 */
 .app-toast {
-  position: fixed; right: 18px; bottom: 18px; z-index: 10001;
+  position: fixed; right: 18px; bottom: 18px; z-index: var(--z-toast);
   max-width: min(80vw, 420px); padding: 9px 14px;
   background: var(--card, #fff); color: var(--text);
   border: 1px solid var(--accent); border-radius: 10px;
@@ -1392,11 +1417,11 @@ body.rp-open .w-handle { display: none; }
 .mode-flags.hidden { display: none; }
 
 /* ---------- 弹出面板 ---------- */
-/* z-index 必须压过窄屏的整屏浮层（左/右栏 210、顶栏 220、设置 230）：
-   弹层挂在 body 上而非浮层内，层级低于 210 时手机端点排序/菜单只会
+/* z-index 必须压过窄屏的整屏页面浮层（--z-panel 左/右栏、--z-topbar 顶栏、--z-page 设置）：
+   弹层挂在 body 上而非浮层内，层级低了手机端点排序/菜单只会
    「弹到浮层背后」——按钮看起来完全没反应 */
 .popover {
-  position: fixed; z-index: 240; background: #fff; border: 1px solid var(--border);
+  position: fixed; z-index: var(--z-pop); background: #fff; border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 8px 28px rgba(20, 24, 32, .14);
   padding: 6px; min-width: 190px; max-width: 340px;
 }
@@ -1713,10 +1738,11 @@ body.rp-open .w-handle { display: none; }
 }
 .chat-loading .cl-retry:hover { border-color: var(--accent); color: var(--accent); }
 
-/* ---------- 设置弹窗 ---------- */
+/* ---------- 居中弹窗（.modal）：层级一律走 :root 的 --z-* 阶梯 ---------- */
+/* 默认业务弹窗带（--z-dialog）：一切弹窗永远在一切页面（--z-page 及以下）之上 */
 .modal {
   position: fixed; inset: 0; background: rgba(15, 18, 22, .35);
-  display: flex; align-items: center; justify-content: center; z-index: 50;
+  display: flex; align-items: center; justify-content: center; z-index: var(--z-dialog);
 }
 .modal-card {
   width: 460px; max-width: 92vw; background: var(--bg);
@@ -1742,9 +1768,9 @@ body.rp-open .w-handle { display: none; }
 .modal-actions button:hover { background: var(--hover); }
 .modal-actions button.accent { background: var(--accent); border-color: var(--accent); color: #fff; }
 .modal-actions button.accent:hover { background: var(--accent-hover); }
-/* 居中确认弹窗（破坏性操作统一用它） */
-/* 比设置等业务弹窗更高一层：确认框可能叠在这些弹窗之上出现（如设置内删技能） */
-#confirm-modal { z-index: 60; }
+/* 居中确认弹窗（破坏性操作统一用它）：比一切页面与业务弹窗都高一层——确认框
+   会叠在它们之上出现（如设置内删技能、窄屏侧栏开着时删会话），必须永远最高 */
+#confirm-modal { z-index: var(--z-confirm); }
 .confirm-card { width: 380px; }
 /* 第二级确认整体上移，与第一级的按钮位置彻底错开，防手滑连点误删 */
 .confirm-card.confirm-up { transform: translateY(-140px); }
@@ -2050,10 +2076,10 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 :root[data-theme='dark'] .ap-src { background: rgba(224, 138, 0, .16); color: #f0b95f; }
 :root[data-theme='dark'] .ap-src:hover { background: rgba(224, 138, 0, .26); }
 /* 跨对话待办（不属于当前对话的审批 / 提问）：右下角一叠，整块可缩成一枚胶囊。
-   z-index 压过窄屏整屏浮层（同 .popover 的理由）：手机端左/右栏浮层开着时，
+   z-index 压过窄屏整屏页面（同 .popover 的理由）：手机端左/右栏浮层开着时，
    角标堆不能被浮层挡在后面，否则永远等不到用户决定。 */
 .ask-dock {
-  position: fixed; right: 12px; bottom: 12px; z-index: 240; /* 右/宽由 JS 按对话区右侧留白算（dockMetrics） */
+  position: fixed; right: 12px; bottom: 12px; z-index: var(--z-pop); /* 右/宽由 JS 按对话区右侧留白算（dockMetrics） */
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
   box-shadow: 0 14px 40px rgba(0, 0, 0, .18);
@@ -2080,7 +2106,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 
 /* 收起后的胶囊：只报条数，点它再展开（用户也可以回那个对话里处理） */
 .ask-dock-pill {
-  position: fixed; right: 12px; bottom: 12px; z-index: 240; /* 锚点与角标堆同一处（JS 写 right；bottom 由拖动改写并记忆） */
+  position: fixed; right: 12px; bottom: 12px; z-index: var(--z-pop); /* 锚点与角标堆同一处（JS 写 right；bottom 由拖动改写并记忆） */
   display: flex; align-items: center; gap: 6px; cursor: grab; font: inherit; font-size: 12.5px;
   touch-action: none; user-select: none; /* 上下拖胶囊别带动页面滚动、别选中文字（手机端）；横向不动＝一直吸附右侧 */
   padding: 8px 13px; border-radius: 999px; border: 1px solid var(--border);
@@ -2133,7 +2159,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
    不闪入、前段变化极缓（护眼、防光敏），到 15 秒才彻底变蓝；此后保持不动。
    成色后光晕已无意义（整屏同色），淡出藏掉。 */
 #ask-alert {
-  position: fixed; inset: 0; z-index: 70; cursor: pointer;
+  position: fixed; inset: 0; z-index: var(--z-ask-alert); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   background-color: rgba(31, 35, 40, .12); /* 刚弹出：很淡的整屏压暗，一眼有提醒感、不遮内容 */
   transition: background-color 15s ease-in-out; /* 15 秒缓入缓出：与倒计时同步，到 15 秒才彻底变蓝 */
@@ -2162,10 +2188,10 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
    悬停才显下划线，不喧宾夺主 */
 .aa-box .aa-tip-link { display: block; margin-top: 6px; color: var(--accent); cursor: pointer; }
 .aa-box .aa-tip-link:hover { text-decoration: underline; }
-/* 设置浮层要盖在久等提醒层（#ask-alert 的 z-index 70）之上：提醒里那行「可在设置·常规
-   里关闭或修改时长」点开设置时，用户得能正常操作设置——关掉设置，提醒还在原处
-   （.modal 默认 50；窄屏那段已单独给到 230） */
-#settings { z-index: 90; }
+/* 设置浮层要盖在久等提醒层（#ask-alert 的 --z-ask-alert）之上：提醒里那行「可在设置·常规
+   里关闭或修改时长」点开设置时，用户得能正常操作设置——关掉设置，提醒还在原处。
+   桌面与窄屏同一层级（--z-page），其余弹窗（--z-dialog 及以上）都盖得住设置 */
+#settings { z-index: var(--z-page); }
 /* 朗读前的 15 秒倒计时（数字 + 进度条）：用户看着它就知道还有几秒出声；
    15 秒内关掉这层或进去处理就不朗读（见 app-chat.js 的 showAskAlert）。 */
 .aa-count {
@@ -2903,7 +2929,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
      顺序用 order 后移标题 + flex-basis:100% 把它独占推到第二行；定高 --tb-h
      供下方浮层的 top 对齐 */
   #topbar {
-    position: relative; z-index: 220; /* 压在浮层之上，开合按钮始终可点 */
+    position: relative; z-index: var(--z-topbar); /* 压在页面浮层之上，开合按钮始终可点 */
     height: var(--tb-h); flex-wrap: wrap; align-content: space-evenly;
     row-gap: 2px; padding: 6px 12px;
   }
@@ -2917,7 +2943,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
     border-right: none;
     transform: translateX(-100%);
     transition: transform .22s cubic-bezier(.4, 0, .2, 1);
-    z-index: 210;
+    z-index: var(--z-panel);
   }
   body.sb-show #sidebar { transform: none; }
   /* 中和桌面收起规则（同特异性靠后取胜）：否则 jx.sb=1 时浮层宽被压成 0 */
@@ -2990,7 +3016,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
     width: 100%; min-width: 100%;
     transform: translateX(100%);
     transition: transform .22s cubic-bezier(.4, 0, .2, 1);
-    z-index: 210;
+    z-index: var(--z-panel);
   }
   body.rp-open #rpanel { transform: none; }
   .rp-resize, .sb-resize { pointer-events: none; }
@@ -3009,8 +3035,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   /* 设置＝整屏 + 两级菜单：一级是导航列表，点入二级显示对应分区（带返回头）。
      pane-open 由 app-settings.js 切换；桌面不消费这些规则，维持左右双栏。
      卡片铺满整个遮罩层（100%/100% 并解除 modal-card 的 max-height:88vh——
-     那是上下黑边的来源），层级压过左右浮层与顶栏（230 > 220 > 210） */
-  #settings { z-index: 230; }
+     那是上下黑边的来源）；层级走全局的 --z-page（230），压过左右栏与顶栏
+     （--z-page 230 > --z-topbar 220 > --z-panel 210），弹窗层再压过它 */
   .settings-card { width: 100%; height: 100%; max-height: none; border-radius: 0; border: none; }
   .set-footer .tip { display: none; } /* 手机上底栏只留按钮，说明文字太长 */
   /* 返回头一级/二级都在：一级标题「设置」（返回＝退出设置），二级标题＝分区名 */
@@ -3113,7 +3139,7 @@ html.electron-shell .bpw-hint { display: none; }
 .ccp-market-item.installed { opacity: .6; }
 .ccp-market-item p { margin: 3px 0 6px; font-size: 12px; opacity: .75; }
 .ccp-install-btn { font-size: 11px; padding: 3px 12px; border-radius: 7px; border: 1px solid var(--bd, #d8d8de); background: transparent; cursor: pointer; color: inherit; }
-#ccp-cmd-pop { position: fixed; z-index: 260; max-height: 300px; overflow: auto; background: var(--bg-pop, #fff); border: 1px solid var(--bd, #d8d8de); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 4px; }
+#ccp-cmd-pop { position: fixed; z-index: var(--z-pop); max-height: 300px; overflow: auto; background: var(--bg-pop, #fff); border: 1px solid var(--bd, #d8d8de); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 4px; }
 .ccp-cmd-item { padding: 6px 10px; border-radius: 7px; cursor: pointer; }
 .ccp-cmd-item.active { background: var(--bg-tag, #eef0f4); }
 .ccp-cmd-name { font-size: 12px; font-weight: 600; }

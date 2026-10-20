@@ -6562,7 +6562,7 @@ function vanishIntoPlus(el, view) {
   Object.assign(ghost.style, {
     position: 'fixed', left: r.left + 'px', top: r.top + 'px',
     width: r.width + 'px', height: r.height + 'px', margin: '0',
-    zIndex: 200, pointerEvents: 'none', // 压过消息流即可（弹层 240、侧栏 210 均在其上）
+    zIndex: 'var(--z-ghost)', pointerEvents: 'none', // 压过消息流即可（锚定弹层 --z-pop、窄屏侧栏 --z-panel 均在其上）
   });
   document.body.appendChild(ghost);
   const dx = p.left + p.width / 2 - (r.left + r.width / 2);

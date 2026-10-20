@@ -1374,15 +1374,8 @@ $('set-save').onclick = saveSettings;
    强制 llm 策略，忽略上面的「模式」）；清空走两级确认，后端真删
    （消息 + 摘要 + 快照/交付/上传登记），会话设置保留。 */
 
-// confirmAboveSettings 在设置页里弹居中确认框：窄屏下 #settings 的层级
-// （230）高于确认框（60），不抬一下就会被设置页盖住——临时抬高，弹完还原。
-async function confirmAboveSettings(msg, up) {
-  const m = $('confirm-modal');
-  const saved = m.style.zIndex;
-  m.style.zIndex = '240';
-  try { return await confirmCenter(msg, false, !!up); }
-  finally { m.style.zIndex = saved; }
-}
+// confirmCenter 的层级（--z-confirm）已保证居中确认框压过设置页等一切页面
+// 与弹窗，设置页里直接调用即可，无须临时抬层。
 
 // refreshAssistantOps 动作后的界面定版：会话列表、正开着的主对话区、右栏子对话清单。
 async function refreshAssistantOps() {
@@ -1400,7 +1393,7 @@ function assistantOpsState(msg) {
 }
 
 $('btn-assistant-compact').onclick = async () => {
-  if (!(await confirmAboveSettings('立即压缩「跟数字经理对话」？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
+  if (!(await confirmCenter('立即压缩「跟数字经理对话」？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
   const btn = $('btn-assistant-compact');
   const orig = btn.textContent;
   btn.disabled = true;
@@ -1421,10 +1414,10 @@ $('btn-assistant-compact').onclick = async () => {
 };
 
 $('btn-assistant-clear').onclick = async () => {
-  if (!(await confirmAboveSettings('清空「跟数字经理对话」的全部历史消息？\n' +
+  if (!(await confirmCenter('清空「跟数字经理对话」的全部历史消息？\n' +
       '将删除它的全部聊天记录、压缩摘要以及随消息产生的文件快照登记、交付登记、上传登记，' +
       '并丢弃待发的插话/排队；会话设置（工作目录、权限、模型等）保留。\n此操作不可恢复。'))) return;
-  if (!(await confirmAboveSettings('再次确认：跟数字经理对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
+  if (!(await confirmCenter('再次确认：跟数字经理对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
   const btn = $('btn-assistant-clear');
   const orig = btn.textContent;
   btn.disabled = true;
