@@ -274,6 +274,9 @@ async function loadSessionInto(id, tok) {
   // 迟到的旧快照（见 snapshotStale）：界面已被流式帧推进到更新，整包不应用，
   // 只收掉加载态并按现状重绘——壳与列表由后续事件（title/done/session_updated）纠正
   if (snapshotStale(mainView, id, data.messages)) {
+    // 旧快照丢的只是消息；权限/能力这类配置仍以服务端为准——否则胶囊会被
+    // 这份「不应用」的快照留在旧档（切走再切回才变，正是用户报的现象之一）
+    applySessionPermToViews(data.meta);
     renderMessages(state.msgs, mainView);
     return;
   }
@@ -2612,6 +2615,13 @@ function handleGlobalEvent(ev) {
       // 后台落库的用户消息（todo.go 广播）与环境快照行（权限等 PATCH 后立即
       // 落库的 env 行，role=system）：正看着这个会话就整体翻新（节流合并）
       if (viewing && !state.streaming && ev.message && (ev.message.role === 'user' || ev.kind === 'env')) refreshCurrentSoon();
+      // env 行是「环境条目刚变过」的信号（权限/能力/计划目标/工作目录；人工改权限
+      // 走 PATCH，不发 session_updated）：顺手把权限胶囊跟上——同一个会话的另一处
+      // 视图（右栏子对话）、别的窗口、手机端都靠这里，不必等下一次切会话
+      if (ev.kind === 'env') {
+        const sid = ev.sessionId || (ev.message && ev.message.sessionId);
+        if (sid) loadSessions().then(() => applySessionPermFromList(sid));
+      }
       break;
     case 'pending':
       // 插话/排队队列变化：只更新对应的那个视图（自己窗口的操作也会推回来，天然多端一致）
@@ -2647,18 +2657,11 @@ function handleGlobalEvent(ev) {
       if (viewing && !state.streaming) refreshCurrentSoon();
       break;
     case 'session_updated':
-      loadSessions().then(() => {
-        // 权限被审批提升（如「始终允许」把会话切到完全访问）时，
-        // 流式中的当前会话也立即同步权限芯片/面板
-        if (state.cur && state.cur.id === ev.sessionId && state.streaming) {
-          const m = (state.sessions || []).find((s) => s.id === ev.sessionId);
-          if (m) {
-            state.cur.permission = m.permission;
-            state.cur.tools = m.tools;
-            syncComposer();
-          }
-        }
-      });
+      // 权限档/能力开关的变更（审批卡「始终允许」升级、别处或另一窗口改权限）
+      // 只经这条广播告知：先就地同步正在显示该会话的输入区（主对话区 + 右栏
+      // 子对话，与是否流式无关——原来那道 state.streaming 门是胶囊滞后的根因），
+      // 再按需整包翻新内容
+      loadSessions().then(() => applySessionPermFromList(ev.sessionId));
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrentSoon();
       break;
@@ -6469,12 +6472,50 @@ function sessionOrDraftFor(view) {
 
 function sessionOrDraft() { return sessionOrDraftFor(mainView); }
 
+// 权限胶囊与能力菜单的唯一数据源是各自视图的 state.cur（permission / tools），
+// 只有「重开这个会话」或「本视图自己发的 PATCH」才会重画它。于是两种真实场景
+// 会看到胶囊停在旧档、菜单里却已是新值：
+//   ① 审批卡「始终允许」把权限升级（或在别处/另一窗口改权限）——本窗口只收到广播，
+//      原来那段同步逻辑还只在 state.streaming 为真时跑、且只同步主对话区，右栏
+//      子对话的胶囊只能靠「切走再切回」才更新；
+//   ② 同一个会话同时开在主对话区与右栏子对话——一边改完，另一边的胶囊不动
+//      （PATCH 不发 session_updated 广播）。
+// 下面两个函数把「已知的新权限」就地写进正在显示该会话的视图并重画输入区，
+// 与流式状态无关，也不整包重取（胶囊是配置，不该等消息级刷新）。
+function applySessionPermToViews(meta) {
+  if (!meta || !meta.id) return false;
+  let hit = false;
+  for (const view of [mainView, subView]) {
+    const cur = view.state.cur;
+    if (!cur || cur.id !== meta.id) continue;
+    if (meta.permission) cur.permission = meta.permission;
+    if (Array.isArray(meta.tools)) cur.tools = meta.tools.slice();
+    syncComposer(view); // 权限胶囊/模式徽标/能力菜单都按 state.cur 重画
+    // 权限菜单正开着：勾选态与「完全访问捆绑项置灰」一并跟上，别让面板停在旧档
+    if (view === popView && !$('perm-pop').classList.contains('hidden')) renderPermPop(view);
+    hit = true;
+  }
+  return hit;
+}
+
+// 广播（session_updated / env 行）只带会话 id：从刚刷新的会话列表取权限两字段。
+// 列表接口带 permission/tools（GET /api/sessions），比整包 GET /api/sessions/{id}
+// 轻得多——后者会把整个消息历史再拉一遍。
+function applySessionPermFromList(sessionId) {
+  const m = (state.sessions || []).find((s) => s.id === sessionId);
+  if (!m) return false;
+  return applySessionPermToViews({ id: m.id, permission: m.permission, tools: m.tools });
+}
+
 async function patchDraftOrSession(fields, view) {
   view = view || mainView;
   const cur = view.state.cur;
   if (cur) {
     try {
-      view.state.cur = await api('/api/sessions/' + cur.id, { method: 'PATCH', body: JSON.stringify(fields) });
+      const meta = await api('/api/sessions/' + cur.id, { method: 'PATCH', body: JSON.stringify(fields) });
+      view.state.cur = meta;
+      // 同一会话可能同时开在主对话区与右栏子对话：另一处的胶囊也立刻跟上
+      applySessionPermToViews(meta);
     } catch (e) { alert('保存失败：' + e.message); }
   } else if (view === mainView) {
     Object.assign(homeDraft, fields);
