@@ -32,6 +32,9 @@ type Event struct {
 	ApprovalID string   `json:"approvalId,omitempty"`
 	Summary    string   `json:"summary,omitempty"`
 	Reason     string   `json:"reason,omitempty"`
+	// Data 通用附带载荷（前端按 ev.type 自行解释）。目前用于 company_resync：
+	// {needWizard, server, user, company, models, mode, reason}。
+	Data map[string]any `json:"data,omitempty"`
 	// 提问 / 计划审批（question_required）：等待用户输入
 	QuestionID string `json:"questionId,omitempty"`
 	// 提问卡倒计时：question_required 首发带 deadlineMs（截止的绝对毫秒时间戳，

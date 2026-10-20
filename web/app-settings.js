@@ -1358,10 +1358,16 @@ window.refreshUpdateBox = refreshUpdateBox;
 
 // 重新运行接入向导（app-wizard.js 的 openWizard）。向导弹层在 DOM 序上先于设置窗
 // （层级在其下），从设置里打开会被盖住——先收起设置页再弹，向导直接可见。
-$('btn-wizard-rerun').onclick = () => {
+$('btn-wizard-rerun').onclick = async () => {
   if (typeof openWizard !== 'function') return;
   closeSettingsUI();
-  openWizard();
+  // 带原有配置预填（公司名/服务端地址/姓名）：重连只是点一下，不用重新找地址
+  let prefill = {};
+  try {
+    const c = await api('/api/config');
+    prefill = { company: c.wizardCompany || '', server: c.wizardServer || '', user: c.publisherName || '' };
+  } catch (e) { /* 拿不到配置就空表单 */ }
+  openWizard(prefill);
 };
 
 $('btn-settings').onclick = openSettings;

@@ -2714,6 +2714,22 @@ function handleGlobalEvent(ev) {
         if (st.update) showUpdateBanner(st.update);
       }).catch(() => {});
       break;
+    case 'company_resync': {
+      // 新版一次性重新接入的结果（sync.go companyResyncOnce）：
+      //   needWizard → 连不上公司服务端，弹带原有配置的向导让用户点一下；
+      //   否则 → 已静默追平，刷新模型并轻提示。
+      const cd = ev.data || {};
+      if (cd.needWizard) {
+        if (typeof openWizardForResync === 'function') openWizardForResync(cd);
+      } else {
+        if (typeof loadModels === 'function') { try { loadModels(); } catch (e) {} }
+        if (typeof loadStatus === 'function') { try { loadStatus(); } catch (e) {} }
+        if (typeof toast === 'function') {
+          toast('公司模型配置已更新（' + (cd.models || 0) + ' 个模型）' + (cd.mode === 'announce' ? '' : ''));
+        }
+      }
+      break;
+    }
     case 'demo_record_started':
     case 'demo_record_stopped':
       // 演示记录器归用户直控（按钮）：任何窗口起录/停录，所有录制按钮同步收敛

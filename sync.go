@@ -359,6 +359,128 @@ func providerHasModel(p *ProviderCfg, id string) bool {
 	return false
 }
 
+/* ---------- 一次性重新接入（发新版本时把老配置追平） ---------- */
+
+// companyResyncTarget 本轮「一次性重新接入」的目标标记版本：提高它 = 所有已接
+// 入公司、但 companyResync 低于它的客户端，在下次启动时自动重跑一次公司接入。
+// 20261020：10-16 更新后没再手动跑过向导的机器，模型清单还停在旧配置（服务端
+// 早已改过模型，但那批客户端的自动同步器从没跑起来过——wizardServer 空、或版本
+// 太老还没有 sync.go），直接追平比让人手点向导靠谱。
+const companyResyncTarget = 20261020
+
+// startCompanyResyncOnce 启动后异步做一次重新接入；不需要/没接入过公司的直接跳过。
+func startCompanyResyncOnce(a *App) {
+	if a.Cfg.CompanyResync >= companyResyncTarget {
+		return
+	}
+	if a.Cfg.CompanyLinkOff || !a.Cfg.WizardDone {
+		return // 没接入过公司（或已停用）：不打扰，首启向导照常负责
+	}
+	server := resyncServerBase(a)
+	if server == "" {
+		return // 连服务端地址都没有：交给首启向导/设置页
+	}
+	go func() {
+		time.Sleep(8 * time.Second) // 先让窗口/HTTP 就绪，再谈网络
+		a.companyResyncOnce(server)
+	}()
+}
+
+// resyncServerBase 重新接入用的服务端地址：优先 wizardServer；缺了就从市场/更新
+// 地址反推 origin（老配置的典型形态：市场与更新指向公司服务端，但 wizardServer
+// 是空的，于是自动同步器从来没跑起来过）。
+func resyncServerBase(a *App) string {
+	if s := strings.TrimRight(strings.TrimSpace(a.Cfg.WizardServer), "/"); s != "" {
+		return s
+	}
+	for _, u := range []string{a.Cfg.UpdateURL, a.Cfg.MarketURL} {
+		if base := originOfURL(u); base != "" {
+			return base
+		}
+	}
+	return ""
+}
+
+// originOfURL 取 http(s) 地址的 scheme://host[:port]（认不出返回空）。
+func originOfURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// companyResyncOnce 一次重新接入，按可靠性递降三级：
+//  1. 按人重领 provision（最完整：模型清单 + key + 市场/更新地址）；
+//  2. 只拉公告 /announce（不动 key，够把模型清单/元数据追平）；
+//  3. 都不成 → 弹一次「带原有配置」的向导（companyResyncPrompted 防重复打扰）。
+func (a *App) companyResyncOnce(server string) {
+	user := strings.TrimSpace(a.Cfg.PublisherName)
+	finish := func(mode string, models int) {
+		a.Cfg.CompanyResync = companyResyncTarget
+		a.Cfg.CompanyResyncPrompted = false
+		a.Cfg.syncLegacyFields()
+		if err := a.Cfg.Save(a.CfgPath); err != nil {
+			log.Printf("[重新接入] 配置保存失败：%v", err)
+		}
+		log.Printf("[重新接入] 已按服务端配置追平（%s，模型×%d，用户「%s」）", mode, models, user)
+		a.broadcast(Event{Type: "company_resync", Title: "公司模型配置已更新",
+			Data: map[string]any{
+				"ok": true, "mode": mode, "models": models,
+				"server": server, "user": user, "company": a.Cfg.WizardCompany,
+			}})
+	}
+
+	// ① 按人重领配置包
+	if user != "" {
+		if payload, err := fetchProvision(server, user); err != nil {
+			log.Printf("[重新接入] 按人领配置失败（改试公告）：%v", err)
+		} else {
+			models := a.applyProvisionPayload(&payload)
+			a.Cfg.WizardDone = true
+			if payload.Company != "" {
+				a.Cfg.WizardCompany = payload.Company
+			}
+			a.Cfg.WizardServer = server
+			if payload.PublicServer != "" {
+				a.Cfg.WizardPublicServer = strings.TrimRight(payload.PublicServer, "/")
+			}
+			finish("provision", len(models))
+			return
+		}
+	}
+
+	// ② 只拉公告（公司通道还在才谈得上应用；不在了必须有姓名才能重建，走 ① 已失败）
+	if p := wizardProvider(a); p != nil {
+		if ann := fetchAnnounce(server, user); ann != nil {
+			applyAnnounce(a, ann, server, false)
+			if n := len(wizardProvider(a).Models); n > 0 {
+				finish("announce", n)
+				return
+			}
+		}
+	}
+
+	// ③ 都失败：弹一次带原有配置的向导
+	log.Printf("[重新接入] 公司服务端 %s 不可达（用户「%s」），模型配置未能自动更新", server, user)
+	if a.Cfg.CompanyResyncPrompted {
+		return
+	}
+	a.Cfg.CompanyResyncPrompted = true
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		log.Printf("[重新接入] 配置保存失败：%v", err)
+	}
+	a.broadcast(Event{Type: "company_resync", Title: "公司配置需要重新连接",
+		Data: map[string]any{
+			"needWizard": true, "server": server, "user": user,
+			"company": a.Cfg.WizardCompany,
+			"reason":  "连不上公司服务端，模型配置没能自动更新",
+		}})
+}
+
 // listenAnnounceUDP best-effort 监听服务端变更广播（UDP 2230）：端口被占（如多开
 // 实例）时记一行日志退化为纯轮询。收到本公司名的变更广播即触发即时同步。
 func listenAnnounceUDP(a *App) {

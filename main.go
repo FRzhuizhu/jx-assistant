@@ -239,6 +239,7 @@ func main() {
 	app.FinalizeEngineSwap()
 	app.FinalizeRuntimeState()
 	StartUpdateChecker(app)
+	startCompanyResyncOnce(app) // 一次性重新接入：把 10-16 之后没再跑过向导的机器模型配置追平
 	StartRunSweepOnce(app) // 启动 30s 后补扫一次孤儿会话（只扫一次，不做持续轮询）
 
 	if wantDesktop && !*browser {

@@ -6,16 +6,38 @@
 
 let wzBusy = false; // 连接在途：防重复提交
 
-function openWizard() {
+// openWizard(prefill) 打开接入向导。prefill 可选：
+//   { company, server, user }  预填表单（重跑向导、以及新版一次性重新接入失败时
+//                              弹出的「强行重连」都用原有配置填好，用户只要点连接）
+//   { notice }                 顶部提示文案（说明为什么要重连）
+function openWizard(prefill) {
   const m = $('welcome-modal');
   if (!m) return;
+  const p = prefill || {};
   wzSetResult('', '');
+  if (typeof p.company === 'string' && p.company) $('wz-company').value = p.company;
+  if (typeof p.server === 'string' && p.server) $('wz-server').value = p.server;
+  if (typeof p.user === 'string' && p.user) $('wz-user').value = p.user;
   const go = $('wz-go');
   go.disabled = false;
   go.textContent = '连 接';
   go.onclick = wzConnect; // 上次成功后会被换成「完成即关」，重开时必须复位
   m.classList.remove('hidden');
+  if (p.notice) wzSetResult('busy', esc(p.notice));
   setTimeout(() => ($('wz-user').value ? $('wz-company') : $('wz-user')).focus(), 60); // 称呼在最上：先填它
+}
+
+// openWizardForResync 后端「一次性重新接入」失败时的事件入口（app-chat.js 调）：
+// 带原有配置弹出来，用户点一下「连接」即重新领公司的模型配置。
+function openWizardForResync(data) {
+  const d = data || {};
+  openWizard({
+    company: d.company || '',
+    server: d.server || '',
+    user: d.user || '',
+    notice: (d.reason || '公司模型配置需要重新连接') +
+      '。下面已填好原有配置，直接点「连接」即可（用户名与服务端地址可改）。',
+  });
 }
 
 function closeWizard() {

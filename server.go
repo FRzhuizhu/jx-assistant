@@ -1159,6 +1159,10 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
 		"marketURL":        a.Cfg.MarketURL,
 		"publisherName":    a.Cfg.PublisherName,
+		// 公司接入的「身份三件套」：只用于向导表单预填（重跑接入向导、以及新版
+		// 一次性重新接入失败时弹出的向导），不含任何密钥
+		"wizardCompany":    a.Cfg.WizardCompany,
+		"wizardServer":     a.Cfg.WizardServer,
 		"wizardDone":       a.Cfg.WizardDone,
 		"companyLinkOff":   a.Cfg.CompanyLinkOff, // 公司接入停用（设置·网络访问开关）：true=不弹向导、不连公司服务端
 		"registryURL":      a.Cfg.RegistryURL,

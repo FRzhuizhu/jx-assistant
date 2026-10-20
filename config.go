@@ -111,6 +111,13 @@ type Config struct {
 	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用
 	WizardRev          string `json:"wizardRev,omitempty"`          // 最近应用的服务端公告哈希（仅记录）
 	CompanyLinkOff     bool   `json:"companyLinkOff,omitempty"`     // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
+	// companyResync=已完成「一次性重新接入」的标记版本（0=从未做过）。发新版时
+	// 把 companyResyncTarget 提高，老客户端启动后自动重跑一次公司接入（按人
+	// 重领 provision / 至少拉一次公告），把 10-16 之后没再跑过向导、模型清单
+	// 还停在旧配置的机器追平；失败则弹一次带原有配置的向导（companyResyncPrompted
+	// 记已弹过，避免每次启动都打扰）。
+	CompanyResync         int  `json:"companyResync,omitempty"`
+	CompanyResyncPrompted bool `json:"companyResyncPrompted,omitempty"`
 	// 更新检查：定期 GET 该地址（默认 Gitea releases/latest API），响应里的
 	// tag_name 比本程序版本新就经事件流给所有客户端推「新版本可用」。空串=关闭。
 	UpdateURL string `json:"updateURL"`

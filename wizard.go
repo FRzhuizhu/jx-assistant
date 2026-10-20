@@ -382,6 +382,10 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 	// 随包上报，市场卡片据此判断哪些条目能「更新发布 / 删除」。重跑向导按新填的
 	// 姓名覆盖（向导填的就是"我是谁"）；只想改名去 设置 · 网络访问。
 	a.Cfg.PublisherName = user
+	// 手动跑过向导 = 配置已是最新：清掉「一次性重新接入」的待办与已提醒标记
+	// （sync.go companyResyncTarget），免得下次启动又自动重跑/再弹一次。
+	a.Cfg.CompanyResync = companyResyncTarget
+	a.Cfg.CompanyResyncPrompted = false
 	a.Cfg.syncLegacyFields()
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
 		writeErr(w, 500, "配置保存失败："+err.Error())
