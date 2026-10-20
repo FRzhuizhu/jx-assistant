@@ -346,26 +346,30 @@ func TestAssistantCompactWorksWhenAutoCompactOff(t *testing.T) {
 	}
 }
 
-// 只有一轮历史时（保留窗口至少保最近一轮，窗口之上没有内容），按钮透传
-// 现有错误文案（doSummarize 原话），且不改动历史、不落摘要。
-func TestAssistantCompactSingleRoundPassesExistingError(t *testing.T) {
+// 只有一轮历史且该轮自身超预算：修复后不再「至少保 1 轮」硬保它——应照常
+// 摘要掉（覆盖到这一轮），而不是报「没有可压缩的区间」让超长上下文压不动。
+func TestAssistantCompactSingleOversizedRoundGetsSummarized(t *testing.T) {
 	f := newAssistantOpsFixture(t)
 	a, main := f.app, f.main
 	if _, err := a.Store.ClearSession(main.ID); err != nil {
 		t.Fatal(err)
 	}
 	seedRound(t, a, main.ID, "唯一一轮", true)
-	a.Cfg.KeepChars = 10
+	a.Cfg.KeepChars = 10 // 预算小于这一轮：修复后仍要压
 
 	w := post(t, a.handleAssistantCompact, "/api/assistant/compact")
-	if w.Code != 400 {
-		t.Fatalf("不可压缩应 400, got %d %s", w.Code, w.Body.String())
+	if w.Code != 200 {
+		t.Fatalf("超预算单轮应压缩成功, got %d %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "没有可压缩的区间") {
-		t.Fatalf("应透传现有错误文案（没有可压缩的区间）, got %s", w.Body.String())
+	summaries := 0
+	all, _ := a.Store.RawMessagesAll(main.ID)
+	for _, m := range all {
+		if m.Kind == kindSummary {
+			summaries++
+		}
 	}
-	if n := msgCount(t, a, main.ID); n != 4 {
-		t.Fatalf("失败的压缩不该改动历史, got %d 条", n)
+	if summaries != 1 {
+		t.Fatalf("应落 1 条模型摘要行, got %d", summaries)
 	}
 }
 

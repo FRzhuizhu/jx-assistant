@@ -421,7 +421,8 @@ func TestKeepRoundsByBudget(t *testing.T) {
 	if got := a.keepRoundsByBudget(raw); got != 3 {
 		t.Fatalf("预算 1000 应保 3 轮, got %d", got)
 	}
-	// 巨型最后一轮：预算再大也只保 1 轮（轮是原子单位，更早的全折）
+	// 巨型最后一轮：预算装不下它 → 返回 0（连最近一轮也要折叠）。
+	// 这是「百万级单轮压不动」的根因修复点：硬保 1 轮会让超长上下文永远压不动。
 	if err := a.Store.AppendRow("s1", &StoredMessage{
 		Message: TextMessage("user", "巨轮问题"), Kind: kindChat,
 	}); err != nil {
@@ -434,22 +435,89 @@ func TestKeepRoundsByBudget(t *testing.T) {
 	}
 	raw, _ = a.Store.RawMessagesAll("s1")
 	a.Cfg.KeepChars = 10000
-	if got := a.keepRoundsByBudget(raw); got != 1 {
-		t.Fatalf("巨轮独大应只保 1 轮, got %d", got)
+	if got := a.keepRoundsByBudget(raw); got != 0 {
+		t.Fatalf("巨轮独大应保 0 轮（连它一起折）, got %d", got)
 	}
-	// 端到端：阈值触发后按预算折叠，保留的最近一轮（巨轮，第7-8行）原文完整
+	// 端到端：阈值触发后按预算折叠——巨轮自身超预算，连最近一轮也要折，
+	// 否则上下文压不动（回归：此前报「没有可折叠的回合」但上下文仍超长）。
 	cp, err := a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000)
 	if err != nil || !cp {
 		t.Fatalf("阈值应触发折叠, cp=%v err=%v", cp, err)
 	}
-	if got := rowBySeq(t, a, "s1", 7).Compact; got != "" {
-		t.Fatalf("保留的巨轮用户行不应折叠, got %q", got)
+	if got := rowBySeq(t, a, "s1", 7).Compact; got == "" {
+		t.Fatalf("超预算的巨轮用户行应被折叠, got %q", got)
 	}
-	if got := rowBySeq(t, a, "s1", 8).Compact; got != "" {
-		t.Fatalf("保留的巨轮结论行不应折叠, got %q", got)
+	if got := rowBySeq(t, a, "s1", 8).Compact; got == "" {
+		t.Fatalf("超预算的巨轮结论行应被折叠, got %q", got)
 	}
 	if got := rowBySeq(t, a, "s1", 1).Compact; got == "" {
 		t.Fatal("预算外的旧轮应已折叠")
+	}
+}
+
+// 回归：上下文超长（最近一轮自身远超保留预算）时，手动压缩必须产生实质削减。
+// 之前 keepRoundsByBudget 硬保 1 轮，百万级单轮永远压不动——报「没有可折叠的
+// 回合」但上下文仍满（ERP 会话实测：单轮 130 万字 ≈ 99 万 token）。修复后空
+// body 手动压缩（走自动预算保留窗口）应把巨轮也折叠，工具结果整行 omit。
+func TestManualCompactHugeRoundReducesContext(t *testing.T) {
+	a := newCompactTestApp(t)
+	a.Cfg.KeepChars = 10000
+	sess := &SessionMeta{ID: "s1", Mode: "task"}
+	if err := a.Store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	// 一个普通带工具的小轮（折叠后显著缩减）
+	seedRound(t, a, "s1", "旧轮", true)
+	// 一个巨型轮：用户输入 + 带调用的助手行 + 巨大工具结果（折叠时整行 omit）
+	if err := a.Store.AppendRow("s1", &StoredMessage{
+		Message: TextMessage("user", "巨轮问题"), Kind: kindChat, CreatedAt: "2026-01-02 10:10:00",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Store.AppendRow("s1", &StoredMessage{
+		Message: Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "gc", Type: "function", Function: ToolCallFunc{Name: "run_command", Arguments: `{"command":"cat huge.log"}`}}}},
+		Kind:    kindChat, CreatedAt: "2026-01-02 10:10:01",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Store.AppendRow("s1", &StoredMessage{
+		Message: Message{Role: "tool", Content: strings.Repeat("巨", 200000), ToolCallID: "gc"},
+		Kind:    kindChat, CreatedAt: "2026-01-02 10:10:02",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := a.Store.RawMessagesAll("s1")
+	giantFinal := int64(len(all) + 1)
+	if err := a.Store.AppendRow("s1", &StoredMessage{
+		Message: TextMessage("assistant", "巨轮结论"), Kind: kindChat, CreatedAt: "2026-01-02 10:10:03",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	totalVisible := func() int {
+		raw, _ := a.Store.RawMessagesAll("s1")
+		n := 0
+		for _, m := range raw {
+			n += visibleSize(m)
+		}
+		return n
+	}
+	before := totalVisible()
+
+	// 手动压缩（空 body 与「压缩」按钮空请求同路径，走自动预算保留窗口）
+	if n := a.ruleCompactAuto(sess, -1); n == 0 {
+		t.Fatal("超长上下文手动压缩应折叠轮次，而不是报没有可折叠的回合")
+	}
+	after := totalVisible()
+	if after >= before/10 {
+		t.Fatalf("手动压缩应显著削减上下文: before=%d after=%d", before, after)
+	}
+	if got := rowBySeq(t, a, "s1", giantFinal).Compact; got == "" {
+		t.Fatal("巨轮结论应被折叠")
+	}
+	// 巨大工具结果被 omit（折叠的核心收益）：再压一次应无轮可折，且报错是真的
+	if _, err := a.ruleCompactTo(sess, giantFinal); err == nil || !strings.Contains(err.Error(), "已折叠") {
+		t.Fatalf("全折后再压应报已折叠, got err=%v", err)
 	}
 }
 

@@ -638,8 +638,10 @@ func visibleSize(m *StoredMessage) int {
 
 // keepRoundsByBudget 按保留预算（KeepChars，字）算自动压缩保留几轮：从最新
 // 一轮往前累计模型可见字数，装得下的整轮都保留；命中点可能落在某一轮中间，
-// 轮是原子单位——往上扩到整轮保留，宁可略超预算也不劈半轮。至少保 1 轮
-//（最近一轮独大时只留它，更早的全部折叠）。
+// 轮是原子单位——往上扩到整轮保留，宁可略超预算也不劈半轮。
+// 不设「至少保 1 轮」的下限：最近一轮自身就超预算时返回 0——表示连最近一轮
+// 也要折叠。否则超长上下文永远压不动：单轮由几十次工具调用（含超大工具结果）
+// 拼成时，一轮即可百万 token，硬保这一轮等于压缩失效。
 func (a *App) keepRoundsByBudget(raw []*StoredMessage) int {
 	rounds := splitRounds(raw)
 	if len(rounds) == 0 {
@@ -654,8 +656,8 @@ func (a *App) keepRoundsByBudget(raw []*StoredMessage) int {
 		}
 		return n
 	}
-	kept, total := 1, sizeOf(rounds[len(rounds)-1])
-	for i := len(rounds) - 2; i >= 0; i-- {
+	kept, total := 0, 0
+	for i := len(rounds) - 1; i >= 0; i-- {
 		s := sizeOf(rounds[i])
 		if total+s > a.Cfg.KeepChars {
 			break
@@ -667,23 +669,34 @@ func (a *App) keepRoundsByBudget(raw []*StoredMessage) int {
 }
 
 // ruleCompactAuto 阈值触发/溢出兜底的自动入口：把保留窗口之外、尚未折叠的
-// 轮次全部折叠。keep<=0 表示自动触发——按 KeepChars 字数预算保留最近的完整
-// 轮（规则与模型摘要两种压缩共用同一预算口径）；keep=1 是溢出兜底的最大化
-// 压缩（只留最近一轮）。返回折叠的轮数。
+// 轮次全部折叠。keep<0 表示自动触发——按 KeepChars 字数预算保留最近的完整
+// 轮（规则与模型摘要两种压缩共用同一预算口径）；keep=0 表示全部折叠（连最近
+// 一轮也折，最近一轮自身超预算时兜底用到）；keep=1 是溢出兜底的最大化压缩
+//（只留最近一轮）。返回折叠的轮数。
 func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
 		return 0
 	}
 	rounds := splitRounds(raw)
-	if keep <= 0 {
-		keep = a.keepRoundsByBudget(raw)
-	}
-	if len(rounds) <= keep {
+	if len(rounds) == 0 {
 		return 0
 	}
-	// 保留窗口起点的前一条即压缩终点
-	return a.foldRounds(sess, raw, rounds, rounds[len(rounds)-keep].startSeq-1)
+	if keep < 0 {
+		keep = a.keepRoundsByBudget(raw)
+	}
+	var endSeq int64
+	switch {
+	case keep <= 0:
+		// 连最近一轮都超预算：全部折叠（含最近一轮），确保超长上下文必然实质削减
+		endSeq = rounds[len(rounds)-1].endSeq
+	case keep < len(rounds):
+		// 保留窗口起点的前一条即压缩终点
+		endSeq = rounds[len(rounds)-keep].startSeq - 1
+	default:
+		return 0 // 全部轮都在保留区内，没有可折叠的
+	}
+	return a.foldRounds(sess, raw, rounds, endSeq)
 }
 
 // ruleCompactTo 手动压缩：折叠 upTo 所在轮（含）及更早、尚未折叠的全部轮，
@@ -841,8 +854,9 @@ const summarizeInstruction = `请把下面这段对话历史压缩成一份结�
 // doSummarize 把 [最后摘要边界, 压缩终点] 的区间压成一条摘要。
 // origin=auto 时合并旧自动摘要（DSH 式单一检查点）；origin=manual 时独立叠加、永不重压。
 // upTo>0（手动按钮）时压缩终点=upTo 所在轮（含），之后的轮保持原文；
-// 否则按保留窗口从尾部倒数——keepTail<=0 表示自动触发，与规则压缩共用同一
-// 字数预算（keepRoundsByBudget）；溢出兜底显式传 1（只留最近一轮）。
+// 否则按保留窗口从尾部倒数——keepTail<0 表示自动触发，与规则压缩共用同一
+// 字数预算（keepRoundsByBudget）；keepTail=0 表示摘要覆盖全部历史（最近一轮
+// 自身超预算时兜底用到）；溢出兜底显式传 1（只留最近一轮）。
 func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo int64) (string, error) {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
@@ -860,7 +874,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		}
 	}
 	keep := keepTail
-	if keep <= 0 {
+	if keep < 0 {
 		keep = a.keepRoundsByBudget(raw)
 	}
 	rounds := splitRounds(raw)
@@ -882,6 +896,11 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		}
 		if segEnd == 0 {
 			return "", fmt.Errorf("第 %d 条之前没有可压缩的回合", upTo)
+		}
+	} else if keep <= 0 {
+		// 连最近一轮都超预算：摘要覆盖到最后一轮（全部历史），确保超长上下文必然削减
+		if len(rounds) > 0 {
+			segEnd = rounds[len(rounds)-1].endSeq
 		}
 	} else if len(rounds) > keep {
 		segEnd = rounds[len(rounds)-keep].startSeq - 1
@@ -968,25 +987,32 @@ func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int)
 		return false, nil
 	}
 	if a.Cfg.CompactMode == "rule" {
-		return a.ruleCompactAuto(sess, 0) > 0, nil
+		return a.ruleCompactAuto(sess, -1) > 0, nil
 	}
-	_, err := a.doSummarize(sess, "auto", 0, 0)
+	_, err := a.doSummarize(sess, "auto", -1, 0)
 	return err == nil, err
 }
 
 // overflowCompact 是上下文超限的兜底：最大化压缩一次。rule 模式规则折叠到
-// 只留最近 1 轮（零模型调用）；llm 模式生成只留最近 1 轮的摘要。
+// 只留最近 1 轮（零模型调用），压不动（最近一轮自身超预算）就全部折叠；
+// llm 模式生成只留最近 1 轮的摘要，仍压不动就摘要全部历史。
 func (a *App) overflowCompact(sess *SessionMeta) error {
 	if a.Cfg.CompactMode == "off" {
 		return fmt.Errorf("上下文超限且压缩已关闭，请手动精简会话或开启压缩")
 	}
 	if a.Cfg.CompactMode == "rule" {
-		if a.ruleCompactAuto(sess, 1) > 0 {
+		// 先折叠到只留最近 1 轮；压不动（最近一轮自身就超预算，前面又都已折叠）
+		// 时全部折叠——否则百万级单轮永远压不下去，兜底形同虚设。
+		if a.ruleCompactAuto(sess, 1) > 0 || a.ruleCompactAuto(sess, 0) > 0 {
 			return nil
 		}
 		return fmt.Errorf("没有可折叠的回合（上下文超限可能来自系统提示词或工具目录本身）")
 	}
-	_, err := a.doSummarize(sess, "manual", 1, 0)
+	// llm：先摘要到只留最近 1 轮；仍压不动就摘要全部历史。
+	if _, err := a.doSummarize(sess, "manual", 1, 0); err == nil {
+		return nil
+	}
+	_, err := a.doSummarize(sess, "manual", 0, 0)
 	return err
 }
 

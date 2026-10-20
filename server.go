@@ -2087,7 +2087,7 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 		folded, err := 0, error(nil)
 		if body.UpTo > 0 {
 			folded, err = a.ruleCompactTo(m, body.UpTo)
-		} else if folded = a.ruleCompactAuto(m, 0); folded == 0 {
+		} else if folded = a.ruleCompactAuto(m, -1); folded == 0 {
 			err = fmt.Errorf("没有可折叠的回合（保留最近约 %d 字）", a.Cfg.KeepChars)
 		}
 		if err != nil {
@@ -2098,7 +2098,7 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": 1, "folded": folded})
 		return
 	}
-	summary, err := a.doSummarize(m, "manual", 0, body.UpTo)
+	summary, err := a.doSummarize(m, "manual", -1, body.UpTo)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -2184,7 +2184,7 @@ func (a *App) handleAssistantClear(w http.ResponseWriter, r *http.Request) {
 // 压缩按钮）。固定走上下文压缩里「AI 模型压缩」那条路（doSummarize）：无视
 // Cfg.CompactMode（规则/关闭都不看），保留窗口与区间划分原样沿用现有实现
 //（keepRoundsByBudget：从最近一轮往上数，保留「保留字数」预算内装得下的
-// 完整轮，至少保最近一轮，只把窗口之上的历史发给模型摘要）。
+// 完整轮；最近一轮自身超预算时摘要覆盖全部历史，不硬保这一轮）。
 // 设计目的：数字助理主对话平时也会自动压缩，默认走规则引擎（规则折叠）；等
 // 规则引擎也压不动、上下文仍然过长时，用户才会来点这个按钮——所以这里到点
 // 一定是模型压缩。origin=manual 与对话里消息级「压缩」按钮的 llm 分支同款
@@ -2209,7 +2209,7 @@ func (a *App) handleAssistantCompact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	summary, err := a.doSummarize(m, "manual", 0, 0) // 与 llm 模式自动/手动压缩同一函数、同一保留窗口
+	summary, err := a.doSummarize(m, "manual", -1, 0) // 与 llm 模式自动/手动压缩同一函数、同一保留窗口
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
