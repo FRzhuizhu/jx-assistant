@@ -34,7 +34,6 @@ var (
 	procSHCreateItemFromParsingName = shell32.NewProc("SHCreateItemFromParsingName")
 	procLstrlenW                    = kernel32.NewProc("lstrlenW")
 	procGetCurrentProcessID         = kernel32.NewProc("GetCurrentProcessId")
-	procKeybdEvent                  = user32.NewProc("keybd_event")
 	procFindWindowW                 = user32.NewProc("FindWindowW")
 	procSetForegroundWindow         = user32.NewProc("SetForegroundWindow")
 	procBringWindowToTop            = user32.NewProc("BringWindowToTop")
@@ -428,21 +427,21 @@ func parseGUID(s string) (syscall.GUID, error) {
 
 // raiseDialogToForeground 解决后台进程弹窗不置顶的问题。
 // 本服务不是前台进程，Windows 默认禁止它抢占前台——对话框会被创建但压在
-// 其它窗口后面，用户看来就是“点了没反应”。两步组合：
-//  1. 先模拟一次 ALT 键（keybd_event），让系统认为本进程刚收到用户输入，
-//     解除 SetForegroundWindow 的前台锁；
-//  2. Show 阻塞期间由独立 goroutine 轮询找到对话框窗口并反复尝试提前台
-//     （对话框创建有时机差，第一次尝试可能早于窗口诞生）。
-// 必须在调用 Show 的同一线程执行（KeybdEvent 部分影响的是本线程输入状态）。
+// 其它窗口后面，用户看来就是“点了没反应”。做法：Show 阻塞期间由独立
+// goroutine 轮询找到对话框窗口（对话框创建有时机差，第一次可能早于窗口
+// 诞生），再用 alertForceForeground（AllowSetForegroundWindow + AttachThreadInput
+// 附着到当前前台线程的输入队列）把它提到前台，拿不到前台就隔 100ms 重试。
+//
+// 历史（2026-10-21 修复，别改回去）：旧实现先 keybd_event 合成一次「Alt 按下+
+// 松开」解锁前台锁——但 keybd_event 注入的是全局输入事件，会真送进当时仍持
+// 焦点的页面（桌面壳 WebView2 / 浏览器）：语音组件的默认副快捷键「独按 Alt、
+// 松开触发」把它当成真人按键，于是「＋→文件上传」「添加工作目录」这类弹原生
+// 选择框的入口每次都误开听写。置前一律走 AttachThreadInput，任何情况下都
+// 不得合成键盘/鼠标输入。
 func raiseDialogToForeground(title string) {
-	const (
-		vkMenu         = 0x12
-		keyeventfKeyUp = 0x0002
-	)
-	procKeybdEvent.Call(vkMenu, 0, 0, 0)
-	procKeybdEvent.Call(vkMenu, 0, keyeventfKeyUp, 0)
-
 	go func() {
+		runtime.LockOSThread() // AttachThreadInput 附着的是 OS 线程，全程钉住线程
+		defer runtime.UnlockOSThread()
 		cls, _ := syscall.UTF16PtrFromString("#32770") // 标准对话框窗口类
 		ttl, err := syscall.UTF16PtrFromString(title)
 		if err != nil {
@@ -455,8 +454,9 @@ func raiseDialogToForeground(title string) {
 				var wpid uint32
 				procGetWindowThreadProcessId.Call(h, uintptr(unsafe.Pointer(&wpid)))
 				if uint32(wpid) == uint32(pid) {
-					procSetForegroundWindow.Call(h)
-					procBringWindowToTop.Call(h)
+					for j := 0; j < 10 && !alertForceForeground(h); j++ {
+						time.Sleep(100 * time.Millisecond) // 对话框仍在初始化时再等等
+					}
 					return
 				}
 			}
