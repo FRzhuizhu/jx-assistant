@@ -758,22 +758,13 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 .dc-name { font-family: Consolas, "Courier New", monospace; font-size: 1em; word-break: break-all; }
 .dc-note { flex: 1; min-width: 0; font-size: .93em; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dc-acts { flex: none; display: flex; gap: 6px; flex-wrap: wrap; }
+.dc-acts { flex: none; display: flex; gap: 6px; }
 .dc-btn {
   flex: none; font: inherit; font-size: .93em; color: var(--accent);
   background: none; cursor: pointer; white-space: nowrap;
   border: 1px solid currentColor; border-radius: 6px; padding: 2px 10px;
 }
 .dc-btn:hover { background: var(--hover); }
-/* 手机端（窄屏断点与 isNarrow 同款 499.98px）：文件行改为可折行，按钮组
-   整体掉到名称下方并折成两行——「打开 + 右侧打开」第一行、「在文件夹中
-   打开」独占第二行（第三个按钮拉满宽度强制换行）；桌面端空间足够，flex-wrap
-   不触发，仍是单行不回归。 */
-@media (max-width: 499.98px) {
-  .dc-file { flex-wrap: wrap; }
-  .dc-acts { flex-basis: 100%; }
-  .dc-acts .dc-btn:last-child { flex-basis: 100%; text-align: center; }
-}
 
 /* 系统注入的通知（report 通道：上传/中断/回退/交付/工具目录变更/目标续跑提示）：
    左侧细边框虚线通知样式——克制的系统注记，不占对话的视觉权重（2026-09 初版
