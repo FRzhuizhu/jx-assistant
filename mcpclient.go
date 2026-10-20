@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -189,14 +190,22 @@ func (c *mcpClient) listTools(ctx context.Context) ([]mcpToolDef, error) {
 	return page.Tools, nil
 }
 
-// callTool 调用一个工具并返回文本结果（isError 语义转为错误文本）。
-func (c *mcpClient) callTool(ctx context.Context, tool string, args json.RawMessage) (string, error) {
+// mcpImage 是工具结果里携带的一张图片（MCP image content，base64 已解码）。
+type mcpImage struct {
+	Data     []byte
+	MIMEType string
+}
+
+// callTool 调用一个工具并返回文本结果与随附图片（isError 语义转为错误文本
+// 前缀）。图片与文本并列返回：图片字节拿到即唯一一份，由调用方入库注入
+// （见 attachment.go 的 mcpImagesEnvelope）。
+func (c *mcpClient) callTool(ctx context.Context, tool string, args json.RawMessage) (string, []mcpImage, error) {
 	c.mu.Lock()
 	if !c.started {
 		c.mu.Unlock()
 		// 单次自愈：未启动或上次死亡时重连一次（独立连接器懒启动的落地点）
 		if err := c.start(ctx); err != nil {
-			return "", err
+			return "", nil, err
 		}
 		c.mu.Lock()
 	}
@@ -219,43 +228,59 @@ func (c *mcpClient) callTool(ctx context.Context, tool string, args json.RawMess
 			}
 		}
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
-	return mcpResultText(res), nil
+	return mcpResultContent(res)
 }
 
-// mcpResultText 从 tools/call 结果提取文本（content 数组的 text 项拼接）。
-func mcpResultText(res any) string {
+// mcpResultContent 从 tools/call 结果提取文本（content 数组的 text 项拼接）
+// 与图片（image content 的 base64 解码）。
+func mcpResultContent(res any) (string, []mcpImage, error) {
 	raw, _ := json.Marshal(res)
 	var doc struct {
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Data     string `json:"data"`
+			MIMEType string `json:"mimeType"`
 		} `json:"content"`
 		IsError bool   `json:"isError"`
 		Text    string `json:"text"`
 	}
-	_ = json.Unmarshal(raw, &doc)
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", nil, err
+	}
 	var b strings.Builder
+	var images []mcpImage
 	for _, item := range doc.Content {
-		if item.Type == "text" && item.Text != "" {
+		switch {
+		case item.Type == "text" && item.Text != "":
 			if b.Len() > 0 {
 				b.WriteString("\n")
 			}
 			b.WriteString(item.Text)
+		case item.Type == "image" && item.Data != "":
+			if data, err := base64.StdEncoding.DecodeString(item.Data); err == nil {
+				mt := item.MIMEType
+				if mt == "" {
+					mt = "image/png"
+				}
+				images = append(images, mcpImage{Data: data, MIMEType: mt})
+			}
 		}
 	}
 	if b.Len() == 0 && doc.Text != "" {
 		b.WriteString(doc.Text)
 	}
+	text := b.String()
 	if doc.IsError {
-		return "（MCP 工具报告错误）" + b.String()
+		text = "（MCP 工具报告错误）" + text
 	}
-	if b.Len() == 0 {
-		return "（工具执行完成，无文本输出）"
+	if text == "" && len(images) == 0 {
+		text = "（工具执行完成，无文本输出）"
 	}
-	return b.String()
+	return text, images, nil
 }
 
 // rpc 发一个 JSON-RPC 请求并等匹配 id 的响应。

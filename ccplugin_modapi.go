@@ -472,7 +472,7 @@ func (h *modHost) buildDollar(sess *modSessCtx) goja.Value {
 				data, _ := json.Marshal(a.Export())
 				args = data
 			}
-			out, err := h.reg.app.CCPlugins.mcpCall(h.sessContext(sess), "mcp__"+server+"__"+tool, args)
+			out, _, err := h.reg.app.CCPlugins.mcpCall(h.sessContext(sess), "mcp__"+server+"__"+tool, args)
 			if err != nil {
 				panic(h.vm.NewGoError(err))
 			}

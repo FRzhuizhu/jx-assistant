@@ -181,6 +181,35 @@ func imageEnvelope(att *Attachment, srcPath string) string {
 		att.File, att.MediaType, w, h, att.Bytes, src)
 }
 
+// mcpImagesEnvelope 把 MCP 工具结果携带的图片入库为附件并生成注入文本段
+// （信封 + 说明行；无图片时返回空串）。MCP 服务器（如 Windows-MCP 的
+// Screenshot/Snapshot）以 image content 回传截图，入库后与 read_image 走
+// 同一条注入链路：inlineImagesForRequest 在请求组装时把信封内联为视觉块，
+// 前端在工具卡片渲染原图。信封段应拼在工具文本结果**之前**——规则压缩只
+// 保留工具结果的开头片段，放尾部会被长文本截掉。入库失败降级为一行说明，
+// 不吞掉工具本身的结果。
+func mcpImagesEnvelope(app *App, images []mcpImage) string {
+	if len(images) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	ok := 0
+	for _, img := range images {
+		att, err := app.storeAttachment(img.Data, img.MIMEType)
+		if err != nil {
+			continue
+		}
+		b.WriteString(imageEnvelope(att, "MCP 工具返回"))
+		b.WriteString("\n")
+		ok++
+	}
+	if ok == 0 {
+		return fmt.Sprintf("（工具随结果返回了 %d 张图片，均入库失败：格式不受支持或超出大小上限）\n", len(images))
+	}
+	fmt.Fprintf(&b, "（以上 %d 张图片来自 MCP 工具返回：支持视觉的模型可直接看到内容，用户可在工具卡片里查看原图）", ok)
+	return b.String()
+}
+
 // inlineImagesForRequest 是发给模型前的最后一步变换：当前模型支持视觉时，
 // 把历史里工具结果携带的图片信封内联为 user 角色的 base64 内容块
 // （紧跟该步全部工具结果之后；部分兼容端不接受 tool 角色直接携带图片）。

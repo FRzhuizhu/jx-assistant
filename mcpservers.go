@@ -492,16 +492,16 @@ func (r *MCPServersRegistry) ReadConnector(ctx context.Context, name string) (st
 }
 
 // CallToolByName 按连接器名 + 工具名执行（mcp_call_tool 的落地）。
-func (r *MCPServersRegistry) CallToolByName(ctx context.Context, connector, tool string, args json.RawMessage) (string, error) {
+func (r *MCPServersRegistry) CallToolByName(ctx context.Context, connector, tool string, args json.RawMessage) (string, []mcpImage, error) {
 	r.mu.Lock()
 	e, ok := r.entryOf(connector)
 	if !ok {
 		r.mu.Unlock()
-		return "", fmt.Errorf("MCP 连接器 %s 不存在（清单见环境快照）", connector)
+		return "", nil, fmt.Errorf("MCP 连接器 %s 不存在（清单见环境快照）", connector)
 	}
 	if !e.Enabled {
 		r.mu.Unlock()
-		return "", fmt.Errorf("MCP 连接器 %s 已停用", connector)
+		return "", nil, fmt.Errorf("MCP 连接器 %s 已停用", connector)
 	}
 	c := r.clientOf(e)
 	r.mu.Unlock()
@@ -566,7 +566,16 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 				if t.app.MCPServers == nil {
 					return "", fmt.Errorf("MCP 注册表未初始化")
 				}
-				return t.app.MCPServers.CallToolByName(t.ctx, strings.TrimSpace(p.Connector), strings.TrimSpace(p.Tool), p.Arguments)
+				text, images, err := t.app.MCPServers.CallToolByName(t.ctx, strings.TrimSpace(p.Connector), strings.TrimSpace(p.Tool), p.Arguments)
+				if err != nil {
+					return "", err
+				}
+				// 随结果回传的图片入库为附件（信封置顶，防长文本截断），与
+				// read_image 同链路进入模型上下文与前端工具卡片。
+				if note := mcpImagesEnvelope(t.app, images); note != "" {
+					text = note + "\n" + text
+				}
+				return text, nil
 			},
 		},
 	}

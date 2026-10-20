@@ -155,7 +155,15 @@ func (r *CCPluginRegistry) MCPTools() []Tool {
 					if err := requireNotReadOnly(t, "调用插件 MCP 工具 "+full); err != nil {
 						return "", err
 					}
-					return t.app.CCPlugins.mcpCall(t.ctx, full, args)
+					text, images, err := t.app.CCPlugins.mcpCall(t.ctx, full, args)
+					if err != nil {
+						return "", err
+					}
+					// 随结果回传的图片入库为附件（与独立连接器同一注入链路）
+					if note := mcpImagesEnvelope(t.app, images); note != "" {
+						text = note + "\n" + text
+					}
+					return text, nil
 				},
 			})
 		}
@@ -174,8 +182,8 @@ func ccToolDesc(t mcpToolDef, server string) string {
 	return desc
 }
 
-// mcpCall 按完整工具名路由到客户端执行。
-func (r *CCPluginRegistry) mcpCall(ctx context.Context, full string, args json.RawMessage) (string, error) {
+// mcpCall 按完整工具名路由到客户端执行（图片随第二返回值交给调用方处置）。
+func (r *CCPluginRegistry) mcpCall(ctx context.Context, full string, args json.RawMessage) (string, []mcpImage, error) {
 	// 名形如 mcp__<插件>_<服务器>__<工具>：按工具清单反查
 	for _, c := range r.mcpClients() {
 		prefix := "mcp__" + c.fullName + "__"
@@ -185,11 +193,11 @@ func (r *CCPluginRegistry) mcpCall(ctx context.Context, full string, args json.R
 			c.mu.Unlock()
 			if !started {
 				if err := c.start(ctx); err != nil {
-					return "", err
+					return "", nil, err
 				}
 			}
 			return c.callTool(ctx, strings.TrimPrefix(full, prefix), args)
 		}
 	}
-	return "", fmt.Errorf("MCP 工具 %s 不在已连接清单里", full)
+	return "", nil, fmt.Errorf("MCP 工具 %s 不在已连接清单里", full)
 }

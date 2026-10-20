@@ -139,10 +139,10 @@ func TestMCPReadConnectorGuards(t *testing.T) {
 		t.Error("已停用的连接器应报错")
 	}
 	// CallToolByName 同一对守卫
-	if _, err := r.CallToolByName(ctx, "ghost", "t", nil); err == nil {
+	if _, _, err := r.CallToolByName(ctx, "ghost", "t", nil); err == nil {
 		t.Error("不存在连接器的调用应报错")
 	}
-	if _, err := r.CallToolByName(ctx, "beta", "t", nil); err == nil {
+	if _, _, err := r.CallToolByName(ctx, "beta", "t", nil); err == nil {
 		t.Error("已停用连接器的调用应报错")
 	}
 }
