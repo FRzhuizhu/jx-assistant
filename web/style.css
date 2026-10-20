@@ -763,10 +763,13 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   border-top: 1px solid var(--border-2);
 }
 /* 文件名 + 灰色说明是同一块（.dc-main）：两者之间只缩不折，保证「一行文件名
-   + 一行灰字」的观感；折叠时这一块独占上面一行。 */
+   + 一行灰字」的观感；折叠时这一块独占上面一行。
+   优先级：文件名先完整显示（真放不下才省略）→ 剩下有富余才显示灰色说明（它只是
+   一句「这文件是什么」的简介，不重要）；富余连两个字都摆不下时整块不显示
+   （由 dcStackRO 判定，见 app-chat.js），不做「灰字占半行、文件名被挤」的分配。 */
 .dc-main { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
 .dc-name { font-family: Consolas, "Courier New", monospace; font-size: 1em; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dc-note { flex: 0 1 auto; min-width: 0; max-width: 100%; font-size: .93em; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-note { flex: 1 1 0; min-width: 0; font-size: .93em; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-acts { flex: none; display: flex; gap: 6px; }
 /* 折叠态（行宽不足两块等宽 + 间距）：按钮组独占第二行 */
 .dc-file.dc-stacked { flex-wrap: wrap; row-gap: 6px; }

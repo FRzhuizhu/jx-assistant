@@ -1965,11 +1965,13 @@ function deliveryRevealFile(view, sid, d) {
   }).catch((e) => alert('打开所在文件夹失败：' + e.message));
 }
 
-/* 交付卡行的折叠判定：文件名区与按钮区地位对等——文件名区的最小宽就取按钮区
-   的实际宽，两块宽 + 中间间距塞不进行内可用宽，就把按钮挪到下一行（上一行
-   = 文件名 + 灰色说明，下一行 = 按钮）。按钮宽现场实测（文案、字号变了自动
-   跟随，不写死像素），判据只看行自身实际宽、不看视口：手机窄屏、右栏挤窄的
-   对话区、桌面宽屏同一套；CSS 只描述两种形态，折与不折由这里切 .dc-stacked。
+/* 交付卡行里两件事由这里判定（都只看行自身实际宽，按钮宽现场实测，不写死像素、
+   不看视口——手机窄屏、右栏挤窄的对话区、桌面宽屏同一套）：
+   1. 折不折：文件名区与按钮区地位对等——文件名区的最小宽就取按钮区的实际宽，
+      两块宽 + 中间间距塞不进行内可用宽，就把按钮挪到下一行（上一行 = 文件名 +
+      灰色说明，下一行 = 按钮）。CSS 只描述两种形态，这里切 .dc-stacked。
+   2. 灰字显不显：文件名优先完整，剩下有富余才显示灰色说明（一句「这文件是
+      什么」的简介）；富余连两个字都摆不下就整块不显示，免得挤出半截灰字。
    行会随尾部重画反复重建，离了 DOM 立即取消观察。 */
 const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => {
   for (const en of entries) {
@@ -1983,6 +1985,15 @@ const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((ent
     for (let i = 0; i < acts.children.length; i++) actsW += acts.children[i].offsetWidth + (i ? btnGap : 0);
     // 两块等宽：可用宽要装得下「文件名区（= 按钮区宽）+ 间距 + 按钮区」，否则折
     row.classList.toggle('dc-stacked', avail < actsW * 2 + (parseFloat(rcs.columnGap) || 0));
+    const main = row.querySelector('.dc-main');
+    const note = main && main.querySelector('.dc-note');
+    if (note) {
+      const name = main.querySelector('.dc-name');
+      const gap = parseFloat(getComputedStyle(main).columnGap) || 0;
+      const spare = main.clientWidth - name.scrollWidth - gap; // 文件名完整显示后剩下的宽
+      const minShow = (parseFloat(getComputedStyle(note).fontSize) || 13) * 2; // 至少摆得下两个字
+      note.classList.toggle('hidden', spare < minShow); // 项目口径的隐身：.hidden = display:none !important
+    }
   }
 }) : null;
 
