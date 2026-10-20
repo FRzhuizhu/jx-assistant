@@ -1221,7 +1221,10 @@ function subTaskCard(tc, result) {
        自己上一次裁剪的影响，也就不会自激）；
      - 会话渲染完、对话区尺寸变化（拖宽/缩窗口）、字号变化时都重算（ResizeObserver +
        window resize，合到一帧）；所以不会出现「该折叠的没折叠」或「明明很短却折叠了」；
-     - 用户手动展开过的（data-fold-open=1）重算后保持展开，只是按钮变成「收起」。
+     - 用户手动展开过的（data-fold-open=1）重算后保持展开，只是按钮变成「收起」；
+       展开意图还按「会话+seq」记入内存（foldOpenMem）——流式期间尾部每个消息
+       事件都会重建、用户气泡随之换新元素，展开过的气泡靠记忆恢复展开，不再
+       被新出的思考/工具行反复折回（刷新页面才回到默认折叠）。
    作用域（2026-10-14 放开）：主对话与右栏子对话两个视图都生效，不再看会话
    mode——按《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」，任务会话、
    子对话与主对话一致；仍不折叠的只有流式输出中的那半句与编辑态气泡
@@ -1232,6 +1235,20 @@ const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取�
 let foldScheduled = false;
 let foldTimer = 0;
 let foldRetry = 0;      // 「当时还没排好版」的重试次数（最多 5 次）
+
+// 展开记忆（跨尾部重建存活）：流式期间每个 message 事件都会全量重建尾部
+//（renderMessages：最后一回合的用户气泡随之换新元素，挂在元素上的
+// data-fold-open 一起丢，于是每出一行思考/工具就重折一次——不符合「展开了
+// 就保持展开」的设计意图）。这里按「会话 id + seq」记住用户手动展开过的气泡，
+// 重建后的新元素在装折叠按钮时查表恢复展开。只在内存里：刷新页面自然全部
+// 回到默认折叠；用户再手动收起即删记录（回到默认行为）。插话/发送占位是
+// 随重建重置的临时形态（无 seq），刻意不记。
+const foldOpenMem = new Map();
+function foldKeyOf(el, view) {
+  const seq = el.parentElement && el.parentElement.dataset.seq;
+  const sid = view && view.state && view.state.cur ? view.state.cur.id : '';
+  return seq && sid ? sid + ':' + seq : null;
+}
 
 // 是否需要折叠：**所有会话、所有视图一律生效**（此前只做数字助理主对话
 // mode=assistant，与《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」不符；
@@ -1350,8 +1367,15 @@ function applyFoldsIn(view, enabled) {
         b.textContent = '展开';
         b.onclick = () => toggleFold(el, b);
         el.appendChild(b);
-        el.dataset.foldOpen = '0';
-        el.classList.add('folded'); // 默认折叠：只显示前 6 行
+        // 尾部重建会换新元素（data-fold-open 已丢）：查展开记忆，本回合展开过
+        // 就直接以展开态出现（流式中每出一行思考/工具都重建一次，不恢复的话
+        // 用户刚展开的气泡立刻被折回去）
+        const fk = foldKeyOf(el, view);
+        const open = !!fk && foldOpenMem.get(fk) === '1';
+        el.dataset.foldOpen = open ? '1' : '0';
+        el.classList.toggle('folded', !open); // 无记忆时默认折叠：只显示前 6 行
+        b.textContent = open ? '收起' : '展开';
+        b.setAttribute('aria-expanded', open ? 'true' : 'false');
       } else {
         // 已经在折叠体系里：保留用户的展开意图，只同步按钮文案
         const open = el.dataset.foldOpen === '1';
@@ -1380,6 +1404,8 @@ function applyFoldsIn(view, enabled) {
 function toggleFold(el, btn) {
   const folded = el.classList.toggle('folded');
   el.dataset.foldOpen = folded ? '0' : '1';
+  const fk = foldKeyOf(el, foldViewOf(el));
+  if (fk) { folded ? foldOpenMem.delete(fk) : foldOpenMem.set(fk, '1'); } // 只记展开；手动收起=回到默认
   btn.textContent = folded ? '展开' : '收起';
   btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
   if (folded) followScroll(foldViewOf(el), false); // 收起到 6 行后按所在视图重新贴底
