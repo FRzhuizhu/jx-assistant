@@ -270,8 +270,14 @@ func ensureTermuxSkillRuntime(modules, wheels []string, emit func(string)) (*pyt
 	return py, nil
 }
 
+// pythonEmbedURLs 便携 Python embeddable 的下载源，依次回退：官方源在国内
+// 经常超时（2026-10 实测 HEAD 挂起），华为云镜像托管同一文件、秒下。
+var pythonEmbedURLs = []string{
+	"https://www.python.org/ftp/python/3.14.8/python-3.14.8-embed-amd64.zip",
+	"https://mirrors.huaweicloud.com/python/3.14.8/python-3.14.8-embed-amd64.zip",
+}
+
 const (
-	pythonEmbedURL   = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip"
 	getPipURL        = "https://bootstrap.pypa.io/get-pip.py"
 	pipMirror        = "https://pypi.tuna.tsinghua.edu.cn/simple"
 	provisionTimeout = 20 * time.Minute
@@ -287,7 +293,7 @@ func provisionPythonRuntime(rtDir string, modules, wheels []string, emit func(st
 			return nil, err
 		}
 		zipPath := filepath.Join(rtDir, "python-embed.zip")
-		if err := downloadFile(pythonEmbedURL, zipPath); err != nil {
+		if err := downloadFirstAvailable(zipPath, pythonEmbedURLs); err != nil {
 			return nil, fmt.Errorf("下载便携 Python 失败（需联网一次）: %w", err)
 		}
 		if err := unzip(zipPath, rtDir); err != nil {
@@ -305,7 +311,8 @@ func provisionPythonRuntime(rtDir string, modules, wheels []string, emit func(st
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 		defer cancel()
-		out, err := runCommandCapture(ctx, pyExe, []string{getPip, "--no-warn-script-location"}, rtDir)
+		// -i 镜像：get-pip 要从 PyPI 拉 pip 本体，bootstrap 源在国内不稳
+		out, err := runCommandCapture(ctx, pyExe, []string{getPip, "--no-warn-script-location", "-i", pipMirror}, rtDir)
 		if err != nil {
 			return nil, fmt.Errorf("安装 pip 失败: %v\n%s", err, tailRunes(out, 800))
 		}
@@ -392,6 +399,17 @@ func downloadFile(url, dest string) error {
 	}
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+// downloadFirstAvailable 依次尝试多个源下载（官方源在国内经常超时，镜像兜底）。
+func downloadFirstAvailable(dest string, urls []string) error {
+	var err error
+	for _, u := range urls {
+		if err = downloadFile(u, dest); err == nil {
+			return nil
+		}
+	}
 	return err
 }
 
