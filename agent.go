@@ -363,13 +363,14 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	}
 	// 引用文件覆盖：data/prompts/<mode>.md 存在时替换该模式的基础提示词；
 	// 模式附加段（文件规范/派发准则）是产品硬规则，覆盖后仍追加。
-	// 版本行记录提示词来源：内置路径文案保持原样（存量会话缓存不受影响），
-	// 引用文件则附内容 hash——提示词变更必然改变请求前缀（断缓存），
-	// hash 让这种变更在导出时间线上一眼可见。
+	// 引用文件附内容 hash 记录提示词来源——提示词变更必然改变请求前缀
+	//（断缓存），hash 让这种变更在导出时间线上一眼可见；内置路径则不加
+	// 任何标记，版本号不进系统提示词（随发版变化会白白打断前缀缓存，
+	// 版本可经 /api/status 查询）。
 	tag := ""
 	if over := a.promptOverride(sess.Mode); over != "" {
 		base = over
-		tag = "；系统提示词：引用文件 " + promptHash(base)
+		tag = "\n\n（系统提示词：引用文件 " + promptHash(base) + "）"
 	}
 	// 文件修改与交付规范只给有写入能力的模式：task / office 拼 fileToolsPrompt
 	// （含 deliver_result 交付强调——办公向任务的成果文件要送回用户手上）；
@@ -407,7 +408,7 @@ func (a *App) systemPrompt(sess *SessionMeta) string {
 	}
 	// 提问的分寸（全模式共享）：配合 ask_user_question 的 timeout_sec 分档
 	base += askTierPrompt
-	return base + a.selfExeLine() + "\n\n（本助手由 坚祥数字助理 v" + appVersion + " 驱动" + tag + "）"
+	return base + a.selfExeLine() + tag
 }
 
 // selfExeLine 引擎程序自我定位句（全模式）：模型据此知道自己运行在哪、
