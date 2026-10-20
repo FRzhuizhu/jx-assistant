@@ -147,6 +147,10 @@ async function openSession(id) {
 // 消息与派生数据清空，_pfxSid 失效（渲染缓存随会话作废）
 function optimisticSwitch(view, brief) {
   const st = view.state;
+  // 落盘必须赶在 cur 改写之前：persistSessionDraftLS / persistSubDraftLS 认的是
+  // 「当前 cur」，cur 一旦换成目标对话，这次落盘就把上一个对话的字写进了目标
+  // 对话的草稿键——切到哪个对话都带着同一份没发出去的字，正是这个顺序造成的
+  if (view === mainView) flushMainDraft(); else flushSubDraft();
   st.cur = { ...brief };
   st.msgs = [];
   st.pendingSteer = [];
@@ -176,9 +180,9 @@ function applySessionChrome(view) {
   }
   syncComposer(view);
   renderPanels(); // 待决定的浮窗跟着会话归属走
-  // 覆盖输入框为目标上下文的草稿前，先把当前输入（防抖 300ms 窗口内的最后几下）
-  // 落盘——否则切换/同会话刷新会把还没落盘的几个字顶回旧草稿
-  if (view === mainView) flushMainDraft(); else flushSubDraft();
+  // ① 输入框整体换成目标对话的草稿；② 调用方必须已经「在 cur 改写之前」把源对话
+  // 输入框里的字落过盘（optimisticSwitch / loadSessionInto 各自负责，见那里的注释）——
+  // 这里不能自己 flush：此刻 st.cur 已是目标对话，flush 等于把源对话的字写进目标键
   try {
     viewEl(view, 'input').value = localStorage.getItem(
       view === mainView ? sessionDraftKey(st.cur.id) : subDraftKey(st.cur.id)
@@ -280,6 +284,9 @@ async function loadSessionInto(id, tok) {
     renderMessages(state.msgs, mainView);
     return;
   }
+  // 落盘必须在 cur 改写之前（见 optimisticSwitch 的注释）：列表里查不到 brief 时
+  // 不走乐观切换，cur 此刻还是上一个对话——先把它输入框里的字落到它自己的草稿键
+  flushMainDraft();
   state.cur = data.meta;
   state.msgs = data.messages || [];
   state.pendingSteer = (data.pending && data.pending.steer) || [];
@@ -5078,7 +5085,6 @@ async function prepareSend(forceContent, view) {
   // 重试时判重幂等，见 flushAttachments）
   let attNotes = [];
   if (attachmentsOf(view).length) {
-    view.state.attachSid = view.state.cur.id;
     attNotes = await flushAttachments(view);
     if (attNotes === null) { if (armed) runHintOff(view); return; }
     clearAttachments(view); // 已上传并将并入内容：附件区退场
@@ -6858,7 +6864,6 @@ function stagePaths(paths, view) {
     list.push(a);
     added.push(a);
   }
-  if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
   // 输入框里挂上“报告fina….docx”胶囊标记：附件区卡片照旧（图标/缩略图/✕），胶囊只记
   // “在正文哪个位置引用了哪个文件”，发送时原样随正文发出（【文件上传】注记带全名）
@@ -6889,7 +6894,6 @@ function stageFiles(files, view) {
     list.push(a);
     added.push(a);
   }
-  if (view.state.cur && !view.state.attachSid) view.state.attachSid = view.state.cur.id;
   renderAttachments(view);
   // 输入框里挂上“报告fina….docx”胶囊标记（同 stagePaths：附件区卡片照旧，标记只管位置）
   for (const a of added) insertInputMark(view, attachMarkOf(a));
@@ -6979,12 +6983,11 @@ JX.receiveText = function (text) {
   return true;
 };
 
-// 清空附件（换会话 / 发送完毕）：缩略图的 objectURL 一并释放
+// 清空附件（发送完毕）：缩略图的 objectURL 一并释放。暂存区跨对话通用，切对话不清
 function clearAttachments(view) {
   const list = attachmentsOf(view);
   for (const a of list) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   list.length = 0;
-  view.state.attachSid = null;
   const box = viewEl(view, 'attachments');
   if (box) { box._sig = null; box.innerHTML = ''; box.classList.add('hidden'); }
   syncComposerPad(view);
@@ -7048,14 +7051,13 @@ function removeAttachment(view, id) {
 
 // 附件区渲染：0 个附件 → 带 hidden（零占位、不参与布局）；有附件才上屏。
 // 内容签名没变就不重建 DOM（syncComposer 会被频繁调用）。
+// 附件暂存区是「所有对话通用」的：跨对话切换/回首页都不清（手机壳把文件分享到
+// 新建对话页、再挑一个对话发出去，靠的就是这份暂存跟着走）；只有发送成功才清。
 function renderAttachments(view) {
   view = view || mainView;
   const box = viewEl(view, 'attachments');
   if (!box) return;
   const list = attachmentsOf(view);
-  // 换了会话：这一轮的附件不跟过去（首页还没会话时 attachSid 为空，建会话不算换）
-  const sid = view.state.cur ? view.state.cur.id : null;
-  if (view.state.attachSid && view.state.attachSid !== sid) clearAttachments(view);
   const sig = list.map((a) => [a.id, a.name, a.size, a.status].join(':')).join('|');
   if (box._sig === sig) return;
   box._sig = sig;

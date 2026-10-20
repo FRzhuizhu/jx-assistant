@@ -786,8 +786,12 @@ function persistMainDraftLS() {
 // 草稿落盘的防抖包装：input 事件逐键同步写 localStorage 在输入快/存储慢时
 // 白费（上午排查报告路径三）；300ms 尾随合并。执行时读当下输入框与上下文，
 // 不捕获参数——期间发生的清空/切换会话会让晚到的落盘写空值或新上下文的值，
-// 都幂等无害。覆盖输入框的路径（applySessionChrome / resetEmpty / 子对话切换）
-// 与关页（beforeunload）前必须先 flush，保证最后 300ms 内的输入不丢。
+// 都幂等无害。
+// 切换对话时必须「在 cur 改写之前」flush（optimisticSwitch / loadSessionInto /
+// openSubSession / goHomeNewTask / subClearCurrent 各自负责）：落盘按当前 cur 认
+// 目标对话，cur 换成目标之后才 flush 会把上一个对话的字写进目标对话的草稿键。
+// 覆盖输入框（applySessionChrome / resetEmpty）与关页（beforeunload）前也要 flush，
+// 保证最后 300ms 内的输入不丢。
 let mainDraftTimer = 0, subDraftTimer = 0;
 function scheduleMainDraft() {
   clearTimeout(mainDraftTimer);

@@ -400,7 +400,6 @@ function subClearCurrent() {
 
 // 子对话只在右栏显示，绝不切换主对话区
 async function openSubSession(id) {
-  flushSubDraft(); // 切换前把防抖窗口内的输入落进旧子对话的草稿（下面会整体替换输入框）
   // 右栏换子对话：同样先放开本地这条流（后端执行照旧，回来自动接上）
   if (subState.streaming && (!subState.cur || subState.cur.id !== id)) detachStream(subView);
   const tok = ++navTok.sub;
@@ -419,6 +418,10 @@ async function openSubSession(id) {
       renderMessages(subState.msgs, subView);
       return;
     }
+    // 落盘必须在 cur 改写之前（persistSubDraftLS 认的是当前 subState.cur）：此刻
+    // cur 可能是上一个子对话（没走乐观切换）或已是目标（乐观切换已把 cur 换了），
+    // 两种都对。放在 cur 之后再 flush 就会把上一个子对话的字写进目标子对话的草稿键
+    flushSubDraft();
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
     // 打开即视为已读（与主对话 openSession 同款）：清红点与完成绿点，下拉清单数据同步
@@ -446,8 +449,8 @@ async function openSubSession(id) {
     syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
     syncComposerPad(subView); // 悬浮输入区：重算子对话消息列的垫高与按钮锚点
     renderPanels(); // 待决定的浮窗：这个子对话自己的卡落在右栏输入区上方，主对话区那份随之撤掉
-    // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个子对话的字）
-    flushSubDraft(); // 覆盖前落盘：乐观切换后到数据落地之间输入的字不能被顶回旧草稿
+    // 输入框整体替换为该子对话的草稿（打字时已即时落盘；没有草稿就是空，不残留上一个子对话的字）。
+    // 落盘已在 cur 改写之前做过（见上方 flushSubDraft），这里只读目标草稿
     try {
       $('sub-input').value = localStorage.getItem(subDraftKey(id)) || '';
     } catch (e) { $('sub-input').value = ''; }
