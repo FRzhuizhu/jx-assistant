@@ -453,6 +453,98 @@ func TestKeepRoundsByBudget(t *testing.T) {
 	}
 }
 
+// 模式切换不影响历史压缩的应用：压缩发生了就是发生了——规则折叠的历史在
+// llm（AI 摘要）模式下仍按折叠视图组装，摘要历史在 rule 模式下仍照常注入。
+// 设置里的压缩模式只决定未来的压缩行为。回归测试：此前组装与 Cfg.CompactMode
+// 耦合，切到摘要模式后历史折叠标记被无视、按原始消息整包重组，主对话上下文
+// 从 20 多万 token 飙回 70 多万（压缩等于失效）。
+func TestCompactHistoryIndependentOfMode(t *testing.T) {
+	a := newCompactTestApp(t)
+	sess := &SessionMeta{ID: "s1", Mode: "task"}
+	if err := a.Store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, final := seedRound(t, a, "s1", "一轮", true)
+	seedRound(t, a, "s1", "二轮", false)
+	if _, err := a.ruleCompactTo(sess, final); err != nil {
+		t.Fatal(err)
+	}
+
+	join := func(mode string) string {
+		a.Cfg.CompactMode = mode
+		var b strings.Builder
+		for _, m := range a.buildContext(sess, "SYS") {
+			if s, ok := m.Content.(string); ok {
+				b.WriteString(s + "\n")
+			}
+		}
+		return b.String()
+	}
+
+	// 规则压缩历史 + 摘要模式：折叠视图照常生效（工具结果/思考不回流）
+	llm := join("llm")
+	for _, want := range []string{"一轮的问题", "[调用 write 参数=", "一轮的结论", "二轮的问题"} {
+		if !strings.Contains(llm, want) {
+			t.Fatalf("llm 模式下折叠历史视图缺 %q:\n%s", want, llm)
+		}
+	}
+	for _, ban := range []string{"写入成功1024字节", "的思考"} {
+		if strings.Contains(llm, ban) {
+			t.Fatalf("llm 模式下折叠历史不应回流 %q:\n%s", ban, llm)
+		}
+	}
+	if n := strings.Count(llm, "以上为压缩后的历史"); n != 1 {
+		t.Fatalf("llm 模式下折叠边界提示应 1 条, got %d:\n%s", n, llm)
+	}
+	if strings.Index(llm, "以上为压缩后的历史") > strings.Index(llm, "二轮的问题") {
+		t.Fatalf("llm 模式下边界提示应在未折叠原文之前:\n%s", llm)
+	}
+	// 上下文面板口径：同一段历史在两种模式下 token 总量必须一致
+	join("rule")
+	ruleTotal := a.contextStats(sess).Total
+	join("llm")
+	llmTotal := a.contextStats(sess).Total
+	if ruleTotal != llmTotal {
+		t.Fatalf("切换模式不应改变历史组装口径: rule=%d llm=%d", ruleTotal, llmTotal)
+	}
+
+	// 对称场景：摘要历史 + 规则模式 → 摘要照常注入、边界内行不进上下文
+	s2 := &SessionMeta{ID: "s2", Mode: "task"}
+	if err := a.Store.Create(s2); err != nil {
+		t.Fatal(err)
+	}
+	seedRound(t, a, "s2", "旧一轮", true)  // seq 1-4，被摘要覆盖
+	seedRound(t, a, "s2", "旧二轮", false) // seq 5-6，被摘要覆盖
+	if err := a.Store.AppendRow("s2", &StoredMessage{
+		Message: TextMessage("system", "【手动历史摘要（覆盖至第 6 条）】先前对话的摘要正文。"),
+		Kind:    kindSummary, Origin: "manual", CoversUpTo: 6, CreatedAt: "2026-01-02 11:00:00",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedRound(t, a, "s2", "新一轮", false) // seq 8-9，边界后原文
+	a.Cfg.CompactMode = "rule"
+	var b strings.Builder
+	for _, m := range a.buildContext(s2, "SYS") {
+		if s, ok := m.Content.(string); ok {
+			b.WriteString(s + "\n")
+		}
+	}
+	rule := b.String()
+	for _, want := range []string{"先前对话的摘要正文", "新一轮的问题", "新一轮的结论"} {
+		if !strings.Contains(rule, want) {
+			t.Fatalf("rule 模式下摘要历史视图缺 %q:\n%s", want, rule)
+		}
+	}
+	for _, ban := range []string{"旧一轮的问题", "旧二轮", "写入成功1024字节"} {
+		if strings.Contains(rule, ban) {
+			t.Fatalf("rule 模式下已摘要覆盖的原文不应回流 %q:\n%s", ban, rule)
+		}
+	}
+	if n := strings.Count(rule, "以上为压缩后的历史"); n != 0 {
+		t.Fatalf("无折叠标记时不应注入折叠边界提示, got %d:\n%s", n, rule)
+	}
+}
+
 // 二级压缩与边界提示标签：已折叠过的轮再次被更大的压缩范围覆盖时，升级为
 // 只留用户输入与模型最终输出；组装时在折叠边界注入提示（告知模型以上已压缩、
 // 细节可查历史原文），全折时提示缀尾。

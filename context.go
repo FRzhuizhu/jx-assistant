@@ -101,6 +101,10 @@ func activeSummaries(msgs []*StoredMessage) []*StoredMessage {
 
 // buildContext 是组装管线：系统提示词 + 活跃摘要 + 边界后消息
 // （规则压缩视图生效，最近轮保持原文），并修剪结尾悬空的工具调用。
+// 组装只认压缩的事实——行上的 Compact 标记与摘要覆盖边界无条件应用，
+// 与设置里的压缩模式无关：压缩发生了就是发生了，永久生效；模式只决定
+// 未来压缩走哪条路（maybeAutoCompact/overflowCompact/handleCompact 选路），
+// 切换模式绝不能让已压缩的历史按原始消息整包重组。
 // 环境快照行（kind=env）按落位进上下文，**追加式**（已发送的前缀绝不改写）：
 // 可见的首条快照整份呈现（摘要折叠后以边界后首条重新作为完整基线），
 // 其后相邻快照按差分形状分流——纯新增渲染为短的「环境更新」补充，条目有减
@@ -118,8 +122,6 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 			boundary = s.CoversUpTo
 		}
 	}
-	ruleMode := a.Cfg.CompactMode == "rule"
-
 	out := make([]Message, 0, len(raw)+2)
 	out = append(out, TextMessage("system", sys))
 	for _, s := range summaries {
@@ -131,18 +133,16 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" || m.Kind == "audit" {
 			continue
 		}
-		if ruleMode {
-			if m.Compact == "" && foldSeen {
-				out = append(out, TextMessage("user", foldBoundaryNote))
-				foldSeen = false
-			}
-			if m.Compact != "" {
-				foldSeen = true
-			}
+		if m.Compact == "" && foldSeen {
+			out = append(out, TextMessage("user", foldBoundaryNote))
+			foldSeen = false
+		}
+		if m.Compact != "" {
+			foldSeen = true
 		}
 		// 折叠丢弃的行先跳过——含压缩区内的环境快照（不再走差分渲染，
 		// 保留区首个可见快照自然成为整份基线）
-		if ruleMode && m.Compact == compactOmit {
+		if m.Compact == compactOmit {
 			continue
 		}
 		if m.Kind == "env" {
@@ -156,7 +156,7 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 			prevEnv = env
 			continue
 		}
-		if ruleMode && m.Compact != "" {
+		if m.Compact != "" {
 			// 压缩表示：纯文本消息，不带 tool_calls（协议要求配对完整）。
 			// 用户侧输入的折叠视图与原文一致，时间提示词照常派生
 			out = append(out, Message{Role: m.Role, Content: m.Compact})
@@ -184,7 +184,7 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		out = append(out, a.timeAfter(m)...)
 	}
 	// 整段可见历史都已折叠（按钮把最后一轮也折了）：提示标签缀在尾部
-	if ruleMode && foldSeen {
+	if foldSeen {
 		out = append(out, TextMessage("user", foldBoundaryNote))
 	}
 	// 全序列修复工具调用配对（协议硬要求；残缺可能出现在任何位置，见函数注释）
@@ -510,7 +510,6 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 				boundary = s.CoversUpTo
 			}
 		}
-		ruleMode := a.Cfg.CompactMode == "rule"
 		for _, s := range summaries {
 			add("摘要", TextMessage("user", s.Text()))
 		}
@@ -520,17 +519,15 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
 				continue
 			}
-			if ruleMode {
-				if m.Compact == "" && foldSeen {
-					add("消息", TextMessage("user", foldBoundaryNote))
-					foldSeen = false
-				}
-				if m.Compact != "" {
-					foldSeen = true
-				}
+			if m.Compact == "" && foldSeen {
+				add("消息", TextMessage("user", foldBoundaryNote))
+				foldSeen = false
+			}
+			if m.Compact != "" {
+				foldSeen = true
 			}
 			// 与 buildContext 同一折叠口径：omit 行（含压缩区环境快照）不进上下文
-			if ruleMode && m.Compact == compactOmit {
+			if m.Compact == compactOmit {
 				continue
 			}
 			if m.Kind == "env" {
@@ -543,7 +540,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 				prevEnv = env
 				continue
 			}
-			if ruleMode && m.Compact != "" {
+			if m.Compact != "" {
 				add("消息", Message{Role: m.Role, Content: m.Compact})
 				// 与 buildContext 同一派生口径：折叠的用户侧行同样跟时间消息
 				for _, tm := range a.timeAfter(m) {
@@ -559,7 +556,7 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			}
 		}
 		// 与 buildContext 同一口径：整段可见历史都已折叠时提示标签缀尾
-		if ruleMode && foldSeen {
+		if foldSeen {
 			add("消息", TextMessage("user", foldBoundaryNote))
 		}
 		// 输出速度：倒序找最近一次有效的成功输出——audit 行带输出窗口 outMs 且
