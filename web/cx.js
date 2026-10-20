@@ -16,30 +16,89 @@
  * 收到后重挂——于是关掉组件时它那段设置连同按钮一起消失。 */
 
 (function () {
-  if (window.CX) return;
+  // 同一 window 里文档被整页替换（配对页 gate 的 document.open/write 换页、离线缓存
+  // 兜底换页）时，window.CX 还活着但 document 已是新的：旧 CX 绑的是旧文档的 DOM，
+  // 组件按钮在新文档里全都没有（语音按钮回落到 .hidden、待办按钮没人注入）。
+  // 只认「同一文档」的 CX——跨文档就重新初始化、在新文档上重挂组件（2026-10-21）。
+  if (window.CX && window.CX._doc === document) return;
+
+  // 诊断打点（同 app-chat.js 的 jxDiag：1px GIF beacon → 后端日志）。cx.js 先于
+  // 其它脚本执行时 jxDiag 可能还没定义，这里自带一份，只用于组件加载链路排障。
+  function cxDiag(msg) {
+    try { new Image().src = '/api/diag?m=' + encodeURIComponent('[CX] ' + msg) + '&t=' + Date.now(); } catch (e) { /* 静默 */ }
+  }
 
   const CX = {
+    _doc: document,   // 归属文档：换页后要重新初始化（见上方守卫）
+    _ok: false,       // 清单是否至少成功拉到过一次（成功拉空也置位，不空转重试）
     _list: [],        // /api/components 的清单
     _active: {},      // id -> { dispose }（已 init 的组件）
     _gen: {},         // id -> 代数（防快速反复开关的旧请求串台）
     _sections: [],    // {id, title, mount}：组件设置区（设置页「内置组件」渲染）
 
-    async boot() {
+    async boot(tryN) {
+      tryN = tryN || 0;
+      let data = null;
       try {
         const res = await fetch('/api/components');
-        const data = await res.json();
-        this._list = data.components || [];
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        data = await res.json();
       } catch (e) {
-        console.warn('[CX] 清单读取失败', e);
+        // 远程模式首屏经中继/直连拉组件清单，手机在后台被系统重建页面、中继未就绪
+        // 时这一拉会失败——过去一次失败就整个页面生命周期没有组件（按钮全不见、
+        // 页面其余功能却正常，2026-10-21 手机端实测反馈）。这里退避重试，并在
+        // 页面可见/网络恢复时自愈（见下方监听）。
+        console.warn('[CX] 清单读取失败（第 ' + (tryN + 1) + ' 次）', e);
+        cxDiag('boot 清单读取失败 #' + (tryN + 1) + ' ' + (e && e.message || e));
+        this._bootRetry(tryN);
         return;
       }
+      this._ok = true;
+      this._list = (data && data.components) || [];
       for (const c of this._list) {
         if (c.enabled) this._inject(c);
       }
     },
 
+    /** 清单没拉到就退避重试（1.5s→20s，最多 5 轮）；拉到过一次就停，不空转 */
+    _bootRetry(tryN) {
+      if (tryN >= 5) { cxDiag('boot 连续 5 轮失败，等页面可见/网络恢复再试'); return; }
+      const waits = [1500, 3000, 6000, 12000, 20000];
+      const w = waits[tryN] || 20000;
+      setTimeout(() => {
+        if (this._doc !== document) return;      // 换页了：新文档的 CX 自己会拉
+        if (this._ok) return;                    // 期间已经拉到了
+        this.boot(tryN + 1);
+      }, w);
+    },
+
+    /** 自愈：清单没拉到过（_ok=false）时，立即重拉一轮（页面可见/网络恢复/定时兜底） */
+    heal() {
+      if (this._doc !== document || this._ok) return;
+      this.boot(0);
+    },
+
     _manifest(id) {
       return this._list.find((c) => c.id === id) || null;
+    },
+
+    /** 资产拉取（带重试）：远程走中继，首屏抖动一次不该让组件永久缺席 */
+    _fetchText(url, tries) {
+      tries = tries == null ? 3 : tries;
+      return (async () => {
+        let lastErr = null;
+        for (let i = 0; i < tries; i++) {
+          try {
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return await r.text();
+          } catch (e) {
+            lastErr = e;
+            if (i < tries - 1) await new Promise((res) => setTimeout(res, 600 * (i + 1)));
+          }
+        }
+        throw lastErr || new Error('fetch failed');
+      })();
     },
 
     // 注入一个组件的资产（带代数防串台；重注入前先清旧标签）。
@@ -55,29 +114,27 @@
       this._removeTags(c.id);
       const base = '/api/components/' + c.id + '/';
       if (c.hasCss) {
-        fetch(base + 'client.css?t=' + gen)
-          .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        this._fetchText(base + 'client.css?t=' + gen)
           .then((css) => {
-            if (this._gen[c.id] !== gen) return;
+            if (this._gen[c.id] !== gen || this._doc !== document) return;
             const style = document.createElement('style');
             style.dataset.cx = c.id;
             style.textContent = css;
             document.head.appendChild(style);
           })
-          .catch((e) => console.warn('[CX] 组件 ' + c.id + ' 样式加载失败', e));
+          .catch((e) => { console.warn('[CX] 组件 ' + c.id + ' 样式加载失败', e); cxDiag(c.id + ' css 加载失败 ' + (e && e.message || e)); });
       }
       if (c.hasJs) {
-        fetch(base + 'client.js?t=' + gen)
-          .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        this._fetchText(base + 'client.js?t=' + gen)
           .then((code) => {
-            if (this._gen[c.id] !== gen) return;
+            if (this._gen[c.id] !== gen || this._doc !== document) return;
             const s = document.createElement('script');
             s.dataset.cx = c.id;
             // sourceURL 让报错堆栈按组件文件名显示（text 注入默认是匿名 inline）
             s.text = code + '\n//# sourceURL=' + base + 'client.js';
             document.body.appendChild(s);
           })
-          .catch((e) => console.warn('[CX] 组件 ' + c.id + ' 脚本加载失败', e));
+          .catch((e) => { console.warn('[CX] 组件 ' + c.id + ' 脚本加载失败', e); cxDiag(c.id + ' js 加载失败 ' + (e && e.message || e)); });
       }
     },
 
@@ -138,10 +195,19 @@
       let fresh;
       try {
         const res = await fetch('/api/components');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         fresh = data.components || [];
       } catch (e) {
         console.warn('[CX] 清单刷新失败', e);
+        return;
+      }
+      // 瞬时空清单（远程中继抖动 / 服务端正扫目录）不等于「组件全被删了」——
+      // 照单全收会把所有组件 dispose 掉且再也没有补回的机会（按钮消失的另一种来路），
+      // 这里当作异常跳过本轮对账（2026-10-21）。
+      if (!fresh.length && this._list.length) {
+        console.warn('[CX] 清单返回空，疑似瞬时异常，跳过本轮对账');
+        cxDiag('refresh 返回空清单，跳过对账');
         return;
       }
       const oldIds = new Set(this._list.map((c) => c.id));
@@ -197,4 +263,14 @@
   } else {
     CX.boot();
   }
+
+  // 自愈：手机端页面常在后台被系统重建（WebView 渲染进程回收/换页），那一刻中继
+  // 可能未就绪，首拉清单会失败——过去失败就永久没有组件（按钮全不见、页面其余
+  // 功能正常）。页面回到前台、网络恢复、或每 30 秒兜底时，只要清单还没成功拉过
+  // 就立刻重拉（成功过就什么都不做，零开销，2026-10-21）。
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) CX.heal();
+  });
+  window.addEventListener('online', () => CX.heal());
+  setInterval(() => CX.heal(), 30000);
 })();
