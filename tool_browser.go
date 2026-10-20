@@ -14,6 +14,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -47,25 +48,37 @@ func browserOpenTool() Tool {
 	return Tool{
 		Spec: toolSpec("browser_open",
 			"打开或导航到指定网页或本地文件（各实例各自保留地址与登录态，重开会回到之前的页面）。url 接受浏览器支持的任意地址：http/https 网址、file:/// 本地文件路径，以及 edge://、about: 等内部页（部分内部页浏览器本身不允许嵌入打开，会自然报导航失败）。mode 选打开方式："+
-				"headless（默认）在内嵌浏览器打开——桌面版显示在右栏「浏览器」面板（原生 Edge 网页，用户可旁观并随时直接操作），网页版在后台运行；两种形态都是每个会话一个独立实例（页面与登录态互不串台，用户切到别的对话时面板跟着切走，切回来即恢复）；"+
-				"headed 弹一个独立的浏览器窗口，用户在真实窗口里查看和操作，适合演示给用户、需要用户配合填写的场景（各会话独立窗口与登录态、互不干扰；窗口被手动关闭后再次 open 会自动重开新窗口）。"+
-				"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。返回页面标题与最终地址。"+capNoteBrowser,
+			"headless（默认）在内嵌浏览器打开——桌面版显示在右栏「浏览器」面板（原生 Edge 网页，用户可旁观并随时直接操作），网页版在后台运行；两种形态都是每个会话一个独立实例（页面与登录态互不串台，用户切到别的对话时面板跟着切走，切回来即恢复）；"+
+			"headed 弹一个独立的浏览器窗口，用户在真实窗口里查看和操作，适合演示给用户、需要用户配合填写的场景（各会话独立窗口与登录态、互不干扰；窗口被手动关闭后再次 open 会自动重开新窗口）。"+
+			"grants 可选：给该会话的浏览器实例预授权站点权限，每项「权限名@origin」（如 automatic_downloads@https://mail.qq.com——预授权 QQ 邮箱自动下载多个文件，不再弹「网页想要下载多个文件」确认；权限名是 Chromium content settings 类型名，与浏览器设置页一一对应，常用还有 notifications、geolocation、microphone、camera；origin 可写宽如 https://[*.]qq.com）。"+
+			"预授权只对列出的站点生效、其余站点保持默认询问，写入实例 profile 需重启生效（工具自动处理：在跑的实例会自动重开，登录态保留）。"+
+			"之后的其他 browser_* 工具作用于最近一次 browser_open 选定的实例。返回页面标题与最终地址。"+capNoteBrowser,
 			objSchema(withCapRequest(map[string]any{
-				"url":  strProp("要打开的地址：http/https 网址、file:/// 本地路径或浏览器内部页（edge:// 等）"),
-				"mode": strProp("headless（默认，内嵌形态）或 headed（独立窗口）"),
+				"url":    strProp("要打开的地址：http/https 网址、file:/// 本地路径或浏览器内部页（edge:// 等）"),
+				"mode":   strProp("headless（默认，内嵌形态）或 headed（独立窗口）"),
+				"grants": map[string]any{"type": "array", "items": strProp("预授权项：权限名@origin，如 automatic_downloads@https://mail.qq.com"), "description": "可选：给该会话浏览器实例预授权的站点权限（默认不授任何权）"},
 			}), "url")),
 		Run: func(t *toolContext, args json.RawMessage) (string, error) {
 			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
 			var p struct {
-				URL  string `json:"url"`
-				Mode string `json:"mode"`
+				URL    string   `json:"url"`
+				Mode   string   `json:"mode"`
+				Grants []string `json:"grants"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
 			}
 			h := t.app.browserFor(sessionBrowserKey(t), p.Mode)
+			if len(p.Grants) > 0 {
+				if g, ok := h.(interface{ ApplyGrants([]string) error }); ok {
+					if err := g.ApplyGrants(p.Grants); err != nil {
+						return "", fmt.Errorf("预授权写入失败: %w", err)
+					}
+				}
+				// Electron 桥面板未实现 ApplyGrants：静默跳过（该形态无此机制）
+			}
 			url, title, err := h.Navigate(p.URL)
 			if err != nil {
 				return "", err
@@ -75,6 +88,9 @@ func browserOpenTool() Tool {
 				if note := bh.ReopenNote(); note != "" {
 					where += "；" + note
 				}
+			}
+			if len(p.Grants) > 0 {
+				where += "；已预授权 " + strconv.Itoa(len(p.Grants)) + " 项站点权限"
 			}
 			return fmt.Sprintf("已打开：%s（标题：%s；%s）", url, title, where), nil
 		},

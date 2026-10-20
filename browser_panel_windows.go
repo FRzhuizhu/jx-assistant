@@ -372,6 +372,31 @@ func withPanelBrowserArgs(f func()) {
 	f()
 }
 
+// dataPath 面板的 WebView2 数据目录（每会话独立 profile，与 createOnUI 共用
+// 同一口径）。
+func (p *browserPanel) dataPath() string {
+	if key := browserProfileKey(p.sid); key != "" {
+		return filepath.Join(p.app.Cfg.DataDir, "webview-browsers", key)
+	}
+	return filepath.Join(p.app.Cfg.DataDir, "webview-browser")
+}
+
+// ApplyGrants 预授权内容设置（browser_open 的 grants 参数，见
+// writeProfileGrants）：面板的 WebView2 同为 Chromium profile 结构，注入
+// 同款；实例在跑先停（Close 两阶段收尾、浏览器进程随之退出释放
+// Preferences），授权落盘后由后续导航触发重建生效。
+func (p *browserPanel) ApplyGrants(grants []string) error {
+	if len(grants) == 0 {
+		return nil
+	}
+	dir := p.dataPath()
+	if p.Started() {
+		p.Close()
+		waitProfileQuiet(dir, 5*time.Second)
+	}
+	return writeProfileGrants(dir, grants)
+}
+
 // createOnUI 在 UI 线程创建子窗口与该会话的 WebView2 控件（独立环境与
 // profile：data/webview-browsers/<会话>，与主界面 data/webview 隔离，同浏览器
 // 模型于旧方案的 data/browser-profile）。
@@ -400,10 +425,7 @@ func (p *browserPanel) createOnUI() error {
 	// 串台；空会话（首页态点链接等无会话上下文的入口）沿用旧共享目录。
 	// 不同 user-data-folder 的多个 WebView2 环境在同一进程共存，各带一组
 	// 独立浏览器进程——惰性创建（首个矩形/导航才建），不用浏览器的会话零开销。
-	ch.DataPath = filepath.Join(p.app.Cfg.DataDir, "webview-browser")
-	if key := browserProfileKey(p.sid); key != "" {
-		ch.DataPath = filepath.Join(p.app.Cfg.DataDir, "webview-browsers", key)
-	}
+	ch.DataPath = p.dataPath()
 	ch.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		p.onNavCompleted()
 	}

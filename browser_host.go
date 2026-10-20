@@ -367,6 +367,114 @@ func (h *BrowserHost) dead() bool {
 	return h.tabCtx != nil && h.tabCtx.Err() != nil
 }
 
+// profileDir 实例的配置目录（profile 为空=按形态取默认；绝对化）。预授权
+// 注入与启动共用，保证两处算的是同一个目录。
+func (h *BrowserHost) profileDir() string {
+	profile := h.profile
+	if profile == "" {
+		profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile")
+		if !h.headless {
+			profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile-headed")
+		}
+	}
+	if abs, err := filepath.Abs(profile); err == nil {
+		return abs
+	}
+	return profile
+}
+
+// writeProfileGrants 往 Chromium profile 的 Preferences 注入内容设置预授权：
+// grants 每项「权限名@origin」（如 automatic_downloads@https://mail.qq.com——
+// 权限名是 Chromium content settings 的类型名，对应浏览器设置页里的一项，
+// 网上可查），落为 profile.content_settings.exceptions.<权限名> 下的
+// "<origin>,*": {"setting":1}（1=允许）。只合并指定键，其余设置不动。
+// 必须在该 profile 的浏览器未运行时调用——运行中的实例退出时会整体覆写
+// Preferences，注入会被冲掉（ApplyGrants 负责先停实例）。
+func writeProfileGrants(profileDir string, grants []string) error {
+	if len(grants) == 0 {
+		return nil
+	}
+	prefsPath := filepath.Join(profileDir, "Default", "Preferences")
+	if err := os.MkdirAll(filepath.Dir(prefsPath), 0o755); err != nil {
+		return err
+	}
+	raw := map[string]any{}
+	if b, err := os.ReadFile(prefsPath); err == nil {
+		_ = json.Unmarshal(b, &raw) // 解析失败从空重建：浏览器启动时自会补全结构
+	}
+	prof, _ := raw["profile"].(map[string]any)
+	if prof == nil {
+		prof = map[string]any{}
+		raw["profile"] = prof
+	}
+	cs, _ := prof["content_settings"].(map[string]any)
+	if cs == nil {
+		cs = map[string]any{}
+		prof["content_settings"] = cs
+	}
+	exc, _ := cs["exceptions"].(map[string]any)
+	if exc == nil {
+		exc = map[string]any{}
+		cs["exceptions"] = exc
+	}
+	for _, g := range grants {
+		name, origin, ok := strings.Cut(strings.TrimSpace(g), "@")
+		if !ok || name == "" || origin == "" {
+			return fmt.Errorf("预授权格式应为 权限名@origin（如 automatic_downloads@https://mail.qq.com），收到: %s", g)
+		}
+		list, _ := exc[name].(map[string]any)
+		if list == nil {
+			list = map[string]any{}
+			exc[name] = list
+		}
+		list[origin+",*"] = map[string]any{"setting": 1}
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(prefsPath, out)
+}
+
+// waitProfileQuiet 等浏览器进程把退出时的 Preferences 覆写做完（修改时间
+// 连续几拍不变视为写完），上限 max。文件不存在（全新 profile）立即返回。
+func waitProfileQuiet(profileDir string, max time.Duration) {
+	p := filepath.Join(profileDir, "Default", "Preferences")
+	deadline := time.Now().Add(max)
+	var prev time.Time
+	stable := 0
+	for time.Now().Before(deadline) {
+		fi, err := os.Stat(p)
+		switch {
+		case err != nil:
+			return // 还没有 Preferences：没有可被覆写的东西
+		case fi.ModTime() == prev:
+			stable++
+			if stable >= 3 {
+				return // ~450ms 无变化：退场覆写已结束
+			}
+		default:
+			prev, stable = fi.ModTime(), 0
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// ApplyGrants 给本实例预授权内容设置（browser_open 的 grants 参数入口）：
+// Preferences 只在浏览器启动时读取，所以实例在跑必须先停再注入，之后由
+// 调用方的 Navigate 触发重开（登录态在 profile 里，无损）。右栏面板同款
+// 方法见 browserPanel.ApplyGrants。
+func (h *BrowserHost) ApplyGrants(grants []string) error {
+	if len(grants) == 0 {
+		return nil
+	}
+	if h.Started() {
+		h.Close()
+		waitProfileQuiet(h.profileDir(), 5*time.Second)
+	}
+	return writeProfileGrants(h.profileDir(), grants)
+}
+
 // startIfNeeded 拉起浏览器，返回是否「检测到上一实例已死并重开」。发现
 // 僵尸态先彻底清场再重启：用户手动关掉窗口后，下一次 browser_open 应当
 // 重开一个新窗口，而不是抱着死 ctx 报错（调用方需持有 h.mu）。
@@ -383,16 +491,7 @@ func (h *BrowserHost) startIfNeeded() (bool, error) {
 		h.closeLocked() // 上一实例已死：彻底清场后重开
 		reopened = true
 	}
-	profile := h.profile
-	if profile == "" {
-		profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile")
-		if !h.headless {
-			profile = filepath.Join(h.app.Cfg.DataDir, "browser-profile-headed")
-		}
-	}
-	if abs, err := filepath.Abs(profile); err == nil {
-		profile = abs
-	}
+	profile := h.profileDir()
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		return reopened, fmt.Errorf("创建浏览器配置目录失败: %w", err)
 	}

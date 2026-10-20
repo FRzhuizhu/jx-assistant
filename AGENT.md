@@ -1242,7 +1242,17 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   WebView2 面板开不了 edge:// 是微软对控件的限制），未知 scheme 由浏览器层
   自然报错。交付卡有「在右侧打开」显式按钮（任意文件进右栏），工具栏在
   file:// 页面提供「用系统应用打开 / 在文件夹中定位」配套；远程会话流式
-  预览（/api/browser/view）按扩展名给真实 Content-Type。接口：`POST
+  预览（/api/browser/view）按扩展名给真实 Content-Type。
+  **站点权限预授权**：`browser_open` 的 `grants` 参数（每项
+  `权限名@origin`，如 `automatic_downloads@https://mail.qq.com`——预授权
+  站点自动下载多个文件，浏览器不再弹「想要下载多个文件」确认）写入该会话
+  实例 profile 的 Preferences（`profile.content_settings.exceptions`，
+  setting=1 允许，仅对列出站点生效、其余保持默认询问）。Preferences 只在
+  浏览器启动时读取：`ApplyGrants` 会先停在跑的实例（等退出覆写结束）再
+  注入，随后 Navigate 重开生效（登录态在 profile 无损）；右栏 WebView2
+  面板同款（Chromium 同构 profile），Electron 桥面板不支持（静默跳过）。
+  具体授什么权由各技能的 SKILL.md 写明，权限名是 Chromium content settings
+  类型名（网上可查）。接口：`POST
   /api/browser/{panel-rect,navigate,viewport,open-view,close}`、`GET
   /api/browser/{state,view}`，body/query 带 session 字段路由到该会话的实例；
  事件 `browser_nav`（工具栏地址/标题）、
