@@ -127,7 +127,11 @@ if ($Skills) {
   [IO.Compression.ZipFile]::CreateFromDirectory($stageSkills, $skillsZip,
     [IO.Compression.CompressionLevel]::Optimal, $false)
   Remove-Item $stageSkills -Recurse -Force
-  $skillsArgs += "-skills", (Split-Path -Leaf $skillsZip)
+  # 文件名带上内容哈希前缀：内容变了就是新文件，客户端中途下载不会撞上"同名但内容已换"
+  $skHash = (Get-FileHash $skillsZip -Algorithm SHA256).Hash.ToLower().Substring(0, 16)
+  $skillsNamed = Join-Path $outDir "skills-builtin-$skHash.zip"
+  Move-Item $skillsZip $skillsNamed -Force
+  $skillsArgs += "-skills", (Split-Path -Leaf $skillsNamed)
 }
 
 # ---- 完整安装包（可选，整包路与静默更新并存） ----
