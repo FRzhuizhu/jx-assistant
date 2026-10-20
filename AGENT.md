@@ -1409,7 +1409,10 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   一轮的用户消息」——增量演化规则写进组件里的提示词（保留最初核心、语义合并
   新主题、合不拢用「＋」连接）。用户手动改名（PATCH title）即打钉（session
   data `title.pinned`），`autoTitle` 通道对该会话 409 停改，`autoTitleUnpin`
-  解钉，组件设置区提供状态显示与解钉按钮；轻量消息读取走
+  解钉——钉住标记随会话列表/详情接口下发（`titlePinned`，会话右键菜单的
+  「恢复自动命名」按它显隐，组件关掉即不出）；改名落库广播 `title` 事件，
+  前端侧栏/顶栏实时跟进（组件改名常在流结束数秒后晚到，不广播的话当面永远
+  看不见）；轻量消息读取走
   `GET /api/sessions/{id}/messages`）。
 
 ## 插件与插件兼容层

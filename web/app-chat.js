@@ -2702,6 +2702,18 @@ function handleGlobalEvent(ev) {
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrentSoon();
       break;
+    case 'title':
+      // 会话标题被改（AI 自动命名组件在流结束数秒后晚到落库 / 别处窗口手动改
+      // 名）：翻新侧栏行、右栏子对话下拉与顶栏——侧栏只在流结束那一刻刷新一次，
+      // 不跟这条广播的话晚到的改名当面永远看不见，观感就是「自动命名没生效」
+      loadSessions();
+      refreshDrawer();
+      if (viewing) {
+        state.cur.title = ev.title; // 内存 brief 一并对齐（重命名弹窗等读它）
+        applySessTitle({ mode: state.cur.mode, parentId: state.cur.parentId, title: ev.title });
+      }
+      if (subViewing) { subState.cur.title = ev.title; subRenderHeader(); }
+      break;
     case 'approval_required':
       pushApproval(ev);
       break;

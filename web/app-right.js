@@ -341,6 +341,12 @@ function openSubItemMenu(s, rect) {
       subRenderHeader();
       loadSessions();
     } },
+    // 与主对话会话菜单同款：钉住的会话在自动命名组件启用中时可在此恢复
+    ...((window.CX && CX.isActive('session-title') && s.titlePinned) ? [{
+      label: '恢复自动命名', fn: async () => {
+        await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ autoTitleUnpin: true }) });
+        loadSessions();
+      } }] : []),
     { label: s.unread ? '取消未读' : '标为未读', fn: async () => {
       await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ unread: !s.unread }) });
       s.unread = !s.unread; // 就地翻转，重开下拉即见红点

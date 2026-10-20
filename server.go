@@ -1555,8 +1555,10 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stops := a.Store.LastStops() // 异常中断标记（空=正常收口，见 Store.SetLastStop）
+		pins := a.Store.PinnedTitles()
 		for _, m := range list {
 			m.LastStop = stops[m.ID]
+			m.TitlePinned = pins[m.ID]
 			if a.IsRunning(m.ID) {
 				m.Status = "running"
 			}
@@ -1572,8 +1574,10 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	// 执行状态以内存注册表为准：数据库那列只用于服务重启后的中断恢复；
 	// 异常中断标记（侧栏「⚠ 已中断」）同理不读会话表，一次取齐后按 id 分发
 	stops := a.Store.LastStops()
+	pins := a.Store.PinnedTitles() // 标题钉住标记（右键「恢复自动命名」按它显隐）
 	for _, m := range list {
 		m.LastStop = stops[m.ID]
+		m.TitlePinned = pins[m.ID]
 		if m.Status != "running" && a.IsRunning(m.ID) {
 			m.Status = "running"
 		}
@@ -1696,12 +1700,15 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// meta 一并带上钉住标记：title_worker 的预检读 meta.titlePinned——此前只有
+	// 顶层字段，预检永远落空，钉住会话每个节奏轮都白调一次模型再吃 409
+	m.TitlePinned = a.titlePinned(m.ID)
 	writeJSON(w, 200, map[string]any{
 		"meta": m, "messages": msgs,
 		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
 		"checkpoints": cps, "deliveries": dvs,
 		"error": a.runError(m.ID), // 最近一次失败原因（输入框上方报错条 + 重试）
-		"titlePinned": a.titlePinned(m.ID), // 手动命名钉住：AI 自动标题（组件 session-title）停改
+		"titlePinned": m.TitlePinned, // 手动命名钉住：AI 自动标题（组件 session-title）停改
 	})
 }
 
@@ -1801,6 +1808,7 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	// 上下文事件收集：字段有实际变化才记，落库成功后经总线 Notify（导出时间线呈现）
 	type ctxNote struct{ kind, detail string }
 	var notes []ctxNote
+	titleWas := m.Title // 标题是否真的被改：落库后广播 title 事件（前端侧栏/顶栏跟进）
 	if body.AutoTitleUnpin != nil && *body.AutoTitleUnpin {
 		_ = a.Store.SetSessionData(m.ID, titlePinKey, "")
 	}
@@ -1808,7 +1816,7 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		title := truncateRunes(*body.Title, 40)
 		if body.AutoTitle != nil && *body.AutoTitle {
 			if a.titlePinned(m.ID) {
-				writeErr(w, 409, "标题已被用户手动命名（钉住），自动改名停用；可在 设置 → 内置组件 里恢复自动命名")
+				writeErr(w, 409, "标题已被用户手动命名（钉住），自动改名停用；可右键该会话选「恢复自动命名」")
 				return
 			}
 			m.Title = title
@@ -1911,6 +1919,13 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, n := range notes {
 		a.ctxEngine().Notify(m, n.kind, n.detail)
+	}
+	// 标题被改（AI 自动命名组件晚到落库 / 别处窗口手动改名）：广播给所有在线
+	// 前端翻新侧栏与顶栏。不加这条的话，组件的改名常在流结束数秒后才落库，而
+	// 侧栏只在流结束那一刻刷新一次——用户当面永远看不到标题变化，误以为自动
+	// 命名从未生效（10-21 实测排查的根因）。
+	if m.Title != titleWas {
+		a.broadcast(Event{Type: "title", SessionID: m.ID, Title: m.Title})
 	}
 	// 环境快照正管的条目（权限/能力/计划目标/工作目录）在 PATCH 落库后立即
 	// 重算并按需落新快照——变更瞬间即进时间线与下一次组装的上下文，不等下一

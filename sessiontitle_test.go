@@ -114,6 +114,46 @@ func TestTitlePinSemantics(t *testing.T) {
 	}
 }
 
+// ①′ 钉住标记随会话列表/详情下发（会话右键菜单「恢复自动命名」按它显隐）。
+func TestSessionListCarriesTitlePinned(t *testing.T) {
+	a := newTitleTestApp(t, "")
+	mkTitleSession(t, a, "s-pin2")
+	mkTitleSession(t, a, "s-free")
+
+	// 初始都没钉住：列表与详情都应回 false/缺省
+	inList := func(id string) map[string]any {
+		_, d := doReq(t, a, "GET", "/api/sessions", "")
+		sessions, _ := d["sessions"].([]any)
+		for _, sm := range sessions {
+			if m, ok := sm.(map[string]any); ok && m["id"] == id {
+				return m
+			}
+		}
+		return nil
+	}
+	if m := inList("s-pin2"); m == nil || m["titlePinned"] == true {
+		t.Fatalf("未钉住会话不应带 titlePinned=true，得到 %v", m)
+	}
+	// 手动命名 → 列表带 true，详情 meta 也带（worker 预检读 meta.titlePinned）
+	doReq(t, a, "PATCH", "/api/sessions/s-pin2", `{"title":"手工名"}`)
+	if m := inList("s-pin2"); m == nil || m["titlePinned"] != true {
+		t.Fatalf("钉住后列表应带 titlePinned=true，得到 %v", m)
+	}
+	_, d := doReq(t, a, "GET", "/api/sessions/s-pin2", "")
+	meta, _ := d["meta"].(map[string]any)
+	if meta == nil || meta["titlePinned"] != true {
+		t.Fatalf("详情 meta 应带 titlePinned=true（worker 预检口径），得到 %v", meta)
+	}
+	if d["titlePinned"] != true {
+		t.Fatalf("详情顶层应带 titlePinned=true，得到 %v", d["titlePinned"])
+	}
+	// 解钉 → 列表回落
+	doReq(t, a, "PATCH", "/api/sessions/s-pin2", `{"autoTitleUnpin":true}`)
+	if m := inList("s-pin2"); m == nil || m["titlePinned"] == true {
+		t.Fatalf("解钉后列表不应再带 titlePinned=true，得到 %v", m)
+	}
+}
+
 // ② 轻量消息列表的 role 过滤与插话排除。
 func TestSessionMessagesRoleFilter(t *testing.T) {
 	a := newTitleTestApp(t, "")

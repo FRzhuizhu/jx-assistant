@@ -596,6 +596,26 @@ func (s *Store) LastStops() map[string]string {
 	return out
 }
 
+// PinnedTitles 一次取齐所有「标题被手动命名（钉住）」的会话（会话列表接口用：
+// AI 自动标题组件的会话右键「恢复自动命名」按它显隐）。出错当没有：少一个
+// 菜单项不该把整个列表带崩。
+func (s *Store) PinnedTitles() map[string]bool {
+	const prefix = "sessdata:" + titlePinKey + ":"
+	out := map[string]bool{}
+	rows, err := s.db.Query(`SELECT k FROM meta WHERE k LIKE ? AND v<>''`, prefix+"%")
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out[strings.TrimPrefix(k, prefix)] = true
+		}
+	}
+	return out
+}
+
 // ---------- 停止原因记录（谁停的 / 什么时候停的，重启后仍查得出来） ----------
 
 // 停止原因的两类触发者。

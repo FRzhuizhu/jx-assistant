@@ -428,6 +428,13 @@ function openSessionMenu(s, rect) {
       await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
       loadSessions();
     } },
+    // 手动改过名（钉住）的会话恢复 AI 自动命名：入口贴着使用场景放会话菜单，
+    // 且仅在该组件启用中且确实钉住时出现（组件关掉=整套自动命名停转，恢复无意义）
+    ...((window.CX && CX.isActive('session-title') && s.titlePinned) ? [{
+      label: '恢复自动命名', fn: async () => {
+        await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ autoTitleUnpin: true }) });
+        loadSessions();
+      } }] : []),
     { label: s.unread ? '取消未读' : '标为未读', fn: async () => {
       await api('/api/sessions/' + s.id, { method: 'PATCH', body: JSON.stringify({ unread: !s.unread }) });
       loadSessions();

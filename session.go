@@ -58,6 +58,10 @@ type SessionMeta struct {
 	// 「⟳ 运行中」同槽、天然互斥。值存在 meta 表（Store.SetLastStop），只由会话
 	// 列表接口临时填进来——不在 sessionCols 里，SaveMeta 也就写不到它。
 	LastStop string `json:"lastStop,omitempty"`
+	// 标题被用户手动命名（钉住，AI 自动标题组件对该会话停改）。与 LastStop 同款
+	// 口径：值在 meta 表（titlePinKey），由会话列表/详情接口临时填进来，不在
+	// sessionCols 里、SaveMeta 写不到它——会话右键菜单「恢复自动命名」按它显隐。
+	TitlePinned bool `json:"titlePinned,omitempty"`
 	// 累计用量（来自每次模型调用的流尾 usage，按 token 累加而非按次平均，
 	// 供上下文面板「Token 用量」分组：缓存命中% = hit/prompt）
 	UsagePrompt   int64  `json:"usagePrompt,omitempty"`   // 历次调用 prompt_tokens 总和（输入）
