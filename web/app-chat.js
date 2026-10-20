@@ -611,21 +611,18 @@ function toolRow(tc, result, opts = {}) {
 
 /* ---------- 折叠段：折叠条 + 隐藏容器 ---------- */
 
-  // 上下文材料条目：时间提示、首轮尾部材料、系统提示词/工具定义变更。
+  // 上下文材料条目：时间提示、首轮尾部材料、运行环境更新、系统提示词/工具定义变更。
   // 它们与思考/工具过程一起折叠（想核对「模型看到了什么」时再展开），
   // 渲染的两个路径（完成态/流式）都按此归类。
-  // 运行环境更新（envnote）不在此列：它是用户需要知道的环境变更通知（权限
-  // 提升/模式切换/能力开关等），与系统通知（note）同列常显（见 streamPinned
-  // / finishedKeep），不参与过程折叠。
 function isMatItem(it) {
-  return it.k === 'time' || it.k === 'prompttail' || it.k === 'syschange' || it.k === 'toolschange';
+  return it.k === 'time' || it.k === 'prompttail' || it.k === 'envnote' || it.k === 'syschange' || it.k === 'toolschange';
 }
 // 注意：fold（已折叠标注行）刻意不归入材料折叠——它是用户要看的状态标注，
 // 与压缩摘要行同样常显，藏进材料分组就失去「这里压缩过」的提示意义
 
 // 折叠条标签：折起多少行是总体计数，放最前面；后面是调用 AI 几次、执行工具几次、
-// 以及上下文材料条数。行数**永远在**（执行中与完成态同一个函数出标签，
-// 不会一处有一处没有）。系统通知不计数：通知类整体常显、不进折叠段。
+// 以及上下文材料/系统通知条数。行数**永远在**（执行中与完成态同一个函数出标签，
+// 不会一处有一处没有）。
 // 步数口径 = 向模型发送请求的次数：一步 = 主循环一次迭代（一次模型调用，该步触发的
 // 全部工具调用——含并行——都算同一步），与后端 agent.go 的 step 计步一致
 // （见《最大步数计步口径排查报告.md》）。消息数据里没有现成的步数字段，用「本段
@@ -638,6 +635,7 @@ function foldLabel(cnt) {
   if (cnt.steps) parts.push('调用 AI ' + cnt.steps + ' 次');
   if (cnt.tools) parts.push(cnt.tools + ' 次工具调用');
   if (cnt.mat) parts.push(cnt.mat + ' 条上下文材料');
+  if (cnt.note) parts.push(cnt.note + ' 条系统通知');
   return parts.join(' · ');
 }
 
@@ -647,7 +645,7 @@ function foldLabel(cnt) {
 // 次」= 3，而该回合真实只有 2 次调用——seq 277 在两段里都被数了）。所以整个回合
 // 共用一个 Set，本段只报**本段新增**的步数，各段合计仍等于真实调用次数。
 function secCount(items, seen) {
-  const cnt = { steps: 0, tools: 0, mat: 0, rows: items.length };
+  const cnt = { steps: 0, tools: 0, mat: 0, note: 0, rows: items.length };
   const steps = seen instanceof Set ? seen : new Set();
   let added = 0; // 本段新计入的步数（前面各段已计过的不再计）
   items.forEach((it) => {
@@ -661,7 +659,8 @@ function secCount(items, seen) {
       if (steps.has(k)) return;
       steps.add(k);
       added++;
-    } else if (isMatItem(it)) cnt.mat++;
+    } else if (it.k === 'note') cnt.note++;
+    else if (isMatItem(it)) cnt.mat++;
   });
   cnt.steps = added;
   return cnt;
@@ -2197,7 +2196,7 @@ function appendTurn(target, turn, key, view, isLast) {
   if (turn.sysHead) target.appendChild(sysHeadRow(turn.sysHead, turn.sysHeadSeq));
   if (turn.userMsg) target.appendChild(userBubble(turn.userMsg, view));
   const streaming = isLast && view.state.streaming;
-  renderTurnProcess(target, turn, key, { streaming: streaming });
+  renderTurnProcess(target, turn, key, { streaming: streaming, isLast: !!isLast });
   if (streaming) return; // 执行中不画收尾件（文件改动/交付卡片），随完成态一起出现
   const seqSet = new Set();
   turn.items.forEach((it) => { if (it.seq != null) seqSet.add(it.seq); });
@@ -2353,10 +2352,10 @@ function renderMessages(msgs, view, opts) {
 // （seenSteps）都在这条路径上，执行中与完成态共用，所以「折起来的样子」永远一致；
 // 两态真正的差别只在**哪些条目常显**，由下面两套策略给出：
 //   · 执行中 streamKeep：尾部窗口——最近 TAIL_ROWS 个过程条目常显（看得到最新
-//     动作），上方折成折叠条；系统通知/环境变更/运行中子任务卡/计划卡/长正文/
-//     已折叠标注行钉住常显。
+//     动作），上方折成折叠条；系统通知/运行中子任务卡/计划卡/长正文/已折叠标注行
+//     钉住常显。
 //   · 完成态 finishedKeep：按内容角色钉住——收尾答案、长正文、计划卡、已折叠
-//     标注行、压缩卡片，以及系统通知与运行环境更新（通知类整体常显，不折叠）。
+//     标注行、孤立的系统通知与末回合尾部通知。
 // 为什么不能并成一套：执行中按内容角色折会把最新动作折没；完成后还留尾部 10 行
 // 窗口，打开历史会话时中段会露出零散过程行。上下文材料行不参与常显，位置就是它
 // 在消息序列里的真实位置——两态一致，不会「流式时被搬到顶上、完成后又跑回中间」。
@@ -2365,7 +2364,7 @@ function renderTurnProcess(box, turn, key, opts = {}) {
   const streaming = opts.streaming === true;
   const plan = streaming
     ? { set: streamKeep(items), answerIdx: -1 }
-    : finishedKeep(items);
+    : finishedKeep(items, opts.isLast === true);
   // 步数去重集按**回合**共享：同一助手行的条目可能被锚点切到前后两段，
   // 各段各建一个 Set 会把一次调用数两遍（见 secCount）
   const seenSteps = new Set();
@@ -2396,24 +2395,23 @@ function streamKeep(items) {
 }
 
 // 执行中钉住常显的几类：系统通知（report 通道的虚线通知块——执行期间的中断/上传
-// 提示不能被折没）与运行环境更新（envnote，权限提升/模式切换这类变更用户需要
-// 看到）、运行中的子任务卡（实时进度）、计划卡、中间长正文（与完成态
+// 提示不能被折没）、运行中的子任务卡（实时进度）、计划卡、中间长正文（与完成态
 // 同一豁免：「先解释一大段、再连续十几次工具调用」的讲解段不能执行中途被折没）、
 // 以及「已折叠」标注行（它标记的就是折叠这件事本身，折进段里等于没标）。
 // 派发类消息（aiuser）是回合的 userMsg、永远在过程段之外，天然常显，不劳这里钉。
 function streamPinned(it) {
-  return it.k === 'note' || it.k === 'envnote' || it.k === 'plancard' || it.k === 'fold' || it.k === 'summary' ||
+  return it.k === 'note' || it.k === 'plancard' || it.k === 'fold' || it.k === 'summary' ||
     (it.k === 'subtask' && !it.result) || (it.k === 'text' && isLongText(it.text));
 }
 
-// 完成态的可见策略（锚点）：回合内连续的可折叠项（思考/工具/子任务卡/上下文材料）
-// 不分家，相邻就折进同一段；段内还有各自的行级小折叠（proc-row 点开看
-// 原文、工具行点开看参数）。锚点：回合收尾答案（最后一条正文且其行无伴随工具
-// 调用，见下）、长正文（isLongText，plancard 计划卡同理）、已折叠标注行与压缩
-// 卡片，以及**系统通知/运行环境更新整体常显**——中断/交付完成/环境变更这类
-// 信息用户必须看得到，折进折叠条等于没通知（此前的口径是只有孤立的与末回合
-// 尾部的通知常显，与过程相邻的通知跟着进大折叠，已废弃）。
-function finishedKeep(items) {
+// 完成态的可见策略（锚点）：回合内连续的可折叠项（思考/工具/子任务卡/上下文材料/
+// 系统通知）不分家，相邻就折进同一段；段内还有各自的行级小折叠（proc-row 点开看
+// 原文、工具行点开看参数）。锚点四类：回合收尾答案（最后一条正文且其行无伴随工具
+// 调用，见下）、长正文（isLongText，plancard 计划卡同理）、**孤立**的系统通知
+// （前后都没有可折叠邻居的单条），以及**尾部通知**——最后一个回合里、下方再没有
+// 任何消息（正文/计划卡）的通知保持常显：系统中断这类提示往往就是会话的最后一条，
+// 重启后用户打开会话要靠它知道「发个继续」。
+function finishedKeep(items, isLast) {
   // 回合的收尾答案 = 最后一条正文，且它自己所在的助手行**没有伴随工具调用**
   // （「正文+工具调用」是过程交代，不是收尾）。被打断的回合（系统中断/执行中断）
   // 停在半路，最后一条正文往往来自这种行——不能按最终输出对待：不挂操作按钮、
@@ -2433,8 +2431,15 @@ function finishedKeep(items) {
   // 「已折叠」标注行与压缩卡片常显：它们标记的就是压缩/折叠这件事本身，
   // 折进折叠段等于没标——用户要靠它们知道对话在哪儿被压过
   items.forEach((it, i) => { if (it.k === 'fold' || it.k === 'summary') anchor.add(i); });
-  // 系统通知与运行环境更新整体常显（见函数头注释），不参与过程折叠
-  items.forEach((it, i) => { if (it.k === 'note' || it.k === 'envnote') anchor.add(i); });
+  const foldable = (it) => it.k !== 'text' && it.k !== 'plancard';
+  items.forEach((it, i) => {
+    if (it.k !== 'note') return;
+    const nb = (j) => j >= 0 && j < items.length && foldable(items[j]);
+    // 尾部豁免：最后一回合里，这条通知下方没有消息（正文/计划卡）——它是
+    // 最新一条消息，常显；下方一旦有消息（哪怕材料行也无所谓）按常规规则走
+    const tail = isLast && !items.slice(i + 1).some((x) => x.k === 'text' || x.k === 'plancard');
+    if (tail || (!nb(i - 1) && !nb(i + 1))) anchor.add(i);
+  });
   return { set: anchor, answerIdx: answerIdx };
 }
 
