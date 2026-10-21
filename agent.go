@@ -14,7 +14,28 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// toolResultMaxBytes 是单条工具结果进入上下文前的统一上限。各工具自己有更细
+// 的限额（run_command 64KB、read 256KB、job_output 64KB…），这里是最后一层
+// 兜底：任何工具（含以后新增的）单次输出都不超过它，超出截断并提示分页续读。
+// 目的：不让某一类工具（历史上 job_output 曾达 512KB）一次吃掉大半个上下文窗口。
+const toolResultMaxBytes = 128 * 1024
+
+// clipToolResult 按字节上限截断一条工具结果，在 rune 边界收口（不劈开多字节
+// 字符），末尾附续读提示——模型据此改用 offset/分页参数继续读，而不是把整段
+// 原始输出塞回上下文。
+func clipToolResult(out string) string {
+	if len(out) <= toolResultMaxBytes {
+		return out
+	}
+	cut := toolResultMaxBytes
+	for cut > 0 && !utf8.RuneStart(out[cut]) {
+		cut--
+	}
+	return out[:cut] + fmt.Sprintf("\n…（工具结果过长已截断：共 %d 字节，仅保留前 %d 字节；需要更多请改用 offset / 分页参数分段读取）", len(out), cut)
+}
 
 // Event 是后端向前端推送的流式事件（SSE data 帧的载荷）。
 type Event struct {
@@ -1443,6 +1464,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			if rewritten := a.ccPostToolUse(ctx, sess, tc, out); rewritten != "" {
 				out = rewritten
 			}
+			out = clipToolResult(out) // 统一封顶：任何工具单次结果都不能过大
 			tm := Message{Role: "tool", Content: out, ToolCallID: tc.ID}
 			tsm := a.appendMessage(sess, tm)
 			emit(Event{Type: "message", Message: &tsm.Message, Seq: tsm.Seq, Kind: kindChat})

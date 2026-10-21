@@ -4,7 +4,9 @@ package main
 // run_command 带 run_in_background=true 时不等待命令结束，立即返回作业 id，
 // 命令在后台继续跑（不限时）；模型用 job_output 读输出（可阻塞等待）、
 // job_list 列出本会话的作业、job_kill 终止。输出进内存环形缓冲，上限
-// 512KB，超出截头。作业仅本地执行（SSH 远程会话不支持，返回明确错误）。
+// 64KB（与前台的 run_command 同口径；曾为 512KB，一次 job_output 就能吃掉
+// 大半个上下文窗口——ERP 会话实测单次 50 万字），超出截头。作业仅本地执行
+//（SSH 远程会话不支持，返回明确错误）。
 
 import (
 	"bytes"
@@ -19,7 +21,7 @@ import (
 )
 
 const (
-	jobBufMax = 512 * 1024 // 单作业输出缓冲上限
+	jobBufMax = 64 * 1024 // 单作业输出缓冲上限（与前台命令 64KB 同口径，防单次读走半个上下文）
 	jobKeep   = time.Hour  // 已结束作业的保留时长（之后在新作业启动时清理）
 )
 
