@@ -43,9 +43,10 @@ import kotlin.math.abs
  *   http，只有壳子享受 https
  * - 麦克风权限链：Manifest RECORD_AUDIO + onPermissionRequest 对已配对 host 的
  *   AUDIO_CAPTURE 先申请运行时权限再 grant（语音听写的采集入口）
- * - 返回键（2026-10-12）：交给网页的返回键守卫——对话页→呼出左栏、左栏→收回
- *   对话页、弹窗/设置页逐层收敛（网页自带 popstate 两级返回）；3 秒内第二次
- *   返回 = 回壳首页（不能拦住用户退不出去）
+ * - 返回键（2026-10-22 收敛）：逻辑全在网页——壳只把按键转成一次 jxNavBack()
+ *   调用，由网页按层级决定（设置页 → 连按两次退出 → 菜单 → 右栏 → 左栏 →
+ *   对话页呼出左栏），与浏览器返回、左右滑手势同一套。壳只保留网页做不到的两件
+ *   事：先退系统全屏视频；网页说 'exit'（3 秒内连按两次）时 finish() 真正结束本页
  * - 应用级「首页」浮条：原生 TextView 胶囊浮在 WebView 之上、
  *   屏幕水平绝对居中，与网页布局完全解耦——此前把按钮注入网页顶栏，编程模式下
  *   顶栏内容变多会把右侧栏按钮挤到第二行；浮条盖在网页上，网页爱怎么排怎么排
@@ -66,9 +67,6 @@ class DeviceActivity : Activity() {
 
     // 麦克风：网页 PermissionRequest 暂存（等运行时权限结果回来再 grant）
     private var pendingAudioReq: PermissionRequest? = null
-
-    // 返回键：3 秒内第二次 = 回首页
-    private var lastBackAt = 0L
 
     // 全屏视频状态（onShowCustomView/onHideCustomView 用）
     private var fullscreenView: View? = null
@@ -499,33 +497,22 @@ class DeviceActivity : Activity() {
         }
     }
 
-    /* ---------- 返回键：交给网页守卫，双击直出 ---------- */
+    /* ---------- 返回键：逻辑全在网页，壳只做网页做不到的事 ---------- */
 
     override fun onBackPressed() {
-        // 全屏视频先退全屏（不退出页面）
+        // 一、系统全屏视频先退全屏：那是 WebView 盖在页面上的原生 overlay，
+        //     网页自己关不掉，只能由壳退出（且不退出页面）
         if (fullscreenView != null) {
             web.webChromeClient?.onHideCustomView()
             return
         }
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastBackAt <= 3000) {
-            // 3 秒内第二次：回壳首页（不能拦住用户退不出去）
-            finish()
-            return
-        }
-        lastBackAt = now
-        // 第一次：交给网页的返回键守卫（对话页→呼出左栏 / 左栏→收回对话页 /
-        // 弹窗→关弹窗）；设置页走它自己的两级返回（goBack 触发 popstate）
-        web.evaluateJavascript(BACK_JS) { res ->
-            val r = (res ?: "").trim('"')
-            if (r == "settings" && web.canGoBack()) {
-                web.goBack()
-            } else if (r == "chat") {
-                runOnUiThread {
-                    Toast.makeText(this, "再按一次返回首页", Toast.LENGTH_SHORT).show()
-                }
-            }
-            // open/close/popover：网页已消费本次返回
+        // 二、其余全交给网页的 jxNavBack：设置页 → 连按两次退出 → 菜单 → 右栏 →
+        //     左栏 → 对话页呼出左栏，与浏览器返回、左右滑手势是同一套逻辑（不再
+        //     在壳里复刻分派）。只有网页明确回 'exit'（3 秒内连按第二次）时壳才
+        //     真正结束本页——「结束 Activity」是网页做不到的事。页面还没就绪、
+        //     取不到 jxNavBack 时同样放行，绝不把用户困在页面里
+        web.evaluateJavascript(NAV_BACK_JS) { res ->
+            if ((res ?: "").trim('"') == "exit") runOnUiThread { finish() }
         }
     }
 
@@ -678,29 +665,15 @@ class DeviceActivity : Activity() {
         """
 
         /**
-         * 返回键分派脚本（每次即时注入，不驻留——换页/路由重建都不怕）。
-         * 优先级复刻网页返回键守卫（app-left.js backGuardPop）：设置页（它自己有
-         * 两级 popstate 返回，壳子只负责 goBack 触发）> 弹出菜单（直接关）>
-         * 左栏开关（对话页→呼出 / 左栏开→收回，正是窄屏 toggleSidebar 的行为）。
-         * 返回值：settings | popover | open | close | chat
+         * 返回键的唯一转交口：调用网页的 jxNavBack（窄屏返回层级的唯一入口），
+         * 由它按层级决定动作并回答结果；只有 'exit' 需要壳动作（结束本页）。
+         * 取不到函数（页面还没就绪/老版本网页）时回 'exit'——壳照旧放行退出，
+         * 不能让用户按返回没反应。
          */
-        private const val BACK_JS = """
-            (function(){
-              try {
-                var set = document.getElementById('settings');
-                if (set && !set.classList.contains('hidden')) return 'settings';
-                if (document.querySelector('.popover:not(.hidden)')) {
-                  if (typeof closePopovers === 'function') closePopovers();
-                  return 'popover';
-                }
-                if (typeof isNarrow === 'function' && isNarrow() &&
-                    typeof toggleSidebar === 'function') {
-                  toggleSidebar();
-                  return document.body.classList.contains('sb-show') ? 'open' : 'close';
-                }
-                return 'chat';
-              } catch (e) { return 'chat'; }
-            })()
+        private const val NAV_BACK_JS = """
+            (function(){try{
+              return (typeof jxNavBack === 'function') ? jxNavBack() : 'exit';
+            }catch(e){return 'exit'}})()
         """
     }
 }

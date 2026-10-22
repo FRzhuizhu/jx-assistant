@@ -173,9 +173,10 @@ const narrowMq = window.matchMedia ? window.matchMedia('(max-width: 499.98px)') 
 const NARROW_WS_ADD_NOTICE = '手机端不支持新增工作目录，请到电脑宽屏上操作';
 function isNarrow() { return !!(narrowMq && narrowMq.matches); }
 
-// 窄屏下收起左栏浮层：选中/新建会话等入口调用（右栏浮层保持用户手开的状态）
+// 窄屏下收起左栏浮层：选中/新建会话等入口调用（右栏浮层保持用户手开的状态）。
+// 走返回键同一个开合原语 jxPanelSet，别在别处直接动 sb-show 类
 function narrowClosePanels() {
-  if (isNarrow()) document.body.classList.remove('sb-show');
+  if (isNarrow()) jxPanelSet('left', false);
   onLeftPanelClosed(); // 返回键守卫：收起后补历史哨兵（宽屏/已放行退出时内部自动跳过）
 }
 
@@ -214,8 +215,8 @@ if (narrowMq) {
    * 栏收着：从屏幕缘热区向中间滑 → 拉出该侧栏（两栏都收着才拉得开，
      手势绝不把两栏同时打开）。
    * 栏开着：在栏身上向屏幕外方向滑 → 收起该栏；向中间滑不动作。
-   触发仍是单次位移 ≥44px 且横向主导，直接调用与按钮相同的 toggleSidebar /
-   toggleRpanel——状态机、记忆、文案全走按钮那一条路。
+   触发仍是单次位移 ≥44px 且横向主导，动作走 jxPanelSet——返回键、按钮、手势
+   共用同一套开合原语（状态机、记忆、文案只有一处）。
    触摸走非被动 Touch 事件（横向确立即 preventDefault，阻断浏览器收编成滚动
    ——真机拉不出来的根因）；窄窗口里的鼠标/笔走 Pointer 事件。轻微上下漂移容忍。
    收起手势的起点豁免：拖宽把手（#rp-resize 等）、输入框——它们有自己的交互。 */
@@ -229,7 +230,9 @@ if (narrowMq) {
   const leftOpen = () => document.body.classList.contains('sb-show'); // 仅窄屏语义：整屏浮层开着
   const rightOpen = () => !document.getElementById('rpanel').classList.contains('hidden');
   const verticalIntent = (dx, dy) => Math.abs(dy) > Math.abs(dx) * 1.5 + 12;
-  const fire = (side) => { if (side === 'left') toggleSidebar(); else toggleRpanel(); };
+  // 手势与返回键是同一套逻辑：开合都调 jxPanelSet（app-left.js 的统一导航原语），
+  // 手势这里只负责「往哪个方向＝要开还是要关」
+  const fire = (side, close) => jxPanelSet(side, !close);
 
   // 按起点与两侧栏状态定手势：先看是不是点在开着的栏身上（收起手势），
   // 再看是不是屏幕缘热区（拉出手势，要求两栏都收着）；宽屏在 armAt 入口一票否决
@@ -273,7 +276,7 @@ if (narrowMq) {
       e.preventDefault();
     }
     const toward = towardOf(g, t.clientX);
-    if (!g.done && hit(g, toward)) { g.done = true; fire(g.side); } // 一次手势只触发一次
+    if (!g.done && hit(g, toward)) { g.done = true; fire(g.side, g.close); } // 一次手势只触发一次
     else if (quit(g, toward)) g = null;
   }, { passive: false });
   const touchEnd = () => { if (g && g.touch) g = null; };
@@ -296,7 +299,7 @@ if (narrowMq) {
       e.preventDefault(); // 鼠标：横向确立后抑制拖动选中
     }
     const toward = towardOf(g, e.clientX);
-    if (!g.done && hit(g, toward)) { g.done = true; fire(g.side); }
+    if (!g.done && hit(g, toward)) { g.done = true; fire(g.side, g.close); }
     else if (quit(g, toward)) g = null;
   });
   const pointerEnd = () => { if (g && !g.touch) g = null; };

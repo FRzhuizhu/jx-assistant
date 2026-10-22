@@ -1117,20 +1117,43 @@ function setupSidebarResize() {
 }
 setupSidebarResize();
 
-/* ---------- 手机端返回键守卫（仅窄屏）：先呼出左栏，再按才离开 ----------
-   三态收敛（见 backGuardPop）：右栏浮层开着 → 先关右栏；左栏开着 → 放行离开
-   （浏览器无更早页面即关闭，有则回上一页）；都给关着 → 呼出左栏。用户手动
-   收起左栏（顶栏按钮/滑动手势/选中会话/进设置）后，下一次返回重新呼出左栏
-   （收起钩子 onLeftPanelClosed 挂在 toggleSidebar 与 narrowClosePanels 上）。
+/* ---------- 窄屏返回层级：网页里唯一的一套导航逻辑 ----------
+   用户定义（网页与手机 App 完全同一套，两端不许各写一套）：
+     · 右栏开着 → 关右栏（关完停在哪，由下一次返回照常决定）；
+     · 左栏开着 → 收起左栏（回对话页）；
+     · 都收着（对话页）→ 打开左栏；
+     · 3 秒内连按两次 → 退出（浏览器＝离开网页，App＝壳结束本页）。
+   三条通路走的是同一批函数：系统返回键（壳注入调用 jxNavBack）、浏览器后退
+   （popstate → jxNavBack）、左右滑手势（jxPanelSet 同一批开合原语）。
+   设置页自带两级返回（{jxSettings:depth} 哨兵），优先级最高——本函数把返回
+   让给它，不插队。
 
-   实现基于一条历史哨兵：窄屏页面加载即压一条 {jxGuard:1}，popstate 按到达点
-   校准 guardOn（当前位置是否站在哨兵上）；需要拦住返回时就补压哨兵。
+   历史哨兵：窄屏页面加载即压一条 {jxGuard:1}。浏览器/系统手势的后退会先吃掉
+   它再派发 popstate——守卫按到达点校准 guardOn（当前位置是否站在哨兵上），
+   需要继续拦截时补压一条。App 里壳直接调 jxNavBack（不碰 history），此时
+   guardOn 恒为真、补压是幂等空操作。
    桌面宽屏不压哨兵、不拦截——浏览器后退行为完全不变。 */
 
+const BACK_EXIT_MS = 3000;      // 连按两次的窗口：与手机 App 原来的 3 秒一致
+let lastBackAt = 0;             // 上一次返回的时刻（连按窗口用）
 let guardOn = false;            // 当前位置是否在我方哨兵条目上（popstate 按到达点校准）
-let exiting = false;            // 已放行退出：不再拦截，直到页面重载
+let exiting = false;            // 已决定退出：不再拦截，直到页面重载
 let backGuardSkipOnce = false;  // 设置页主动退栈（history.go）的一次性豁免，见 app-settings.js
 let guardReadyAt = 0;           // 加载瞬间的杂散 popstate 忽略窗口
+
+// 左右栏的开合态（都取逻辑态：窄屏收起有滑出过渡，DOM 的 hidden 会滞后）
+function jxLeftOpen() { return document.body.classList.contains('sb-show'); }
+function jxRightOpen() { return document.body.classList.contains('rp-open'); }
+
+// 左/右栏开合的唯一原语：返回键与左右滑手势都走它，不再有第二套开关逻辑
+// （右栏永远经 rpOpen/rpClose，展开回到上次看的视图）
+function jxPanelSet(side, open) {
+  if (side === 'left') {
+    if (jxLeftOpen() !== open) toggleSidebar(); // 窄屏分支：切 sb-show + 按钮文案 + 哨兵
+    return;
+  }
+  if (jxRightOpen() !== open) toggleRpanel();
+}
 
 function backGuardArm() {
   if (guardOn) return; // 幂等：栈顶已有哨兵，不再堆叠
@@ -1151,47 +1174,78 @@ function onLeftPanelClosed() {
   backGuardArm();
 }
 
-function backGuardPop(e) {
-  guardOn = !!(e.state && e.state.jxGuard); // 先按到达点校准
-  if (Date.now() < guardReadyAt) return;     // 加载瞬间：浏览器可能补发杂散 popstate
-  if (backGuardSkipOnce) { backGuardSkipOnce = false; return; } // 设置页程序性退栈
-  // 设置弹窗：它有自己的两级返回（setHistDepth）。本守卫先于设置页注册，
-  // 事件派发到这里时设置 UI 还没被关闭，「可见」即可靠；停在设置层（state
-  // 带 jxSettings）时一并跳过。
-  if (!$('settings').classList.contains('hidden')) return;
-  if (e.state && e.state.jxSettings) return;
-  if (!isNarrow() || exiting) return;
-  // 弹出菜单开着：先关菜单（返回键逐层收敛），下一次返回才开左栏
+/* 唯一的返回入口：按当前层级决定下一步动作，返回做了什么（手机壳只认 'exit'）。
+   e 传 popstate 事件时表示这次后退是浏览器/系统手势送进来的（历史栈已退一步，
+   需要时由这里的 backGuardArm 补回哨兵）；不传＝手机壳注入调用，历史栈没动。 */
+function jxNavBack(e) {
+  const fromPop = !!(e && e.type === 'popstate');
+  if (exiting) return 'none';
+  // 设置页：两级返回全归它自己（{jxSettings:depth} 哨兵 + 自己的 popstate 监听）
+  if (!$('settings').classList.contains('hidden')) {
+    // popstate 路径不做动作：设置页的监听器正在同一事件里退栈，插手会多退一级
+    if (!fromPop) $('set-back').click(); // 壳直接调：等效点设置页的返回按钮
+    return 'settings';
+  }
+  // 连按两次＝退出（与手机 App 原来的 3 秒窗口一致）。放在其余层级之前：这是
+  // 「用户要立刻出去」的逃生口，不能被某一层开着挡住（全屏视频除外，归壳）
+  const now = Date.now();
+  const doubleBack = now - lastBackAt <= BACK_EXIT_MS;
+  lastBackAt = now;
+  if (doubleBack) {
+    exiting = true;
+    // 浏览器路径：哨兵已被这次后退吃掉，再退一步就是离开网页（无更早页面时由
+    // 浏览器自己收尾）；App 路径：壳收到 'exit' 后结束本页（网页做不到这件事）
+    if (fromPop) history.back();
+    return 'exit';
+  }
+  if (!isNarrow()) return 'none'; // 桌面宽屏：左右栏是常驻布局，没有层级可退
+  // 弹出菜单开着：先关菜单（返回键逐层收敛），下一次返回才轮到左右栏/对话页
   if (document.querySelector('.popover:not(.hidden)')) {
     closePopovers();
     backGuardArm();
-    return;
+    return 'popover';
   }
-  // 居中层（确认框等 modal）开着：本次按键放行给「关掉弹层后的下一次返回」——
-  // 不拦截也不补哨兵，第二次按即离开页面
-  if ([...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'))) return;
-  // 右栏浮层开着：先关右栏
-  if (!$('rpanel').classList.contains('hidden')) {
-    rpClose();
+  // 居中层（确认框等 modal）开着：本次让给弹层——不动作也不补哨兵，关掉弹层后
+  // 的下一次返回照常走层级
+  if ([...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'))) return 'modal';
+  // 右栏开着：先关右栏，本次返回到此为止（判定用 body.rp-open 这个逻辑开合态：
+  // 窄屏收起有 220ms 滑出过渡，panel 的 hidden 要等过渡结束才加，用它会让动画
+  // 期间连按的第二次返回被「右栏还开着」吞掉，左栏永远轮不到）
+  if (jxRightOpen()) {
+    jxPanelSet('right', false);
     backGuardArm();
-    return;
+    return 'right';
   }
-  // 左栏开着：放行离开——主动再退一步，让「第二次按返回＝离开页面」成立；
-  // 无更早历史时 back() 静默无效，下一次按键由浏览器接管关闭
-  if (document.body.classList.contains('sb-show')) {
-    exiting = true;
-    history.back();
-    return;
+  // 左栏开着：收起它＝回对话页（收起时 toggleSidebar 已补回哨兵）
+  if (jxLeftOpen()) {
+    jxPanelSet('left', false);
+    return 'left-close';
   }
-  // 都给关着：呼出左栏（与 toggleSidebar 窄屏分支同一套状态）
-  document.body.classList.add('sb-show');
-  setSidebarBtn(false);
+  // 都收着（对话页）：打开左栏
+  jxPanelSet('left', true);
   backGuardArm();
+  return 'left-open';
 }
 
-(function initLeftBackGuard() {
+function backGuardPop(e) {
+  const wasOnGuard = guardOn;               // 弹出前站的那条是不是哨兵
+  guardOn = !!(e.state && e.state.jxGuard); // 先按到达点校准
+  if (Date.now() < guardReadyAt) return;     // 加载瞬间：浏览器可能补发杂散 popstate
+  if (backGuardSkipOnce) { backGuardSkipOnce = false; return; } // 设置页程序性退栈
+  // 落点仍是哨兵、弹出前也在哨兵上：栈里有重复哨兵（WebView 连历史记录一起
+  // 恢复页面时可能出现）。这条只是多出来的，吃掉、不派发动作也不再补压——
+  // 下一次返回落到真页面条目，层级照常生效（只会白按一次，不会失灵）
+  if (wasOnGuard && guardOn) return;
+  jxNavBack(e);
+}
+
+(function initJxBackGuard() {
   if (!isNarrow()) return; // 桌面/宽屏：不参与返回键语义
   guardReadyAt = Date.now() + 600;
+  // 自检：页面可能是 WebView 按 saved state 恢复出来的，历史栈连同哨兵条目
+  // 一起回来了——当前条目若已站在哨兵上，就不能再压一条（多压会让第一次
+  // 返回像「按了没反应」）。以真实的 history.state 为准校准 guardOn
+  guardOn = !!(history.state && history.state.jxGuard);
   window.addEventListener('popstate', backGuardPop);
   backGuardArm(); // 加载即压哨兵：第一次按返回先给左栏，而不是直接离开
 })();
