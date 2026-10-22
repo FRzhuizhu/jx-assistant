@@ -406,7 +406,23 @@ async function deleteSession(s) {
   loadSessions();
 }
 
-function openSessionMenu(s, rect) {
+// 会话项的朗读口径：标题 + 所在工作区名（左栏这一行能看到的就这两样；时间与
+// 操作按钮不念）。itemEl 若真有行内选区，仍以选区为准（speechSelectionIn）。
+function sessionSpeechText(s) {
+  const ws = wsOf(s);
+  const name = lsGet('jx.wsalias', {})[ws] || baseName(ws) || '默认工作区';
+  return (s.title || '(未命名)') + '，工作区 ' + name;
+}
+
+// 工作区分组头的朗读口径：显示名 + 目录路径（头里只显示名字，路径在 tooltip 上；
+// 用户念它是想知道这组是哪个目录）
+function workspaceSpeechText(ws) {
+  const name = lsGet('jx.wsalias', {})[ws] || baseName(ws) || '默认工作区';
+  return '工作区 ' + name + (ws ? '，路径 ' + ws : '');
+}
+
+function openSessionMenu(s, rect, itemEl) {
+  const speak = ctxSpeakItems({ kind: 'session', text: speechSelectionIn(itemEl) || sessionSpeechText(s) });
   // 回收站视图里的会话菜单：恢复 / 重命名 / 彻底删除
   if (binView) {
     openCtxMenu([
@@ -418,6 +434,7 @@ function openSessionMenu(s, rect) {
         loadSessions();
       } },
       { label: '彻底删除', danger: true, fn: () => deleteSession(s) },
+      ...speak,
     ], rect.right - 8, rect.bottom + 4);
     return;
   }
@@ -453,6 +470,7 @@ function openSessionMenu(s, rect) {
       if (state.cur && state.cur.id === s.id) { state.cur = null; state.msgs = []; resetEmpty(); }
       loadSessions();
     } },
+    ...speak,
   ], rect.right - 8, rect.bottom + 4);
 }
 
@@ -551,9 +569,9 @@ function sessionItem(s) {
   if (raRestore) raRestore.onclick = (e) => { e.stopPropagation(); restoreSession(s); };
   item.querySelector('.ra-more').onclick = (e) => {
     e.stopPropagation();
-    openSessionMenu(s, item.getBoundingClientRect());
+    openSessionMenu(s, item.getBoundingClientRect(), item);
   };
-  item.oncontextmenu = (e) => { e.preventDefault(); openSessionMenu(s, item.getBoundingClientRect()); };
+  item.oncontextmenu = (e) => { e.preventDefault(); openSessionMenu(s, item.getBoundingClientRect(), item); };
   return item;
 }
 
@@ -738,6 +756,7 @@ function renderBin(box) {
       openCtxMenu([
         { label: '复制路径', fn: () => navigator.clipboard.writeText(ws) },
         { label: '彻底删除目录', danger: true, fn: () => deleteWorkspace(ws) },
+        ...ctxSpeakItems({ kind: 'workspace', text: speechSelectionIn(head) || workspaceSpeechText(ws) }),
       ], r.left, r.bottom + 4);
     };
     head.oncontextmenu = (e) => {
@@ -943,6 +962,7 @@ function renderSessionList() {
           lsSet('jx.wsrecycled', [...new Set([...lsGet('jx.wsrecycled', []), ws])]);
           loadSessions();
         } },
+        ...ctxSpeakItems({ kind: 'workspace', text: speechSelectionIn(head) || workspaceSpeechText(ws) }),
       ];
       openCtxMenu(acts, r.left, r.bottom + 4);
     };

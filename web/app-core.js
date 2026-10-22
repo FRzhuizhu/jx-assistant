@@ -163,6 +163,69 @@ function esc(s) {
   ));
 }
 
+/* ---------- 右键菜单的「朗读」取值（发音归语音组件，这里只管念什么） ----------
+   「朗读」条目本身由语音组件经 JX.registerCtxMenu 贡献（组件关掉即整条消失，
+   不会留下点了没反应的菜单项），应用本体不发音。这里只负责各菜单取文本的口径：
+   **选区优先，其次被右键那条的可见文字**——用户选中一段就念那段（与对话区选区
+   菜单一致），没选区就念整个条目/气泡；代码块、脚本、按钮标签一律跳过（念代码
+   和按钮文字只是噪音，markdown 语法剥壳由组件的 cleanForSpeech 收尾）。
+   放 app-core.js 是因为所有菜单（桌面壳 app-ctxmenu、左栏、右栏）都要用。 */
+
+// 只念正文：这些标签里的东西不该念（代码块/行内代码/键盘提示/按钮与控件）
+const SPEECH_SKIP_TAGS = ['PRE', 'CODE', 'KBD', 'SAMP', 'SCRIPT', 'STYLE', 'SVG', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'IMG'];
+
+// 取节点可见文字（按文档顺序、跳过 SPEECH_SKIP_TAGS 与 .hidden 子树）
+function speechTextOf(node) {
+  const out = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (n.nodeType === 3) {
+      const t = String(n.nodeValue || '').replace(/\s+/g, ' ').trim();
+      if (t) out.push(t);
+      return;
+    }
+    if (n.nodeType !== 1) return;
+    if (SPEECH_SKIP_TAGS.indexOf(String(n.tagName || '').toUpperCase()) >= 0) return;
+    if (n.classList && n.classList.contains('hidden')) return;
+    const kids = n.childNodes || [];
+    for (let i = 0; i < kids.length; i++) walk(kids[i]);
+  };
+  walk(node);
+  return out.join(' ').replace(/\s{2,}/g, ' ').trim();
+}
+
+// 落在 node 内部的文字选区（选区跨元素时 anchor/focus 任一在里面即算）。
+// 不认页面别处的旧选区：右键文件项时不该因为刚才在对话里划过一句就念那句。
+function speechSelectionIn(node) {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+  const text = String(sel.toString() || '').trim();
+  if (!text) return '';
+  const host = (n) => {
+    const el = n && (n.nodeType === 1 ? n : n.parentElement);
+    return !!(el && node && (el === node || node.contains(el)));
+  };
+  return (host(sel.anchorNode) || host(sel.focusNode)) ? text : '';
+}
+
+// 菜单项末尾的「朗读 / 停止朗读」：问组件要（贡献项为空时连分隔线一起省掉）
+function ctxSpeakItems(ctx) {
+  const extra = (window.JX && JX.ctxMenuItems) ? JX.ctxMenuItems(ctx) : [];
+  return extra.length ? [{ sep: true }, ...extra] : [];
+}
+
+// 路径取文件名（\ 与 / 都算分隔符；末尾分隔符忽略）
+function speechFileName(p) {
+  const s = String(p || '').trim().replace(/[\\/]+$/, '');
+  return s ? s.split(/[\\/]/).pop() : '';
+}
+
+// 文件类目标的朗读口径：文件名 + 完整路径（路径末段就是文件名时只说一次）
+function speechPathText(p) {
+  const base = speechFileName(p);
+  return (base && base !== p) ? ('文件 ' + base + '，路径 ' + p) : ('文件 ' + p);
+}
+
 /* ---------- 窄屏断点（CSS 宽 <500px）：浮层布局的总开关 ----------
    窄屏下左/右栏是整屏浮层（样式见 style.css 末节），各宽度引擎冻结：
    不推导 --rp-w、不写 --content-w，避免手机宽度污染桌面记忆

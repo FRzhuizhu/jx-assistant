@@ -11,9 +11,12 @@
  * 权限桌面壳创建时已放行（库 SetPermission(ClipboardRead, Allow)）。 */
 
 /* ---------- 朗读条目 ----------
- * 应用本体不带任何朗读实现：菜单里的「朗读」由语音组件经 JX.registerCtxMenu
- * 贡献（组件/voice/client.js），与本组件的消息按钮、设置页试听同一条链路；
- * 组件关掉即注销，菜单项随组件消失。 */
+ * 应用本体不带任何朗读实现：菜单里的「朗读 / 停止朗读」由语音组件经
+ * JX.registerCtxMenu 贡献（组件/voice/client.js），与本组件的消息按钮、设置页
+ * 试听同一条链路（同一套分块播放、音色语速与单飞停播）；组件关掉即注销，菜单项
+ * 随组件消失——不出现好过点了没反应。**每一类菜单**（选区、气泡、链接、文件、
+ * 交付行、图片、输入框）都经 ctxSpeakItems() 交给它，取值口径见 app-core.js 的
+ * 「右键菜单的朗读取值」一节：选区优先，其次该条目的可见文字。 */
 
 /* ---------- 文本编辑动作（execCommand 在焦点元素上执行，保留撤销栈） ---------- */
 
@@ -144,7 +147,7 @@ async function copyImageToClipboard(url) {
 
 function editMenuItems(ed) {
   const hasSel = edHasSelection(ed);
-  return [
+  const items = [
     { label: '撤销', fn: () => { edFocus(ed); document.execCommand('undo'); } },
     { label: '重做', fn: () => { edFocus(ed); document.execCommand('redo'); } },
     { sep: true },
@@ -154,6 +157,17 @@ function editMenuItems(ed) {
     { sep: true },
     { label: '全选', fn: () => { edFocus(ed); if (ed.select) ed.select(); else document.execCommand('selectAll'); } },
   ];
+  // 朗读口径：有选中→念选中；没选中→念框里现有内容（草稿/引用的全文）。
+  // textarea/input 的内部选区不进 window.getSelection()，只能读 value 切片。
+  let text = '';
+  if (typeof ed.selectionStart === 'number') {
+    const v = String(ed.value || '');
+    text = v.slice(ed.selectionStart, ed.selectionEnd) || v;
+  } else {
+    text = speechSelectionIn(ed) || speechTextOf(ed);
+  }
+  items.push(...ctxSpeakItems({ kind: 'edit', text }));
+  return items;
 }
 function selectionMenuItems(text) {
   const items = [
@@ -161,53 +175,72 @@ function selectionMenuItems(text) {
     { label: '引用到输入框', fn: () => setQuote(mainView, text) },
     { label: '问AI', fn: () => askInAux(text) },
   ];
-  const extra = JX.ctxMenuItems({ kind: 'selection', text }); // 组件贡献（如朗读）
-  if (extra.length) items.push({ sep: true }, ...extra);
+  items.push(...ctxSpeakItems({ kind: 'selection', text })); // 组件贡献（如朗读）
   return items;
 }
 function bubbleMenuItems(msgEl) {
   const body = msgEl.querySelector('.md') || msgEl.querySelector('.bubble');
   const text = body ? body.innerText : '';
   const items = [];
+  // 复制全文取 innerText（代码块要一起带走）；朗读取 speechTextOf（跳过代码块与
+  // 按钮，念代码只是噪音）——两者口径不同，别共用一份字符串
+  const speech = speechSelectionIn(msgEl) || speechTextOf(body || msgEl);
   if (text) items.push({ label: '复制全文', fn: () => navigator.clipboard.writeText(text).catch(() => {}) });
-  items.push(...JX.ctxMenuItems({ kind: 'bubble', text, msgEl }));
+  items.push(...ctxSpeakItems({ kind: 'bubble', text: speech, msgEl }));
   return items;
 }
 function linkMenuItems(a) {
   const url = a.getAttribute('href') || '';
   if (!url) return null;
-  return [
+  const items = [
     { label: '打开', fn: () => openInPanelBrowser({ url }) },
     { label: '在系统浏览器中打开', fn: () => openURLSystem(url) },
     { sep: true },
     { label: '复制链接', fn: () => navigator.clipboard.writeText(url).catch(() => {}) },
   ];
+  // 朗读口径：选中→念选中；否则念链接文字（图标链接没有文字，念 URL 本身）
+  items.push(...ctxSpeakItems({ kind: 'link', text: speechSelectionIn(a) || speechTextOf(a) || url }));
+  return items;
 }
-function fileMenuItems(view, sid, path) {
+function fileMenuItems(view, sid, path, node) {
   if (!sid || !path) return null;
-  return [
+  const items = [
     { label: '预览（右栏）', fn: () => openInPanelBrowser({ session: sid, path }) },
     { label: '在系统中打开', fn: () => openWorkspacePath(view, sid, path) },
     { label: '在文件夹中定位', fn: () => revealWorkspacePath(view, sid, path) },
     { sep: true },
     { label: '复制路径', fn: () => navigator.clipboard.writeText(path).catch(() => {}) },
   ];
+  // 朗读口径：选中→念选中；否则「文件 名，路径 全路径」（见 app-core 的 speechPathText）
+  items.push(...ctxSpeakItems({ kind: 'file', text: speechSelectionIn(node) || speechPathText(path) }));
+  return items;
 }
-function deliveryMenuItems(view, sid, path) {
+function deliveryMenuItems(view, sid, path, node) {
   const d = { path }; // deliveryOpenFile/Reveal 只读 path
-  return [
+  const items = [
     { label: '打开', fn: () => deliveryOpenFile(view, sid, d) },
     { label: '在文件夹中查看', fn: () => deliveryRevealFile(view, sid, d) },
     { sep: true },
     { label: '预览（右栏）', fn: () => openInPanelBrowser({ session: sid, path }) },
     { label: '复制路径', fn: () => navigator.clipboard.writeText(path).catch(() => {}) },
   ];
+  // 朗读口径：选中→念选中；否则念行内可见文字（文件名 + 大小，跳过按钮），再补
+  // 上完整路径（交付行本身显示的是相对/短路径，念全路径更可听）
+  const rowText = speechTextOf(node);
+  const speech = rowText ? (rowText + '，路径 ' + path) : speechPathText(path);
+  items.push(...ctxSpeakItems({ kind: 'delivery', text: speechSelectionIn(node) || speech }));
+  return items;
 }
 function imageMenuItems(a) {
-  return [
+  const items = [
     { label: '在右栏查看', fn: () => openInPanelBrowser({ url: a.href }) },
     { label: '复制图片', fn: () => copyImageToClipboard(a.href) },
   ];
+  // 朗读口径：图片说明文字（alt）→ 否则文件名（截图常没有 alt）
+  const img = a.querySelector ? a.querySelector('img') : null;
+  const name = speechFileName(String(a.href || '').split(/[?#]/)[0]) || '图片';
+  items.push(...ctxSpeakItems({ kind: 'image', text: speechSelectionIn(a) || (img && img.alt ? img.alt : name) }));
+  return items;
 }
 
 /* ---------- 上下文识别与分发 ---------- */
@@ -233,13 +266,13 @@ function buildCtxMenuItems(e) {
   const flink = t.closest('a.file-link');
   if (flink) {
     const view = viewFromNode(flink);
-    return fileMenuItems(view, view.state.cur && view.state.cur.id, flink.getAttribute('data-path'));
+    return fileMenuItems(view, view.state.cur && view.state.cur.id, flink.getAttribute('data-path'), flink);
   }
   const drow = t.closest('.dc-file');
   if (drow && drow.dataset.path) {
     const view = viewFromNode(drow);
     const sid = view.state.cur && view.state.cur.id;
-    if (sid) return deliveryMenuItems(view, sid, drow.dataset.path);
+    if (sid) return deliveryMenuItems(view, sid, drow.dataset.path, drow);
   }
   const imgA = t.closest('.tc-imgs a');
   if (imgA && imgA.href) return imageMenuItems(imgA);

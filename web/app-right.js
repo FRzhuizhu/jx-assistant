@@ -314,9 +314,9 @@ function renderSubDDPop() {
     };
     item.querySelector('.ra-more').onclick = (e) => {
       e.stopPropagation();
-      openSubItemMenu(s, item.getBoundingClientRect());
+      openSubItemMenu(s, item.getBoundingClientRect(), item);
     };
-    item.oncontextmenu = (e) => { e.preventDefault(); openSubItemMenu(s, item.getBoundingClientRect()); };
+    item.oncontextmenu = (e) => { e.preventDefault(); openSubItemMenu(s, item.getBoundingClientRect(), item); };
     pop.appendChild(item);
   }
   const neu = document.createElement('button');
@@ -330,7 +330,7 @@ function renderSubDDPop() {
 // 动作与语义——重命名/标为未读/分支/移入回收站；差别只在落地刷新面（下拉清单、
 // 右栏当前子对话）与「正看着的子对话被回收时右栏回空态」。分支沿用 forkFromAnswer
 // 的口径（fork 保留 parent，新会话还是这个主对话的子对话，就地打开）。
-function openSubItemMenu(s, rect) {
+function openSubItemMenu(s, rect, itemEl) {
   openCtxMenu([
     { label: '重命名', fn: async () => {
       const t = prompt('重命名子对话', s.title || '');
@@ -366,6 +366,12 @@ function openSubItemMenu(s, rect) {
       refreshDrawer();
       loadSessions();
     } },
+    // 朗读口径：说话人标记（AI/人工）+ 标题，与下拉行里能看到的文字一致；
+    // 行内有选区时以选区为准
+    ...ctxSpeakItems({
+      kind: 'sub',
+      text: speechSelectionIn(itemEl) || ((s.mode === 'aux' || s.origin === 'human' ? '人工子对话，' : 'AI 子对话，') + (s.title || '(未命名)')),
+    }),
   ], rect.right - 8, rect.bottom + 4);
 }
 

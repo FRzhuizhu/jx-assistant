@@ -1631,23 +1631,27 @@
       };
       if (JX.hook) JX.hook('send', sendHook);
 
-      // 右键菜单「朗读」条目（JX.registerCtxMenu 组件桥，app-ctxmenu 汇总）：
-      // 消息气泡与文字选区菜单各贡献一项，与消息按钮、设置页试听同一条链路
-      //（同分块播放、同音色语速、同单飞停播）。应用本体不带朗读实现——组件
-      // 关掉即注销，菜单项随组件消失。
+      // 右键菜单「朗读」条目（JX.registerCtxMenu 组件桥，各菜单用 JX.ctxMenuItems
+      // 汇总 —> 桌面壳 app-ctxmenu、左栏会话/工作区、右栏子对话清单全都走这里）：
+      // 与消息按钮、设置页试听同一条链路（同分块播放、同音色语速、同单飞停播）。
+      // 应用本体不带朗读实现——组件关掉即注销，菜单项随组件消失（宁可不出现，
+      // 也不留一个点了没反应的条目）。
+      // 取值口径由调用方给（app-core.js 的「右键菜单的朗读取值」）：文字先过
+      // cleanForSpeech，剥壳后为空（比如只选了一段代码）就不出条目，避免死点。
       ctxMenuFn = (ctx) => {
-        if (!active || !ctx || !ctx.text) return [];
-        return [(!!playingBtn || !!ttsStopChain)
-          ? { label: '停止朗读', fn: () => stopSpeak() }
-          : {
-              label: '朗读',
-              fn: () => {
-                const t = cleanForSpeech(ctx.text);
-                if (!t) return;
-                stopSpeak(); // 单飞：顶掉进行中的朗读（含消息按钮发起的）
-                speakPlain(t);
-              },
-            }];
+        if (!active || !ctx) return [];
+        const busy = !!playingBtn || !!ttsStopChain;
+        const stop = { label: '停止朗读', fn: () => stopSpeak() };
+        const t = ctx.text ? cleanForSpeech(ctx.text) : '';
+        if (!t) return busy ? [stop] : []; // 没东西可念：念着时至少给个「停止」
+        if (busy) return [stop]; // 单飞：正在念就只给停止，别让人误以为能换一条同时念
+        return [{
+          label: '朗读',
+          fn: () => {
+            stopSpeak(); // 单飞：顶掉进行中的朗读（含消息按钮发起的）
+            speakPlain(t);
+          },
+        }];
       };
       JX.registerCtxMenu(ctxMenuFn);
 
