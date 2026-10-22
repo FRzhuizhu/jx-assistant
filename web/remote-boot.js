@@ -34,6 +34,20 @@
   var HAS_SUBTLE = typeof crypto !== 'undefined' && !!crypto.subtle;
   var HAS_DECOMPRESS = typeof DecompressionStream === 'function'; // 响应 gzip 解压能力（现代浏览器）
 
+  /* ---------- 「隧道可用」通知 ----------
+     页面里的组件加载（web/cx.js）和主体数据走的是同一条隧道（所有 /api/ 请求都被
+     这里劫持），但组件的注入只发生一次：手机从后台回来/页面被系统重建的那一瞬间
+     隧道还没恢复，那一次抓取失败，组件就一直缺席（语音/待办入口不见、主体却正常）。
+     所以这里在隧道真正可用时派发 jx:tunnel，组件运行时收到就立刻补一遍——组件
+     的重放由此挂在「和主体同一条通道」的就绪信号上，不再靠定时器撞运气。
+     只在三种真正的转折点发：首次隧道请求成功、P2P 直连建立、SSE 重连成功。 */
+  var tunnelOk = false;
+  function announceTunnel(force) {
+    if (tunnelOk && !force) return;
+    tunnelOk = true;
+    try { window.dispatchEvent(new Event('jx:tunnel')); } catch (e) { /* 老引擎忽略 */ }
+  }
+
   /* ---------- base64 工具 ---------- */
   function b64ToBytes(b64) {
     var bin = atob(b64), u8 = new Uint8Array(bin.length);
@@ -379,6 +393,7 @@
             var hdrs = new Headers();
             if (fr.contentType) hdrs.set('Content-Type', fr.contentType);
             resolve(new Response(stream, { status: fr.status || 200, headers: hdrs }));
+            announceTunnel(); // 隧道首笔请求通了：通知页面（组件运行时据此补加载）
           } else if (fr.t === 'chunk') {
             if (controllerRef) controllerRef.enqueue(b64ToBytes(fr.data));
           } else if (fr.t === 'end') {
@@ -516,6 +531,7 @@
     if (f.t === 'authok') {
       dcx.mode = 'direct';
       try { window.__JX_REMOTE_MODE = 'direct'; console.info('[远程] P2P 直连已建立，后续请求直传（断开自动回中继）'); } catch (e) {}
+      announceTunnel(true); // 直连通道就绪：通知页面（组件运行时据此补加载）
       return;
     }
     var en = dcx.pending[f.id];
@@ -606,6 +622,8 @@
       if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
       self.readyState = 1;
       if (self.onopen) self.onopen({});
+      // SSE 连上/重连成功＝隧道又通了（手机从后台回来最常见）：通知页面补组件
+      announceTunnel(true);
       var reader = resp.body.getReader();
       var dec = new TextDecoder();
       var buf = '';

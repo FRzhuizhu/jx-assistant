@@ -15,7 +15,7 @@ applyTheme();         // 恢复常规页选的背景色（白/黑/跟随系统�
 restoreSidebarWidth(); // 恢复上次拖定的左侧栏宽度（--sb-w，须在 applySidebarState 之前）
 applySidebarState();
 resetEmpty();
-loadStatus().then(loadSessions);
+loadStatus().then(loadSessions).then(restoreLastSession); // 会话列表到位后再定落哪一屏（上次的对话 / 首页）
 loadModels();
 loadChatModes(); // 工作模式清单：唯一数据源在后端（GET /api/modes），拉回来重建模式下拉
 connectEvents();
@@ -31,3 +31,46 @@ setInterval(() => {
   loadApprovals();
   loadQuestions();
 }, 20000);
+
+/* ---------- 上次所在的对话：页面重新加载后回到那里 ----------
+   手机壳从桌面切回、进程被系统杀掉后冷启动、远程外壳自愈整页重拉——只要 WebView
+   里的文档重载，前端就是从零启动：没有这条记忆就永远落在首页（用户 2026-10-22 报的
+   「一从外面进 APP 就只进首页，之前的对话记忆没了」）。记的是「最后打开的那个主对话」：
+   - 打开即写：主对话区每成功开一个会话都会发 JX session:open（侧栏点选、通知进去、
+     子任务「打开会话」、分支/派生切换全走同一条路）；
+   - 明确点「新工作任务」回首页就清（app-chat.js 的 goHomeNewTask）——用户自己回了
+     首页，下次就该从首页开始；
+   - 启动时确认它还在列表里才恢复：老用户/从没开过 → 停在首页；列表里真没有这条
+     （已删/已归档）→ 停在首页并清掉记忆；打不开（电脑端刚不可达）→ 提示一句回首页。
+     两种情况都不留白屏、不留转圈。 */
+function rememberLastSession(id) { lsSet('jx.lastSess', id || ''); }
+JX.on('session:open', (s) => { if (s && s.id) rememberLastSession(s.id); });
+
+async function restoreLastSession() {
+  const id = lsGet('jx.lastSess', '');
+  if (!id) return; // 还没有任何「上次会话」记录（老用户/首次使用）：照常停在首页
+  const brief = (state.sessions || []).find((s) => s.id === id);
+  if (!brief || brief.archived) {
+    // 列表空着多半是这一拉没成功（电脑端刚不可达）：留着记忆下次再试；
+    // 列表非空而里面没有这条，才是真的没了（被删/被归档）
+    if ((state.sessions || []).length) rememberLastSession('');
+    return;
+  }
+  try {
+    await openSession(id); // 失败不抛：openSession 把失败画在对话区（下面按它判定）
+  } catch (e) { /* 按「打不开」处理 */ }
+  // 真落到了目标会话上（不在加载态、也不是加载失败的报错壳）才算恢复成功
+  if (state.cur && state.cur.id === id && !state._loading && !mainView.col.querySelector('.cl-retry')) return;
+  // 打不开：撤干净、提示一句回首页。记忆保留——下次网络正常进来还能回到这里
+  navTok.main++;
+  navBusy.main = false;
+  state._loading = false;
+  state._pfxSid = null;
+  state.cur = null;
+  state.msgs = [];
+  resetEmpty();
+  renderPanels();
+  refreshCtxChip();
+  toast('没能回到上次的对话，已回到首页');
+}
+

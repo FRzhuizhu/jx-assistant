@@ -33,7 +33,6 @@ class MainActivity : Activity() {
     private val online = HashMap<String, Boolean>()   // id -> 在线态（内存，随探测刷新）
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
-    private var suppressClear = false                  // 冷启动直达时不清「上次位置」
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,16 +52,17 @@ class MainActivity : Activity() {
         // 非空、栈上本来就有设备页，再拉一个会叠出两层设备页
         val last = if (savedInstanceState == null) DeviceStore.lastDevice(this) else null
         if (last != null && DeviceStore.byId(this, last) != null) {
-            suppressClear = true
             startActivity(Intent(this, DeviceActivity::class.java).putExtra(DeviceActivity.EXTRA_ID, last))
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // 回到首页 = 离开设备页；此后退出应用，下次从首页开始
-        if (suppressClear) suppressClear = false
-        else DeviceStore.setLastDevice(this, null)
+        // 这里【不】清「上次所在」记忆：本页出现 ≠ 用户回了首页。系统杀掉进程后按
+        // saved state 恢复任务栈时，栈底的本页也会走一遍 onCreate/onResume（设备页
+        // 是随后才重建的），那时清记忆等于把刚恢复的位置抹掉——用户从外面重进 APP
+        // 就再也进不到上次那台电脑（2026-10-22 实测）。清记忆的职责归触发点：
+        // 用户主动回首页（设备页浮条/返回键/边缘手势 → DeviceActivity.finish()）。
         refresh()
     }
 

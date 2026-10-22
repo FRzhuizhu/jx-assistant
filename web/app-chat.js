@@ -99,6 +99,7 @@ function goHomeNewTask() {
   navBusy.main = false;
   state._pfxSid = null;   // 消息区的增量渲染缓存随之失效
   state._loading = false; // 在途加载态一并作废（回首页是同步完成的导航）
+  rememberLastSession(''); // 明确回首页：下次打开从首页开始，不再恢复上次的对话
   state.cur = null;
   loadProgress();
   state.msgs = [];
