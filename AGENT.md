@@ -1304,17 +1304,20 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   任何对话回报**（用户口径：打开了什么是个人的事）——模型需要看画面时用户
   会主动说，模型用 `panel_screenshot` 截右栏（见下）。本地 html 交付文件转
   `file://`（同目录相对资源可用），SSH 远程会话经 `/api/browser/view` 流式
-  渲染（相对资源不加载）。**Markdown 是例外**：一律进右栏渲染页
-  （`/api/md/{sid}/{path...}`，见上条），不走上面这两条原文/系统程序的老路。
+  渲染（相对资源不加载）。**Markdown 的右栏渲染只在显式入口**：交付卡
+  「右侧打开」、右键「预览（右栏）」传 md 时进右栏渲染页（`/api/md/{sid}/{path...}`，
+  见上条）；默认「打开」仍是系统程序——md 交给系统关联的自带 MD 查看器
+  （`md-viewer/MD查看器.exe`，独立窗口），不进右栏。两者是两个动作，别合并。
 - **文件查看 = 系统默认应用**：右栏「文件」查看页（`fileview.go`，当年原生
   浏览器面板修不好时期的替代品，只支持文本、观感差）已整体移除。交付卡与
-  聊天文件链接的「打开」两路路由：html/htm、Markdown（md/markdown…，见下条
-  「右栏 md 渲染页」）与网址进右栏「浏览器」；其余
-  一律 `ShellExecute` 系统默认应用（`/api/sessions/{id}/open-path` 与
+  聊天文件链接的「打开」两路路由：html/htm 与网址进右栏「浏览器」；其余
+  （含 md——系统关联的自带 MD 查看器以独立窗口打开）一律 `ShellExecute` 系统
+  默认应用（`/api/sessions/{id}/open-path` 与
   `/delivery/open`；用户手势直通——工作区内外都不校验、无确认弹窗，这些
   路由不在 call_api 目录里 AI 调不到，SSH 远程工作区无本机路径给直白报错）。
-- **右栏 md 渲染页**（`mdview.go`，`GET /api/md/{sid}/{path...}`）：md 在右栏
-  渲染打开，用的就是自带 MD 查看器那套网页（`md-viewer/viewer-template.html`
+- **右栏 md 渲染页**（`mdview.go`，`GET /api/md/{sid}/{path...}`）：**显式右栏
+  入口**（「右侧打开」/右键「预览（右栏）」）里的 md 在右栏渲染打开，用的就是
+  自带 MD 查看器那套网页（`md-viewer/viewer-template.html`
   经 `go:embed` 进 exe，占位符 `__TITLE__/__B64__/__META__/__KEEP_RUNNING__`
   灌数据；不另写渲染器）。地址用**路径形态**而非查询参数：md 里的相对图片/
   附件按 URL 语义落到同一路由（页在 `…/docs/a.md`，`./img/x.png` →

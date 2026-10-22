@@ -1978,17 +1978,20 @@ function fmtBytes(n) {
 // 交付卡片的两个动作（用户主动操作，不经模型权限门控）。「打开」按文件类型
 // 分两路（右栏「文件」查看页已整体移除——那是原生浏览器面板修不好时期的
 // 替代品，只支持文本且观感差，不再维护）：
-//   * 网页（html/htm）与 Markdown（md/markdown…）→ 右栏「浏览器」（桌面=原生
-//     WebView2 面板；手机与网页形态=右栏 iframe 里的渲染页，见 openMDInPanel）；
+//   * 网页（html/htm）→ 右栏「浏览器」（桌面=原生 WebView2 面板，网页=新标签）；
 //   * 其余（代码/图片/PDF/Word/Excel/压缩包/exe 等）→ 系统默认程序，双击文件
 //     是什么程序这里就是什么程序（远程会话没有本机路径，后端给直白报错）。
+//     **md 也在这条老路上**：系统关联的 MD 查看器（md-viewer/MD查看器.exe）以
+//     独立窗口打开——「打开」= 交系统程序，与「右侧打开」是两件事，别合并。
 // 「在文件夹中查看」= 资源管理器里定位并选中该文件（远程不可用，给直白提示）。
 
-// Markdown：右栏渲染页（后端 mdview.go 复用 MD 查看器的渲染网页）。手机端
-// 没有 MD 查看器，md 进系统程序等于看不了，所以与 html 一样走右栏。
+// Markdown：只有**显式**的「右侧打开」/「预览（右栏）」才进右栏渲染页（后端
+// mdview.go 复用 MD 查看器的渲染网页）。默认「打开」不认它——那是系统应用的事。
 const MD_PANEL_EXT = new Set(['md', 'markdown', 'mdown', 'mkd']);
-// 走右栏「浏览器」的后缀：真网页（原生面板/新标签里的完整浏览体验）+ Markdown
-const BROWSER_PANEL_EXT = new Set(['html', 'htm', ...MD_PANEL_EXT]);
+// 走右栏「浏览器」的后缀：真网页（原生面板/新标签里的完整浏览体验）。
+// 别把 md 加进来：加进来「打开」就又变成进右栏了（md 的右栏入口在
+// openInPanelBrowser 里显式写着，只服务「右侧打开」）。
+const BROWSER_PANEL_EXT = new Set(['html', 'htm']);
 
 function fileExtOf(p) {
   const m = String(p).toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -1997,7 +2000,7 @@ function fileExtOf(p) {
 
 function isMarkdownPath(p) { return MD_PANEL_EXT.has(fileExtOf(p)); }
 
-// 两路路由：'panel'（html/md 进右栏浏览器）/ 'shell'（系统默认应用）。
+// 两路路由：'panel'（html 进右栏浏览器）/ 'shell'（系统默认应用，含 md）。
 function deliveryOpenRoute(view, path) {
   return BROWSER_PANEL_EXT.has(fileExtOf(path)) ? 'panel' : 'shell';
 }
@@ -2011,9 +2014,10 @@ function mdPanelURL(sid, path) {
   return '/api/md/' + encodeURIComponent(sid) + '/' + segs.map(encodeURIComponent).join('/');
 }
 
-/* Markdown 在右栏渲染打开：桌面/Electron 走原生面板（与 html 预览同一条
-   navigate 通道，面板里跑的就是那张渲染页）；手机与网页形态走右栏 iframe
-   （bpwShowFrame，见 app-right.js）——抽屉里铺满可用宽，窄屏单列可读。 */
+/* Markdown 在右栏渲染打开——只给**显式**的右栏入口（「右侧打开」/右键「预览
+   （右栏）」）用，默认「打开」不经这里。桌面/Electron 走原生面板（与 html
+   预览同一条 navigate 通道，面板里跑的就是那张渲染页）；手机与网页形态走右栏
+   iframe（bpwShowFrame，见 app-right.js）——抽屉里铺满可用宽，窄屏单列可读。 */
 function openMDInPanel(sid, path) {
   const url = mdPanelURL(sid, path);
   rpOpen('browser'); // 面板未开自动开；已开只是切页签
@@ -2110,7 +2114,7 @@ function deliveryCard(dvs, sid, view) {
       : '用系统默认程序打开这个文件';
     // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
     // 音视频、svg 这些浏览器能渲染的交付物，点它就在右栏看；md 也一样进右栏
-    // 渲染页。默认「打开」仍按类型自动路由（html/md 进右栏，其余系统应用）。
+    // 渲染页。默认「打开」只把 html 交右栏，其余（含 md）一律系统应用。
     const pv = document.createElement('button');
     pv.type = 'button';
     pv.className = 'dc-btn';
@@ -2193,11 +2197,12 @@ function jxOpenContent(url, path) {
  * 目标（用户开了「操作浏览器」能力后，模型的 browser_screenshot/browser_content
  * 看到的就是这页）并注入【网页查看】回报，模型由此知道用户在看什么。
  * 网页模式没有原生面板：手机壳里开在壳内浏览器页（见下面 jxOpenPage），
- * 纯浏览器里仍是新标签页；Markdown 文件例外——一律进右栏渲染页（openMDInPanel，
- * 手机端是右栏 iframe），这是「手机上看 md」的唯一可读形态。 */
+ * 纯浏览器里仍是新标签页。这是**显式**的右栏入口（「右侧打开」/「预览（右栏）」/
+ * 聊天链接）；传 md 时进右栏渲染页（openMDInPanel），默认「打开」不走这里——
+ * md 的「打开」是系统程序（MD 查看器独立窗口）。 */
 async function openInPanelBrowser(body) {
-  // Markdown 一律进右栏渲染页（右栏看到的就是 MD 查看器那一页，见 openMDInPanel）：
-  // 不走下面的「原文流式预览」——那是 text/plain，手机上没有 MD 查看器时等于没法读。
+  // 显式右栏入口传 md：进右栏渲染页（右栏看到的就是 MD 查看器那一页，见
+  // openMDInPanel），不走下面的「原文流式预览」——那是 text/plain，看不了 md。
   if (body.path && body.session && isMarkdownPath(body.path)) { openMDInPanel(body.session, body.path); return; }
   const desktop = document.documentElement.classList.contains('desktop-shell');
   if (!desktop) {
@@ -2231,7 +2236,8 @@ document.addEventListener('click', (e) => {
 });
 
 // 文件路径链接（file-link，正文/反引号里的路径渲染而来）：按消息所在视图
-// 解析出会话——网页/Markdown 文件进右栏「浏览器」，其余一律系统默认程序打开
+// 解析出会话——网页文件进右栏「浏览器」，其余（含 md：系统关联的 MD 查看器
+// 独立窗口）一律系统默认程序打开
 // （/api/sessions/{id}/open-path：用户手势直通，工作区内外都不校验、无
 // 确认弹窗；只有「路径不存在」这类自然错误才弹带完整路径的提示）。
 document.addEventListener('click', (e) => {
