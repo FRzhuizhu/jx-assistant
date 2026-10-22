@@ -494,9 +494,9 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 		end = len(lines)
 	}
 	out := strings.Join(lines[start-1:end], "\n")
-	if len(out) > 256*1024 {
-		out = out[:256*1024] + "\n…（内容过长已截断）"
-	}
+	// 与 agent 层工具结果统一上限（toolResultMaxBytes=128KB）同口径、同一提示：
+	// 读取工具自己说「给了 256KB」而 agent 层只让模型看到 128KB 会造成误解。
+	out = clipToolResult(out)
 	suffix := ""
 	if end < len(lines) {
 		suffix = fmt.Sprintf("\n…（共 %d 行，可调大 limit 或用 offset 继续读取）", len(lines))

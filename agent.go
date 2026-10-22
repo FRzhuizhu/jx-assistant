@@ -27,7 +27,8 @@ const toolResultMaxBytes = 128 * 1024
 // 字符），末尾附续读提示——模型据此改用 offset/分页参数继续读，而不是把整段
 // 原始输出塞回上下文。
 func clipToolResult(out string) string {
-	if len(out) <= toolResultMaxBytes {
+	// 已裁过（个别工具如 read 自己就按同一上限裁）就不再重复裁，免得把提示也切掉
+	if len(out) <= toolResultMaxBytes || strings.Contains(out, "工具结果过长已截断") {
 		return out
 	}
 	cut := toolResultMaxBytes
