@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeBrowserTarget 只实现收口用到的三个方法，其余按接口占位——收口不碰
@@ -28,6 +29,7 @@ type fakeBrowserTarget struct {
 	started bool
 	closed  int
 	where   string
+	reason  string // CloseWithReason 收到的发起方（面板形态据此写关闭日志）
 }
 
 func (f *fakeBrowserTarget) Navigate(string) (string, string, error) { return "", "", nil }
@@ -46,6 +48,7 @@ func (f *fakeBrowserTarget) Started() bool                       { return f.star
 func (f *fakeBrowserTarget) Where() string                       { return f.where }
 func (f *fakeBrowserTarget) BroadcastPointer(string)             {}
 func (f *fakeBrowserTarget) Close()                              { f.closed++; f.started = false }
+func (f *fakeBrowserTarget) CloseWithReason(reason string)       { f.reason = reason; f.Close() }
 
 // testAppWithFake 造一个「内嵌面板=假 target」的 App（面板集合直接塞假对象，
 // 不走真实 WebView2 创建；panelDispatch 非 nil 才能让 embeddedTarget 走面板路）。
@@ -117,6 +120,9 @@ func TestCloseSessionBrowserByUser(t *testing.T) {
 	if !res.Closed || fake.closed != 1 {
 		t.Fatalf("用户关闭未收口：closed=%v 实例关闭次数=%d", res.Closed, fake.closed)
 	}
+	if !strings.Contains(fake.reason, "用户") {
+		t.Fatalf("关闭没把「谁发起」带给面板（关闭阶段日志要靠它排查）：%q", fake.reason)
+	}
 	if !a.browserUserClosed(sid) {
 		t.Fatal("用户关闭没打「用户关闭」标记（后续工具会把用户操作报成崩溃）")
 	}
@@ -172,6 +178,9 @@ func TestCloseSessionBrowserByAI(t *testing.T) {
 	res := a.closeSessionBrowser(sid, closeByAI)
 	if !res.Closed || fake.closed != 1 {
 		t.Fatalf("AI 关闭未收口：closed=%v 关闭次数=%d", res.Closed, fake.closed)
+	}
+	if !strings.Contains(fake.reason, "AI") {
+		t.Fatalf("AI 关闭没把发起方带给面板（日志分不清谁关的）：%q", fake.reason)
 	}
 	if res.Fallback != nil {
 		t.Fatalf("实例都关完了却报「另一实例仍在运行」：%v", res.Fallback.Where())
@@ -244,5 +253,150 @@ func TestBrowserCloseEntrypointsShareCollector(t *testing.T) {
 	}
 	if out != "浏览器已关闭" {
 		t.Fatalf("工具回执文案变了（模型口径会跟着变）：%q", out)
+	}
+}
+
+// ---------- 关闭阶段二：等进程真退出 → 超时强杀 → 拆窗口（不碰真 WebView2） ----------
+//
+// 用户的硬要求：关闭必须真关（进程真退出、窗口真拆）、不许延迟回收、不许软
+// 关闭、超时也必须真关。下面用假进程（fakePanelProc）与假 UI 投递覆盖四条
+// 分支：正常退出、超时强杀、拆窗口只投一次且只在 UI 线程、无进程可等。
+
+// fakePanelProc 假浏览器进程：Wait 结果按 results 逐次返回（用完后重复最后
+// 一项），并把调用顺序记进 events（断言「先等退出、后拆窗口」）。
+type fakePanelProc struct {
+	pid     uint32
+	results []bool
+	waits   int
+	kills   int
+	release int
+	events  *[]string
+}
+
+func (f *fakePanelProc) PID() uint32 { return f.pid }
+
+func (f *fakePanelProc) Wait(time.Duration) bool {
+	i := f.waits
+	f.waits++
+	if f.events != nil {
+		*f.events = append(*f.events, "wait")
+	}
+	if i >= len(f.results) {
+		i = len(f.results) - 1
+	}
+	if i < 0 {
+		return true
+	}
+	return f.results[i]
+}
+
+func (f *fakePanelProc) Kill() error {
+	f.kills++
+	if f.events != nil {
+		*f.events = append(*f.events, "kill")
+	}
+	return nil
+}
+
+func (f *fakePanelProc) Release() { f.release++ }
+
+// testPanelCloseTiming 测试用的等待上限（真实值 10s/5s，测试里只验证分支）。
+var testPanelCloseTiming = panelCloseTiming{exit: 50 * time.Millisecond, kill: 50 * time.Millisecond}
+
+// ① 正常退出：等到真实退出信号就拆窗口，不动强杀。
+func TestFinishPanelCloseWaitsForRealExit(t *testing.T) {
+	var events []string
+	ex := &fakePanelProc{pid: 4242, results: []bool{true}, events: &events}
+	destroys, posts := 0, 0
+	destroy := func() { destroys++; events = append(events, "destroy") }
+	post := func(f func()) { posts++; f() } // 模拟 UI 线程投递：立即执行
+
+	killed := finishPanelClose(ex, post, "sid-1", "hwnd=0x1", destroy, testPanelCloseTiming)
+
+	if killed || ex.kills != 0 {
+		t.Fatalf("进程正常退出却动了强杀：killed=%v 强杀次数=%d", killed, ex.kills)
+	}
+	if ex.waits != 1 {
+		t.Fatalf("没等退出就往下走（Wait 次数=%d）", ex.waits)
+	}
+	if posts != 1 || destroys != 1 {
+		t.Fatalf("拆窗口没有恰好投递/执行一次：投递=%d 执行=%d", posts, destroys)
+	}
+	if ex.release != 1 {
+		t.Fatalf("进程句柄没释放（Release 次数=%d）", ex.release)
+	}
+	if len(events) != 2 || events[0] != "wait" || events[1] != "destroy" {
+		t.Fatalf("动作顺序不对（必须等进程退出后才拆窗口）：%v", events)
+	}
+}
+
+// ② 超时强杀：等不到就强制终止我们自己的这个子进程，再等到确实退出才拆窗口
+// ——不留「放弃拆、留空壳」的分支。
+func TestFinishPanelCloseKillsOnTimeout(t *testing.T) {
+	var events []string
+	ex := &fakePanelProc{pid: 77, results: []bool{false, true}, events: &events}
+	destroys := 0
+	destroy := func() { destroys++; events = append(events, "destroy") }
+
+	killed := finishPanelClose(ex, func(f func()) { f() }, "sid-2", "hwnd=0x2", destroy, testPanelCloseTiming)
+
+	if !killed || ex.kills != 1 {
+		t.Fatalf("超时没强杀：killed=%v 强杀次数=%d", killed, ex.kills)
+	}
+	if ex.waits != 2 {
+		t.Fatalf("强杀后没有继续等到确实退出（Wait 次数=%d）", ex.waits)
+	}
+	if destroys != 1 {
+		t.Fatalf("强杀后没拆窗口（或拆了多次）：执行=%d", destroys)
+	}
+	want := []string{"wait", "kill", "wait", "destroy"}
+	if len(events) != len(want) {
+		t.Fatalf("动作序列不对：%v（期望 %v）", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("动作序列不对：%v（期望 %v）", events, want)
+		}
+	}
+}
+
+// ③ 拆窗口只在 UI 线程（投递进去的闭包里）执行；UI 投递不可用时什么都不乱拆。
+func TestFinishPanelCloseDestroysOnUIThread(t *testing.T) {
+	inPost := false
+	posts, destroys := 0, 0
+	post := func(f func()) { posts++; inPost = true; f(); inPost = false }
+	destroy := func() {
+		destroys++
+		if !inPost {
+			t.Error("拆窗口在后台 goroutine 里直接跑了：必须投递回 UI 线程执行")
+		}
+	}
+	ex := &fakePanelProc{pid: 9, results: []bool{true}}
+	finishPanelClose(ex, post, "sid-3", "hwnd=0x3", destroy, testPanelCloseTiming)
+	if posts != 1 || destroys != 1 {
+		t.Fatalf("拆窗口投递/执行次数不对：投递=%d 执行=%d", posts, destroys)
+	}
+
+	// 消息泵已停（post 为 nil）时：不拆（也无从拆），但不许 panic、句柄照样释放
+	ex2 := &fakePanelProc{pid: 10, results: []bool{true}}
+	finishPanelClose(ex2, nil, "sid-4", "hwnd=0x4", func() { t.Error("没有 UI 投递却直接拆了窗口") },
+		testPanelCloseTiming)
+	if ex2.release != 1 {
+		t.Fatalf("投递不可用时进程句柄没释放（Release 次数=%d）", ex2.release)
+	}
+}
+
+// ④ 没有可等的进程句柄（PID 取不到/进程已退）：按已退出处理，照常拆窗口。
+func TestFinishPanelCloseWithoutProcess(t *testing.T) {
+	destroys := 0
+	killed := finishPanelClose(nil, func(f func()) { f() }, "sid-5", "hwnd=0x5",
+		func() { destroys++ }, testPanelCloseTiming)
+	if killed || destroys != 1 {
+		t.Fatalf("没有进程可等时应当直接拆窗口：killed=%v 拆窗口=%d", killed, destroys)
+	}
+	// 没有窗口可拆：不投递、不 panic、不报强杀
+	if killed := finishPanelClose(nil, func(f func()) { t.Error("没有窗口却投递了动作") },
+		"sid-6", "hwnd=0x0", nil, testPanelCloseTiming); killed {
+		t.Fatal("没有窗口时不该报强杀")
 	}
 }

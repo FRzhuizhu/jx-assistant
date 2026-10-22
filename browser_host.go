@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -287,6 +288,114 @@ func (a *App) panelFrontendReset(dispatch func(f func()), mainWnd uintptr) {
 			lp.releaseAfterMainLoopGone()
 		}
 	}
+}
+
+// ---------- 面板关闭的阶段二：等进程真退出再拆窗口 ----------
+//
+// 用户对「关闭浏览器」的硬要求：必须真关（进程真退出、窗口真拆掉）；不许
+// 「几分钟后后台回收」这类延迟机制（出了 bug 感知不到，莫名挂十几分钟最难
+// 排查），也不许「软关闭」（清页面收屏外、留实例）当最终方案。阶段一的
+// 「发退出指令」与阶段三的「拆宿主子窗口」在 browser_panel_windows.go 的
+// closePanel 里（那两段是 UI 线程上的 COM/Win32 动作）；中间这段「等那个
+// 浏览器进程真的退出」放在这里——它是纯 Go 的进程信号逻辑，注入平台动作就能
+// 单测（browser_close_test.go），不必真起 WebView2。
+
+// panelRecover 面板侧所有落在 WebView2 原生回调栈上、以及关闭流程后台
+// goroutine 里的入口的统一兜底：这些帧里的 panic 冒出去就是整进程无声死亡
+// （无 panic 日志、无 Windows 崩溃事件——windowsgui 子系统下回调栈上的崩溃
+// 无现场可查），只能就地吞掉落日志。覆盖面刻意包含 go-webview2 库自己调进来
+// 的帧（NavigationCompleted 等）：库不给护栏，护栏就放在我们自己这一侧（取证
+// 建议「把护栏/recover 覆盖到库级回调帧」，见
+// .jxai/tmp/取证报告-20261022-1645服务重启归因.md）。
+func panelRecover(where string) {
+	if r := recover(); r != nil {
+		log.Printf("[browser-panel] %s panic（已兜住）: %v\n%s", where, r, debug.Stack())
+	}
+}
+
+// panelExiter 对一个「已定位的浏览器进程」的等退出/强杀操作。真实实现
+// （browser_panel_windows.go 的 panelProcess）在发退出指令之前就打开进程
+// 句柄：关后 PID 可能被系统复用，按句柄等/杀才安全；单测用假实现。
+//
+// 为什么不用 ICoreWebView2Environment5::BrowserProcessExited 当退出信号：绑定库
+// （jchv/go-webview2）没导出该事件，取它要自己对环境对象 QueryInterface 并手写
+// 一个未经本机验证的 vtbl 镜像——镜像错一格就是整进程静默崩溃（正是本路径要
+// 避免的事故类型）。而 WaitForSingleObject 等的是同一个内核退出事件，确定性
+// 一样，还没有这层自研风险；PID 取不到时按「已退出」处理，照常拆窗口。
+type panelExiter interface {
+	PID() uint32
+	// Wait 等进程退出，等到返回 true。真实实现是 WaitForSingleObject 等内核
+	// 的退出事件（确定的退出信号），不是轮询、也不是拍脑袋的固定延时。
+	Wait(max time.Duration) bool
+	// Kill 强制终止这个进程（我们自己的浏览器子进程）。
+	Kill() error
+	// Release 释放句柄。
+	Release()
+}
+
+// panelCloseTiming 关闭等待的两段上限：先等自然退出 exit，超时就强杀，强杀后
+// 最多再等 kill。自然退出通常远快于此（控制器一关，浏览器进程就开始退场）。
+type panelCloseTiming struct{ exit, kill time.Duration }
+
+var panelCloseWait = panelCloseTiming{exit: 10 * time.Second, kill: 5 * time.Second}
+
+// finishPanelClose 关闭的阶段二：等浏览器进程退出 →（超时）强杀并继续等到
+// 确实退出 → 投递拆宿主子窗口（UI 线程，只投一次）。返回是否动用了强杀。
+//
+// 纪律：超时也必须真关——没有「等不到就放弃拆、留个空壳」的分支（空壳在后台
+// 驻留，出 bug 也感知不到）。每一步都落 [browser-panel] 日志：排查「莫名挂住
+// 的后台问题」全靠这几行。
+func finishPanelClose(ex panelExiter, post func(f func()), sid, what string, destroy func(), tm panelCloseTiming) (killed bool) {
+	defer panelRecover("面板关闭 阶段二")
+	start := time.Now()
+	if ex != nil {
+		defer ex.Release()
+		pid := ex.PID()
+		log.Printf("[browser-panel] 关闭: 等浏览器进程退出中（sid=%q %s pid=%d）", sid, what, pid)
+		if ex.Wait(tm.exit) {
+			log.Printf("[browser-panel] 关闭: 收到退出信号（sid=%q pid=%d 等待 %s）", sid, pid, elapsedStr(start))
+		} else {
+			killed = true
+			log.Printf("[browser-panel] 关闭: 等退出超时（sid=%q pid=%d %s 未退），强制终止这个浏览器子进程",
+				sid, pid, tm.exit)
+			if err := ex.Kill(); err != nil {
+				log.Printf("[browser-panel] 关闭: 强杀失败（sid=%q pid=%d）: %v；继续等它退出", sid, pid, err)
+			} else {
+				log.Printf("[browser-panel] 关闭: 已强制终止（sid=%q pid=%d），继续等到确实退出", sid, pid)
+			}
+			if ex.Wait(tm.kill) {
+				log.Printf("[browser-panel] 关闭: 强杀后已确认退出（sid=%q pid=%d 等待 %s）", sid, pid, elapsedStr(start))
+			} else {
+				log.Printf("[browser-panel] 关闭: 强杀后 %s 仍未确认退出（sid=%q pid=%d）——该进程需人工核查；"+
+					"窗口照常拆掉（不留空壳）", tm.kill, sid, pid)
+			}
+		}
+	} else {
+		log.Printf("[browser-panel] 关闭: 没有可等的浏览器进程句柄（sid=%q），跳过等退出", sid)
+	}
+	if destroy == nil || post == nil {
+		log.Printf("[browser-panel] 关闭: 拆窗口跳过（sid=%q %s 拆窗口动作=%v UI投递=%v）", sid, what, destroy != nil, post != nil)
+		return killed
+	}
+	done := make(chan struct{})
+	post(func() { // 拆窗口只在 UI 线程做：进程已确认退出，此前已反注册自有事件、状态已清空
+		defer panelRecover("面板关闭 阶段三")
+		destroy()
+		close(done)
+	})
+	select {
+	case <-done:
+		log.Printf("[browser-panel] 关闭: 已拆宿主子窗口（sid=%q %s）", sid, what)
+	case <-time.After(2 * time.Second):
+		log.Printf("[browser-panel] 关闭: 拆窗口投递 2 秒未回（sid=%q %s，消息泵可能已停）", sid, what)
+	}
+	log.Printf("[browser-panel] 关闭: 完成（sid=%q %s 总耗时 %s 强杀=%v）", sid, what, elapsedStr(start), killed)
+	return killed
+}
+
+// elapsedStr 把耗时打成日志里好读的形式（毫秒）。
+func elapsedStr(t time.Time) string {
+	return time.Since(t).Round(time.Millisecond).String()
 }
 
 // browserFor 按 browser_open 的 mode 取目标（headless 缺省=内嵌形态），并记为

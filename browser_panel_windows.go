@@ -143,17 +143,8 @@ func ctlVtblOf(ctl *edge.ICoreWebView2Controller) *ctlRawVtbl {
 
 // ---------- 自制 COM 回调对象（仿库内 comproc 模式） ----------
 
-// panelRecover 面板侧所有会落在 WebView2 原生回调栈上的入口的统一兜底：
-// 这些帧里的 panic 冒出去就是整进程无声死亡（无 panic 日志、无 Windows 崩溃
-// 事件——windowsgui 子系统下回调栈上的崩溃无现场可查），只能就地吞掉落日志。
-// 覆盖面刻意包含 go-webview2 库自己调进来的帧（NavigationCompleted 等）：
-// 库不给护栏，护栏就放在我们自己这一侧（取证建议「把护栏/recover 覆盖到库级
-// 回调帧」，见 .jxai/tmp/取证报告-20261022-1645服务重启归因.md）。
-func panelRecover(where string) {
-	if r := recover(); r != nil {
-		log.Printf("[browser-panel] %s panic（已兜住）: %v\n%s", where, r, debug.Stack())
-	}
-}
+// panelRecover 的实现在 browser_host.go（跨平台文件）：关闭阶段二的后台
+// goroutine 也要用它兜 panic，所以不留在本平台文件里。
 
 var (
 	comQIProc  = windows.NewCallback(func(this, iid, obj uintptr) uintptr { return 0 })
@@ -286,13 +277,13 @@ type browserPanel struct {
 	url, title                 string
 	navCh                      chan struct{} // 最近一次导航的完成信号（NavigationCompleted 关闭）
 
-	// 事件 token：Close 时反注册（remove_XXX）要用；注册时由 WebView2 写入。
+	// 事件 token：关闭时反注册（remove_XXX）要用；注册时由 WebView2 写入。
 	newWinToken   int64
 	titleToken    int64
-	closing       bool        // Close 已进入：跳过迟到事件里对将亡控件的调用
-	suspended     bool        // 已软关闭（Close）：页面清空、控件收屏外但保留，下次导航/落位显示即复用（见 Close 注释）
-	dragHold      int32       // 1 = 用户正在拖动/缩放主窗口：暂停面板落位（见 holdForWindowDrag）
-	newWinHandler *evtHandler // 引用保活：COM 侧只存裸指针，Go 侧必须持有
+	closing       bool          // 关闭已发起：迟到事件一律跳过，不碰将亡控件
+	closingDone   chan struct{} // 本实例正在进行的那次关闭（等进程退出+拆窗口）的完成信号；nil=没有在关（见 closePanel）
+	dragHold      int32         // 1 = 用户正在拖动/缩放主窗口：暂停面板落位（见 holdForWindowDrag）
+	newWinHandler *evtHandler   // 引用保活：COM 侧只存裸指针，Go 侧必须持有
 	titleHandler  *evtHandler
 }
 
@@ -306,13 +297,14 @@ func (p *browserPanel) ensureStarted() error {
 	if p.dispatch == nil {
 		return fmt.Errorf("桌面窗口尚未就绪（可能正在热重启），稍后重试")
 	}
+	p.waitCloseSettled() // 上一轮关闭还在等进程退出：先等它关完，别在同一 profile 上叠新环境
 	p.createMu.Lock()
 	defer p.createMu.Unlock()
 	p.stateMu.Lock()
 	started, cerr := p.started, p.createErr
 	p.stateMu.Unlock()
 	if started {
-		return nil // 已创建（含软关闭后待复用：控件还在，调用方的导航/落位会把它唤回来）
+		return nil // 已创建
 	}
 	if cerr != nil {
 		return cerr
@@ -398,21 +390,19 @@ func (p *browserPanel) dataPath() string {
 
 // ApplyGrants 预授权内容设置（browser_open 的 grants 参数，见
 // writeProfileGrants）：面板的 WebView2 同为 Chromium profile 结构，注入
-// 同款。Preferences 只在浏览器启动时读取，所以实例还在就必须让它的浏览器
-// 进程真正退场——这里走 hardClose（不是用户可见的软关闭 Close）：软关闭只是
-// 清页面、控件与浏览器进程都还在，注入会被退场覆写冲掉。
+// 同款。Preferences 只在浏览器启动时读取，所以实例还在就必须让它真关干净
+// ——走与日常关闭完全相同的序列（closePanel：发退出指令 → 等浏览器进程退出
+// → 拆窗口），本函数等它关完再落盘，退场覆写才不会冲掉注入。
 func (p *browserPanel) ApplyGrants(grants []string) error {
 	if len(grants) == 0 {
 		return nil
 	}
 	dir := p.dataPath()
-	p.stateMu.Lock()
-	live := p.started // 软关闭后 Started() 为 false，但控件与浏览器进程仍在
-	p.stateMu.Unlock()
-	if live {
-		p.hardClose()
-		waitProfileQuiet(dir, 5*time.Second)
-	}
+	// 没在跑时它就是立刻可读的 channel
+	<-p.closePanel("预授权写 profile（Preferences 需实例先真退场）")
+	// 别人已经发起的那次关闭也在等：同一个 profile 不能边退场边写
+	p.waitCloseSettled()
+	waitProfileQuiet(dir, 5*time.Second)
 	return writeProfileGrants(dir, grants)
 }
 
@@ -475,7 +465,7 @@ func (p *browserPanel) createOnUI() error {
 		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&tt)))
 	p.stateMu.Lock()
 	p.chrome, p.ctl, p.wv, p.hwnd = ch, ctl, wv, hwnd
-	p.closing, p.suspended = false, false
+	p.closing = false
 	p.newWinHandler, p.titleHandler = nwh, th
 	p.newWinToken, p.titleToken = nwt, tt
 	p.stateMu.Unlock()
@@ -608,9 +598,6 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 	}
 	p.dpr, p.visible = dpr, visible
 	if visible {
-		// 前端把面板重新落位显示 = 用户又要用了：解除软关闭（Close 留下的
-		// suspended），控件按当前页面（一般是 about:blank）重新出场。
-		p.suspended = false
 		// w/h 已是 CSS px（见 handleBrowserPanelRect 的换算注释：CSS px 与
 		// 子窗口坐标 1:1），面板视口即舞台尺寸，不再除 dpr。
 		p.cssW = clampInt(w, 1, 65535)
@@ -660,7 +647,6 @@ func (p *browserPanel) navigate(raw string, allowFile bool) (string, string, err
 	p.navCh = make(chan struct{})
 	ch := p.navCh
 	wv := p.wv
-	p.suspended = false // 软关闭后的复用：页面被重新驱动，面板回到「在运行」
 	p.stateMu.Unlock()
 	p.dispatch(func() {
 		if wv == nil {
@@ -691,7 +677,6 @@ func (p *browserPanel) NavAction(action string) error {
 	}
 	p.navCh = make(chan struct{})
 	ch := p.navCh
-	p.suspended = false // 同 navigate：用户/工具驱动的导航把面板唤回「在运行」
 	p.stateMu.Unlock()
 	if wv == nil {
 		return fmt.Errorf("浏览器面板尚未就绪")
@@ -725,20 +710,12 @@ func (p *browserPanel) onNavCompleted() {
 	p.stateMu.Lock()
 	if p.closing {
 		p.stateMu.Unlock()
-		return // Close 进行中：不再碰将亡控件
+		return // 正在关闭：不再碰将亡控件
 	}
-	wv, ch, suspended := p.wv, p.navCh, p.suspended
+	wv, ch := p.wv, p.navCh
 	p.navCh = nil
 	p.stateMu.Unlock()
 	if wv == nil {
-		if ch != nil {
-			close(ch)
-		}
-		return
-	}
-	if suspended {
-		// 软关闭自己的 about:blank 收尾：只放行等待者，不写地址/标题、不广播、
-		// 不重排（面板此刻在屏外，重排会把它又捞回画面）。
 		if ch != nil {
 			close(ch)
 		}
@@ -764,7 +741,7 @@ func (p *browserPanel) onNavCompleted() {
 func (p *browserPanel) onTitleChanged() {
 	defer panelRecover("onTitleChanged")
 	p.stateMu.Lock()
-	if p.closing || p.suspended {
+	if p.closing {
 		p.stateMu.Unlock()
 		return
 	}
@@ -788,7 +765,7 @@ func (p *browserPanel) onTitleChanged() {
 func (p *browserPanel) onNewWindow(args unsafe.Pointer) {
 	defer panelRecover("onNewWindow")
 	p.stateMu.Lock()
-	closing := p.closing || p.suspended
+	closing := p.closing
 	wv := p.wv
 	p.stateMu.Unlock()
 	if closing || wv == nil {
@@ -1064,7 +1041,7 @@ func (p *browserPanel) SetViewport(w, h int) error {
 
 func (p *browserPanel) State() BrowserState {
 	p.stateMu.Lock()
-	st := BrowserState{Running: p.started && !p.suspended, URL: p.url, Title: p.title, VW: p.cssW, VH: p.cssH}
+	st := BrowserState{Running: p.started && !p.closing, URL: p.url, Title: p.title, VW: p.cssW, VH: p.cssH}
 	p.stateMu.Unlock()
 	if !st.Running {
 		return st
@@ -1075,197 +1052,256 @@ func (p *browserPanel) State() BrowserState {
 	return st
 }
 
-// Started 面板是否「在运行」：软关闭（Close 后的待复用态）不算——工具层据
-// 此报「浏览器未在运行」，与旧「关闭即销毁」的对外语义保持一致。
+// Started 面板是否「在运行」：关闭一开始就为 false——工具层据此报「浏览器未
+// 在运行」，下次 browser_open 会重建实例。
 func (p *browserPanel) Started() bool {
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
-	return p.started && !p.suspended
+	return p.started && !p.closing
 }
 
 func (p *browserPanel) Where() string {
 	return "右栏「浏览器」面板（原生 Edge，用户可直接操作）"
 }
 
-// Close 关闭面板实例（右栏 ✕ / browser_close）：**软关闭**——页面导航到
-// about:blank 清空、子窗口收屏外，控件与宿主子窗口都保留，下次导航或重新落位
-// 显示直接复用。对外语义不变（Started=false、地址/标题清空、广播复位）。
+// ---------- 关闭（真关：发退出指令 → 等浏览器进程退出 → 拆窗口） ----------
 //
-// 为什么不拆控件：2026-10-22 16:13 的进程无声退出紧跟在本路径旧实现的
-// 「Controller.Close + 固定 400ms 后 DestroyWindow」之后（取证：
-// .jxai/tmp/取证报告-20261022-1645服务重启归因.md），而 go-webview2 库自己
-// 的回调帧不在我们的 recover 覆盖面内——拆解途中任何一个迟到回调踩到已释放的
-// 控件就是整进程死、无日志无 WER。软关闭把这条最危险的动作从两个日常入口
-// （用户 ✕、AI browser_close）彻底移开：
-//   · 真正拆控件只留两条路：窗口退出（顶层 kill-on-close Job 兜底清浏览器
-//     进程）与预授权（hardClose，profile 必须先释放）；
-//   · 代价是软关闭后该会话的 WebView2 浏览器进程仍驻留（页面已清空、控件
-//     收屏外），内存代价有限，换来的是日常关闭不再碰拆解路径。
-func (p *browserPanel) Close() {
+// 用户对「关闭浏览器」的硬要求：必须真关（进程真退出、窗口真拆掉）；不许
+// 「几分钟后后台回收」这类延迟机制（出了 bug 感知不到，莫名挂十几分钟最难
+// 排查），也不许「软关闭」（清页面收屏外、留实例）当最终方案。所以只有下面
+// 这一条序列，每阶段各有一条落盘日志（desktop.log 里搜 [browser-panel] 关闭）：
+//
+//	阶段一（UI 线程）：反注册自有事件（remove_NewWindowRequested /
+//	  remove_DocumentTitleChanged，拿注册时的 token）→ 立刻隐藏宿主子窗口
+//	  （画面马上消失，窗口本身等进程退出后才拆）→ 读浏览器进程 PID 并在发
+//	  退出指令之前打开它的进程句柄 → Controller.Close（给 WebView2 与它对应的
+//	  浏览器进程发退出指令）。
+//	阶段二（后台 goroutine）：等那个浏览器进程真的退出（进程句柄
+//	  WaitForSingleObject，拿到确定的退出信号，不拿毫秒延时猜）；超过上限还
+//	  没退就强制终止我们自己的这个子进程，并继续等到确实退出——没有「放弃拆、
+//	  留空壳」的分支（finishPanelClose，browser_host.go）。
+//	阶段三（投递回 UI 线程）：DestroyWindow 拆宿主子窗口。此时进程已确认退出，
+//	  不可能再有回调打到将亡资源上。
+//
+// 等进程全程在后台，UI 线程只执行投递进来的 COM/Win32 动作，界面不卡。
+// 拆解前状态已清空（closing 置位、控件引用置零、地址标题清零、导航等待者
+// 放行）：迟到的导航/标题/弹窗/CDP 回调在各自入口就被 closing 挡掉。
+
+// Close 关闭面板实例（右栏 ✕ / browser_close 的收口都调它）。
+func (p *browserPanel) Close() { p.closePanel("未标注发起方") }
+
+// CloseWithReason 同 Close，额外把发起方写进各阶段日志（右栏 ✕ 与 AI 的
+// browser_close 走同一个收口，差别只在日志与收口方的标记）。其余形态
+// （有头/无头/Electron 桥）没有关闭阶段日志，收口按 browserTarget.Close 调。
+func (p *browserPanel) CloseWithReason(reason string) { p.closePanel(reason) }
+
+// closePanel 发起关闭，返回「浏览器进程已退出且宿主子窗口已拆」的完成信号。
+// 普通调用方不等（Close 就这样用：界面与 HTTP 都不卡）；需要「确实关干净」
+// 的调用方（ApplyGrants 写 profile 前）等这个 channel。
+func (p *browserPanel) closePanel(reason string) <-chan struct{} {
+	done := make(chan struct{})
 	p.createMu.Lock()
-	p.stateMu.Lock()
-	if !p.started || p.suspended {
-		p.stateMu.Unlock()
-		p.createMu.Unlock()
-		return // 没开过或已软关闭：幂等
+	parts := p.detach(done) // 同一个锁区里就把「正在关」登记给并发方（见 waitCloseSettled）
+	p.createErr = nil       // 关掉即允许下次重建（创建失败留下的旧错误不再挡住 browser_open）
+	p.createMu.Unlock()
+	if !parts.live {
+		close(done) // 没开过或正在关：幂等（窗口只拆一次）
+		return done
 	}
-	wv := p.wv
-	p.suspended = true
-	p.visible = false
+	log.Printf("[browser-panel] 关闭: 发起（原因=%s sid=%q hwnd=%#x 控件=%v）", reason, p.sid, parts.hwnd, parts.ctl != nil)
+	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid}) // 工具栏地址/标题复位
+	go func() {
+		defer close(done)
+		defer func() { // 本次关闭收尾：清掉「关闭进行中」标记（等待重建的一方据此放行）
+			p.stateMu.Lock()
+			if p.closingDone == done {
+				p.closingDone = nil
+			}
+			p.stateMu.Unlock()
+		}()
+		var ex panelExiter
+		if parts.ctl != nil && parts.dispatch != nil {
+			stage := make(chan panelExiter, 1)
+			parts.dispatch(func() { stage <- p.closeControllerOnUI(parts) })
+			select {
+			case ex = <-stage:
+			case <-time.After(5 * time.Second):
+				log.Printf("[browser-panel] 关闭: 阶段一 5 秒未在 UI 线程执行（sid=%q，消息泵可能已停），直接转入等退出/拆窗口", p.sid)
+			}
+		} else {
+			log.Printf("[browser-panel] 关闭: 没有控件可关（sid=%q 控件=%v UI投递=%v），无需发退出指令",
+				p.sid, parts.ctl != nil, parts.dispatch != nil)
+		}
+		var destroy func()
+		if parts.hwnd != 0 {
+			destroy = func() { _, _, _ = procPanelDestroyWindow.Call(parts.hwnd) }
+		}
+		finishPanelClose(ex, parts.dispatch, p.sid, fmt.Sprintf("hwnd=%#x", parts.hwnd), destroy, panelCloseWait)
+	}()
+	return done
+}
+
+// panelParts 从面板里取走的现场（关闭与前端收尾共用）。
+type panelParts struct {
+	hwnd                uintptr
+	ctl                 *edge.ICoreWebView2Controller
+	wv                  *edge.ICoreWebView2
+	newWin, title       *evtHandler
+	newWinTok, titleTok int64
+	dispatch            func(f func())
+	live                bool // 取走前是否在运行：false=没开过/已在关，调用方据此幂等返回
+}
+
+// detach 取走控件与宿主子窗口的引用并清空状态（调用方须持 createMu）。
+// closing 一置位，迟到回调就在各自入口被挡掉，碰不到即将销毁的控件——这是
+// 关闭流程「不崩」的关键前置（2026-10-22 16:13 的无声退出正是拆解途中被
+// 迟到回调踩到已释放控件）。真正在关时把 done 登记为「关闭进行中」，谁要在
+// 同一个 profile 上重建（ensureStarted）或写它（ApplyGrants）都得先等这个信号；
+// 前端收尾（releaseAfterMainLoopGone）没有关闭驱动，传 nil 即可。
+func (p *browserPanel) detach(done chan struct{}) panelParts {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	parts := panelParts{
+		hwnd: p.hwnd, ctl: p.ctl, wv: p.wv,
+		newWin: p.newWinHandler, title: p.titleHandler,
+		newWinTok: p.newWinToken, titleTok: p.titleToken,
+		dispatch: p.dispatch,
+		live:     p.started && !p.closing,
+	}
+	p.closing = true
+	if parts.live && done != nil {
+		p.closingDone = done
+	}
+	// 已在关的那次不动它的登记：并发的 Close / 前端收尾不该把等待者放走
+	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
+	p.newWinHandler, p.titleHandler = nil, nil
+	p.newWinToken, p.titleToken = 0, 0
+	p.started, p.visible = false, false
 	p.url, p.title = "", ""
 	p.cssW, p.cssH = 0, 0
 	if p.navCh != nil {
 		close(p.navCh) // 旧等待者放行（读到中间态）
-	}
-	p.navCh = make(chan struct{}) // 等 about:blank 的导航完成（见下方 select）
-	ch := p.navCh
-	dispatch := p.dispatch
-	p.stateMu.Unlock()
-	p.createMu.Unlock()
-	log.Printf("[browser-panel] 软关闭开始（sid=%q）", p.sid)
-	if wv == nil || dispatch == nil {
-		// 控件根本没建起来（创建失败/窗口消息泵已停）：没有页面可清，只把状态
-		// 落到「不在运行」即可。
-		log.Printf("[browser-panel] 软关闭：控件不在或 UI 投递不可用，仅置状态")
-	} else {
-		dispatch(func() {
-			defer panelRecover("软关闭")
-			blank, _ := windows.UTF16PtrFromString("about:blank")
-			_, _, _ = wvVtblOf(wv).navigate.Call(uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(blank)))
-		})
-		select {
-		case <-ch:
-		case <-time.After(3 * time.Second):
-			log.Printf("[browser-panel] 软关闭：about:blank 3 秒内未回导航完成（不阻塞，控件与进程照旧保留）")
-		}
-	}
-	log.Printf("[browser-panel] 软关闭完成（sid=%q）", p.sid)
-	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid})
-}
-
-// hardClose 真拆控件与宿主子窗口（唯一调用处：ApplyGrants——预授权要把
-// profile 的浏览器进程停干净，退场才不覆写注入的 Preferences）。用户可见的
-// 关闭一律走软关闭 Close()，别在这里加调用点。
-//
-// 阶段一（UI 线程）：反注册自有事件（remove_XXX，拿注册时的 token）→ 读
-//   getBrowserProcessID → Controller.Close。让 WebView2 异步清理时不再回调
-//   我们的 Go handler。
-// 阶段二（后台等真实信号再投递）：不再拍固定 400ms——先等那个 WebView2 浏览器
-//   进程真正退出（句柄等待），拿到明确信号才 DestroyWindow；迟迟不退就放弃拆
-//   窗口（留一个空容器，随主窗口一起销毁）：宁可多留一个空壳，也不在清理途中
-//   抽走地面（历史两次无声退出都指向这段）。
-// 两道 recover 都在：闭包与回调里的 panic 出现在原生栈上，冒出去就是整进程死。
-func (p *browserPanel) hardClose() {
-	p.createMu.Lock()
-	p.stateMu.Lock()
-	p.closing = true
-	hwnd, ctl, wv := p.hwnd, p.ctl, p.wv
-	nwh, th := p.newWinHandler, p.titleHandler
-	nwt, tt := p.newWinToken, p.titleToken
-	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
-	p.started, p.suspended, p.visible = false, false, false
-	p.url, p.title = "", ""
-	p.cssW, p.cssH = 0, 0
-	if p.navCh != nil {
-		close(p.navCh)
 		p.navCh = nil
 	}
-	dispatch := p.dispatch
-	p.stateMu.Unlock()
-	p.createMu.Unlock()
-	p.createErr = nil // 允许下次重建
-	log.Printf("[browser-panel] 硬关闭开始（sid=%q hwnd=%#x）", p.sid, hwnd)
-	if ctl != nil && dispatch != nil {
-		dispatch(func() {
-			defer panelRecover("硬关闭 阶段一")
-			pid := uint32(0)
-			if wv != nil {
-				if nwh != nil {
-					_, _, _ = wvVtblOf(wv).removeNewWindowRequested.Call(
-						uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(nwh)), uintptr(unsafe.Pointer(&nwt)))
-				}
-				if th != nil {
-					_, _, _ = wvVtblOf(wv).removeDocumentTitleChanged.Call(
-						uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&tt)))
-				}
-				_, _, _ = wvVtblOf(wv).getBrowserProcessID.Call(
-					uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(&pid)))
-			}
-			_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
-			log.Printf("[browser-panel] 硬关闭 阶段一完成（pid=%d）", pid)
-			go p.finishHardClose(hwnd, pid)
-		})
-	}
-	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid})
+	return parts
 }
 
-// finishHardClose 硬关闭的阶段二：等 WebView2 浏览器进程退出后再销毁宿主
-// 子窗口（拿真实信号，代替原来的固定 400ms 延时）。
-func (p *browserPanel) finishHardClose(hwnd uintptr, pid uint32) {
-	defer panelRecover("硬关闭 阶段二")
-	if hwnd == 0 {
-		return
-	}
-	if pid != 0 && !waitProcessExit(pid, 8*time.Second) {
-		log.Printf("[browser-panel] 硬关闭 阶段二：浏览器进程 pid=%d 8 秒内未退出，放弃拆窗口（空容器随主窗口销毁）", pid)
-		return
-	}
+// waitCloseSettled 等上一轮关闭收尾（浏览器进程退出 + 拆窗口）。同一个 profile
+// 目录上重建控件必须等它关完：否则新旧两个 WebView2 环境会同时占用同一 user
+// data folder，还可能撞上正在退出的浏览器进程。
+func (p *browserPanel) waitCloseSettled() {
 	p.stateMu.Lock()
-	dispatch := p.dispatch
+	done := p.closingDone
 	p.stateMu.Unlock()
-	if dispatch == nil {
+	if done == nil {
 		return
 	}
-	done := make(chan struct{})
-	dispatch(func() {
-		defer panelRecover("硬关闭 阶段二")
-		log.Printf("[browser-panel] 硬关闭 阶段二：拆宿主子窗口 hwnd=%#x", hwnd)
-		_, _, _ = procPanelDestroyWindow.Call(hwnd)
-		close(done)
-	})
+	max := panelCloseWait.exit + panelCloseWait.kill + 2*time.Second
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		log.Printf("[browser-panel] 硬关闭 阶段二：DestroyWindow 投递 2 秒未回（消息泵可能已停）")
+	case <-time.After(max):
+		log.Printf("[browser-panel] 创建: 上一轮关闭 %s 仍未完成（sid=%q），照常创建（可能撞上正在退出的旧实例）", max, p.sid)
 	}
 }
 
-// waitProcessExit 等某个进程结束（最多 max），返回是否已结束。用于「拿真实
-// 退出信号代替拍脑袋的固定延时」；进程不存在（已退出/句柄打不开）一律当作
-// 已结束——这正是我们要等的状态。
-func waitProcessExit(pid uint32, max time.Duration) bool {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+// closeControllerOnUI 阶段一（仅 UI 线程）：反注册自有事件 → 先隐藏宿主子窗口
+// （画面立即消失，窗口等进程退出后再拆）→ 读浏览器进程 PID 并在发退出指令前
+// 打开它的进程句柄 → Controller.Close 发退出指令。返回进程句柄给阶段二等退出；
+// 取不到 PID/句柄时返回 nil（阶段二按「没有进程可等」处理并照常拆窗口）。
+func (p *browserPanel) closeControllerOnUI(parts panelParts) (ex panelExiter) {
+	defer panelRecover("面板关闭 阶段一")
+	v := (*wvRawVtbl)(nil)
+	if parts.wv != nil {
+		v = wvVtblOf(parts.wv)
+	}
+	if v != nil {
+		if parts.newWin != nil {
+			tok := parts.newWinTok
+			_, _, _ = v.removeNewWindowRequested.Call(
+				uintptr(unsafe.Pointer(parts.wv)), uintptr(unsafe.Pointer(parts.newWin)), uintptr(unsafe.Pointer(&tok)))
+		}
+		if parts.title != nil {
+			tok := parts.titleTok
+			_, _, _ = v.removeDocumentTitleChanged.Call(
+				uintptr(unsafe.Pointer(parts.wv)), uintptr(unsafe.Pointer(parts.title)), uintptr(unsafe.Pointer(&tok)))
+		}
+	}
+	if parts.hwnd != 0 {
+		_, _, _ = procPanelShowWindow.Call(parts.hwnd, swHide) // 画面马上消失；窗口等进程退出后拆
+	}
+	var pid uint32
+	if v != nil {
+		_, _, _ = v.getBrowserProcessID.Call(uintptr(unsafe.Pointer(parts.wv)), uintptr(unsafe.Pointer(&pid)))
+	}
+	ex = openPanelProcess(pid) // 关前抓句柄：关后 PID 可能被系统复用
+	if parts.ctl != nil {
+		_, _, _ = ctlVtblOf(parts.ctl).close.Call(uintptr(unsafe.Pointer(parts.ctl)))
+		log.Printf("[browser-panel] 关闭: 已发退出指令（sid=%q Controller.Close 浏览器进程 pid=%d）", p.sid, pid)
+	}
+	return ex
+}
+
+// panelProcess 真实浏览器进程句柄（panelExiter 的 Windows 实现）：句柄在发
+// 退出指令之前打开，之后按句柄等/杀——不按 PID 重开，避开 PID 被系统复用的
+// 风险（拿复用的 PID 还能误杀别人的进程）。
+type panelProcess struct {
+	pid uint32
+	h   windows.Handle
+}
+
+func openPanelProcess(pid uint32) panelExiter {
+	if pid == 0 {
+		log.Printf("[browser-panel] 关闭: 取不到浏览器进程 PID，跳过等退出（按已退出处理）")
+		return nil
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_TERMINATE, false, pid)
 	if err != nil {
+		log.Printf("[browser-panel] 关闭: 打开浏览器进程句柄失败（pid=%d）: %v；按已退出处理", pid, err)
+		return nil
+	}
+	return &panelProcess{pid: pid, h: h}
+}
+
+func (pp *panelProcess) PID() uint32 { return pp.pid }
+
+// Wait 等进程退出：WaitForSingleObject 返回的是内核的退出事件（真实信号），
+// 不是轮询也不是固定延时。
+func (pp *panelProcess) Wait(max time.Duration) bool {
+	if pp.h == 0 {
 		return true
 	}
-	defer windows.CloseHandle(h)
-	ev, err := windows.WaitForSingleObject(h, uint32(max/time.Millisecond))
+	ev, err := windows.WaitForSingleObject(pp.h, uint32(max/time.Millisecond))
 	return err == nil && ev == windows.WAIT_OBJECT_0
+}
+
+func (pp *panelProcess) Kill() error {
+	if pp.h == 0 {
+		return fmt.Errorf("进程句柄不可用")
+	}
+	return windows.TerminateProcess(pp.h, 1)
+}
+
+func (pp *panelProcess) Release() {
+	if pp.h != 0 {
+		windows.CloseHandle(pp.h)
+		pp.h = 0
+	}
 }
 
 // releaseAfterMainLoopGone 主窗口消息循环已退出后的兜底释放（前端热重启用，
 // 仅 UI 线程调用）：不走 Dispatch（旧泵已停），直接 Close 控制器、拆子窗口，
-// 让面板这棵浏览器进程树随旧前端一起退场。面板状态清空，下次 SetRect/
-// Navigate 会经新窗口的 Dispatch 重建。
+// 让面板这棵浏览器进程树随旧前端一起退场。状态清理与关闭共用 detach（closing
+// 置位后迟到事件一律跳过），下次 SetRect/Navigate 会经新窗口的 Dispatch 重建。
 func (p *browserPanel) releaseAfterMainLoopGone() {
 	p.createMu.Lock()
 	defer p.createMu.Unlock()
-	p.stateMu.Lock()
-	p.closing = true // 与 Close() 同语义：之后到期的迟到事件一律跳过
-	hwnd, ctl := p.hwnd, p.ctl
-	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
-	p.started, p.suspended, p.visible = false, false, false
-	if p.navCh != nil {
-		close(p.navCh)
-		p.navCh = nil
+	parts := p.detach(nil) // 前端要换新窗口：不再等这次关闭（旧泵已停，投递到不了）
+	p.createErr = nil      // 允许在新前端上重建
+	if parts.ctl != nil {
+		_, _, _ = ctlVtblOf(parts.ctl).close.Call(uintptr(unsafe.Pointer(parts.ctl)))
 	}
-	p.stateMu.Unlock()
-	p.createErr = nil // 允许在新前端上重建
-	if ctl != nil {
-		_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
-	}
-	if hwnd != 0 {
-		_, _, _ = procPanelDestroyWindow.Call(hwnd) // 已随父窗口销毁时是无害重复
+	if parts.hwnd != 0 {
+		_, _, _ = procPanelDestroyWindow.Call(parts.hwnd) // 已随父窗口销毁时是无害重复
 	}
 }
 
