@@ -1112,7 +1112,8 @@ func (p *browserPanel) closePanel(reason string) <-chan struct{} {
 	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid}) // 工具栏地址/标题复位
 	go func() {
 		defer close(done)
-		defer func() { // 本次关闭收尾：清掉「关闭进行中」标记（等待重建的一方据此放行）
+		defer retirePanelChromium(parts.chrome) // 拆完就保活：原生侧还握着它的 handler 裸指针
+		defer func() {                          // 本次关闭收尾：清掉「关闭进行中」标记（等待重建的一方据此放行）
 			p.stateMu.Lock()
 			if p.closingDone == done {
 				p.closingDone = nil
@@ -1146,10 +1147,53 @@ type panelParts struct {
 	hwnd                uintptr
 	ctl                 *edge.ICoreWebView2Controller
 	wv                  *edge.ICoreWebView2
+	chrome              *edge.Chromium // 绑定库实例：拆完后要保活（见 retirePanelChromium）
 	newWin, title       *evtHandler
 	newWinTok, titleTok int64
 	dispatch            func(f func())
 	live                bool // 取走前是否在运行：false=没开过/已在关，调用方据此幂等返回
+}
+
+// 已退休 WebView2 实例的 Go 侧保活表。
+//
+// 为什么必须保活（2026-10-22 19:57 无声退出的加固项）：go-webview2 把
+// environment/controller 创建完成回调、WebMessageReceived、PermissionRequested、
+// WebResourceRequested、AcceleratorKeyPressed、NavigationCompleted 这一批
+// handler 对象以裸指针（uintptr）交给原生侧，**从不反注册**（库自己没提供
+// remove）。Go 的 GC 只看 Go 侧的引用，原生侧那串裸指针不算引用——面板一关，
+// Chromium 实例与它名下这批 handler 就变成不可达垃圾，一旦被回收，原生侧的
+// 后续回调就踩进已释放的 Go 内存（windowsgui 下等于整进程无声死亡，无日志无
+// WER）。保活这几个 Go 对象是零行为代价的保险：它们对应的 COM 对象本来也从
+// 不 Release（本就没有 Release 路径），留着不但不多占 COM 引用，反而消除了
+// 「原生指针指向已回收内存」这一整类事故。
+var (
+	retiredMu        sync.Mutex
+	retiredChromiums []*edge.Chromium
+)
+
+// retirePanelChromium 把拆完的绑定库实例登记进保活表（同一个实例只记一次）。
+func retirePanelChromium(ch *edge.Chromium) {
+	if ch == nil {
+		return
+	}
+	retiredMu.Lock()
+	for _, c := range retiredChromiums {
+		if c == ch {
+			retiredMu.Unlock()
+			return
+		}
+	}
+	retiredChromiums = append(retiredChromiums, ch)
+	n := len(retiredChromiums)
+	retiredMu.Unlock()
+	log.Printf("[browser-panel] 已退休实例保活（累计 %d 个）：原生侧仍持有它的回调对象裸指针，Go 侧不许让它变成垃圾", n)
+}
+
+// retiredChromiumCount 保活表规模（单测断言「同一实例只记一次」用）。
+func retiredChromiumCount() int {
+	retiredMu.Lock()
+	defer retiredMu.Unlock()
+	return len(retiredChromiums)
 }
 
 // detach 取走控件与宿主子窗口的引用并清空状态（调用方须持 createMu）。
@@ -1162,11 +1206,15 @@ func (p *browserPanel) detach(done chan struct{}) panelParts {
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
 	parts := panelParts{
-		hwnd: p.hwnd, ctl: p.ctl, wv: p.wv,
+		hwnd: p.hwnd, ctl: p.ctl, wv: p.wv, chrome: p.chrome,
 		newWin: p.newWinHandler, title: p.titleHandler,
 		newWinTok: p.newWinToken, titleTok: p.titleToken,
 		dispatch: p.dispatch,
-		live:     p.started && !p.closing,
+		// 「有东西可取」就算在运行：不只看 started——创建链路超时返回后控件仍可能
+		// 稍晚落进字段（started 永远没置上），那种实例同样要把控件关掉、窗口拆掉；
+		// 只按 started 判的话，取走现场却不做任何收尾，等于把一个活着的 WebView2
+		// 环境连窗口一起丢在地上，下次重建就在同一 profile 上叠出第二套环境。
+		live: !p.closing && (p.started || p.ctl != nil || p.hwnd != 0 || p.chrome != nil),
 	}
 	p.closing = true
 	if parts.live && done != nil {
@@ -1210,6 +1258,10 @@ func (p *browserPanel) waitCloseSettled() {
 // 取不到 PID/句柄时返回 nil（阶段二按「没有进程可等」处理并照常拆窗口）。
 func (p *browserPanel) closeControllerOnUI(parts panelParts) (ex panelExiter) {
 	defer panelRecover("面板关闭 阶段一")
+	// 逐步打点：阶段一全是原生调用，整段静默死亡时（windowsgui 下无 panic 日志、
+	// 无 WER）唯一能留下的线索就是「最后一条打点」。2026-10-22 19:57 那次死在这段
+	// 里面，只留了「关闭: 发起」，连是哪一个调用都判不出来——所以每步都落一行。
+	log.Printf("[browser-panel] 关闭: 阶段一 开始（sid=%q 先反注册自有事件）", p.sid)
 	v := (*wvRawVtbl)(nil)
 	if parts.wv != nil {
 		v = wvVtblOf(parts.wv)
@@ -1226,13 +1278,16 @@ func (p *browserPanel) closeControllerOnUI(parts panelParts) (ex panelExiter) {
 				uintptr(unsafe.Pointer(parts.wv)), uintptr(unsafe.Pointer(parts.title)), uintptr(unsafe.Pointer(&tok)))
 		}
 	}
+	log.Printf("[browser-panel] 关闭: 阶段一 已反注册自有事件（sid=%q）", p.sid)
 	if parts.hwnd != 0 {
 		_, _, _ = procPanelShowWindow.Call(parts.hwnd, swHide) // 画面马上消失；窗口等进程退出后拆
 	}
+	log.Printf("[browser-panel] 关闭: 阶段一 已隐藏宿主子窗口（sid=%q hwnd=%#x）", p.sid, parts.hwnd)
 	var pid uint32
 	if v != nil {
 		_, _, _ = v.getBrowserProcessID.Call(uintptr(unsafe.Pointer(parts.wv)), uintptr(unsafe.Pointer(&pid)))
 	}
+	log.Printf("[browser-panel] 关闭: 阶段一 已取浏览器进程 PID（sid=%q pid=%d）", p.sid, pid)
 	ex = openPanelProcess(pid) // 关前抓句柄：关后 PID 可能被系统复用
 	if parts.ctl != nil {
 		_, _, _ = ctlVtblOf(parts.ctl).close.Call(uintptr(unsafe.Pointer(parts.ctl)))
@@ -1303,6 +1358,7 @@ func (p *browserPanel) releaseAfterMainLoopGone() {
 	if parts.hwnd != 0 {
 		_, _, _ = procPanelDestroyWindow.Call(parts.hwnd) // 已随父窗口销毁时是无害重复
 	}
+	retirePanelChromium(parts.chrome) // 同上：原生侧的 handler 裸指针还在，Go 侧不许回收
 }
 
 // BroadcastPointer 点击/输入前亮出 AI 位置：在目标页面内注入临时标记元素
