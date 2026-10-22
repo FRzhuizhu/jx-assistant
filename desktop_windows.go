@@ -541,6 +541,10 @@ func releaseFrontend(app *App, w webview2.WebView) {
 		if ctl := ch.GetController(); ctl != nil {
 			_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
 		}
+		// 主壳实例同款保活（retirePanelChromium 的语义在面板侧，这里是主
+		// WebView2）：热重启销毁旧前端后，绑定库交给原生侧的 handler 裸指针
+		// 仍指着它——旧 Chromium 若被 GC 回收，下一次原生回调就是静默闪退。
+		retirePanelChromium(ch)
 	}()
 }
 

@@ -196,6 +196,7 @@ var cdpCompletedVtblInst = cdpCompletedVtbl{
 		if this == nil || this.ch == nil {
 			return 0
 		}
+		unretireCdpHandler(this) // 超时路径挂过保活的：回调真到了，可以放手
 		r := cdpResult{hr: int32(uint32(errCode))}
 		if resultJSON != nil {
 			r.json = copyWVString(resultJSON)
@@ -206,6 +207,28 @@ var cdpCompletedVtblInst = cdpCompletedVtbl{
 		}
 		return 0
 	}),
+}
+
+// cdpRetired 超时后仍在原生侧挂着的 CDP 完成回调对象保活表。
+// callCDP 的超时分支一旦返回，defer KeepAlive 即释放对象——但 evaluate 跑了
+// 60 秒还没回不代表永远不回（重页面/长 XHR），完成回调可以更晚才到。挂进
+// 表里等回调真到时自摘（unretireCdpHandler），不然就是又一个「原生指针指向
+// 已回收内存」的静默闪退窗口（同 retirePanelChromium 的事故类）。
+var (
+	cdpRetiredMu sync.Mutex
+	cdpRetired   = map[*cdpCompletedHandler]struct{}{}
+)
+
+func retireCdpHandler(h *cdpCompletedHandler) {
+	cdpRetiredMu.Lock()
+	cdpRetired[h] = struct{}{}
+	cdpRetiredMu.Unlock()
+}
+
+func unretireCdpHandler(h *cdpCompletedHandler) {
+	cdpRetiredMu.Lock()
+	delete(cdpRetired, h)
+	cdpRetiredMu.Unlock()
 }
 
 // ---------- 字符串工具 ----------
@@ -824,6 +847,8 @@ func (p *browserPanel) callCDP(method string, params map[string]any) (json.RawMe
 		}
 		return json.RawMessage(r.json), nil
 	case <-time.After(browserTimeout):
+		// 超时≠回调不会来：对象挂保活表，回调真到时自摘（见 cdpRetired 注释）。
+		retireCdpHandler(h)
 		return nil, fmt.Errorf("CDP %s 调用超时", method)
 	}
 }
@@ -1112,7 +1137,11 @@ func (p *browserPanel) closePanel(reason string) <-chan struct{} {
 	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid}) // 工具栏地址/标题复位
 	go func() {
 		defer close(done)
-		defer retirePanelChromium(parts.chrome) // 拆完就保活：原生侧还握着它的 handler 裸指针
+		defer func() { // 拆完就保活：原生侧还握着它的 handler 裸指针
+			retirePanelChromium(parts.chrome)
+			retireEvtHandler(parts.newWin)
+			retireEvtHandler(parts.title)
+		}()
 		defer func() {                          // 本次关闭收尾：清掉「关闭进行中」标记（等待重建的一方据此放行）
 			p.stateMu.Lock()
 			if p.closingDone == done {
@@ -1169,6 +1198,7 @@ type panelParts struct {
 var (
 	retiredMu        sync.Mutex
 	retiredChromiums []*edge.Chromium
+	retiredHandlers  []*evtHandler
 )
 
 // retirePanelChromium 把拆完的绑定库实例登记进保活表（同一个实例只记一次）。
@@ -1194,6 +1224,24 @@ func retiredChromiumCount() int {
 	retiredMu.Lock()
 	defer retiredMu.Unlock()
 	return len(retiredChromiums)
+}
+
+// retireEvtHandler 自制事件回调对象的同款保活：remove_* 在正常关闭序列里
+// 反注册过，但「拆解途中迟到事件」「remove 未生效/竞态」这类残余可能性没法
+// 从外部证伪——对象本身只有几十字节，保活的代价比再赌一次静默闪退低。
+func retireEvtHandler(h *evtHandler) {
+	if h == nil {
+		return
+	}
+	retiredMu.Lock()
+	for _, x := range retiredHandlers {
+		if x == h {
+			retiredMu.Unlock()
+			return
+		}
+	}
+	retiredHandlers = append(retiredHandlers, h)
+	retiredMu.Unlock()
 }
 
 // detach 取走控件与宿主子窗口的引用并清空状态（调用方须持 createMu）。
@@ -1359,6 +1407,8 @@ func (p *browserPanel) releaseAfterMainLoopGone() {
 		_, _, _ = procPanelDestroyWindow.Call(parts.hwnd) // 已随父窗口销毁时是无害重复
 	}
 	retirePanelChromium(parts.chrome) // 同上：原生侧的 handler 裸指针还在，Go 侧不许回收
+	retireEvtHandler(parts.newWin)
+	retireEvtHandler(parts.title)
 }
 
 // BroadcastPointer 点击/输入前亮出 AI 位置：在目标页面内注入临时标记元素

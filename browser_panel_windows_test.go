@@ -20,6 +20,7 @@ package main
 import (
 	"testing"
 	"time"
+	"unsafe"
 
 	edge "github.com/jchv/go-webview2/pkg/edge"
 )
@@ -185,5 +186,40 @@ func TestRetirePanelChromiumDedup(t *testing.T) {
 	retirePanelChromium(nil)
 	if got := retiredChromiumCount(); got != before+1 {
 		t.Fatalf("同一实例被重复记了（%d → %d）", before, got)
+	}
+}
+
+// ⑥ CDP 完成回调的保活表：超时挂入 → 回调自摘；同一对象重复挂不得撑表。
+func TestCdpRetireHandlerLifecycle(t *testing.T) {
+	h := &cdpCompletedHandler{vtbl: &cdpCompletedVtblInst, ch: make(chan cdpResult, 1)}
+	retireCdpHandler(h)
+	retireCdpHandler(h)
+	cdpRetiredMu.Lock()
+	n := len(cdpRetired)
+	cdpRetiredMu.Unlock()
+	if n != 1 {
+		t.Fatalf("重复挂入撑大了保活表（len=%d）", n)
+	}
+	unretireCdpHandler(h)
+	unretireCdpHandler(h) // 重复自摘也幂等
+	cdpRetiredMu.Lock()
+	n = len(cdpRetired)
+	cdpRetiredMu.Unlock()
+	if n != 0 {
+		t.Fatalf("自摘后表未清空（len=%d）", n)
+	}
+}
+
+// ⑦ 自制事件回调对象的保活：nil 不记、同一对象只记一次。
+func TestRetireEvtHandlerDedup(t *testing.T) {
+	h := newEvtHandler(func(sender, args unsafe.Pointer) {})
+	retireEvtHandler(h)
+	retireEvtHandler(h)
+	retireEvtHandler(nil)
+	retiredMu.Lock()
+	n := len(retiredHandlers)
+	retiredMu.Unlock()
+	if n != 1 {
+		t.Fatalf("事件回调保活表长度异常（len=%d，应为 1）", n)
 	}
 }
