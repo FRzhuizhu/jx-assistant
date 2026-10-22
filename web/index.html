@@ -583,9 +583,8 @@
             <div class="set-field">
               <div class="sf-label">最大步数</div>
               <div class="sf-inline">
-                <label class="pr-toggle"><input type="checkbox" id="set-maxsteps-unlimited"><span></span></label>
-                <input id="set-maxsteps" type="number" min="1" max="1000">
-                <span class="sf-desc">单条消息触发的任务里，模型可连续执行的步数（模型调用＋工具执行）上限。勾上「不限制」（默认）：任务一直跑到模型自己收尾或你点停止；关掉后可填上限，连续跑满这个数仍未完成会自动停止</span>
+                <input id="set-maxsteps" type="number" min="0" max="1000">
+                <span class="sf-desc">单条消息触发的任务里，模型可连续执行的步数（模型调用＋工具执行）上限；填 0 = 不限制（默认，任务一直跑到模型自己收尾或你点停止），填正整数则跑满该步数仍未完成会自动停止</span>
               </div>
             </div>
           </div>

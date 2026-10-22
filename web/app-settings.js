@@ -1084,47 +1084,30 @@ $('set-queueauto-on').onchange = async () => {
 };
 
 /* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ----------
-   表示法只有一种：服务端 maxSteps <= 0 = 不限制（新装默认），> 0 = 手填的
-   步数上限。设置页用「不限制」开关表达它——勾上＝不限制（数字框置灰留空），
-   关掉才填数字，用户不必知道 0 这个暗号。 */
+   表示法只有一种：服务端 maxSteps 0/负数 = 不限制（新装默认），> 0 = 手填的
+   步数上限。设置页就一个输入框：回显多少就是多少（0 显示 0），保存原样提交
+   （含 0）——不搞开关，用户填个 0 就懂，说明文字里写着。 */
 
-// syncMaxSteps 按服务端值回显：0/负数 = 不限制（勾上开关、数字框置灰留空）；
-// 正数 = 上限（关掉开关、数字框可编辑并显示该值）。回显与保存后都走这里，
-// 不再用 `c.maxSteps || 200` 那种硬编码兜底——那会把「不限制」显示成 200。
+// syncMaxSteps 按服务端值回显：0/负数一律显示 0（＝不限制），正数显示该值
 function syncMaxSteps(n) {
-  const unlimited = !(n > 0);
-  $('set-maxsteps-unlimited').checked = unlimited;
-  $('set-maxsteps').disabled = unlimited;
-  $('set-maxsteps').value = unlimited ? '' : n;
+  $('set-maxsteps').value = n > 0 ? n : 0;
 }
 
-// saveMaxSteps 落库并回显；失败时按服务端实际值回显，UI 不和服务端掰着。
-async function saveMaxSteps(v) {
+$('set-maxsteps').onchange = async () => {
+  const raw = $('set-maxsteps').value.trim();
+  const v = Number(raw);
+  if (raw === '' || !Number.isInteger(v) || v < 0) {
+    alert('步数需为 ≥0 的整数（填 0 = 不限制）');
+    const c = await api('/api/config').catch(() => null);
+    if (c) syncMaxSteps(c.maxSteps); // 输入不合法：回到服务端实际值
+    return;
+  }
   try {
     const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ maxSteps: v }) });
     syncMaxSteps(c.maxSteps); // 以服务端落库值为准回显
   } catch (e) {
     alert('保存失败：' + e.message);
-    const c = await api('/api/config').catch(() => null);
-    if (c) syncMaxSteps(c.maxSteps);
   }
-}
-
-$('set-maxsteps-unlimited').onchange = () => {
-  // 勾上＝不限制（发 0）；取消＝回到手填上限，框里空着就先给个起步值 1000
-  if ($('set-maxsteps-unlimited').checked) { saveMaxSteps(0); return; }
-  const v = parseInt($('set-maxsteps').value, 10);
-  saveMaxSteps(v >= 1 ? v : 1000);
-};
-
-$('set-maxsteps').onchange = () => {
-  const v = parseInt($('set-maxsteps').value, 10);
-  if (isNaN(v) || v < 1) {
-    alert('步数需为 ≥1 的整数（不限制请勾上左侧开关）');
-    api('/api/config').then((c) => syncMaxSteps(c.maxSteps)).catch(() => {});
-    return;
-  }
-  saveMaxSteps(v);
 };
 
 /* ---------- 常规页：关闭窗口驻留后台（服务端配置，改动即时保存） ----------
