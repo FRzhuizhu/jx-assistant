@@ -636,65 +636,66 @@ func visibleSize(m *StoredMessage) int {
 	return n
 }
 
-// keepRoundsByBudget 按保留预算（KeepChars，字）算自动压缩保留几轮：从最新
-// 一轮往前累计模型可见字数，装得下的整轮都保留；命中点可能落在某一轮中间，
-// 轮是原子单位——往上扩到整轮保留，宁可略超预算也不劈半轮。
-// 不设「至少保 1 轮」的下限：最近一轮自身就超预算时返回 0——表示连最近一轮
-// 也要折叠。否则超长上下文永远压不动：单轮由几十次工具调用（含超大工具结果）
-// 拼成时，一轮即可百万 token，硬保这一轮等于压缩失效。
-func (a *App) keepRoundsByBudget(raw []*StoredMessage) int {
-	rounds := splitRounds(raw)
-	if len(rounds) == 0 {
-		return 0
-	}
-	sizeOf := func(r round) int {
-		n := 0
-		for _, m := range raw {
-			if m.Seq >= r.startSeq && m.Seq <= r.endSeq {
-				n += visibleSize(m)
-			}
-		}
-		return n
-	}
-	kept, total := 0, 0
-	for i := len(rounds) - 1; i >= 0; i-- {
-		s := sizeOf(rounds[i])
-		if total+s > a.Cfg.KeepChars {
+// keepStartSeq 按保留预算（KeepChars，字）算保留区的起点 seq：从最新一条往前
+// 累计模型可见字数，装得下的保留原文（不折叠），装不下的折叠。**不按「轮」对齐**
+// ——完整一轮的原子性已去掉：巨轮也能只折前半段、保留最近一段原文（单轮由几十次
+// 工具调用拼成时一轮即可百万 token，按轮保等于压缩失效；但也不能把整轮折光，
+// 近 KeepChars 字的近期上下文要原样留给模型）。
+// 保留区起点若落在工具结果上，往前扩到该步的助手调用行，避免拆散调用/结果配对
+//（宁可略超预算，也不让窗口从一个孤立的 tool 结果开始）。
+func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
+	idx := -1
+	total := 0
+	for i := len(raw) - 1; i >= 0; i-- {
+		s := visibleSize(raw[i])
+		if total+s > a.Cfg.KeepChars && idx >= 0 {
 			break
 		}
 		total += s
-		kept++
+		idx = i
 	}
-	return kept
+	if idx < 0 {
+		return 0
+	}
+	// 不把窗口起点落在工具结果上：往前扩到调用行（同一 step 一起保留）
+	for idx > 0 && raw[idx].Role == "tool" {
+		idx--
+	}
+	return raw[idx].Seq
 }
 
 // ruleCompactAuto 阈值触发/溢出兜底的自动入口：把保留窗口之外、尚未折叠的
-// 轮次全部折叠。keep<0 表示自动触发——按 KeepChars 字数预算保留最近的完整
-// 轮（规则与模型摘要两种压缩共用同一预算口径）；keep=0 表示全部折叠（连最近
-// 一轮也折，最近一轮自身超预算时兜底用到）；keep=1 是溢出兜底的最大化压缩
-//（只留最近一轮）。返回折叠的轮数。
+// 行折叠掉。keep<0 表示自动触发——按 KeepChars 字数预算保留最近约 N 字原文
+//（行级、不按轮：巨轮也能只折前半段，近 N 字原样留给模型）；keep=0 表示全部
+// 折叠（溢出兜底）；keep>0 表示只留最近 keep 轮（溢出兜底的两级：先只留 1 轮，
+// 再全部折叠）。返回折叠的行数（0 = 没有可折叠的）。
 func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
 		return 0
 	}
+	if len(raw) == 0 {
+		return 0
+	}
+	if keep < 0 {
+		// 自动：保留最近约 KeepChars 字原文（行级，不按轮），其余折叠
+		start := a.keepStartSeq(raw)
+		if start <= 1 {
+			return 0
+		}
+		return a.foldUpTo(sess, raw, start-1)
+	}
 	rounds := splitRounds(raw)
 	if len(rounds) == 0 {
 		return 0
 	}
-	if keep < 0 {
-		keep = a.keepRoundsByBudget(raw)
-	}
 	var endSeq int64
-	switch {
-	case keep <= 0:
-		// 连最近一轮都超预算：全部折叠（含最近一轮），确保超长上下文必然实质削减
-		endSeq = rounds[len(rounds)-1].endSeq
-	case keep < len(rounds):
-		// 保留窗口起点的前一条即压缩终点
+	if keep == 0 {
+		endSeq = rounds[len(rounds)-1].endSeq // 全部折叠（含最近一轮）
+	} else if keep < len(rounds) {
 		endSeq = rounds[len(rounds)-keep].startSeq - 1
-	default:
-		return 0 // 全部轮都在保留区内，没有可折叠的
+	} else {
+		return 0
 	}
 	return a.foldRounds(sess, raw, rounds, endSeq)
 }
@@ -772,40 +773,80 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 	return folded
 }
 
-// compactRound 把一整轮**首次**折叠为一级轻量表示并落库（幂等，不改原文；
-// 已折过的轮由 foldRounds 路由到 compactRoundAgain 做二级升级）：
+// foldUpTo 行级折叠：把 endSeq 及更早、尚未折叠的行按一级规则折叠掉（自动预算
+// 压缩用）。**不按轮对齐**——单轮由几十次工具调用拼成时一轮可达百万字，只折它
+// 的前半段也能立刻把上下文降下来，同时把最近约 KeepChars 字原文原样留给模型。
+// 与 foldRounds 的差别只在粒度：行级更细，所以这里不做轮级那套「二级升级」；
+// 反复触发仍压不动时由 overflowCompact 的按轮全折兜底。
+// 返回新折叠的行数（0 = 没有可折叠的）。
+func (a *App) foldUpTo(sess *SessionMeta, raw []*StoredMessage, endSeq int64) int {
+	folded, from := 0, int64(0)
+	for _, m := range raw {
+		if m.Seq > endSeq || m.Compact != "" {
+			continue
+		}
+		if !a.compactOne(sess.ID, m) {
+			continue // 视图外的归档行 / 空正文行：不算折叠，边界不动
+		}
+		if folded == 0 {
+			from = m.Seq
+		}
+		folded++
+	}
+	if folded > 0 {
+		// 审计留痕：规则压缩改写模型可见前缀，是缓存命中率突降的常见原因
+		a.auditWrite(sess, map[string]any{"type": "compact", "rows": folded, "from": from, "to": endSeq})
+		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+	}
+	return folded
+}
+
+// compactOne 把单行**首次**折叠为一级轻量表示并落库（幂等，不改原文）；
+// 返回是否真的标了这一行（视图外的归档行与空正文行不标，调用方据此计数）：
 //   - 用户侧输入（chat/aiuser/report）：Compact=原文（视图逐字节不变，标记只为推进边界）
 //   - 助手正文行：Compact=原文（思考过程丢弃——折叠视图不带 ReasoningContent）
 //   - 带工具调用的助手行：正文 + [调用 名 参数=clip]（工具结果不保留）
 //   - 工具结果行与环境快照行：omit（组装时整行跳过）
+func (a *App) compactOne(sid string, m *StoredMessage) bool {
+	switch {
+	case m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit":
+		// 视图外的归档行不标（组装本来就跳过）
+		return false
+	case len(m.ToolCalls) > 0:
+		var b strings.Builder
+		if s := m.Text(); strings.TrimSpace(s) != "" {
+			b.WriteString(s + "\n")
+		}
+		for _, tc := range m.ToolCalls {
+			b.WriteString(fmt.Sprintf("[调用 %s", tc.Function.Name))
+			if args := clipText(tc.Function.Arguments, argKeepLimit); args != "" {
+				b.WriteString(" 参数=" + args)
+			}
+			b.WriteString("]\n")
+		}
+		_ = a.Store.SetCompact(sid, m.Seq, strings.TrimRight(b.String(), "\n"))
+		return true
+	case m.Role == "tool" || m.Kind == "env":
+		_ = a.Store.SetCompact(sid, m.Seq, compactOmit)
+		return true
+	case m.Role == "assistant" || m.Role == "user":
+		if s := m.Text(); strings.TrimSpace(s) != "" {
+			_ = a.Store.SetCompact(sid, m.Seq, s)
+			return true
+		}
+	}
+	return false
+}
+
+// compactRound 把一整轮首次折叠为一级表示（逐行调 compactOne）。供按轮折叠的
+// 手动入口（ruleCompactTo）与溢出兜底用；自动预算压缩走行级的 foldUpTo。
 func (a *App) compactRound(sid string, r round, raw []*StoredMessage) {
 	for _, m := range raw {
 		if m.Seq < r.startSeq || m.Seq > r.endSeq {
 			continue
 		}
-		switch {
-		case m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit":
-			// 视图外的归档行不标（组装本来就跳过）
-		case len(m.ToolCalls) > 0:
-			var b strings.Builder
-			if s := m.Text(); strings.TrimSpace(s) != "" {
-				b.WriteString(s + "\n")
-			}
-			for _, tc := range m.ToolCalls {
-				b.WriteString(fmt.Sprintf("[调用 %s", tc.Function.Name))
-				if args := clipText(tc.Function.Arguments, argKeepLimit); args != "" {
-					b.WriteString(" 参数=" + args)
-				}
-				b.WriteString("]\n")
-			}
-			_ = a.Store.SetCompact(sid, m.Seq, strings.TrimRight(b.String(), "\n"))
-		case m.Role == "tool" || m.Kind == "env":
-			_ = a.Store.SetCompact(sid, m.Seq, compactOmit)
-		case m.Role == "assistant" || m.Role == "user":
-			if s := m.Text(); strings.TrimSpace(s) != "" {
-				_ = a.Store.SetCompact(sid, m.Seq, s)
-			}
-		}
+		a.compactOne(sid, m)
 	}
 }
 
@@ -855,8 +896,8 @@ const summarizeInstruction = `请把下面这段对话历史压缩成一份结�
 // origin=auto 时合并旧自动摘要（DSH 式单一检查点）；origin=manual 时独立叠加、永不重压。
 // upTo>0（手动按钮）时压缩终点=upTo 所在轮（含），之后的轮保持原文；
 // 否则按保留窗口从尾部倒数——keepTail<0 表示自动触发，与规则压缩共用同一
-// 字数预算（keepRoundsByBudget）；keepTail=0 表示摘要覆盖全部历史（最近一轮
-// 自身超预算时兜底用到）；溢出兜底显式传 1（只留最近一轮）。
+// 字数预算（keepStartSeq，行级不按轮）；keepTail=0 表示摘要覆盖全部历史（最近
+// 一轮自身超预算时兜底用到）；溢出兜底显式传 1（只留最近一轮）。
 func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo int64) (string, error) {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
@@ -873,13 +914,10 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 			prevAuto = s
 		}
 	}
-	keep := keepTail
-	if keep < 0 {
-		keep = a.keepRoundsByBudget(raw)
-	}
 	rounds := splitRounds(raw)
-	segEnd := int64(0)
-	if upTo > 0 {
+	var segEnd int64
+	switch {
+	case upTo > 0:
 		for _, r := range rounds {
 			if upTo >= r.startSeq && upTo <= r.endSeq {
 				segEnd = r.endSeq
@@ -897,13 +935,19 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		if segEnd == 0 {
 			return "", fmt.Errorf("第 %d 条之前没有可压缩的回合", upTo)
 		}
-	} else if keep <= 0 {
-		// 连最近一轮都超预算：摘要覆盖到最后一轮（全部历史），确保超长上下文必然削减
+	case keepTail < 0:
+		// 自动触发：与规则压缩同一口径——保留最近约 KeepChars 字原文，摘要覆盖
+		// 到保留区起点之前那一条（保留区起点落在工具结果上时已往前扩到调用行）
+		if st := a.keepStartSeq(raw); st > 1 {
+			segEnd = st - 1
+		}
+	case keepTail == 0:
+		// 连最近一行都超预算：摘要覆盖到最后一轮（全部历史），确保超长上下文必然削减
 		if len(rounds) > 0 {
 			segEnd = rounds[len(rounds)-1].endSeq
 		}
-	} else if len(rounds) > keep {
-		segEnd = rounds[len(rounds)-keep].startSeq - 1
+	case len(rounds) > keepTail:
+		segEnd = rounds[len(rounds)-keepTail].startSeq - 1
 	}
 	if segEnd <= boundary {
 		return "", fmt.Errorf("没有可压缩的区间（该范围之前的内容已压缩过）")

@@ -395,15 +395,16 @@ func TestForkPreservesCompactAndThinking(t *testing.T) {
 	}
 }
 
-// 字数预算保留算法：从最新一轮往前累计模型可见字数，装得下的整轮保留；
-// 命中点在轮中间时扩到整轮；最近一轮独大时只保它（至少 1 轮）。
-func TestKeepRoundsByBudget(t *testing.T) {
+// 字数预算保留算法（行级）：从最新一条往前累计模型可见字数，装得下的保留原文；
+// 命中点不按轮对齐——巨轮自身超预算时也保它最近的一条原文（保留窗口不能为空）。
+func TestKeepStartSeq(t *testing.T) {
 	a := newCompactTestApp(t)
 	sess := &SessionMeta{ID: "s1", Mode: "task"}
 	if err := a.Store.Create(sess); err != nil {
 		t.Fatal(err)
 	}
-	// 三个小轮（无工具）：每轮 = 用户输入(4字) + 结论(4字) + 思考(6字) = 14 字
+	// 三个小轮（无工具）：每轮 = 用户输入(4字) + 结论(4字+6字思考) = 14 字，两行
+	//（user 4 字 + assistant 10 字）
 	seedRound(t, a, "s1", "甲", false)
 	seedRound(t, a, "s1", "乙", false)
 	seedRound(t, a, "s1", "丙", false)
@@ -411,18 +412,19 @@ func TestKeepRoundsByBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 预算 30：丙(14) + 乙(14)=28 装得下，再装甲=42 超 → 保 2 轮
+	// 预算 30：丙两行(14) + 乙两行(14)=28 装得下，再装甲的结论行(10)=38 超
+	// → 保留区从乙轮的用户行(seq 3)起
 	a.Cfg.KeepChars = 30
-	if got := a.keepRoundsByBudget(raw); got != 2 {
-		t.Fatalf("预算 30 应保 2 轮, got %d", got)
+	if got := a.keepStartSeq(raw); got != 3 {
+		t.Fatalf("预算 30 的保留区应从第 3 条起, got %d", got)
 	}
-	// 预算大到装下全部
+	// 预算大到装下全部 → 从第一条起
 	a.Cfg.KeepChars = 1000
-	if got := a.keepRoundsByBudget(raw); got != 3 {
-		t.Fatalf("预算 1000 应保 3 轮, got %d", got)
+	if got := a.keepStartSeq(raw); got != 1 {
+		t.Fatalf("预算 1000 的保留区应从第 1 条起, got %d", got)
 	}
-	// 巨型最后一轮：预算装不下它 → 返回 0（连最近一轮也要折叠）。
-	// 这是「百万级单轮压不动」的根因修复点：硬保 1 轮会让超长上下文永远压不动。
+	// 巨型最后一轮：预算装不下它 → 只保留它最后一条（不按轮，也不留空窗口）。
+	// 这是「百万级单轮压不动」的根因修复点：按轮硬保整轮会让超长上下文压不动。
 	if err := a.Store.AppendRow("s1", &StoredMessage{
 		Message: TextMessage("user", "巨轮问题"), Kind: kindChat,
 	}); err != nil {
@@ -435,20 +437,20 @@ func TestKeepRoundsByBudget(t *testing.T) {
 	}
 	raw, _ = a.Store.RawMessagesAll("s1")
 	a.Cfg.KeepChars = 10000
-	if got := a.keepRoundsByBudget(raw); got != 0 {
-		t.Fatalf("巨轮独大应保 0 轮（连它一起折）, got %d", got)
+	if got := a.keepStartSeq(raw); got != 8 {
+		t.Fatalf("巨轮独大时保留区应只剩最后一条(8), got %d", got)
 	}
-	// 端到端：阈值触发后按预算折叠——巨轮自身超预算，连最近一轮也要折，
+	// 端到端：阈值触发后按预算行级折叠——巨轮自身超预算，整轮前面的行都要折，
 	// 否则上下文压不动（回归：此前报「没有可折叠的回合」但上下文仍超长）。
 	cp, err := a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000)
 	if err != nil || !cp {
 		t.Fatalf("阈值应触发折叠, cp=%v err=%v", cp, err)
 	}
 	if got := rowBySeq(t, a, "s1", 7).Compact; got == "" {
-		t.Fatalf("超预算的巨轮用户行应被折叠, got %q", got)
+		t.Fatalf("保留区之前的巨轮用户行应被折叠, got %q", got)
 	}
-	if got := rowBySeq(t, a, "s1", 8).Compact; got == "" {
-		t.Fatalf("超预算的巨轮结论行应被折叠, got %q", got)
+	if got := rowBySeq(t, a, "s1", 8).Compact; got != "" {
+		t.Fatalf("保留区内的巨轮结论行应原样保留, got %q", got)
 	}
 	if got := rowBySeq(t, a, "s1", 1).Compact; got == "" {
 		t.Fatal("预算外的旧轮应已折叠")
@@ -456,9 +458,9 @@ func TestKeepRoundsByBudget(t *testing.T) {
 }
 
 // 回归：上下文超长（最近一轮自身远超保留预算）时，手动压缩必须产生实质削减。
-// 之前 keepRoundsByBudget 硬保 1 轮，百万级单轮永远压不动——报「没有可折叠的
-// 回合」但上下文仍满（ERP 会话实测：单轮 130 万字 ≈ 99 万 token）。修复后空
-// body 手动压缩（走自动预算保留窗口）应把巨轮也折叠，工具结果整行 omit。
+// 之前按轮硬保 1 轮，百万级单轮永远压不动——报「没有可折叠的回合」但上下文仍满
+//（ERP 会话实测：单轮 130 万字 ≈ 99 万 token）。修复后空 body 手动压缩（走自动
+// 预算的行级保留窗口）应把巨轮前面的行也折叠，工具结果整行 omit。
 func TestManualCompactHugeRoundReducesContext(t *testing.T) {
 	a := newCompactTestApp(t)
 	a.Cfg.KeepChars = 10000
@@ -512,8 +514,8 @@ func TestManualCompactHugeRoundReducesContext(t *testing.T) {
 	if after >= before/10 {
 		t.Fatalf("手动压缩应显著削减上下文: before=%d after=%d", before, after)
 	}
-	if got := rowBySeq(t, a, "s1", giantFinal).Compact; got == "" {
-		t.Fatal("巨轮结论应被折叠")
+	if got := rowBySeq(t, a, "s1", giantFinal).Compact; got != "" {
+		t.Fatalf("保留区内的巨轮结论行应原样保留, got %q", got)
 	}
 	// 巨大工具结果被 omit（折叠的核心收益）：再压一次应无轮可折，且报错是真的
 	if _, err := a.ruleCompactTo(sess, giantFinal); err == nil || !strings.Contains(err.Error(), "已折叠") {
