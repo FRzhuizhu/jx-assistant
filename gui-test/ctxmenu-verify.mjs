@@ -186,7 +186,7 @@ async function run() {
     await shot(t, join(SCREEN, 'ctxmenu-input.png'));
     let m = await menuState(t);
     ok('C2 输入框菜单条目（无选区：剪切/复制置灰）',
-      m && m.join(',') === '撤销,重做,剪切｜禁,复制｜禁,粘贴,全选', JSON.stringify(m));
+      m && m.join(',') === '撤销,重做,剪切｜禁,复制｜禁,粘贴,全选,朗读', JSON.stringify(m));
 
     // C3 有选区 → 剪切/复制可用；复制入剪贴板桩
     await read(t, `document.getElementById('input').setSelectionRange(0, 3)`);
@@ -260,7 +260,7 @@ async function run() {
     await rightClick(t, lp.x, lp.y);
     await shot(t, join(SCREEN, 'ctxmenu-link.png'));
     m = await menuState(t);
-    ok('C8 链接菜单条目', m && m.join(',') === '打开,在系统浏览器中打开,复制链接', JSON.stringify(m));
+    ok('C8 链接菜单条目', m && m.join(',') === '打开,在系统浏览器中打开,复制链接,朗读', JSON.stringify(m));
     await read(t, `window.__fetchLog = []`);
     await clickMenu(t, '在系统浏览器中打开');
     let fl = await read(t, `window.__fetchLog`);
@@ -280,7 +280,7 @@ async function run() {
     await shot(t, join(SCREEN, 'ctxmenu-filelink.png'));
     m = await menuState(t);
     ok('C9 文件路径链接菜单条目',
-      m && m.join(',') === '预览（右栏）,在系统中打开,在文件夹中定位,复制路径', JSON.stringify(m));
+      m && m.join(',') === '预览（右栏）,在系统中打开,在文件夹中定位,复制路径,朗读', JSON.stringify(m));
     await read(t, `window.__fetchLog = []`);
     await clickMenu(t, '在系统中打开');
     await rightClick(t, fp.x, fp.y);
@@ -301,7 +301,7 @@ async function run() {
     await shot(t, join(SCREEN, 'ctxmenu-delivery.png'));
     m = await menuState(t);
     ok('C10 交付卡行菜单条目',
-      m && m.join(',') === '打开,在文件夹中查看,预览（右栏）,复制路径', JSON.stringify(m));
+      m && m.join(',') === '打开,在文件夹中查看,预览（右栏）,复制路径,朗读', JSON.stringify(m));
     await read(t, `window.__clip = []`);
     await rightClick(t, dp.x, dp.y);
     await clickMenu(t, '复制路径');
