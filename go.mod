@@ -1,5 +1,9 @@
 module jxassistant
 
+// 绑定库本地补丁版（详见 第三方库/go-webview2）：修 PermissionRequested
+// 空指针出参、把 log.Fatal 类「杀整进程」失败改为可恢复降级
+replace github.com/jchv/go-webview2 => ./第三方库/go-webview2
+
 go 1.26.0
 
 require (
