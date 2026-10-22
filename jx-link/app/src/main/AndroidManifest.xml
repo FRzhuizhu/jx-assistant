@@ -80,6 +80,13 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- 壳内浏览器页：手机端「打开一个页面」的落点（右栏浏览器的网址/文件预览、
+             对话里的链接）。返回键与右缘左滑由这一层自己收掉，回到对话页 -->
+        <activity
+            android:name=".BrowserActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
         <!-- 设置：清空应用缓存 / 反馈意见 -->
         <activity
             android:name=".SettingsActivity"

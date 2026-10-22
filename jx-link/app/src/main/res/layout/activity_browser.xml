@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 壳内浏览器页：顶部一条工具栏（关闭/后退/前进/刷新 + 标题），下面铺满 WebView。
+     返回键与右缘左滑由 BrowserActivity 自己处理（先退本页历史，退不动就 finish）。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="4dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:id="@+id/btn_close"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:gravity="center"
+            android:minWidth="44dp"
+            android:text="✕"
+            android:textColor="@color/text1"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/btn_prev"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:gravity="center"
+            android:minWidth="40dp"
+            android:text="◀"
+            android:textColor="@color/text1"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/btn_next"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:gravity="center"
+            android:minWidth="40dp"
+            android:text="▶"
+            android:textColor="@color/text1"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/btn_reload"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:gravity="center"
+            android:minWidth="40dp"
+            android:text="⟳"
+            android:textColor="@color/text1"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/page_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text=""
+            android:textColor="@color/text2"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <WebView
+        android:id="@+id/web"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+</LinearLayout>

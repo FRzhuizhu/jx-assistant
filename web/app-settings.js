@@ -1299,7 +1299,7 @@ $('btn-open-sites').onclick = async () => {
   if (!m) { alert('先在上方「市场服务器」里填服务端地址（如 http://192.168.1.210:PORT/market/manifest.json），托管平台与市场在同一台服务端。'); return; }
   try {
     await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: m[1] + '/sites' }) });
-  } catch (e) { window.open(m[1] + '/sites', '_blank'); }
+  } catch (e) { jxOpenPage(m[1] + '/sites'); }
 };
 bindRemoteInput('set-publisher-name', 'publisherName');
 bindRemoteInput('set-registry-url', 'registryURL');

@@ -687,6 +687,11 @@
       });
     },
     openURL: function (path) {
+      // 手机壳里 window.open(blob) 没人接管：要么开出来关不掉、要么直接被丢。
+      // 有壳桥就交给壳内浏览器页——内容在这一页里取成 base64，壳落成缓存文件打开。
+      if (window.jxOpenContent && window.JXLink && typeof window.JXLink.openFile === 'function') {
+        return window.jxOpenContent(path, path);
+      }
       return window.JX_REMOTE.assetURL(path).then(function (u) { window.open(u, '_blank'); });
     },
   };

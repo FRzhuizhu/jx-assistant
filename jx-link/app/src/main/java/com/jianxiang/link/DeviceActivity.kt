@@ -273,6 +273,11 @@ class DeviceActivity : Activity() {
         }
         web.setBackgroundColor(Color.WHITE)
 
+        // 网页 → 壳的唯一「打开一个页面」出口（web/app-chat.js 的 openInPanelBrowser 调）：
+        // 手机上没有原生右栏面板，而 window.open 在 WebView 里没人接管——那正是
+        // 「打开了一个关不掉的新页面」的根源，所以这一路改由壳开（BrowserActivity）
+        web.addJavascriptInterface(PageOpener(), "JXLink")
+
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
@@ -422,6 +427,38 @@ class DeviceActivity : Activity() {
             } catch (e: Exception) {
                 android.util.Log.d("JxLink", "download fail: ${e.message}")
                 android.widget.Toast.makeText(this, "下载失败：${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * 网页 → 壳的「打开一个页面」桥（JS 里是 window.JXLink）。
+     *
+     * 手机壳没有原生右栏面板，页面只能在壳内另开一层；而网页侧自己 window.open
+     * 在这条 WebView 里没人接管，打开的那一页没有任何返回入口——所以手机端的
+     * 「打开页面」必须走壳。参数只收网址与内容字节，不接本地路径，别的一概不理。
+     * 桥方法跑在 JavaBridge 线程：落文件在这边做完，startActivity 交回主线程。
+     */
+    private inner class PageOpener {
+        @android.webkit.JavascriptInterface
+        fun openPage(url: String?) {
+            val u = url?.trim()
+            if (u.isNullOrEmpty()) return
+            val scheme = try { Uri.parse(u).scheme } catch (e: Exception) { null }
+            if (scheme != "http" && scheme != "https") return // 只开网址，别的 scheme 不外开
+            runOnUiThread { startActivity(BrowserActivity.forUrl(this@DeviceActivity, u)) }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun openFile(name: String?, mime: String?, base64: String?): Boolean {
+            if (base64.isNullOrEmpty()) return false
+            return try {
+                val f = BrowserActivity.writeContent(this@DeviceActivity, name, mime, base64)
+                runOnUiThread { startActivity(BrowserActivity.forContent(this@DeviceActivity, f, name)) }
+                true
+            } catch (e: Exception) {
+                android.util.Log.d("JxLink", "openFile fail: ${e.message}")
+                false
             }
         }
     }

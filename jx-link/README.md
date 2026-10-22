@@ -50,6 +50,17 @@
   与浏览器后退、左右滑手势是同一套。壳只把按键转成一次 `jxNavBack()` 调用，只在
   网页回 `'exit'` 时 `finish()`（结束本页是网页做不到的事），另加「先退系统全屏
   视频」。**3 秒内第二次返回 = 回壳首页**（窗口也搬进了网页，与 App 内一致）。
+- **打开页面 = 壳内浏览器页（2026-10-23）**：右栏浏览器与对话链接打开的页面开在
+  壳自己的一层 `BrowserActivity`（工具栏：关闭 / 后退 / 前进 / 刷新 + 标题）。
+  此前网页侧只能 `window.open(url,'_blank')`，而壳里没有接管新窗口
+  （没实现 `WebChromeClient.onCreateWindow`）——请求要么被 WebView 静默丢掉，
+  要么把电脑页 UI 顶掉：那页上没有 `jxNavBack`，返回键什么都不做，用户只能杀掉
+  整个 App。现在**返回键先退本页历史、退不动就 `finish()` 回对话页**，右缘左滑
+  同样关闭；这一层的关闭只在壳里收尾，**不调** `jxNavBack`（那是电脑页的层级）。
+  工作区文件预览先在这一页里取成 base64 交壳落成缓存文件再 `file://` 打开
+  （5MB 上限，超了直说去电脑上看）；网址与内容都由 `window.JXLink` 桥（
+  `DeviceActivity` 注入）交给壳，没有桥的纯浏览器里仍是新标签页。
+  代价：这一层用默认 WebView 域、不共享每台电脑的独立 Profile，站点登录态要重新登一次。
 - **回桌面再回来（2026-10-22 定稿）**：**页面现场优先保留**——手机壳就该像一个
   浏览器，从桌面切回来还在原来那一页。
   **热路径**（进程活着）：点桌面图标只把任务栈前移到原处，WebView 不重建、不重载；
@@ -110,6 +121,7 @@ app/src/main/java/com/jianxiang/link/
 ├── ScanActivity.kt      CameraX + ZXing 扫码（四向旋转解码，屏幕码横放也能认）
 ├── ShareActivity.kt     系统分享入口（SEND/SEND_MULTIPLE/VIEW）：复制到私有缓存 → 选电脑 → 送设备页
 ├── DeviceActivity.kt    WebView 电脑页：独立 Profile、应用级首页浮条、边缘手势、失败浮层、分享注入
+├── BrowserActivity.kt   壳内浏览器页：手机端「打开页面」的落点（工具栏 + 返回键/右缘左滑关闭）
 ├── DeviceStore.kt       设备列表与「上次所在」记忆（SharedPreferences JSON）；Cache 清理
 ├── Relay.kt             中继协议客户端：入口解析、AES-GCM 封包、探活、反馈发送
 └── SettingsActivity.kt  设置页：清空应用缓存 + 反馈意见

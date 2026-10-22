@@ -2136,12 +2136,64 @@ function deliveryCard(dvs, sid, view) {
   return card;
 }
 
+/* ---------- 手机壳里的「打开页面」：一律开在壳内浏览器页 ----------
+ * 壳子（jx-link）的 WebView 没有接管新窗口（没实现 onCreateWindow），网页这边
+ * window.open(url,'_blank') 要么被悄悄丢掉（点了没反应），要么把整个应用 UI 顶掉：
+ * 那页上没有 jxNavBack，返回键就再也退不出来，只能杀掉 App。所以只要有壳桥
+ * （window.JXLink，壳注入），就交给壳另开一层——那一层用自己的返回键与右缘左滑
+ * 关闭，关完就回到对话页，与网页这套返回层级互不干扰。
+ * 没有桥的场合（局域网/公网里用手机浏览器、电脑浏览器打开的网页版）保持新标签页：
+ * 那是浏览器的标签，浏览器自己的返回就在，不存在退不出去的问题。 */
+function jxHasShellBrowser() {
+  return !!(window.JXLink && typeof window.JXLink.openPage === 'function');
+}
+
+function jxOpenPage(u) {
+  let url = String(u || '').trim();
+  if (!url) return;
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(url)) {
+    try { url = new URL(url, location.href).href; } catch (e) { return; } // 相对地址补全
+  }
+  if (jxHasShellBrowser()) {
+    try { window.JXLink.openPage(url); return; } catch (e) { /* 桥异常退回新标签 */ }
+  }
+  window.open(url, '_blank');
+}
+
+// 内容预览（工作区文件 / 导出页）：内容只在这一页里取得到（远程模式走隧道，桌面外壳
+// 走同源接口），所以先取成 blob、转 base64 交给壳，由壳落成缓存文件再打开。
+// 5MB 上限：base64 还要膨胀 1/3，再大的字符串过一次 JS 桥不划算，直说让用户去电脑上看。
+const JX_SHELL_PREVIEW_MAX = 5 * 1024 * 1024;
+function jxOpenContent(url, path) {
+  const name = String(path || '').split(/[\\/]/).pop() || '预览';
+  fetch(url).then((r) => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.blob();
+  }).then((b) => {
+    if (b.size > JX_SHELL_PREVIEW_MAX) {
+      throw new Error('文件太大（' + Math.round(b.size / 1048576) + 'MB），请在电脑端查看');
+    }
+    return new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result || ''));
+      fr.onerror = () => rej(new Error('内容读取失败'));
+      fr.readAsDataURL(b);
+    });
+  }).then((d) => {
+    const i = d.indexOf(',');
+    const mime = (d.match(/^data:([^;,]*)/) || [])[1] || '';
+    if (i < 0 || !window.JXLink.openFile(name, mime, d.slice(i + 1))) {
+      throw new Error('壳没能打开这个文件');
+    }
+  }).catch((e) => alert('打不开：' + ((e && e.message) || e)));
+}
+
 /* 聊天链接 → 右栏浏览器打开（桌面=原生 WebView2 面板，人机共看）。
  * 用户主动操作，不经模型权限门控；后端 open-view 会把内嵌形态设为工具作用
  * 目标（用户开了「操作浏览器」能力后，模型的 browser_screenshot/browser_content
  * 看到的就是这页）并注入【网页查看】回报，模型由此知道用户在看什么。
- * 网页模式没有原生面板：url 新标签打开，工作区文件走流式渲染端点新标签打开；
- * Markdown 文件例外——一律进右栏渲染页（openMDInPanel，
+ * 网页模式没有原生面板：手机壳里开在壳内浏览器页（见下面 jxOpenPage），
+ * 纯浏览器里仍是新标签页；Markdown 文件例外——一律进右栏渲染页（openMDInPanel，
  * 手机端是右栏 iframe），这是「手机上看 md」的唯一可读形态。 */
 async function openInPanelBrowser(body) {
   // Markdown 一律进右栏渲染页（右栏看到的就是 MD 查看器那一页，见 openMDInPanel）：
@@ -2149,10 +2201,11 @@ async function openInPanelBrowser(body) {
   if (body.path && body.session && isMarkdownPath(body.path)) { openMDInPanel(body.session, body.path); return; }
   const desktop = document.documentElement.classList.contains('desktop-shell');
   if (!desktop) {
-    if (body.url) { window.open(body.url, '_blank'); return; }
+    if (body.url) { jxOpenPage(body.url); return; }
     if (body.path && body.session) {
       const vurl = '/api/browser/view?sid=' + encodeURIComponent(body.session) +
         '&path=' + encodeURIComponent(body.path);
+      if (jxHasShellBrowser()) { jxOpenContent(vurl, body.path); return; } // 手机壳：内容交壳内页面
       if (window.JX_REMOTE) { JX_REMOTE.openURL(vurl); return; } // 远程模式：隧道取 blob 再开
       window.open(vurl, '_blank');
       return;
@@ -2161,7 +2214,7 @@ async function openInPanelBrowser(body) {
   try {
     await api('/api/browser/open-view', { method: 'POST', body: JSON.stringify(body) });
   } catch (e) {
-    if (body.url) window.open(body.url, '_blank'); // 打不开就退回新标签打开
+    if (body.url) jxOpenPage(body.url); // 打不开就退回「打开页面」的常规出口
     else alert(e.message); // 后端错误已带「打开失败: 」前缀，不重复包
     return;
   }
@@ -4713,7 +4766,7 @@ $('update-banner').addEventListener('click', (e) => {
       a.click();
       a.remove();
     } else if (bar.dataset.url) {
-      window.open(bar.dataset.url, '_blank'); // 没挂附件就退回发布页
+      jxOpenPage(bar.dataset.url); // 没挂附件就退回发布页
     }
     bar.classList.add('hidden');
   }
@@ -7367,7 +7420,7 @@ function doExport(format, view) {
   const q = format === 'json' ? '?format=json' : '';
   const url = '/api/sessions/' + cur.id + '/export' + q;
   if (window.JX_REMOTE) { JX_REMOTE.openURL(url); return; } // 远程模式：隧道取 blob 再开
-  window.open(url, '_blank');
+  jxOpenPage(url);
 }
 
 async function toggleModeFlag(flag, view) {
