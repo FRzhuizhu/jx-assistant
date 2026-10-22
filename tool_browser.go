@@ -341,12 +341,14 @@ func browserCloseTool() Tool {
 			if err := requireCapability(t, capBrowser, "操作浏览器", args); err != nil {
 				return "", err
 			}
-			h, err := activeHost(t)
-			if err != nil {
+			// 与右栏 ✕ 同一个收口（closeSessionBrowser）：标记、注记、面板可见性
+			// 清理、browser_nav 复位、另一形态回退都在那里；本工具只多一件——把
+			// 结果说给模型听。
+			res := t.app.closeSessionBrowser(sessionBrowserKey(t), closeByAI)
+			if !res.Closed {
 				return "浏览器未在运行", nil
 			}
-			h.Close()
-			if repl := t.app.activeBrowser(sessionBrowserKey(t)); repl != nil {
+			if res.Fallback != nil {
 				return "已关闭当前浏览器实例；另一实例仍在运行，后续工具作用于它", nil
 			}
 			return "浏览器已关闭", nil

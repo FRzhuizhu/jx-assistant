@@ -300,17 +300,27 @@ func (a *App) browserFor(sid, mode string) browserTarget {
 		t = a.embeddedTarget(sid)
 	}
 	key := browserProfileKey(sid)
+	a.setActiveBrowser(key, t)
 	a.browserMu.Lock()
-	if a.browserActive == nil {
-		a.browserActive = map[string]browserTarget{}
-	}
-	a.browserActive[key] = t
 	if a.browserUserClosedAt == nil {
 		a.browserUserClosedAt = map[string]time.Time{}
 	}
 	delete(a.browserUserClosedAt, key) // 重新打开：用户关闭标记作废（此后的「未在运行」另有原因）
 	a.browserMu.Unlock()
 	return t
+}
+
+// setActiveBrowser 记「本会话工具作用的实例」（懒建记账表）。必须走它而不是直
+// 接写 map：回退分支可能落在从未走过 browser_open 的会话上（面板是被右栏矩形
+// 上报直接拉起来的——用户只是打开右栏浏览器视图、没导航过），那时这张表还是
+// nil，直接赋值即 panic：关闭浏览器这条路上曾经因此埋着一个空指针隐患。
+func (a *App) setActiveBrowser(key string, t browserTarget) {
+	a.browserMu.Lock()
+	if a.browserActive == nil {
+		a.browserActive = map[string]browserTarget{}
+	}
+	a.browserActive[key] = t
+	a.browserMu.Unlock()
 }
 
 // activeBrowser 工具作用目标：本会话最近一次 browser_open 选定的实例；没有
@@ -335,9 +345,7 @@ func (a *App) activeBrowser(sid string) browserTarget {
 	// active 已关（显式 Close）：回退到仍在运行的实例，并更新 active
 	for _, cand := range []browserTarget{a.embeddedTarget(sid), a.headedBrowser(sid)} {
 		if cand != nil && cand.Started() {
-			a.browserMu.Lock()
-			a.browserActive[key] = cand
-			a.browserMu.Unlock()
+			a.setActiveBrowser(key, cand)
 			return cand
 		}
 	}

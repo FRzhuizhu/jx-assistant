@@ -143,6 +143,18 @@ func ctlVtblOf(ctl *edge.ICoreWebView2Controller) *ctlRawVtbl {
 
 // ---------- 自制 COM 回调对象（仿库内 comproc 模式） ----------
 
+// panelRecover 面板侧所有会落在 WebView2 原生回调栈上的入口的统一兜底：
+// 这些帧里的 panic 冒出去就是整进程无声死亡（无 panic 日志、无 Windows 崩溃
+// 事件——windowsgui 子系统下回调栈上的崩溃无现场可查），只能就地吞掉落日志。
+// 覆盖面刻意包含 go-webview2 库自己调进来的帧（NavigationCompleted 等）：
+// 库不给护栏，护栏就放在我们自己这一侧（取证建议「把护栏/recover 覆盖到库级
+// 回调帧」，见 .jxai/tmp/取证报告-20261022-1645服务重启归因.md）。
+func panelRecover(where string) {
+	if r := recover(); r != nil {
+		log.Printf("[browser-panel] %s panic（已兜住）: %v\n%s", where, r, debug.Stack())
+	}
+}
+
 var (
 	comQIProc  = windows.NewCallback(func(this, iid, obj uintptr) uintptr { return 0 })
 	comRefProc = windows.NewCallback(func(this uintptr) uintptr { return 1 })
@@ -159,13 +171,7 @@ type evtHandlerVtbl struct{ queryInterface, addRef, release, invoke uintptr }
 var evtHandlerVtblInst = evtHandlerVtbl{
 	comQIProc, comRefProc, comRefProc,
 	windows.NewCallback(func(this *evtHandler, sender, args unsafe.Pointer) uintptr {
-		// 回调发生在 WebView2 的原生栈上：这里的 panic 冒不出去也接不住，
-		// 直接就是整进程无声死亡——必须就地吞掉落日志。
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[browser-panel] 事件回调 recover: %v", r)
-			}
-		}()
+		defer panelRecover("事件回调")
 		if this != nil && this.fn != nil {
 			this.fn(sender, args)
 		}
@@ -195,13 +201,7 @@ type cdpCompletedVtbl struct{ queryInterface, addRef, release, invoke uintptr }
 var cdpCompletedVtblInst = cdpCompletedVtbl{
 	comQIProc, comRefProc, comRefProc,
 	windows.NewCallback(func(this *cdpCompletedHandler, errCode uintptr, resultJSON *uint16) uintptr {
-		// 回调发生在 WebView2 的原生栈上：panic 冒不出去也接不住，直接就是
-		// 整进程无声死亡——就地吞掉落日志（同 evtHandler 的纪律）。
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[browser-panel] CDP 回调 panic（已兜住）: %v\n%s", r, debug.Stack())
-			}
-		}()
+		defer panelRecover("CDP 回调")
 		if this == nil || this.ch == nil {
 			return 0
 		}
@@ -290,6 +290,7 @@ type browserPanel struct {
 	newWinToken   int64
 	titleToken    int64
 	closing       bool        // Close 已进入：跳过迟到事件里对将亡控件的调用
+	suspended     bool        // 已软关闭（Close）：页面清空、控件收屏外但保留，下次导航/落位显示即复用（见 Close 注释）
 	dragHold      int32       // 1 = 用户正在拖动/缩放主窗口：暂停面板落位（见 holdForWindowDrag）
 	newWinHandler *evtHandler // 引用保活：COM 侧只存裸指针，Go 侧必须持有
 	titleHandler  *evtHandler
@@ -311,13 +312,27 @@ func (p *browserPanel) ensureStarted() error {
 	started, cerr := p.started, p.createErr
 	p.stateMu.Unlock()
 	if started {
-		return nil
+		return nil // 已创建（含软关闭后待复用：控件还在，调用方的导航/落位会把它唤回来）
 	}
 	if cerr != nil {
 		return cerr
 	}
 	done := make(chan error, 1)
-	p.dispatch(func() { done <- p.createOnUI() })
+	p.dispatch(func() {
+		// 创建链路过 WebView2 的环境/控制器创建回调（库级帧，panic 冒出去即
+		// 整进程死）：兜住并把失败/panic 都变成回传给 HTTP 侧的 error。
+		err := error(nil)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("浏览器面板创建 panic: %v", r)
+					log.Printf("[browser-panel] 创建 panic（已兜住）: %v\n%s", r, debug.Stack())
+				}
+			}()
+			err = p.createOnUI()
+		}()
+		done <- err
+	})
 	select {
 	case err := <-done:
 		if err != nil {
@@ -383,15 +398,19 @@ func (p *browserPanel) dataPath() string {
 
 // ApplyGrants 预授权内容设置（browser_open 的 grants 参数，见
 // writeProfileGrants）：面板的 WebView2 同为 Chromium profile 结构，注入
-// 同款；实例在跑先停（Close 两阶段收尾、浏览器进程随之退出释放
-// Preferences），授权落盘后由后续导航触发重建生效。
+// 同款。Preferences 只在浏览器启动时读取，所以实例还在就必须让它的浏览器
+// 进程真正退场——这里走 hardClose（不是用户可见的软关闭 Close）：软关闭只是
+// 清页面、控件与浏览器进程都还在，注入会被退场覆写冲掉。
 func (p *browserPanel) ApplyGrants(grants []string) error {
 	if len(grants) == 0 {
 		return nil
 	}
 	dir := p.dataPath()
-	if p.Started() {
-		p.Close()
+	p.stateMu.Lock()
+	live := p.started // 软关闭后 Started() 为 false，但控件与浏览器进程仍在
+	p.stateMu.Unlock()
+	if live {
+		p.hardClose()
 		waitProfileQuiet(dir, 5*time.Second)
 	}
 	return writeProfileGrants(dir, grants)
@@ -426,7 +445,11 @@ func (p *browserPanel) createOnUI() error {
 	// 不同 user-data-folder 的多个 WebView2 环境在同一进程共存，各带一组
 	// 独立浏览器进程——惰性创建（首个矩形/导航才建），不用浏览器的会话零开销。
 	ch.DataPath = p.dataPath()
+	// 库级回调帧（go-webview2 的 comproc 直接调进来，不经过我们的 evtHandler）：
+	// 这里 panic 就是整进程无声退出，先就地兜住再转给 onNavCompleted（它自己
+	// 还有一层，两道都不多余）。
 	ch.NavigationCompletedCallback = func(*edge.ICoreWebView2, *edge.ICoreWebView2NavigationCompletedEventArgs) {
+		defer panelRecover("NavigationCompleted（库回调）")
 		p.onNavCompleted()
 	}
 	var embedded bool
@@ -452,7 +475,7 @@ func (p *browserPanel) createOnUI() error {
 		uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&tt)))
 	p.stateMu.Lock()
 	p.chrome, p.ctl, p.wv, p.hwnd = ch, ctl, wv, hwnd
-	p.closing = false
+	p.closing, p.suspended = false, false
 	p.newWinHandler, p.titleHandler = nwh, th
 	p.newWinToken, p.titleToken = nwt, tt
 	p.stateMu.Unlock()
@@ -472,6 +495,7 @@ func (p *browserPanel) createOnUI() error {
 // 兜底（见 desktop_windows.go 的 mainWndSubclassProc）。实测：面板被压到主
 // WebView2 之下时导航/标题/CDP 全部正常，画面永远看不见。
 func (p *browserPanel) applyRectOnUI() {
+	defer panelRecover("applyRectOnUI") // 整段都是 COM 调用，落在 UI 线程原生栈上：panic 冒出去就是整进程死
 	if atomic.LoadInt32(&p.dragHold) != 0 {
 		// 用户正在拖动/缩放主窗口：本轮不落位（见 holdForWindowDrag）。面板是
 		// 主窗口的子窗口，会跟着窗口一起动；拖动结束由 releaseAfterWindowDrag
@@ -584,6 +608,9 @@ func (p *browserPanel) SetRect(x, y, w, h int, dpr float64, visible bool) error 
 	}
 	p.dpr, p.visible = dpr, visible
 	if visible {
+		// 前端把面板重新落位显示 = 用户又要用了：解除软关闭（Close 留下的
+		// suspended），控件按当前页面（一般是 about:blank）重新出场。
+		p.suspended = false
 		// w/h 已是 CSS px（见 handleBrowserPanelRect 的换算注释：CSS px 与
 		// 子窗口坐标 1:1），面板视口即舞台尺寸，不再除 dpr。
 		p.cssW = clampInt(w, 1, 65535)
@@ -633,6 +660,7 @@ func (p *browserPanel) navigate(raw string, allowFile bool) (string, string, err
 	p.navCh = make(chan struct{})
 	ch := p.navCh
 	wv := p.wv
+	p.suspended = false // 软关闭后的复用：页面被重新驱动，面板回到「在运行」
 	p.stateMu.Unlock()
 	p.dispatch(func() {
 		if wv == nil {
@@ -663,6 +691,7 @@ func (p *browserPanel) NavAction(action string) error {
 	}
 	p.navCh = make(chan struct{})
 	ch := p.navCh
+	p.suspended = false // 同 navigate：用户/工具驱动的导航把面板唤回「在运行」
 	p.stateMu.Unlock()
 	if wv == nil {
 		return fmt.Errorf("浏览器面板尚未就绪")
@@ -692,20 +721,27 @@ func (p *browserPanel) NavAction(action string) error {
 
 // onNavCompleted NavigationCompleted（UI 线程）：读回地址标题、广播、放行等待者。
 func (p *browserPanel) onNavCompleted() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[browser-panel] onNavCompleted recover: %v", r)
-		}
-	}()
+	defer panelRecover("onNavCompleted")
 	p.stateMu.Lock()
 	if p.closing {
 		p.stateMu.Unlock()
 		return // Close 进行中：不再碰将亡控件
 	}
-	wv, ch := p.wv, p.navCh
+	wv, ch, suspended := p.wv, p.navCh, p.suspended
 	p.navCh = nil
 	p.stateMu.Unlock()
 	if wv == nil {
+		if ch != nil {
+			close(ch)
+		}
+		return
+	}
+	if suspended {
+		// 软关闭自己的 about:blank 收尾：只放行等待者，不写地址/标题、不广播、
+		// 不重排（面板此刻在屏外，重排会把它又捞回画面）。
+		if ch != nil {
+			close(ch)
+		}
 		return
 	}
 	u := wvGetSource(wv)
@@ -726,13 +762,9 @@ func (p *browserPanel) onNavCompleted() {
 }
 
 func (p *browserPanel) onTitleChanged() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[browser-panel] onTitleChanged recover: %v", r)
-		}
-	}()
+	defer panelRecover("onTitleChanged")
 	p.stateMu.Lock()
-	if p.closing {
+	if p.closing || p.suspended {
 		p.stateMu.Unlock()
 		return
 	}
@@ -754,13 +786,9 @@ func (p *browserPanel) onTitleChanged() {
 
 // onNewWindow 弹窗请求（target=_blank / window.open）：原地导航，不弹新窗。
 func (p *browserPanel) onNewWindow(args unsafe.Pointer) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[browser-panel] onNewWindow recover: %v", r)
-		}
-	}()
+	defer panelRecover("onNewWindow")
 	p.stateMu.Lock()
-	closing := p.closing
+	closing := p.closing || p.suspended
 	wv := p.wv
 	p.stateMu.Unlock()
 	if closing || wv == nil {
@@ -807,6 +835,7 @@ func (p *browserPanel) callCDP(method string, params map[string]any) (json.RawMe
 	// 无事件（2026-10-14 19:56:44 与 20:04:27 两次实锤均落于此窗口期）。
 	defer runtime.KeepAlive(h)
 	p.dispatch(func() {
+		defer panelRecover("callCDP 投递")
 		_, _, _ = wvVtblOf(wv).callDevToolsProtocolMethod.Call(
 			uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(m16)), uintptr(unsafe.Pointer(pj16)),
 			uintptr(unsafe.Pointer(h)))
@@ -1035,7 +1064,7 @@ func (p *browserPanel) SetViewport(w, h int) error {
 
 func (p *browserPanel) State() BrowserState {
 	p.stateMu.Lock()
-	st := BrowserState{Running: p.started, URL: p.url, Title: p.title, VW: p.cssW, VH: p.cssH}
+	st := BrowserState{Running: p.started && !p.suspended, URL: p.url, Title: p.title, VW: p.cssW, VH: p.cssH}
 	p.stateMu.Unlock()
 	if !st.Running {
 		return st
@@ -1046,29 +1075,87 @@ func (p *browserPanel) State() BrowserState {
 	return st
 }
 
+// Started 面板是否「在运行」：软关闭（Close 后的待复用态）不算——工具层据
+// 此报「浏览器未在运行」，与旧「关闭即销毁」的对外语义保持一致。
 func (p *browserPanel) Started() bool {
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
-	return p.started
+	return p.started && !p.suspended
 }
 
 func (p *browserPanel) Where() string {
 	return "右栏「浏览器」面板（原生 Edge，用户可直接操作）"
 }
 
-// Close 关闭面板实例（browser_close）：拆控件与子窗口，下次打开重建。
-// 进程退出路径不调它——WebView2 子进程由顶层 kill-on-close Job Object 清场。
+// Close 关闭面板实例（右栏 ✕ / browser_close）：**软关闭**——页面导航到
+// about:blank 清空、子窗口收屏外，控件与宿主子窗口都保留，下次导航或重新落位
+// 显示直接复用。对外语义不变（Started=false、地址/标题清空、广播复位）。
 //
-// 两阶段收尾（修复 browser_close 后整个进程无声退出的缺陷）：
-// 阶段一（UI 线程）：先反注册自有事件（remove_XXX，拿注册时的 token），
-//   再 Controller.Close——让 WebView2 异步清理时不会再回调我们的 Go handler；
-// 阶段二（延迟 400ms 再投递）：DestroyWindow 拆宿主子窗口。Controller.Close
-//   本身是异步的，立刻销毁宿主窗口会在清理途中抽走地面，历史上两度让进程
-//   直接消失（无 panic 日志、无 Windows 崩溃事件——windowsgui 子系统下
-//   回调栈上的 panic/崩溃均无现场可查）。每阶段都 recover 兜底：回调/闭包
-//   里的 panic 出现在 windows.NewCallback 的原生栈上，冒出去就是整进程死，
-//   必须就地吞掉并落日志。
+// 为什么不拆控件：2026-10-22 16:13 的进程无声退出紧跟在本路径旧实现的
+// 「Controller.Close + 固定 400ms 后 DestroyWindow」之后（取证：
+// .jxai/tmp/取证报告-20261022-1645服务重启归因.md），而 go-webview2 库自己
+// 的回调帧不在我们的 recover 覆盖面内——拆解途中任何一个迟到回调踩到已释放的
+// 控件就是整进程死、无日志无 WER。软关闭把这条最危险的动作从两个日常入口
+// （用户 ✕、AI browser_close）彻底移开：
+//   · 真正拆控件只留两条路：窗口退出（顶层 kill-on-close Job 兜底清浏览器
+//     进程）与预授权（hardClose，profile 必须先释放）；
+//   · 代价是软关闭后该会话的 WebView2 浏览器进程仍驻留（页面已清空、控件
+//     收屏外），内存代价有限，换来的是日常关闭不再碰拆解路径。
 func (p *browserPanel) Close() {
+	p.createMu.Lock()
+	p.stateMu.Lock()
+	if !p.started || p.suspended {
+		p.stateMu.Unlock()
+		p.createMu.Unlock()
+		return // 没开过或已软关闭：幂等
+	}
+	wv := p.wv
+	p.suspended = true
+	p.visible = false
+	p.url, p.title = "", ""
+	p.cssW, p.cssH = 0, 0
+	if p.navCh != nil {
+		close(p.navCh) // 旧等待者放行（读到中间态）
+	}
+	p.navCh = make(chan struct{}) // 等 about:blank 的导航完成（见下方 select）
+	ch := p.navCh
+	dispatch := p.dispatch
+	p.stateMu.Unlock()
+	p.createMu.Unlock()
+	log.Printf("[browser-panel] 软关闭开始（sid=%q）", p.sid)
+	if wv == nil || dispatch == nil {
+		// 控件根本没建起来（创建失败/窗口消息泵已停）：没有页面可清，只把状态
+		// 落到「不在运行」即可。
+		log.Printf("[browser-panel] 软关闭：控件不在或 UI 投递不可用，仅置状态")
+	} else {
+		dispatch(func() {
+			defer panelRecover("软关闭")
+			blank, _ := windows.UTF16PtrFromString("about:blank")
+			_, _, _ = wvVtblOf(wv).navigate.Call(uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(blank)))
+		})
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			log.Printf("[browser-panel] 软关闭：about:blank 3 秒内未回导航完成（不阻塞，控件与进程照旧保留）")
+		}
+	}
+	log.Printf("[browser-panel] 软关闭完成（sid=%q）", p.sid)
+	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid})
+}
+
+// hardClose 真拆控件与宿主子窗口（唯一调用处：ApplyGrants——预授权要把
+// profile 的浏览器进程停干净，退场才不覆写注入的 Preferences）。用户可见的
+// 关闭一律走软关闭 Close()，别在这里加调用点。
+//
+// 阶段一（UI 线程）：反注册自有事件（remove_XXX，拿注册时的 token）→ 读
+//   getBrowserProcessID → Controller.Close。让 WebView2 异步清理时不再回调
+//   我们的 Go handler。
+// 阶段二（后台等真实信号再投递）：不再拍固定 400ms——先等那个 WebView2 浏览器
+//   进程真正退出（句柄等待），拿到明确信号才 DestroyWindow；迟迟不退就放弃拆
+//   窗口（留一个空容器，随主窗口一起销毁）：宁可多留一个空壳，也不在清理途中
+//   抽走地面（历史两次无声退出都指向这段）。
+// 两道 recover 都在：闭包与回调里的 panic 出现在原生栈上，冒出去就是整进程死。
+func (p *browserPanel) hardClose() {
 	p.createMu.Lock()
 	p.stateMu.Lock()
 	p.closing = true
@@ -1076,23 +1163,22 @@ func (p *browserPanel) Close() {
 	nwh, th := p.newWinHandler, p.titleHandler
 	nwt, tt := p.newWinToken, p.titleToken
 	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
-	p.started, p.visible = false, false
+	p.started, p.suspended, p.visible = false, false, false
 	p.url, p.title = "", ""
 	p.cssW, p.cssH = 0, 0
 	if p.navCh != nil {
 		close(p.navCh)
 		p.navCh = nil
 	}
+	dispatch := p.dispatch
 	p.stateMu.Unlock()
 	p.createMu.Unlock()
 	p.createErr = nil // 允许下次重建
-	if ctl != nil {
-		p.dispatch(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[browser-panel] Close 阶段一 recover: %v", r)
-				}
-			}()
+	log.Printf("[browser-panel] 硬关闭开始（sid=%q hwnd=%#x）", p.sid, hwnd)
+	if ctl != nil && dispatch != nil {
+		dispatch(func() {
+			defer panelRecover("硬关闭 阶段一")
+			pid := uint32(0)
 			if wv != nil {
 				if nwh != nil {
 					_, _, _ = wvVtblOf(wv).removeNewWindowRequested.Call(
@@ -1102,24 +1188,59 @@ func (p *browserPanel) Close() {
 					_, _, _ = wvVtblOf(wv).removeDocumentTitleChanged.Call(
 						uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(th)), uintptr(unsafe.Pointer(&tt)))
 				}
+				_, _, _ = wvVtblOf(wv).getBrowserProcessID.Call(
+					uintptr(unsafe.Pointer(wv)), uintptr(unsafe.Pointer(&pid)))
 			}
 			_, _, _ = ctlVtblOf(ctl).close.Call(uintptr(unsafe.Pointer(ctl)))
-		})
-		// 阶段二：给 WebView2 一拍异步清理的时间再拆窗口
-		time.AfterFunc(400*time.Millisecond, func() {
-			p.dispatch(func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("[browser-panel] Close 阶段二 recover: %v", r)
-					}
-				}()
-				if hwnd != 0 {
-					_, _, _ = procPanelDestroyWindow.Call(hwnd)
-				}
-			})
+			log.Printf("[browser-panel] 硬关闭 阶段一完成（pid=%d）", pid)
+			go p.finishHardClose(hwnd, pid)
 		})
 	}
 	p.app.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: p.sid})
+}
+
+// finishHardClose 硬关闭的阶段二：等 WebView2 浏览器进程退出后再销毁宿主
+// 子窗口（拿真实信号，代替原来的固定 400ms 延时）。
+func (p *browserPanel) finishHardClose(hwnd uintptr, pid uint32) {
+	defer panelRecover("硬关闭 阶段二")
+	if hwnd == 0 {
+		return
+	}
+	if pid != 0 && !waitProcessExit(pid, 8*time.Second) {
+		log.Printf("[browser-panel] 硬关闭 阶段二：浏览器进程 pid=%d 8 秒内未退出，放弃拆窗口（空容器随主窗口销毁）", pid)
+		return
+	}
+	p.stateMu.Lock()
+	dispatch := p.dispatch
+	p.stateMu.Unlock()
+	if dispatch == nil {
+		return
+	}
+	done := make(chan struct{})
+	dispatch(func() {
+		defer panelRecover("硬关闭 阶段二")
+		log.Printf("[browser-panel] 硬关闭 阶段二：拆宿主子窗口 hwnd=%#x", hwnd)
+		_, _, _ = procPanelDestroyWindow.Call(hwnd)
+		close(done)
+	})
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		log.Printf("[browser-panel] 硬关闭 阶段二：DestroyWindow 投递 2 秒未回（消息泵可能已停）")
+	}
+}
+
+// waitProcessExit 等某个进程结束（最多 max），返回是否已结束。用于「拿真实
+// 退出信号代替拍脑袋的固定延时」；进程不存在（已退出/句柄打不开）一律当作
+// 已结束——这正是我们要等的状态。
+func waitProcessExit(pid uint32, max time.Duration) bool {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return true
+	}
+	defer windows.CloseHandle(h)
+	ev, err := windows.WaitForSingleObject(h, uint32(max/time.Millisecond))
+	return err == nil && ev == windows.WAIT_OBJECT_0
 }
 
 // releaseAfterMainLoopGone 主窗口消息循环已退出后的兜底释放（前端热重启用，
@@ -1133,7 +1254,7 @@ func (p *browserPanel) releaseAfterMainLoopGone() {
 	p.closing = true // 与 Close() 同语义：之后到期的迟到事件一律跳过
 	hwnd, ctl := p.hwnd, p.ctl
 	p.hwnd, p.ctl, p.wv, p.chrome = 0, nil, nil, nil
-	p.started, p.visible = false, false
+	p.started, p.suspended, p.visible = false, false, false
 	if p.navCh != nil {
 		close(p.navCh)
 		p.navCh = nil
