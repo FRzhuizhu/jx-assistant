@@ -5861,12 +5861,60 @@ function fileClipName(name) {
 
 // 附件的输入框标记（“报告fina….docx”，主名前 6 字 + … + 扩展名）：完整标记文本
 // 存在附件对象 a.mark 上——背衬层按它精确高亮、卡片 ✕ 按它从输入框摘掉。不带
-// “文件N”编号：用户自己传的文件认得名字，胶囊越短越好（同名两份的极端情形
-// ✕ 会把两处一起摘掉，可接受）。标记原样随正文发出（【文件上传】注记带全名，
-// 模型自己对上号）
+// “文件N”编号：用户自己传的文件认得名字，胶囊越短越好。标记原样随正文发出
+// （【文件上传】注记带全名，模型自己对上号）
 function attachMarkOf(a) {
   a.mark = '\u201c' + fileClipName(a.name) + '\u201d';
   return a.mark;
+}
+
+// 输入框标记区间：`{start, end, owner}`，owner 是认领这一段的附件对象（引用标记为 null）。
+// 附件标记按“一份附件认领一处”从左到右一对一分配，**不做“按文本找全部出现”**：
+// 同名文件（微信相机 wx_cam….jpg 两张最常见）在正文里就是两段一模一样的文字，逐份
+// 去扫全部出现会把同一段重复认领 n 次（n 份同名 → n×n 颗胶囊），背衬层比输入框长出
+// 好几行，灰底就画到正文上（手机端「胶囊撑长、盖住用户的话」就是这么来的）。
+// 多出来的同形文字（用户自己打的引号）认不到 owner，自然不当胶囊。
+function inputMarkRanges(value, list) {
+  const v = String(value || '');
+  const out = [];
+  const qr = /“引用\d+”/g;
+  let m;
+  while ((m = qr.exec(v))) out.push({ start: m.index, end: m.index + m[0].length, owner: null });
+  const want = new Map(); // 标记文本 → 还要认领它的附件队列（按入列顺序）
+  for (const a of list) {
+    if (!a.mark) continue;
+    const q = want.get(a.mark);
+    if (q) q.push(a); else want.set(a.mark, [a]);
+  }
+  if (want.size) {
+    // 长的优先：一条标记是另一条的前缀时，先试长的那条（如 a.jpg 与 a.jpg….jpg）
+    const pat = Array.from(want.keys()).sort((x, y) => y.length - x.length)
+      .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    const re = new RegExp(pat, 'g');
+    while ((m = re.exec(v))) {
+      const q = want.get(m[0]);
+      if (!q || !q.length) continue; // 队列空了：多出来的同形文字，不算胶囊
+      out.push({ start: m.index, end: m.index + m[0].length, owner: q.shift() });
+    }
+  }
+  out.sort((x, y) => x.start - y.start);
+  return out;
+}
+
+// 背衬层的落 DOM 数据：把值按标记区间切成 [{text, mark}] 段。拼起来必须与原值
+// 逐字相同——背衬层只有与输入框逐字重合，灰底才是“精确垫底”，否则就画到别人身上。
+function markBackdropSegments(value, ranges) {
+  const v = String(value || '');
+  const out = [];
+  let last = 0;
+  for (const r of ranges) {
+    if (r.start < last) continue; // 防御：区间交错时只认先到的，宁少画不错画
+    if (r.start > last) out.push({ text: v.slice(last, r.start), mark: false });
+    out.push({ text: v.slice(r.start, r.end), mark: true });
+    last = r.end;
+  }
+  if (last < v.length) out.push({ text: v.slice(last), mark: false });
+  return out;
 }
 
 // 挂上引用（各引用入口统一走这里）：累计进引用列表（同文再次引用不新增条目、
@@ -5957,9 +6005,10 @@ function restoreQuoteLS(view) {
    行高/内边距/换行规则从输入框复制，同语音灰字层的手法），标记段画灰底圆角色块
    ——黑字仍是输入框自己的、叠在最上层正常编辑，胶囊只是精确垫底的底色（两层渲染
    同一段文本，逐字重合）；pointer-events:none 永不吃点击。
-   标记区间怎么认：引用标记按 /“引用\d+”/ 正则；附件标记按暂存附件的完整标记文本
-   （a.mark）精确匹配——不猜格式，用户自己打的形如文件名的引号不会被误当成胶囊
-   （也所以草稿恢复后没有对应附件就自然不高亮，只是普通文字）。
+   标记区间怎么认：引用标记按 /“引用\d+”/ 正则；附件标记按“一份附件认领一处”
+   （inputMarkRanges 从左到右一对一分配）——不猜格式、也不按文本反查出现次数：同名
+   文件的那两段文字本来就一模一样，按文本扫会重复认领，灰底就画到正文上。草稿恢复后
+   没有对应附件就自然不高亮，只是普通文字。
    防误改中间：光标落进标记内部弹到标记末尾；退格贴着标记末尾 / Delete 贴着标记
    开头整颗删除（优先 execCommand 保撤销栈）；选区完整落在一颗标记内扩成整颗。
    IME 组字期间一律不干预。程序化写值（语音落字、退回回填、清空等）经 value
@@ -5978,40 +6027,19 @@ function setupInputMarks(view) {
       .forEach((k) => { bd.style[k] = cs[k]; });
   }
 
-  // 标记区间：引用标记按正则，附件标记按暂存附件的 a.mark 精确出现位置（升序）
-  function markList() {
-    const v = ta.value;
-    const out = [];
-    const qr = /“引用\d+”/g;
-    let m;
-    while ((m = qr.exec(v))) out.push({ start: m.index, end: m.index + m[0].length });
-    for (const a of attachmentsOf(view)) {
-      if (!a.mark) continue;
-      let i = v.indexOf(a.mark);
-      while (i >= 0) {
-        out.push({ start: i, end: i + a.mark.length });
-        i = v.indexOf(a.mark, i + a.mark.length);
-      }
-    }
-    out.sort((x, y) => x.start - y.start);
-    return out;
-  }
+  // 标记区间（引用标记 + 附件标记的认领结果，升序；见 inputMarkRanges）
+  function markList() { return inputMarkRanges(ta.value, attachmentsOf(view)); }
 
   // 渲染：按标记切段，标记段灰底胶囊、其余透明文本；没有标记就整层腾空（零开销）
   function render() {
-    const v = ta.value;
     bd.textContent = '';
-    const list = markList();
-    let last = 0;
-    for (const mk of list) {
-      if (mk.start > last) bd.appendChild(document.createTextNode(v.slice(last, mk.start)));
+    for (const seg of markBackdropSegments(ta.value, markList())) {
+      if (!seg.mark) { bd.appendChild(document.createTextNode(seg.text)); continue; }
       const sp = document.createElement('span');
       sp.className = 'mk';
-      sp.textContent = v.slice(mk.start, mk.end);
+      sp.textContent = seg.text;
       bd.appendChild(sp);
-      last = mk.end;
     }
-    if (last < v.length) bd.appendChild(document.createTextNode(v.slice(last)));
   }
   let raf = 0;
   function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
@@ -7084,10 +7112,13 @@ function removeAttachment(view, id) {
   if (i < 0) return;
   const a = list[i];
   if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  // 它在输入框里的胶囊标记一并摘掉：认领要在移出列表之前算，而且只摘它自己那一处
+  // （同名两份的标记文字相同，按文本 split 全删会把另一份的一起带走）
+  const r = a.mark ? inputMarkRanges(view.input.value, list).find((x) => x.owner === a) : null;
   list.splice(i, 1);
-  // 它在输入框里的胶囊标记一并摘掉（与引用 ✕ 摘“引用N”同款联动）
-  if (a.mark && view.input.value.indexOf(a.mark) >= 0) {
-    view.input.value = view.input.value.split(a.mark).join('');
+  if (r) {
+    const v = view.input.value;
+    view.input.value = v.slice(0, r.start) + v.slice(r.end);
     autoGrow(view.input);
     if (view === mainView) persistMainDraftLS(); else persistSubDraftLS();
   }
