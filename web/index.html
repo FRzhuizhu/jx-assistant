@@ -371,7 +371,8 @@
            下方 bpw-stage 是网页占位区——桌面模式下原生 WebView2 控件精确覆盖
            该矩形（app-right.js 上报 /api/browser/panel-rect），网页本身不进
            HTML，交互全是原生（滚动/输入法/右键菜单）。网页模式没有原生控件，
-           链接一律新标签页打开，此视图仅作占位提示。 -->
+           链接一律新标签页打开，此视图仅作占位提示——除了 Markdown 渲染页：
+           那页在网页/手机形态下走下面的同源 iframe（上铺满舞台、窄屏单列可读）。 -->
       <!-- 计划视图：本对话提交过的计划按 Markdown 渲染（正文来自 /api/sessions/{id}/plans
            ——从会话日志里读回 exit_plan_mode 的调用参数，与对话同寿命，刷新/切走/重启都在）；
            待审批的那份在底部就地批准/修改。交互见 app-chat.js 的「右栏「计划」视图」 -->
@@ -423,6 +424,10 @@
         </div>
         <div class="bpw-stage" id="bpw-stage">
           <div class="bpw-hint" id="bpw-hint">浏览器面板仅在桌面版可用</div>
+          <!-- 网页/手机形态的右栏网页区（那两种形态没有原生控件）：Markdown
+               渲染页这类必须就地看的页面铺在这里（app-right.js 的 bpwShowFrame）。
+               桌面/Electron 形态由原生控件覆盖舞台，本元素保持隐藏。 -->
+          <iframe id="bpw-frame" class="bpw-frame hidden" title="右栏预览"></iframe>
           <!-- Electron 桌面壳：右栏网页区是真正的 DOM 内嵌浏览器（独立持久
                partition，登录态与主界面隔离）。地址栏/工具栏逻辑不变——仍经
                Go 的 /api/browser/* 走，Go 再经壳的 panel-bridge 驱动本元素，

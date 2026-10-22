@@ -420,6 +420,9 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/close", a.handleBrowserClose)
 	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
 	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)
+	// 右栏 Markdown 渲染页（mdview.go）：复用 md-viewer 的渲染网页，路径形态的
+	// 地址让 md 里的相对图片/链接天然解析到同一路由（用户手势链路，AI 调不到）
+	mux.HandleFunc("GET /api/md/{sid}/{path...}", a.handleMDView)
 	// Electron 壳面板桥的导航回报（panel-bridge.js 在 did-navigate 推送）：
 	// 更新内嵌目标状态并广播 browser_nav（旧壳由 onNavCompleted 触发同一事件）
 	mux.HandleFunc("POST /api/browser/electron-report", a.handleBrowserElectronReport)

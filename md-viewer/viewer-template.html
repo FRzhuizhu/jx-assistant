@@ -44,7 +44,10 @@
   .md table{border-collapse:collapse;width:100%}
   .md th,.md td{border:1px solid var(--border);padding:6px 12px}
   .md th{background:var(--code-bg)}
-  .md img{max-width:100%}
+  .md img{max-width:100%;height:auto}
+  /* 宽表格自己横向滚：右栏/手机窄栏里不把整页撑出横向滚动条（渲染后由脚本套一层） */
+  .md-tablewrap{overflow-x:auto;max-width:100%}
+  .md-tablewrap table{width:auto;min-width:100%}
   .md a{color:var(--accent);text-decoration:none}
   .md a:hover{text-decoration:underline}
   .md hr{border:none;border-top:1px solid var(--border);margin:2em 0}
@@ -63,6 +66,23 @@
   #settings .ok-line{margin-top:12px;text-align:right}
   @media (max-width:880px){
     #toc,#split{display:none !important}
+    #btn-toc{display:none !important} /* 目录侧栏在窄栏里本就隐藏，按钮别占位 */
+  }
+  /* 窄栏（手机右栏抽屉 / 挤窄的窗口）：字号与行距按小屏重排，代码块与表格
+     各自横向滚，图片按可用宽自适应——要求「铺满可用宽度且读得下去」 */
+  @media (max-width:500px){
+    header{padding:0 12px;gap:8px}
+    header h1{font-size:14px}
+    .meta{display:none} /* 副标题是路径+大小，窄屏让位给标题 */
+    main{padding:0 12px 40px}
+    #content{max-width:100%}
+    .md{font-size:15px;line-height:1.75}
+    .md h1{font-size:1.5em}.md h2{font-size:1.28em}.md h3{font-size:1.12em}
+    .md h1,.md h2,.md h3,.md h4{margin-top:1.2em}
+    .md pre{padding:10px;border-radius:6px}
+    .md th,.md td{padding:5px 8px}
+    /* 窄屏表格按内容自然宽（不压缩列、不折断单元格），宽表格由外层横向滚动 */
+    .md-tablewrap table{width:max-content;min-width:0}
   }
 </style>
 </head>
@@ -113,6 +133,14 @@
     var md = new TextDecoder('utf-8').decode(bytes);
     $('content').innerHTML = marked.parse(md);
     $('meta').textContent = '__META__';
+    /* 宽表格自己横向滚（右栏/手机窄栏）：套一层 .md-tablewrap，表格按内容宽
+       伸展、最小满宽——不套的话表格被压缩到读不了，或者把整页撑出横向滚动 */
+    Array.prototype.forEach.call($('content').querySelectorAll('table'), function(t){
+      var w = document.createElement('div');
+      w.className = 'md-tablewrap';
+      t.parentNode.insertBefore(w, t);
+      w.appendChild(t);
+    });
   } catch(e) {
     $('content').innerHTML = '<p class="empty">解析失败：' + e.message + '</p>';
   }

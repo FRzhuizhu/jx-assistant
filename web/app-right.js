@@ -635,11 +635,15 @@ function bpwReport(immediate, force) {
 // 导航与状态读取都带会话身份（bpwSession）：操作的是本会话的面板。
 function bpwNav(body) {
   body.session = bpwSession();
+  // 网页/手机形态的右栏在看 iframe 页：后退/前进/刷新直接驱动 iframe 自己的历史，
+  // 别去戳后端（那形态没有原生面板，问了也是空跑）
+  if (body.action && bpwFrameActive() && !bpwDesktop() && !bpwElectron()) { bpwFrameAction(body.action); return; }
   api('/api/browser/navigate', { method: 'POST', body: JSON.stringify(body) })
     .then((st) => { bpwOnNav(st); })
     .catch((e) => { $('bpw-title').textContent = '导航失败：' + e.message; });
 }
 function bpwOnNav(d) {
+  if (bpwFrameActive()) return; // 网页/手机形态在看 iframe 页（md 渲染页）：状态栏归 bpwShowFrame 管
   if (d && d.url) $('bpw-url').value = d.url;
   $('bpw-title').textContent = (d && d.title) || '未打开页面';
   if (d && d.viewportW) $('bpw-vp').textContent = d.viewportW + '×' + d.viewportH;
@@ -674,6 +678,51 @@ function bpwReveal() {
   api('/api/sessions/' + encodeURIComponent(sid) + '/reveal-path', { method: 'POST', body: JSON.stringify({ path: p }) })
     .catch((e) => alert('定位失败：' + e.message));
 }
+// ── 网页/手机形态的右栏网页区：同源 iframe ──────────────────────────────────
+/* 桌面与 Electron 形态的网页区是原生控件（WebView2 子窗口 / <webview>），网页
+   本身不进 HTML；网页与手机形态没有原生控件，右栏「浏览器」平时只是提示文字。
+   Markdown 渲染页必须就地看（手机上没有 MD 查看器），所以给它铺一张同源 iframe：
+   抽屉里满宽显示，窄屏按单列读（模板自带 500px 断点）。
+   远程（手机外壳 JX_REMOTE）形态的顶层文档不在家端 origin 上，iframe.src 直连
+   /api/md/… 取不到东西：页面 HTML 经隧道取回后写进 srcdoc——渲染照旧；md 里的
+   相对图片/附件在远程形态拿不到（与远程 html 预览同一已知限制）。 */
+function bpwShowFrame(url, title) {
+  const fr = $('bpw-frame');
+  if (!fr) return;
+  const hint = $('bpw-hint');
+  if (hint) hint.classList.add('hidden'); // 提示文字让位（.hidden = display:none !important）
+  fr.classList.remove('hidden');
+  const bar = $('bpw-url');
+  if (bar) bar.value = url;
+  if (title) $('bpw-title').textContent = title;
+  if (window.JX_REMOTE) {
+    fr.removeAttribute('src');
+    window.fetch(url)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((html) => { fr.srcdoc = html; })
+      .catch((e) => { $('bpw-title').textContent = '打开失败：' + ((e && e.message) || e); });
+    return;
+  }
+  fr.removeAttribute('srcdoc');
+  fr.src = url;
+}
+
+// iframe 页是否正显示着（网页/手机形态的右栏网页区；桌面形态恒 false——那是原生控件）
+function bpwFrameActive() {
+  const fr = $('bpw-frame');
+  return !!fr && !fr.classList.contains('hidden');
+}
+
+// 工具栏的后退/前进/刷新作用在 iframe 自己的历史（同源，直接驱动即可）
+function bpwFrameAction(action) {
+  const fr = $('bpw-frame');
+  if (!fr || !fr.contentWindow) return;
+  try {
+    if (action === 'reload') fr.contentWindow.location.reload();
+    else fr.contentWindow.history[action]();
+  } catch (e) { /* 未就绪/被跨源挡住：忽略，页面本身仍可读 */ }
+}
+
 function bpwSyncState(sid) {
   const s = sid || bpwSession();
   api('/api/browser/state' + (s ? '?session=' + encodeURIComponent(s) : '')).then(bpwOnNav).catch(() => {});

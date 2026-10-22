@@ -402,6 +402,12 @@ WebView2 内核渲染（浏览器组件已全部内嵌进 exe，整个程序就
   双击 .md 文件选择「MD查看器」并勾选「始终使用此应用」即可；
   取消关联用 `MD查看器.exe /unregister`（或说明窗口里的「取消关联」按钮）。
 - 未装 WebView2 运行时自动降级用系统浏览器打开；详见 `md-viewer/使用说明.txt`。
+- **右栏也用同一套渲染**（`mdview.go`）：产品里的 md 不再显示原文，右栏打开
+  的就是这份 `viewer-template.html`（`go:embed` 进 exe，灌标题/正文/副标题），
+  与独立窗口同一套 marked 与样式、同一个目录侧栏。所以改模板（样式、断点、
+  渲染行为）要改 `viewer-template.src.html` 再用 `node
+  md-viewer/tools/assemble-template.js` 重新生成 `viewer-template.html`——
+  两处（独立窗口与右栏）一次生效，别去右栏另写渲染器。
 
 ## 权限与执行模型（移植 DSH 官方沙箱机制，本栈重写）
 
@@ -1280,7 +1286,8 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   具体授什么权由各技能的 SKILL.md 写明，权限名是 Chromium content settings
   类型名（网上可查）。接口：`POST
   /api/browser/{panel-rect,navigate,viewport,open-view,close}`、`GET
-  /api/browser/{state,view}`，body/query 带 session 字段路由到该会话的实例；
+  /api/browser/{state,view}`、`GET /api/md/{sid}/{path...}`（右栏 md 渲染页，
+  见下条），body/query 带 session 字段路由到该会话的实例；
  事件 `browser_nav`（工具栏地址/标题）、
   `browser_resize`（AI 的视口宽度请求，前端让对话区让位调宽面板）。右栏收起
   只是隐藏面板（AI 继续操作）；右栏浏览器视图的 ✕ 是**真关闭**（POST /api/browser/close，userstops.go：销毁该会话的内嵌实例、打「用户关闭」标记（按会话记账）、向该会话投 report 注记；activeHost 据此把之后的报错说成用户主动关闭）；顶栏开合按钮仍只是收起。工具条的「在系统浏览器打开」把当前网址跳到
@@ -1292,13 +1299,28 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   任何对话回报**（用户口径：打开了什么是个人的事）——模型需要看画面时用户
   会主动说，模型用 `panel_screenshot` 截右栏（见下）。本地 html 交付文件转
   `file://`（同目录相对资源可用），SSH 远程会话经 `/api/browser/view` 流式
-  渲染（相对资源不加载）。
+  渲染（相对资源不加载）。**Markdown 是例外**：一律进右栏渲染页
+  （`/api/md/{sid}/{path...}`，见上条），不走上面这两条原文/系统程序的老路。
 - **文件查看 = 系统默认应用**：右栏「文件」查看页（`fileview.go`，当年原生
   浏览器面板修不好时期的替代品，只支持文本、观感差）已整体移除。交付卡与
-  聊天文件链接的「打开」两路路由：html/htm 与网址进右栏「浏览器」；其余
+  聊天文件链接的「打开」两路路由：html/htm、Markdown（md/markdown…，见下条
+  「右栏 md 渲染页」）与网址进右栏「浏览器」；其余
   一律 `ShellExecute` 系统默认应用（`/api/sessions/{id}/open-path` 与
   `/delivery/open`；用户手势直通——工作区内外都不校验、无确认弹窗，这些
   路由不在 call_api 目录里 AI 调不到，SSH 远程工作区无本机路径给直白报错）。
+- **右栏 md 渲染页**（`mdview.go`，`GET /api/md/{sid}/{path...}`）：md 在右栏
+  渲染打开，用的就是自带 MD 查看器那套网页（`md-viewer/viewer-template.html`
+  经 `go:embed` 进 exe，占位符 `__TITLE__/__B64__/__META__/__KEEP_RUNNING__`
+  灌数据；不另写渲染器）。地址用**路径形态**而非查询参数：md 里的相对图片/
+  附件按 URL 语义落到同一路由（页在 `…/docs/a.md`，`./img/x.png` →
+  `…/docs/img/x.png`），不裂图、不改写正文。同一路由两种回法——`.md` 回渲染
+  网页，其余按扩展名给真实 Content-Type；超过 4MB 的 md 退化成 text/plain
+  原文（几 MB 铺成 DOM 会把右栏卡死）。渲染页带 CSP（`connect-src 'none'`
+  等）：md 里的内联 HTML/脚本照旧执行（与 MD 查看器同策略），但拿不到产品
+  同源 API（响应头 + `<meta>` 两份，后者覆盖手机外壳的 srcdoc 那条路）。
+  前端分流：桌面/Electron 走原生面板导航（`bpwNav`）；网页与手机形态走右栏
+  同源 `<iframe>`（`app-right.js` 的 `bpwShowFrame`，远程形态经隧道取 HTML 写
+  `srcdoc`），窄屏按模板自带 500px 断点单列可读、宽表格与代码块各自横向滚。
 - **`panel_screenshot`**（无能力门控，仅桌面版）：对右侧栏截图（GDI 截屏
   像素，浏览器页/任何右栏视图通用）。实现：注入主界面探针 JS 读
   `#rpanel` 矩形 POST `/api/shell/panel-view` 回传，Go 侧客户区原点+CSS×dpr
