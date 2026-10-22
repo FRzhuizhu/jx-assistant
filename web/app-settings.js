@@ -199,6 +199,7 @@ async function openSettings(pane) {
   bindSkillDropZone();
   renderMCPPage(); // 独立「MCP 连接器」分区（app-mcp.js）
   renderExpertsPanel();
+  refreshAssistantVersions(); // 对话历史与压缩：版本下拉（当前第几版 / 各版消息数与最后更新）
   const target = pane && document.querySelector('.set-nav-item[data-pane="' + pane + '"]') ? pane : null;
   // 手机端：进设置即收起侧栏浮层（返回后落在对话区），并压一层「设置一级」
   // 底座历史——直达分区时 navGoto 在其上补第二层，返回手势得以逐级退
@@ -1387,22 +1388,27 @@ $('btn-wizard-rerun').onclick = async () => {
 $('btn-settings').onclick = openSettings;
 $('set-save').onclick = saveSettings;
 
-/* ---------- 对话历史与压缩：数字助理主对话的两个动作按钮 ----------
-   两个按钮都作用于「数字助理主对话」这一个会话（服务端按 mode=assistant
-   解析会话，前端不必知道是哪个），不是当前打开的这个对话；点下立即生效、
-   不参与底部「保存」。压缩固定走模型摘要（后端 /api/assistant/compact
-   强制 llm 策略，忽略上面的「模式」）；清空走两级确认，后端真删
-   （消息 + 摘要 + 快照/交付/上传登记），会话设置保留。 */
+/* ---------- 对话历史与压缩：数字经理主对话的版本 ----------
+   主对话不再靠「清空」删历史来重新开始，而是「换版本」：新建一版＝从零开始的
+   新数字助理，老版本的历史、文件快照、交付记录原样留在它自己名下，随时选回去
+   接着聊。当前是哪一版由**服务端**记在库里（/api/assistant/versions），前端只照
+   它显示与切换——绝不自己按更新时间挑，否则切回老版聊一句就把它顶成「最新」，
+   压缩/定时任务转交/入口各取各的、版本当场错位。
+   版本选择器是设置页这里**唯一的一枚下拉**（渲染与切换见 app-core.js 的
+   refreshAssistantVersions / renderAssistantVersionPicker），这一节只放
+   「新建一版 / 压缩当前版本」两个动作 + 那枚下拉，不把每一版铺成一片卡片，
+   侧栏也不放任何版本控件。点下立即生效、不参与底部「保存」。 */
 
 // confirmCenter 的层级（--z-confirm）已保证居中确认框压过设置页等一切页面
 // 与弹窗，设置页里直接调用即可，无须临时抬层。
 
-// refreshAssistantOps 动作后的界面定版：会话列表、正开着的主对话区、右栏子对话清单。
+// refreshAssistantOps 动作后的界面定版：会话列表、版本下拉、正开着的主对话区、右栏子对话清单。
+// 用户此刻正看着某一版（新建/切换换了版本，或压缩改了历史）：对话区跟着切过去/重载。
 async function refreshAssistantOps() {
   try { await loadSessions(); } catch (e) { /* 列表拉取失败不影响操作结果 */ }
-  const m = (state.sessions || []).find((s) => s.mode === 'assistant' && !s.parentId && !s.archived);
-  if (!m) return;
-  if (state.cur && state.cur.id === m.id) { openSession(m.id); return; }
+  try { await refreshAssistantVersions(); } catch (e) { /* 版本下拉拿不到就保持原样 */ }
+  const showingAssist = !!(state.cur && state.cur.mode === 'assistant' && !state.cur.parentId);
+  if (showingAssist) { openSession(assistantVer.current || state.cur.id); return; }
   try { refreshDrawer(); } catch (e) { /* 右栏没开时跳过 */ }
 }
 
@@ -1412,8 +1418,28 @@ function assistantOpsState(msg) {
   if (el) el.textContent = msg;
 }
 
+$('btn-assistant-new').onclick = async () => {
+  if (!(await confirmCenter('新建一版「跟数字经理对话」？\n' +
+      '新的一版是一个全新的数字助理，从零开始聊，工作目录、权限、模型等设置沿用当前这一版。\n' +
+      '当前这一版的历史、文件快照与交付记录都原样保留，随时可以在上面选回来。'))) return;
+  const btn = $('btn-assistant-new');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '新建中…';
+  try {
+    const r = await api('/api/assistant/versions/new', { method: 'POST' });
+    assistantOpsState('已新建第 ' + r.version + ' 版，现在是全新的数字助理；上一版原样保留，可在上面的下拉里选回来。');
+    await refreshAssistantOps();
+  } catch (e) {
+    alert('新建失败：' + e.message);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+};
+
 $('btn-assistant-compact').onclick = async () => {
-  if (!(await confirmCenter('立即压缩「跟数字经理对话」？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
+  if (!(await confirmCenter('立即压缩「跟数字经理对话」的当前这一版？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
   const btn = $('btn-assistant-compact');
   const orig = btn.textContent;
   btn.disabled = true;
@@ -1421,33 +1447,12 @@ $('btn-assistant-compact').onclick = async () => {
   try {
     const r = await api('/api/assistant/compact', { method: 'POST' });
     const sum = String(r.summary || '').replace(/\s+/g, ' ').trim();
-    assistantOpsState('已压缩跟数字经理对话。摘要开头：' +
+    assistantOpsState('已压缩当前这一版。摘要开头：' +
       (sum ? sum.slice(0, 80) + (sum.length > 80 ? '…' : '') : '（摘要为空）') +
       '　原始历史仍可查回；对话区已翻新。');
     await refreshAssistantOps();
   } catch (e) {
     alert('压缩失败：' + e.message);
-  } finally {
-    btn.textContent = orig;
-    btn.disabled = false;
-  }
-};
-
-$('btn-assistant-clear').onclick = async () => {
-  if (!(await confirmCenter('清空「跟数字经理对话」的全部历史消息？\n' +
-      '将删除它的全部聊天记录、压缩摘要以及随消息产生的文件快照登记、交付登记、上传登记，' +
-      '并丢弃待发的插话/排队；会话设置（工作目录、权限、模型等）保留。\n此操作不可恢复。'))) return;
-  if (!(await confirmCenter('再次确认：跟数字经理对话的全部历史将被清空、无法恢复。\n确定要继续吗？', true))) return;
-  const btn = $('btn-assistant-clear');
-  const orig = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '清空中…';
-  try {
-    const r = await api('/api/assistant/clear', { method: 'POST' });
-    assistantOpsState('已清空跟数字经理对话（' + (r.cleared || 0) + ' 条消息），它现在是全新对话。');
-    await refreshAssistantOps();
-  } catch (e) {
-    alert('清空失败：' + e.message);
   } finally {
     btn.textContent = orig;
     btn.disabled = false;

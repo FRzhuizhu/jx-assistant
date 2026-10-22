@@ -1621,6 +1621,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `assistant.go` | 数字助理总控：编排工具 + 会话压缩摘要（建会话/模型选择走 sessioncreate.go 的 service） |
 | `callapi.go` | call_api 通用直通工具（仅 assistant 模式注入）：路由元数据注册表（server.go apiRoute 注册即元数据，AI 可调接口目录是注册的副产品）+ 进程内直调执行器（httptest Recorder 打到与前端同一 mux）+ 最低权限档标注与危险接口审批（调用时按会话档位校验）；完整目录渲染进 call_api 工具定义（含档位与 ⚠ 标记，进程内缓存） |
 | `sessioncreate.go` | 建会话/改权限的 service 单源：createSession（HTTP 人工建会话、dispatch_task、dispatch_sub 三入口共用：模式/权限默认、能力默认、分支克隆、历史继承（失败回滚）、skill-create 演示材料兜底）+ applyPermissionChange（权限档落装与能力联动，人工 PATCH 与 send_to_session 共用） |
+| `assistant_versions.go` | 数字经理主对话的「版本」：每一版就是一个 assistant 顶层会话（会话 id/标题/工作目录/权限/模型各自独立），版本号落 sessdata、当前版本指针落 globaldata（**唯一口径 currentAssistant()**——设置页压缩/清空、待办转交、request_manager、前端入口都认它，不再按「最近更新的那个」猜）；新建一版从零开始、老版本原样保留，切换只动指针 |
 | `historytools.go` | 跨会话历史查询工具（search / read_session_messages） |
 | `context.go` | 上下文组装管线（环境快照**追加式**：首条整份、后续按行差分为短更新，已发送前缀绝不改写）+ 规则压缩 + 模型摘要 + 溢出兜底 |
 | `runtime.go` | 后台运行时：执行注册表、全局事件总线、派发执行体、中断恢复 |
@@ -1661,6 +1662,10 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `POST /api/sessions/{id}/interject` | 执行中发消息：`{content, mode}`，`steer`=插话（下一次调用模型前注入）、`queue`=排队（本轮结束后作为独立一轮发送）；未在执行时按排队处理并顺手拉起执行 |
 | `POST /api/sessions/{id}/pending` | 排队坞操作：`{id, action:'remove'\|'steer'}`（移出队列 / 提前为插话）、`{id, action:'move', before:锚点id\|空=队尾}`（拖拽排序，只动排队队列顺序）、`{action:'pause'\|'resume'}`（队列级暂停/继续，不需要 id；恢复时空闲且有排队消息顺手拉起执行）；前端「编辑排队/插话消息」＝ `remove` 后把原文回填输入框草稿，复用 remove，无新 action |
 | `POST /api/sessions/{id}/compact` | 手动压缩为一条摘要 |
+| `GET /api/assistant/versions` | 数字经理主对话的版本清单（`{current, versions:[{sessionId,version,messages,updatedAt,running,current}]}`；当前版本指针存库，前端入口与设置页都按它走，见 assistant_versions.go） |
+| `POST /api/assistant/versions/new` | 新建一版数字助理主对话（从零开始聊，沿用当前版本的工作目录/权限/模型等设置；老版本历史、快照、交付原样保留） |
+| `POST /api/assistant/versions/switch` | 切换当前版本（`{sessionId}`）：只动指针，两边数据都不碰；切完主对话区显示那一版的历史 |
+| `POST /api/assistant/compact` `/clear` | 对**当前这一版**压缩 / 清空历史（clear 已不在设置页露出——那里换成了「新建一版」，接口保留给彻底重置本版历史用） |
 | `POST /api/sessions/{id}/remote` | 设置/解除会话的 SSH 远程工作区（`{remote:{…}}` 或 `{clear:true}`） |
 | `GET /api/approvals` | 待决定的越权审批清单（轮询兜底） |
 | `GET /api/questions` | 待回答的助手提问 / 计划审批清单（轮询兜底） |

@@ -73,14 +73,19 @@ function resetEmpty() {
 /* ---------- 会话 ---------- */
 
 async function openAssistant() {
-  // 数字助理主对话：复用最近的一个数字助理会话，没有才新建
-  const list = state.sessions.filter((s) => s.mode === 'assistant');
-  if (list.length) return openSession(list[0].id);
-  const s = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ mode: 'assistant', title: '数字助理主对话' }) });
-  // 新建响应先合入列表再切换：与分支同一条竞态链路（见 upsertSessionBrief 注释）
-  upsertSessionBrief(s);
-  loadSessions();
-  await openSession(s.id);
+  // 「跟数字经理对话」入口打开的是**当前版本**——哪一版由服务端记在库里
+  // （/api/assistant/versions，见 assistant_versions.go）。这里绝不能自己从
+  // 会话列表里挑：多版本下「按更新时间取第一个」会把用户刚聊过的那一版当成
+  // 当前版本，切回老版本聊一句就顶掉新版本。
+  let cur = '';
+  try { cur = ((await api('/api/assistant/versions')).current) || ''; } catch (e) { /* 读不到版本就下面新建 */ }
+  if (!cur) {
+    const r = await api('/api/assistant/versions/new', { method: 'POST' }); // 还没有任何一版：建第一版
+    cur = (r && r.sessionId) || '';
+  }
+  if (!cur) return;
+  if (!(state.sessions || []).some((s) => s.id === cur)) await loadSessions(); // 列表里没有这条先补列表（乐观切换要用它当临时 meta）
+  await openSession(cur);
 }
 
 // 「新工作任务」不立即建会话：留在首页聚焦输入框，发出第一条消息才真正创建

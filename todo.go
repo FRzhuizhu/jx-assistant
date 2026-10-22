@@ -1215,28 +1215,23 @@ func (s *todoScheduler) handToTaskSession(task *TaskItem, record *RunRecord) (st
 	return sub.ID, nil
 }
 
-// assistantSession 取数字助理主对话；没有就建一个（与前端「数字助理主对话」
-// 入口同一套参数：mode=assistant、工作目录取默认工作区）。
+// assistantSession 取当前版本的数字助理主对话；没有版本就建第一版（与前端
+// 「跟数字经理对话」入口、设置页版本清单同一套参数、同一个「当前版本」指针，
+// 见 assistant_versions.go）。定时任务转交与任务求助都认这一版——用户切到哪一版，
+// 任务就找哪一版，不会各自找各自「最近更新的那个」。
 func (a *App) assistantSession() (*SessionMeta, error) {
-	sessions, err := a.Store.List()
+	if m := a.currentAssistant(); m != nil {
+		return m, nil
+	}
+	v, err := a.createAssistantVersion()
 	if err != nil {
-		return nil, err
-	}
-	for _, m := range sessions {
-		if m.Mode == "assistant" && m.ParentID == "" && !m.Archived {
-			return m, nil
-		}
-	}
-	m := &SessionMeta{
-		ID: newID(), Title: "数字助理主对话", Mode: "assistant",
-		Workspace: a.Cfg.Workspace, Permission: permWorkspace,
-		CreatedAt: now(), UpdatedAt: now(),
-	}
-	if err := a.Store.Create(m); err != nil {
 		return nil, fmt.Errorf("创建数字助理主对话失败: %w", err)
 	}
-	log.Printf("[会话] 已自动创建数字助理主对话 %s（待办转交 / 任务求助按需找它）", m.ID)
-	a.broadcast(Event{Type: "session_updated", SessionID: m.ID})
+	m, err := a.Store.Get(v.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("创建数字助理主对话失败: %w", err)
+	}
+	log.Printf("[会话] 已自动创建数字助理主对话 %s（第 %d 版，待办转交 / 任务求助按需找它）", m.ID, v.Version)
 	return m, nil
 }
 

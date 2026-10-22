@@ -1545,7 +1545,9 @@ body.rp-open .w-handle { display: none; }
 
 /* 设置页：上下文压缩 */
 .compact-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-/* 设置 · 对话历史与压缩：数字助理主对话的两个动作按钮（清空＝破坏性，红字提示） */
+/* 设置 · 对话历史与压缩：数字经理主对话按版本管理（新建一版为主入口，压缩次之）。
+   版本**不铺开成一串卡片**：一个紧凑下拉选当前用哪一版（设置页唯一入口，见
+   app-core.js 的 renderAssistantVersionPicker），动作按钮放在下拉下面。 */
 .cs-sub { font-size: 12px; color: var(--text-2); margin: 16px 0 8px; }
 .compact-actions { display: flex; gap: 8px; flex-wrap: wrap; max-width: 420px; }
 .compact-actions .set-act {
@@ -1555,8 +1557,38 @@ body.rp-open .w-handle { display: none; }
 }
 .compact-actions .set-act:hover { color: var(--accent); border-color: var(--accent); }
 .compact-actions .set-act:disabled { opacity: .55; cursor: default; }
-.compact-actions .set-act.danger { color: var(--danger); }
-.compact-actions .set-act.danger:hover { border-color: var(--danger); background: rgba(192, 57, 43, .06); }
+.compact-actions .set-act.primary { color: var(--accent); border-color: rgba(77, 107, 254, .45); font-weight: 600; }
+
+/* 数字经理版本下拉（只在设置页「跟数字经理对话」那一节一处）。按钮是一枚细条
+   （写「第 N 版」），点开**就地展开**列出全部版本：每项「第几版 + 消息数 · 最后
+   更新时间」，当前版打勾高亮。菜单不浮层——设置页所在的 .set-pane 是滚动容器，
+   浮层会被它的滚动边界裁掉（这里是唯一的入口，按就地展开写即可）。 */
+.da-ver-row { display: flex; flex-direction: column; max-width: 420px; margin: 10px 0 4px; }
+.da-ver-btn {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  width: 100%; padding: 4px 8px; font-size: 12px; color: var(--text-2);
+  background: none; border: 1px dashed var(--border); border-radius: 8px; cursor: pointer;
+}
+.da-ver-btn:hover { color: var(--accent); border-color: var(--accent); }
+.da-ver-caret { width: 12px; height: 12px; flex: none; }
+.da-ver-menu {
+  margin-top: 6px; max-height: 240px; overflow-y: auto; padding: 4px;
+  border: 1px solid var(--border-2); border-radius: 10px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.da-ver-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  width: 100%; padding: 6px 8px; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 7px; color: var(--text);
+}
+.da-ver-item:hover { background: var(--hover); }
+.da-ver-item.cur { background: rgba(77, 107, 254, .08); }
+.da-ver-item.cur .da-ver-name::after { content: '  ✓'; color: var(--accent); }
+.da-ver-item:disabled { opacity: .6; cursor: default; }
+.da-ver-name { font-size: 12.5px; }
+.da-ver-meta { font-size: 11px; color: var(--text-2); }
+.da-ver-empty { font-size: 12px; color: var(--text-2); padding: 6px 8px; }
+
 .compact-row label { font-size: 12px; }
 .compact-row select, .compact-row input {
   font-size: 12px; padding: 4px 8px; margin-top: 3px; width: 100%;

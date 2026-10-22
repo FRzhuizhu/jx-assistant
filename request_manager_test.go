@@ -126,8 +126,11 @@ func TestRequestManagerDeliversToManager(t *testing.T) {
 	if after, _ := a.Store.Get(task.ID); permModeOf(after) != permWorkspace {
 		t.Fatalf("求助不该改发起方权限档, got %s", permModeOf(after))
 	}
-	if permModeOf(mgr) != permWorkspace {
-		t.Fatalf("新建的经理会话应按默认档（工作区内读写）, got %s", permModeOf(mgr))
+	// 建会话走 createSession 单源：assistant 主对话的默认档是完全访问
+	//（见 sessioncreate.go——总控先站到最高档，派出去的任务才有完整的档位空间；
+	// 前端建主对话一直走这条路）。求助通道只传消息，不改变任何一边的档位。
+	if permModeOf(mgr) != permFull {
+		t.Fatalf("新建的经理会话应按 assistant 默认档（完全访问）, got %s", permModeOf(mgr))
 	}
 }
 

@@ -24,7 +24,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         <span class="sb-label">派任务给新助理</span>
       </button>
-      <button id="btn-new-assistant" class="side-btn" data-short="数据助理">
+      <button id="btn-new-assistant" class="side-btn" data-short="数字助理">
         <span class="doll-wrap"><svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><g class="bob"><g class="head"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g></g><g class="da-paper"><rect x="26.5" y="28.5" width="12" height="14" rx="1.6"></rect><line x1="29" y1="32.5" x2="36" y2="32.5"></line><line x1="29" y1="35.5" x2="36" y2="35.5"></line><line x1="29" y1="38.5" x2="33.5" y2="38.5"></line></g></g></svg><span id="da-badge" class="da-badge hidden">1</span></span>
         <!-- 显示名「跟数字经理对话」：「经理」两字加粗（b 只承担字重，不加任何样式类，
              按钮的图标/尺寸/动画/布局一律不动） -->
@@ -774,11 +774,18 @@
           </div>
           <div class="gen-section">
             <h4>跟数字经理对话</h4>
-            <div class="compact-actions">
-              <button id="btn-assistant-compact" class="set-act" type="button" title="立即对跟数字经理对话执行一次压缩：点击后先确认，再把较早的历史整理成一份摘要">压缩跟数字经理对话</button>
-              <button id="btn-assistant-clear" class="set-act danger" type="button" title="清空跟数字经理对话的全部历史消息（需要二次确认，不可恢复）">清空跟数字经理对话</button>
+            <div class="da-ver-row">
+              <button id="btn-set-da-ver" class="da-ver-btn" type="button" title="选择当前使用哪一版数字助理（每一版的历史各自独立）">
+                <span id="set-da-ver-label">数字助理</span>
+                <svg class="da-ver-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div id="da-set-ver-menu" class="da-ver-menu hidden"></div>
             </div>
-            <p class="sf-desc" id="assistant-ops-state">两个按钮都作用于「跟数字经理对话」这一个会话（不是当前打开的这个对话），点下立即生效、不随底部「保存」提交。「压缩」点击后先确认，再把较早的历史整理成一份摘要放进对话，原始消息永久保留、可随时查回；「清空」要连过两道确认，然后删除它的全部历史消息与摘要，会话设置保留，助理回到全新对话状态（不可恢复）。</p>
+            <div class="compact-actions">
+              <button id="btn-assistant-new" class="set-act primary" type="button" title="新建一版数字助理：从零开始聊；当前这一版的历史、文件快照与交付记录都原样保留，随时切回来">新建一版（从零开始聊）</button>
+              <button id="btn-assistant-compact" class="set-act" type="button" title="对当前这一版执行一次压缩：点击后先确认，再把较早的历史整理成一份摘要">压缩当前版本</button>
+            </div>
+            <p class="sf-desc" id="assistant-ops-state">主对话按「版本」管理：每一版都是一个新的数字助理，历史各自独立；上面选当前用哪一版，切过去就接着那一版聊。</p>
           </div>
           <div class="gen-section">
             <h4>文件备份</h4>

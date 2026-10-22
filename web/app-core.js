@@ -739,6 +739,98 @@ function upsertSessionBrief(s) {
   renderSessionList();
 }
 
+/* ---------- 数字经理的版本（下拉选择，只在设置页一处） ----------
+   主对话现在有多个「版本」（见 assistant_versions.go）：每一版都是独立的数字助理，
+   老版本的历史 / 快照 / 交付原样留着，切回去接着聊。**入口只有一个**——版本不铺开成
+   一串同样的条目，也不往侧栏塞控件：只在设置页「跟数字经理对话」那一节用一个下拉选
+   当前用哪一版。当前是哪一版由服务端记在库里（/api/assistant/versions 的 current），
+   前端只照它显示与切换。 */
+const assistantVer = { current: '', versions: [] };
+
+// refreshAssistantVersions 拉一次版本清单并重画下拉（进设置页、切换/新建之后走它）。
+async function refreshAssistantVersions() {
+  try {
+    const d = await api('/api/assistant/versions');
+    assistantVer.current = (d && d.current) || '';
+    assistantVer.versions = (d && d.versions) || [];
+  } catch (e) { assistantVer.current = ''; assistantVer.versions = []; }
+  renderAssistantVersionPicker();
+}
+
+function assistantVersionName(v) { return v ? '第 ' + v.version + ' 版' : '第 1 版'; }
+
+// 画设置页那枚下拉：按钮上写当前第几版，菜单里每项带消息数与最后更新时间，当前版打勾。
+function renderAssistantVersionPicker() {
+  const cur = assistantVer.versions.find((v) => v.current) || null;
+  const labelEl = $('set-da-ver-label');
+  if (labelEl) labelEl.textContent = cur ? assistantVersionName(cur) : '数字助理';
+  const menuEl = $('da-set-ver-menu');
+  if (!menuEl) return;
+  const list = assistantVer.versions;
+  if (!list.length) {
+    menuEl.innerHTML = '<div class="da-ver-empty">还没有版本：点上面的「新建一版」</div>';
+    return;
+  }
+  menuEl.innerHTML = list.map((v) => (
+    '<button class="da-ver-item' + (v.current ? ' cur' : '') + '" type="button" data-id="' + esc(v.sessionId) + '">' +
+      '<span class="da-ver-name">' + assistantVersionName(v) + (v.running ? '　运行中' : '') + '</span>' +
+      '<span class="da-ver-meta">' + (v.messages || 0) + ' 条消息 · ' + esc(v.updatedAt || '-') + '</span>' +
+    '</button>'
+  )).join('');
+  menuEl.querySelectorAll('.da-ver-item[data-id]').forEach((b) => {
+    b.onclick = async () => {
+      closeAssistantVersionMenu();
+      if (b.classList.contains('cur')) return; // 已经是当前这一版：不做无谓的切换
+      b.disabled = true;
+      try {
+        const r = await switchAssistantVersionTo(b.dataset.id);
+        if (typeof assistantOpsState === 'function') {
+          const no = r && r.version ? ('第 ' + r.version + ' 版') : '所选版本';
+          assistantOpsState('已切到' + no + '：主对话区显示的就是这一版的历史，之后的对话也记在这一版里。');
+        }
+      } catch (e) {
+        alert('切换版本失败：' + e.message);
+      }
+    };
+  });
+}
+
+function closeAssistantVersionMenu() {
+  const el = $('da-set-ver-menu');
+  if (el) el.classList.add('hidden');
+}
+
+// 下拉按钮：点一下展开/收起（内容由上面的渲染填好；点别处自动收起）。
+{
+  const btn = $('btn-set-da-ver');
+  const menu = $('da-set-ver-menu');
+  if (btn && menu) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const willOpen = menu.classList.contains('hidden');
+      closeAssistantVersionMenu();
+      if (willOpen) menu.classList.remove('hidden');
+    };
+  }
+}
+
+// 点下拉自身以外的地方收起菜单（菜单项自己点完也会收起）。
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('.da-ver-row')) return;
+  closeAssistantVersionMenu();
+});
+
+// switchAssistantVersionTo 切到某一版：只改服务端「当前版本」指针，两边的会话与
+// 历史一件不动。切完正开着某一版就把对话区换成目标版；其余地方只刷新列表与下拉。
+async function switchAssistantVersionTo(id) {
+  const r = await api('/api/assistant/versions/switch', { method: 'POST', body: JSON.stringify({ sessionId: id }) });
+  try { await loadSessions(); } catch (e) { /* 列表刷新失败不影响切换结果 */ }
+  if (state.cur && state.cur.mode === 'assistant' && !state.cur.parentId) openSession(id);
+  await refreshAssistantVersions(); // 下拉按新状态重画（状态行由调用方自己写）
+  return r;
+}
+
 /* ---------- 本地草稿持久化：刷新不丢输入与选择 ----------
    缓存模型：输入框内容永远只属于「当前上下文」——
    首页（新对话）一份 jx.homeDraft（含选择项 + text，跨重启保留），

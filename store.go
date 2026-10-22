@@ -1200,6 +1200,14 @@ func (s *Store) RawMessages(id string, offset, limit int) ([]*StoredMessage, int
 	return out, total, rows.Err()
 }
 
+// MessageCount 返回会话的消息条数。数字经理主对话的版本清单只要条数、
+// 不读正文（那边一版几万条，读完只为数字数不值得）。
+func (s *Store) MessageCount(id string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE session_id=?`, id).Scan(&n)
+	return n, err
+}
+
 // LastSeq 返回会话当前的最后一个 seq（无消息返回 0）。
 // 上下文继承要一次性算好新 seq 再落库，需要这个基线。
 func (s *Store) LastSeq(id string) (int64, error) {

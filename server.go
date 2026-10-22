@@ -281,10 +281,14 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "POST /api/sessions/{id}/interject", a.handleInterject, apiMeta{Summary: "执行中发消息（插话/排队）", Params: "content、mode=steer|queue", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/sessions/{id}/pending", a.handlePending, apiMeta{Summary: "排队坞操作", Params: "action=remove|steer|move|pause|resume", Perm: permWorkspace})
 	a.apiRoute(mux, "POST /api/sessions/{id}/compact", a.handleCompact, apiMeta{Summary: "手动压缩会话历史为摘要", Params: "upTo=压缩到哪条", Perm: permWorkspace})
-	// 设置 · 对话历史与压缩：对数字助理主对话的两个动作（会话由服务端按
-	// mode=assistant 解析，前端不必知道是哪个会话）。压缩固定走模型摘要。
-	a.apiRoute(mux, "POST /api/assistant/compact", a.handleAssistantCompact, apiMeta{Summary: "压缩数字助理主对话历史", Perm: permWorkspace})
-	a.apiRoute(mux, "POST /api/assistant/clear", a.handleAssistantClear, apiMeta{Summary: "清空数字助理主对话历史", Perm: permFull, Danger: "清空总控主对话的全部历史，不可恢复"})
+	// 设置 · 对话历史与压缩：数字助理主对话按「版本」管理（见 assistant_versions.go）。
+	// 当前是哪一版由库里的指针决定，前端只照版本清单显示与切换；压缩固定走
+	// 模型摘要；清空只作用于当前这一版（设置页已换成「新建一版」，接口留着）。
+	a.apiRoute(mux, "GET /api/assistant/versions", a.handleAssistantVersions, apiMeta{Summary: "数字助理主对话的版本清单（当前版本/消息数/最后更新）", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/assistant/versions/new", a.handleAssistantVersionNew, apiMeta{Summary: "新建一版数字助理主对话（从零开始，老版本保留）", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/assistant/versions/switch", a.handleAssistantVersionSwitch, apiMeta{Summary: "切换数字助理主对话的当前版本", Params: "sessionId", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/assistant/compact", a.handleAssistantCompact, apiMeta{Summary: "压缩数字助理主对话当前版本的历史", Perm: permWorkspace})
+	a.apiRoute(mux, "POST /api/assistant/clear", a.handleAssistantClear, apiMeta{Summary: "清空数字助理主对话当前版本的历史", Perm: permFull, Danger: "清空当前版本总控主对话的全部历史，不可恢复"})
 	a.apiRoute(mux, "GET /api/sessions/{id}/progress", a.handleGetProgress, apiMeta{Summary: "会话进度清单", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/sessions/{id}/stop-child", a.handleStopChild, apiMeta{Summary: "停止会话的一个运行中程序（进度面板停止按钮）", Params: "id=程序 id（job-*/child-*）", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/sessions/{id}/plans", a.handleListPlans, apiMeta{Summary: "会话提交过的计划清单", Perm: permReadOnly})
@@ -2112,23 +2116,10 @@ func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": 1, "summary": truncateRunes(summary, 300)})
 }
 
-// assistantMainSession 取数字助理主对话（mode=assistant、无父会话、未归档，
-// 与前端「数字助理主对话」入口和 todo.assistantSession 同一口径：会话列表
-// 按更新时间倒序，因此命中的就是最近用的那个）。没建过时返回 nil——设置页的
-// 「清空 / 压缩」是作用于既有对话的动作，不该顺手建出一个空对话，
-// 前端据 404 提示「还没有数字助理主对话」。
-func (a *App) assistantMainSession() *SessionMeta {
-	sessions, err := a.Store.List()
-	if err != nil {
-		return nil
-	}
-	for _, m := range sessions {
-		if m.Mode == "assistant" && m.ParentID == "" && !m.Archived {
-			return m
-		}
-	}
-	return nil
-}
+// 数字助理主对话现在有多个「版本」（设置 · 对话历史与压缩），当前是哪一版
+// 由库里的指针说了算——a.currentAssistant()，见 assistant_versions.go。
+// 以前这里是「会话列表按更新时间倒序取第一个」，多版本下会错位（切回老版本
+// 聊一句，它就成了「最近更新的那个」），已彻底收敛到那个唯一口径。
 
 // lastManualSummaryCover 返回会话里「手动」摘要覆盖到的最远 seq（没有则 0）。
 // 设置页的压缩按钮要在对话区留一条系统通知，文案里要有「这次压到哪一条」——
@@ -2147,15 +2138,16 @@ func (a *App) lastManualSummaryCover(sessionID string) int64 {
 	return cover
 }
 
-// handleAssistantClear 清空数字助理主对话（设置 · 对话历史与压缩 · 清空按钮）。
-// 二次确认在前端（居中确认弹窗，两级）；服务端只做真活：消息与随消息产生的
-// 工件（文件快照登记与正文文件、交付登记、上传登记、待执行交付作业）全部清掉、
-// 会话运行态归零（status=idle/未读/用量），并丢掉待生效的插话与排队——
-// 清完就是一个全新的同一个对话（会话 id、标题、工作目录、权限、模型不动，
-// 子会话与待办记录也不受影响）。
-// 执行中一律拒绝（409）：正在跑的一轮会继续往历史里写，清了也会立刻被冲回来。
+// handleAssistantClear 清空数字助理主对话**当前这一版**的历史（接口保留，
+// 设置页已不再提供按钮——那里换成了「新建一版」，见 assistant_versions.go）。
+// 服务端只做真活：消息与随消息产生的工件（文件快照登记与正文文件、交付登记、
+// 上传登记、待执行交付作业）全部清掉、会话运行态归零（status=idle/未读/用量），
+// 并丢掉待生效的插话与排队——清完这一版就是一个全新的同一个对话（会话 id、
+// 标题、工作目录、权限、模型、版本号不动，子会话与待办记录也不受影响，别的
+// 版本更是一点不碰）。执行中一律拒绝（409）：正在跑的一轮会继续往历史里写，
+// 清了也会立刻被冲回来。
 func (a *App) handleAssistantClear(w http.ResponseWriter, r *http.Request) {
-	m := a.assistantMainSession()
+	m := a.currentAssistant()
 	if m == nil {
 		writeErr(w, 404, "还没有数字助理主对话，无需清空")
 		return
@@ -2185,8 +2177,8 @@ func (a *App) handleAssistantClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": 1, "sessionId": m.ID, "cleared": n})
 }
 
-// handleAssistantCompact 立即压缩数字助理主对话（设置 · 对话历史与压缩 ·
-// 压缩按钮）。固定走上下文压缩里「AI 模型压缩」那条路（doSummarize）：无视
+// handleAssistantCompact 立即压缩数字助理主对话**当前这一版**（设置 · 对话历史
+// 与压缩 · 压缩按钮）。固定走上下文压缩里「AI 模型压缩」那条路（doSummarize）：无视
 // Cfg.CompactMode（规则/关闭都不看），保留窗口与区间划分原样沿用现有实现
 //（keepRoundsByBudget：从最近一轮往上数，保留「保留字数」预算内装得下的
 // 完整轮；最近一轮自身超预算时摘要覆盖全部历史，不硬保这一轮）。
@@ -2199,7 +2191,7 @@ func (a *App) handleAssistantClear(w http.ResponseWriter, r *http.Request) {
 // 消息流，用户在对话里见不到它（通知同时是模型可见的 user 消息，下一轮模型
 // 自然知道历史已被压缩，与消息级「已折叠」边界提示同一口径）。
 func (a *App) handleAssistantCompact(w http.ResponseWriter, r *http.Request) {
-	m := a.assistantMainSession()
+	m := a.currentAssistant()
 	if m == nil {
 		writeErr(w, 404, "还没有数字助理主对话，没有可压缩的历史")
 		return
