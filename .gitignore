@@ -50,3 +50,22 @@ jx.db
 询价单产出_*/
 # 一次性 GUI 验证截图（验证脚本本体 gui-test/ 已入库，截图不入库）
 gui-test-screenshots/
+# 微信操作技能 2026-10-16 优化的交付副本（新版脚本 + 原版备份 + 变更说明，发到安装目录用；
+# 本仓库的技能目录是另有安装形态的副本，两者不混）——同 test-20261018-pm 会话的惯例
+/enter_wechat.py
+/enter_wechat.py.原版备份
+/变更说明.md
+/微信操作技能_*.zip
+# UI 预览草案（设计沟通用的一次性 HTML，非产品页面）
+/*预览.html
+# 微信技能验证留证截图
+/微信留证/
+# 静默更新换装残留（*.exe.old / *.exe.new 的同类，.prev 是换装前的旧 exe）
+*.exe.prev
+# SQLite WAL 附属文件（与上面的 jx.db 同口径，运行时产物）
+jx.db-shm
+jx.db-wal
+# 技能运行时状态戳与生成物：技能区版本（sk-…）/ 便携运行时版本（py3.…）/ comtypes 动态生成的包
+技能/.skills-version
+技能/_runtime/.version
+技能/_runtime/**/comtypes/gen/
