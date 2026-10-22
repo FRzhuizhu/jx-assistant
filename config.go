@@ -61,7 +61,7 @@ type Config struct {
 	Model      string        `json:"model"`
 	Providers  []ProviderCfg `json:"providers"`
 	Workspace  string        `json:"workspace"`
-	MaxSteps   int           `json:"maxSteps"`
+	MaxSteps   int           `json:"maxSteps"` // 步数上限（一条消息触发的任务里连续步数）：0/负数 = 不限制（默认）
 	AllowShell bool          `json:"allowShell"`
 	DataDir    string        `json:"dataDir"`
 	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
@@ -227,17 +227,20 @@ type RemoteAccessCfg struct {
 	RegKey  string `json:"regKey"`
 }
 
-// 步数上限（一条消息触发的任务里，模型调用＋工具执行的连续步数）的默认值：
-// 既是新装的默认，也是升级时「还是旧默认、没人手动改过」的配置被提到的新值。
-// 旧默认 30（太紧）、100（稍复杂的任务仍常跑满）都提到过；本次提到 200——
-// 手动设过其他值的配置一律保留原值（见 LoadConfig 的兼容分支与
-// maxStepsLegacyDefaults）。
-const maxStepsDefault = 200
+// 步数上限（一条消息触发的任务里，模型调用＋工具执行的连续步数）：0 或负数 =
+// 不限制——任务跑到模型自己收手（不再发起工具调用）或用户点停止为止。
+// 以前是「给个数字，跑满自动停」：30 → 100 → 200 一路往上抬，可复杂任务照样
+// 撞墙（撞墙即前功尽弃，只能重试），抬数字永远猜不到够不够。所以默认改成
+// 不限制：真正该决定何时停的是模型与用户，不是一个猜出来的整数。
+// 想给任务兜个上限的，设置页里关掉「不限制」再填步数即可（手动值一律保留）。
+const maxStepsDefault = 0
 
-// maxStepsLegacyDefaults 是历次旧默认值：配置里的值正好等于其中之一，说明用户
-// 从没手动改过（手动改过的不会是这些整数旧默认）——升级时随新默认一并提升，
-// 用户自己设的值（如 300）不受影响。30=首版默认，100=上一次提升后的默认。
-var maxStepsLegacyDefaults = []int{30, 100}
+// maxStepsLegacyDefaults 是历次默认值：配置里的值正好等于其中之一，说明用户
+// 从没手动改过（手动改过的不会是这些整数默认）——升级时随新默认（不限制）走，
+// 用户自己设的值（如 300）不受影响。30=首版默认，100=上一次提升后的默认，
+// 200=上一次提升后的默认，1000=旧设置页的输入上限（填它的人就是想拉满，
+// 意图等同于不限制）。
+var maxStepsLegacyDefaults = []int{30, 100, 200, 1000}
 
 // isLegacyMaxSteps 该值是不是历次旧默认之一（升级提值的判定，见上面注释）。
 func isLegacyMaxSteps(n int) bool {
@@ -319,13 +322,16 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Workspace == "" {
 		cfg.Workspace = def.Workspace
 	}
-	// 步数上限：老配置里还是旧默认（30 / 100）的（说明没人手动改过）随新默认
-	// 提到 200，并在下面落盘；手动设过其他值的配置原样保留。缺这一项/写成 0
-	// 仍按默认补齐。
+	// 步数上限：老配置里还是历次默认（30 / 100 / 200 / 1000）的（说明没人手动
+	// 改过）随新默认改成不限制（0），并在下面落盘；手动设过其他值的配置原样
+	// 保留。缺这一项也是 0 = 不限制，天然对齐默认。负数一律归一成 0。
 	maxStepsBumped := false
 	if isLegacyMaxSteps(cfg.MaxSteps) {
 		cfg.MaxSteps = maxStepsDefault
 		maxStepsBumped = true
+	}
+	if cfg.MaxSteps < 0 {
+		cfg.MaxSteps = 0
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = def.DataDir
@@ -413,8 +419,9 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.Providers = []ProviderCfg{p}
 	}
-	// 步数上限从旧默认提升过：立即落盘，让设置页读数、配置文件与运行时三者
-	// 一致（免得用户看到配置文件里还是 30，以为没生效；其他补全都留给下一次保存）
+	// 步数上限从历次默认迁移过（旧默认 → 不限制）：立即落盘，让设置页读数、
+	// 配置文件与运行时三者一致（免得用户看到配置文件里还是 200，以为没生效；
+	// 其他补全都留给下一次保存）
 	if maxStepsBumped || remoteHostMigrated {
 		if err := cfg.Save(path); err != nil {
 			log.Printf("回写配置迁移失败: %v", err)

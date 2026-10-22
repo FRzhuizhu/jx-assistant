@@ -5,7 +5,7 @@ package main
 //   B 数字助理工具清单去掉 dispatch_sub / list_experts，提示词规则同步
 //   C send_to_session 的 permission（同等或降权、不给已有会话提权）与默认插话语义
 //   D 环境快照「可用模型清单」+ 裸模型名走错渠道的提示兜底
-//   E 步数默认 100 → 200（旧默认随升级提升，用户自己设的值不动）
+//   E 步数默认不限制（0）；历次默认 30/100/200/1000 随升级迁到不限制，用户自己设的值不动
 //   F read_session_messages 单条长消息完整读取（窗口 + seq + from_char 续读）
 
 import (
@@ -406,16 +406,16 @@ func TestModelErrChannelHint(t *testing.T) {
 	}
 }
 
-// ---------- E. 步数默认 200 ----------
+// ---------- E. 步数默认不限制（0） ----------
 
 func TestMaxStepsDefaultAndUpgrade(t *testing.T) {
-	if maxStepsDefault != 200 {
-		t.Fatalf("默认步数应为 200, got %d", maxStepsDefault)
+	if maxStepsDefault != 0 {
+		t.Fatalf("默认步数应为 0（不限制）, got %d", maxStepsDefault)
 	}
-	if got := DefaultConfig().MaxSteps; got != 200 {
-		t.Fatalf("DefaultConfig().MaxSteps 应为 200, got %d", got)
+	if got := DefaultConfig().MaxSteps; got != 0 {
+		t.Fatalf("DefaultConfig().MaxSteps 应为 0（不限制）, got %d", got)
 	}
-	load := func(t *testing.T, raw string) *Config {
+	load := func(t *testing.T, raw string) (*Config, string) {
 		t.Helper()
 		p := filepath.Join(t.TempDir(), "config.json")
 		if err := os.WriteFile(p, []byte(raw), 0o644); err != nil {
@@ -425,23 +425,34 @@ func TestMaxStepsDefaultAndUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatalf("读配置失败: %v", err)
 		}
-		return cfg
+		saved, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg, string(saved)
 	}
-	// 旧默认（30 / 100）＝没人手动改过：随新默认提升到 200
-	for _, legacy := range []int{30, 100} {
-		if cfg := load(t, fmt.Sprintf(`{"maxSteps":%d}`, legacy)); cfg.MaxSteps != 200 {
-			t.Fatalf("旧默认 %d 应提升到 200, got %d", legacy, cfg.MaxSteps)
+	// 历次默认（30/100/200/1000＝旧输入上限，填它就是想把步数拉满）＝没人手动
+	// 改过：迁到不限制，并立即落盘（设置页读数、配置文件、运行时三者一致）
+	for _, legacy := range []int{30, 100, 200, 1000} {
+		cfg, saved := load(t, fmt.Sprintf(`{"maxSteps":%d}`, legacy))
+		if cfg.MaxSteps != 0 {
+			t.Fatalf("旧默认 %d 应迁到不限制(0), got %d", legacy, cfg.MaxSteps)
+		}
+		if !strings.Contains(saved, `"maxSteps": 0`) {
+			t.Fatalf("旧默认 %d 迁移后应立即落盘 maxSteps=0，实际文件: %s", legacy, saved)
 		}
 	}
-	// 用户自己设过的值不受影响
-	for _, user := range []int{50, 350, 1000} {
-		if cfg := load(t, fmt.Sprintf(`{"maxSteps":%d}`, user)); cfg.MaxSteps != user {
+	// 用户自己设过的上限不受影响
+	for _, user := range []int{50, 350, 5000} {
+		if cfg, _ := load(t, fmt.Sprintf(`{"maxSteps":%d}`, user)); cfg.MaxSteps != user {
 			t.Fatalf("用户设定的 %d 不该被改, got %d", user, cfg.MaxSteps)
 		}
 	}
-	// 缺项 / 0：按默认补齐
-	if cfg := load(t, `{}`); cfg.MaxSteps != 200 {
-		t.Fatalf("缺 maxSteps 应补默认 200, got %d", cfg.MaxSteps)
+	// 缺项 / 0 / 负数：都按不限制
+	for _, raw := range []string{`{}`, `{"maxSteps":0}`, `{"maxSteps":-5}`} {
+		if cfg, _ := load(t, raw); cfg.MaxSteps != 0 {
+			t.Fatalf("%s 应按不限制(0), got %d", raw, cfg.MaxSteps)
+		}
 	}
 }
 

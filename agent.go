@@ -1142,7 +1142,7 @@ func (e errMaxSteps) Error() string {
 }
 
 // RunAgent 是核心主循环：向上下文引擎取包 → 流式请求模型 → 执行工具 → 回填结果，
-// 循环直到模型不再发起工具调用、用户中断或达到步数上限。
+// 循环直到模型不再发起工具调用、用户中断或（仅在用户自己设了上限时）达到步数上限。
 // 发给模型的内容一律来自引擎的 Assembly（组装、开轮留痕、测量口径全归引擎），
 // 主循环只经手——补 Model/思考档位等调用参数并发送，不碰任何拼装函数。
 // 每步的上下文都从存储重建（引擎的组装管线：摘要 + 规则压缩视图 + 近期原文）。
@@ -1190,10 +1190,16 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 
 	// planReset 是「计划获批、步数从头计」的信号：exit_plan_mode 获批时经
 	// toolContext.planApproved 置位，本循环在工具执行完检测并重置 step——出计划
-	// 的探索步数不再挤占执行计划的预算（两段各有一份完整的 MaxSteps）。
+	// 的探索步数不再挤占执行计划的预算（不限制时无所谓；设了上限则两段各有一份
+	// 完整的步数预算）。
 	planReset := false
 
-	for step := 0; step < a.Cfg.MaxSteps; step++ {
+	for step := 0; ; step++ {
+		// 步数上限每步现读（设置页中途改了立即生效）：<=0 表示不限制——
+		// 循环只由模型自己收手（不再发起工具调用）或用户停止来结束。
+		if n := a.Cfg.MaxSteps; n > 0 && step >= n {
+			return errMaxSteps{n: n}
+		}
 		a.syncRunPerms(sess) // 面板中途改权限：每步从库合并，下一步即按新权限执行
 		interjectsBefore(emit)
 		// 上下文引擎组装本步全部请求材料与测量口径（系统提示词/环境快照/工具
@@ -1487,5 +1493,4 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			continue
 		}
 	}
-	return errMaxSteps{n: a.Cfg.MaxSteps}
 }

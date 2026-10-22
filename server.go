@@ -1370,8 +1370,13 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if body.AllowShell != nil {
 		a.Cfg.AllowShell = *body.AllowShell
 	}
-	if body.MaxSteps != nil && *body.MaxSteps > 0 {
-		a.Cfg.MaxSteps = *body.MaxSteps
+	// 步数上限：<=0 = 不限制（设置页「不限制」勾上时前端就发 0）；>0 = 手填的上限
+	if body.MaxSteps != nil {
+		if *body.MaxSteps > 0 {
+			a.Cfg.MaxSteps = *body.MaxSteps
+		} else {
+			a.Cfg.MaxSteps = 0
+		}
 	}
 	if body.SnapshotEnabled != nil {
 		a.Cfg.SnapshotEnabled = body.SnapshotEnabled

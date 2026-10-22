@@ -168,8 +168,8 @@ async function openSettings(pane) {
   // 发送页：排队消息自动续发（服务端配置，改动即时保存；缺省＝开）
   $('set-queueauto-on').checked = c.queueAutoSend !== false;
   $('set-askalert-text').value = aa.text || '';
-  // 常规页：任务最大步数（服务端配置，改动即时保存）
-  $('set-maxsteps').value = c.maxSteps || 200;
+  // 常规页：任务最大步数（服务端配置，改动即时保存；0=不限制，是新装默认）
+  syncMaxSteps(c.maxSteps);
   // 常规页：关闭窗口驻留后台（服务端配置，改动即时保存，缺省＝开；仅桌面版显示）
   $('set-tray-on').checked = c.closeToTray !== false;
   // 常规页：局域网访问（服务端配置，写 bindHost，重启程序后生效）
@@ -1083,17 +1083,48 @@ $('set-queueauto-on').onchange = async () => {
   }
 };
 
-/* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ---------- */
+/* ---------- 常规页：任务最大步数（服务端配置，改动即时保存） ----------
+   表示法只有一种：服务端 maxSteps <= 0 = 不限制（新装默认），> 0 = 手填的
+   步数上限。设置页用「不限制」开关表达它——勾上＝不限制（数字框置灰留空），
+   关掉才填数字，用户不必知道 0 这个暗号。 */
 
-$('set-maxsteps').onchange = async () => {
-  const v = parseInt($('set-maxsteps').value, 10);
-  if (isNaN(v) || v < 1) { alert('步数需为 ≥1 的整数'); return; }
+// syncMaxSteps 按服务端值回显：0/负数 = 不限制（勾上开关、数字框置灰留空）；
+// 正数 = 上限（关掉开关、数字框可编辑并显示该值）。回显与保存后都走这里，
+// 不再用 `c.maxSteps || 200` 那种硬编码兜底——那会把「不限制」显示成 200。
+function syncMaxSteps(n) {
+  const unlimited = !(n > 0);
+  $('set-maxsteps-unlimited').checked = unlimited;
+  $('set-maxsteps').disabled = unlimited;
+  $('set-maxsteps').value = unlimited ? '' : n;
+}
+
+// saveMaxSteps 落库并回显；失败时按服务端实际值回显，UI 不和服务端掰着。
+async function saveMaxSteps(v) {
   try {
     const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ maxSteps: v }) });
-    $('set-maxsteps').value = c.maxSteps || v; // 以服务端落库值为准回显
+    syncMaxSteps(c.maxSteps); // 以服务端落库值为准回显
   } catch (e) {
     alert('保存失败：' + e.message);
+    const c = await api('/api/config').catch(() => null);
+    if (c) syncMaxSteps(c.maxSteps);
   }
+}
+
+$('set-maxsteps-unlimited').onchange = () => {
+  // 勾上＝不限制（发 0）；取消＝回到手填上限，框里空着就先给个起步值 1000
+  if ($('set-maxsteps-unlimited').checked) { saveMaxSteps(0); return; }
+  const v = parseInt($('set-maxsteps').value, 10);
+  saveMaxSteps(v >= 1 ? v : 1000);
+};
+
+$('set-maxsteps').onchange = () => {
+  const v = parseInt($('set-maxsteps').value, 10);
+  if (isNaN(v) || v < 1) {
+    alert('步数需为 ≥1 的整数（不限制请勾上左侧开关）');
+    api('/api/config').then((c) => syncMaxSteps(c.maxSteps)).catch(() => {});
+    return;
+  }
+  saveMaxSteps(v);
 };
 
 /* ---------- 常规页：关闭窗口驻留后台（服务端配置，改动即时保存） ----------
