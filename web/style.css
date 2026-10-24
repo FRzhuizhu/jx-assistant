@@ -1155,7 +1155,9 @@ body.rp-open .w-handle { display: none; }
 .sub-dd-empty { padding: 10px 10px 8px; font-size: 12px; color: var(--text-3); }
 
 /* ---------- 上下文用量圆环（模型选择左侧）：弧长=占窗口比例，悬停显示明细 ----------
-   class 选择器：主对话区与右栏子对话区各一枚，样式共用 */
+   class 选择器：主对话区与右栏子对话区各一枚，样式共用。
+   明细卡里带「压缩」按钮，所以悬停时卡片要接鼠标事件（默认只画不接），并且
+   鼠标从圆环挪到卡片上时不能断——见下面的 :hover 与 ::before 透明桥。 */
 .ctx-ring { position: relative; width: 30px; height: 30px; flex: none; cursor: default; }
 .ctx-ring svg { width: 100%; height: 100%; display: block; transform: rotate(-90deg); }
 .ctx-ring .cr-bg { fill: none; stroke: var(--border); stroke-width: 3; }
@@ -1179,7 +1181,37 @@ body.rp-open .w-handle { display: none; }
   opacity: 0; transform: translateY(3px); pointer-events: none;
   transition: opacity .12s ease, transform .12s ease; z-index: 40;
 }
-.ctx-ring:hover .ctx-tip { opacity: 1; transform: translateY(0); }
+/* 悬停出卡：卡片这时要把 pointer-events 打开，否则卡里的「压缩」永远点不到 */
+.ctx-ring:hover .ctx-tip { opacity: 1; transform: translateY(0); pointer-events: auto; }
+/* 圆环与卡片之间那 10px 空隙也要能被指针踩住：卡片是圆环的子元素，指针落在空隙里
+   就等于落在卡片上，:hover 不断——鼠标从圆环往上挪进卡片时卡片不会消失；离开圆环
+   与卡片（落在两者之外）才收起 */
+.ctx-tip::before { content: ''; position: absolute; left: 0; right: 0; bottom: -12px; height: 12px; }
+/* 明细卡顶部两行：第一行是标题与总量；第二行右上角就是「压缩」——
+   压缩会改写对话历史（较早回合折成摘要，原文只能靠历史检索找回），
+   所以用户明确要求放在**卡片最上面**：打开卡片时手指/视线自然落在下沿和圆环附近，
+   放顶部离落点远，避免手一抖就压了（这条是设计意图，别往下挪） */
+.ctx-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ctx-ops { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 7px; }
+.ctx-compact {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px;
+  font: inherit; font-size: 11.5px; line-height: 18px;
+  color: var(--text-2); background: var(--chip); border: 1px solid var(--border-2);
+  border-radius: 999px; cursor: pointer; flex: none;
+}
+.ctx-compact:hover { color: var(--accent); border-color: var(--accent); }
+.ctx-compact:disabled { opacity: .55; cursor: default; }
+.ctx-compact:disabled:hover { color: var(--text-2); border-color: var(--border-2); }
+.ctx-compact svg { width: 12px; height: 12px; flex: none; }
+.ctx-ops-hint { margin-right: auto; font-size: 11px; color: var(--text-3); }
+/* 窄屏（<500px）：卡片按视口收、水平位置由 placeCtxTip 收进屏幕内；顶部的「压缩」
+   只是内边距收小（文字保留——这一行是独占的一行，宽度够，别为了省几像素把字藏掉） */
+@media (max-width: 499.98px) {
+  .ctx-tip { width: min(250px, calc(100vw - 20px)); padding: 10px; }
+  .ctx-head { flex-wrap: wrap; gap: 2px 8px; }
+  .ctx-compact { padding: 2px 8px; }
+  .ctx-ops-hint { font-size: 10.5px; }
+}
 .ctx-tip .ctx-bar { margin: 7px 0 9px; height: 6px; }
 .ctx-tip .ctx-cat { font-size: 11.5px; padding: 2px 0; }
 .ctx-title { font-size: 12.5px; color: var(--text-2); }

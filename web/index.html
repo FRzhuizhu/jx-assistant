@@ -253,8 +253,10 @@
             <button id="btn-voice" class="cbtn voice hidden" title="语音输入">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
             </button>
-            <!-- 上下文用量圆环：弧长=占窗口比例，中心百分比；悬停显示分类明细与缓存命中率（纯展示无点击） -->
-            <div id="ctx-ring" class="ctx-ring" aria-label="上下文用量">
+            <!-- 上下文用量圆环：弧长=占窗口比例，中心百分比；悬停显示分类明细与缓存命中率，
+                 卡片顶部带「压缩」按钮（鼠标可直接从圆环挪进卡片，见 app-chat.js 的
+                 compactFromCtxPanel） -->
+            <div id="ctx-ring" class="ctx-ring" title="上下文用量：悬停查看明细与压缩" aria-label="上下文用量">
               <svg viewBox="0 0 36 36" aria-hidden="true">
                 <circle class="cr-bg" cx="18" cy="18" r="15.5"/>
                 <circle class="cr-fg" cx="18" cy="18" r="15.5"/>
@@ -343,7 +345,8 @@
                   <button id="sub-btn-voice" class="cbtn voice hidden" title="语音输入">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
                   </button>
-                  <div id="sub-ctx-ring" class="ctx-ring" aria-label="上下文用量">
+                  <!-- 右栏子对话输入区的同一枚上下文圆环（样式与交互共用，id 带 sub- 前缀） -->
+                  <div id="sub-ctx-ring" class="ctx-ring" title="上下文用量：悬停查看明细与压缩" aria-label="上下文用量">
                     <svg viewBox="0 0 36 36" aria-hidden="true">
                       <circle class="cr-bg" cx="18" cy="18" r="15.5"/>
                       <circle class="cr-fg" cx="18" cy="18" r="15.5"/>

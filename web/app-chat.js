@@ -1035,7 +1035,7 @@ function msgActions(m, opts) {
   cb.className = 'act-copy act-compact';
   const cbOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>压缩';
   cb.innerHTML = cbOrig;
-  cb.title = '折叠此回合及更早的对话：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果；原文可随时用历史查询工具搜回';
+  cb.title = '折叠这一轮及更早的对话（这一轮本身也在内）：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果；原文可随时用历史查询工具搜回';
   cb.onclick = async () => {
     if (!state.cur || state.streaming) return;
     const sid = m.sessionId || state.cur.id;
@@ -4483,6 +4483,9 @@ function setStreamUI(on, view) {
   view.stopBtn.classList.toggle('hidden', !on);
   if (!on) view.hint.textContent = '';
   if (on) runHintOn(view); else runHintOff(view);
+  // 上下文明细卡里的「压缩」跟着执行态走：执行中置灰并写明原因（后端也会 409，
+  // 前端先拦更友好）。有数据才重画，别把「当前没有会话」的占位盖到已有明细上
+  if (view.state.cur && lastCtx[view.key]) renderCtxTip(view);
 }
 
 function handleEvent(ev, view) {
@@ -5643,6 +5646,10 @@ async function stopRun(view) {
 const CTX_COLORS = { '消息': '#4d6bfe', '系统工具': '#1f9d55', '系统提示词': '#9a6700', '摘要': '#8b5cf6', '环境快照': '#0ea5a5', '其他': '#8b949e' };
 const CTX_CIRC = 97.39; // 2πr，r=15.5
 let lastCtx = { main: null, sub: null }; // 每个输入区视图各自的上下文用量（圆环+明细共用）
+// 每个视图各记一个「压缩进行中」标记：明细卡里的按钮据此进禁用态（卡片每次重画都读它）
+const ctxCompactBusy = { main: false, sub: false };
+// 明细卡「压缩」按钮的图标（上下箭头夹一条中缝＝把历史往里收）
+const CTX_COMPACT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>';
 
 function fmtTokens(n) {
   if (n >= 10000) return (Math.round(n / 1000) / 10).toFixed(1) + '万';
@@ -5678,17 +5685,32 @@ async function refreshCtxChip(view) {
 
 // 悬停明细：总量/窗口 + 占用条（整条=窗口，已用从左往右按窗口占比增长，
 // 灰色轨道=未占用）+ 分类清单（share=占已用量比例）+ 缓存命中率
+// 卡片顶部（标题行下面第一行）带一个「压缩」按钮：压缩**当前会话**的上下文。
 function renderCtxTip(view) {
   view = view || mainView;
   const tip = viewEl(view, 'ctx-tip');
   const d = lastCtx[view.key];
   if (!d) { tip.innerHTML = '<div class="ctx-title">当前没有会话</div>'; return; }
   const pct = d.window ? Math.round(d.total * 100 / d.window) : 0;
+  const running = ctxRunning(view);      // 执行中不给压：后端也 409，前端先拦更友好
+  const busy = !!ctxCompactBusy[view.key];
+  const off = busy || running;
   let html =
-    '<div style="display:flex;align-items:baseline;justify-content:space-between">' +
+    '<div class="ctx-head">' +
       '<span class="ctx-title">上下文容量</span>' +
       `<span class="ctx-total">${fmtTokens(d.total)}/${fmtTokens(d.window)}（${pct}%）</span>` +
-    '</div><div class="ctx-bar" title="已用 ' + pct + '%，灰色为未占用">';
+    '</div>' +
+    // 「压缩」放卡片最上面（标题下方第一行、右上角）：压缩会改写对话历史，放顶部
+    // 离用户翻开卡片时的手感落点（卡下沿/圆环）远一些，避免误操作——用户明确要求。
+    '<div class="ctx-ops">' +
+      (running ? '<span class="ctx-ops-hint">执行中，等这一轮结束再压缩</span>' : '') +
+      '<button type="button" class="ctx-compact" data-ctx-compact="1"' + (off ? ' disabled' : '') +
+        ` title="${running ? '会话正在执行，等这一轮结束再压缩' : '压缩当前对话：从最后一轮往上全部压掉（最后一轮本身也在内，会先问一次）'}">` +
+        CTX_COMPACT_ICON +
+        '<span class="cc-t">' + (busy ? '压缩中…' : '压缩') + '</span>' +
+      '</button>' +
+    '</div>' +
+    '<div class="ctx-bar" title="已用 ' + pct + '%，灰色为未占用">';
   for (const c of d.categories || []) {
     if (!c.tokens || !d.window) continue;
     const w = (c.tokens * 100 / d.window).toFixed(2); // 段宽=占窗口比例，未占用留给灰色轨道
@@ -5720,6 +5742,119 @@ function renderCtxTip(view) {
     html += `<div class="ctx-cat"><span class="cc-name">输出速度</span><span class="cc-val">${sp.tokPerSec.toFixed(1)} tok/s（${Number(sp.tokens).toLocaleString('en-US')} tok / ${(sp.ms / 1000).toFixed(1)}s）</span></div>`;
   }
   tip.innerHTML = html;
+  // 卡里的按钮随 innerHTML 重建：每次渲染后重新挂（renderCtxTip 只在数据刷新/状态
+  // 变化时调用，不会频繁重挂）
+  const btn = tip.querySelector('[data-ctx-compact]');
+  if (btn) btn.onclick = () => compactFromCtxPanel(view);
+  placeCtxTip(view);
+}
+
+// 卡片定位兜底：卡片固定 250 宽、贴着圆环右缘往外撑，圆环太靠左（窄屏手机）时会
+// 顶出屏幕左缘。这里按圆环的实时位置把它收回视口内——桌面/宽屏下算出来就是 CSS
+// 里那个 right:-8px，外观不变；窄屏下往右收，顶部那行（压缩）始终完整可见。
+function placeCtxTip(view) {
+  const ring = viewEl(view, 'ctx-ring'), tip = viewEl(view, 'ctx-tip');
+  if (!ring || !tip) return;
+  const rr = ring.getBoundingClientRect();
+  if (!rr.width) return; // 还没布局（页面隐藏等），别乱设
+  const w = tip.offsetWidth || 250;
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  let rightEdge = Math.min(rr.right + 8, vw - 8);
+  rightEdge = Math.max(rightEdge, Math.min(8 + w, vw - 8));
+  tip.style.right = (rr.right - rightEdge) + 'px';
+}
+
+// 圆环是否该按「执行中」处理：本地有流在跑，或会话（详情 meta / 列表项）仍标着 running
+function ctxRunning(view) {
+  const cur = view.state.cur;
+  if (!cur) return false;
+  if (view.state.streaming) return true;
+  if (cur.status === 'running') return true;
+  const brief = (state.sessions || []).find((s) => s.id === cur.id);
+  return !!(brief && brief.status === 'running');
+}
+
+// 本轮/整段的「终点」：最后一个属于对话回合的行的 seq（摘要/系统提示词/请求快照/
+// 调用审计/继承标记这些归档行不属任何一轮，按它们收尾会让后端把终点算到轮外）
+const CTX_ARCHIVE_KINDS = new Set(['summary', 'prompt', 'request', 'audit', 'inherit']);
+function lastRoundSeq(view) {
+  const msgs = (view.state && view.state.msgs) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || !m.seq) continue;
+    if (CTX_ARCHIVE_KINDS.has(m.kind)) continue;
+    return m.seq;
+  }
+  return 0;
+}
+
+// 明细卡顶部的「压缩」：压缩**当前视图这个会话**的上下文。
+// 口径与「最后一轮正文输出下方那个压缩按钮」完全一致（用户 2026-10-25 明确要求）：
+// 把 upTo 所在轮（含）及更早的回合全部压缩——这里 upTo 传最后一轮的 seq，于是从
+// 最后一轮往上、连最后一轮自己在内全压掉；**不是**自动压缩那种「按字数留最近一截」，
+// 所以不带 upTo 的空请求体不用（空体＝自动压缩的保留窗口口径）。
+// · 接口就用现成的 POST /api/sessions/{id}/compact（body.upTo 指定压到哪一轮，语义
+//   由后端确定：规则模式即时折叠、模型模式出摘要，前端不另造规则）；
+// · 先居中确认（用户明确在意误操作：位置放顶部 + 点一次确认，两道都上）；
+// · 执行中不压：正在跑的一轮还在往历史里写，后端也会 409，前端先拦并说人话；
+// · 完成后重拉 /api/sessions/{id}/context（refreshCtxChip）刷新这张卡，再轻提示
+//   「压了多少 / 现在占用多少」；消息区一并翻新，折叠/摘要行才会出现。
+async function compactFromCtxPanel(view) {
+  view = view || mainView;
+  const cur = view.state.cur;
+  if (!cur) return;
+  if (ctxCompactBusy[view.key]) return;
+  if (ctxRunning(view)) {
+    await confirmCenter('这个对话正在执行，等这一轮跑完再压缩。\n（正在跑的一轮会继续往历史里写，压了也会立刻被冲回来。）', true);
+    return;
+  }
+  const upTo = lastRoundSeq(view);
+  if (!upTo) {
+    await confirmCenter('这个对话还没有可压缩的回合。', true);
+    return;
+  }
+  const ok = await confirmCenter('压缩当前对话的上下文？\n从最后一轮往上，整个对话都会被压缩（最后一轮本身也在内）；' +
+    '原始消息仍可用历史检索工具查回。');
+  if (!ok) return;
+  const before = (lastCtx[view.key] && lastCtx[view.key].total) || 0;
+  ctxCompactBusy[view.key] = true;
+  renderCtxTip(view); // 按钮立刻进「压缩中…」禁用态
+  // 收工：按钮回到可用（成功失败都走，成功时卡片已被 refreshCtxChip 重画过一遍也无妨）
+  const restore = () => { ctxCompactBusy[view.key] = false; renderCtxTip(view); };
+  try {
+    const r = await api('/api/sessions/' + cur.id + '/compact', {
+      method: 'POST', body: JSON.stringify({ upTo }),
+    });
+    await refreshCtxChip(view); // 重拉 /context：卡片里的数字与分类条按压缩后的状态重画
+    const after = (lastCtx[view.key] && lastCtx[view.key].total) || 0;
+    toast(compactResultMsg(r, before, after), 6000);
+    // 消息区也要重取：折叠标记与摘要行只在重取后出现（与消息操作条上的「压缩」同款做法）
+    if (mainView.state.cur && mainView.state.cur.id === cur.id) {
+      if (!mainView.state.streaming) openSession(cur.id);
+    } else if (subState.cur && subState.cur.id === cur.id) {
+      if (!subState.streaming) openSubSession(cur.id);
+    }
+  } catch (e) {
+    restore(); // 先恢复按钮再弹错误：别让它在错误框还开着的时候挂着「压缩中…」
+    // 后端的原话照实给（如「没有可折叠的回合（保留最近约 N 字）」「该会话正在执行，稍后再压缩」）
+    await confirmCenter('压缩失败：' + e.message, true);
+  } finally {
+    restore();
+  }
+}
+
+// 压缩完成后的轻提示：压了什么 + 上下文从多少变成多少（省了多少）
+function compactResultMsg(r, before, after) {
+  const what = (r && r.folded)
+    ? '已折叠 ' + r.folded + ' 个回合'
+    : '已把整个对话压缩成摘要';
+  const from = before ? fmtTokens(before) : '—';
+  const to = after ? fmtTokens(after) : '—';
+  const saved = (before && after && before > after) ? before - after : 0;
+  // 两个数按「万」折算后可能一模一样（省下的不到一千）：这时只报省了多少，
+  // 别写出「2.8万 → 2.8万」这种看着像没压动的句子
+  const body = from !== to ? '上下文 ' + from + ' → ' + to : '上下文 ' + to;
+  return what + '：' + body + (saved ? '，省了 ' + fmtTokens(saved) : '');
 }
 
 /* ---------- 对话区选中文字浮窗：复制 / 引用到下方输入框 / 右侧辅助问答 ---------- */
@@ -7830,8 +7965,19 @@ document.addEventListener('keydown', (e) => {
    组件：组件/voice/client.js。两个语音输入按钮的 DOM 仍在 index.html（位置、样式、
    图标全不变），但默认带 .hidden——按钮属于组件，组件加载成功才揭开并接管行为；
    组件关掉（设置 → 内置组件）或没加载到页面 = 按钮整组不出现。 */
-// 上下文圆环：纯展示，数据在打开会话/发送完成时刷新（refreshCtxChip）；
-// 悬停明细由 CSS :hover 驱动，无点击行为
+/* ---------- 上下文圆环：悬停出明细卡（卡片顶部带「压缩」）----------
+   交互就一套悬停：鼠标进圆环出卡片，从圆环挪到卡片上不消失（CSS 的 :hover 认整棵
+   子树，圆环与卡片之间那 10px 空隙由 .ctx-tip::before 的透明块补上），离开圆环和
+   卡片才收起。卡片里有按钮，所以悬停时 CSS 给卡片接上鼠标事件（平时只画不接事件）。
+   不做点击/钉住：手机上点一下本来就会保持展开，桌面再叠一套点击只会多一种状态。
+   主对话与右栏子对话各一枚（id 带 sub- 前缀，viewEl 解析）。 */
+[mainView, subView].forEach((v) => {
+  const ring = viewEl(v, 'ctx-ring');
+  // 卡片固定 250 宽、贴着圆环右缘往外撑，窄屏手机上圆环太靠左会顶出屏幕左缘：
+  // 悬停进圆环的这一刻按圆环实时位置把卡片收回视口（宽屏下算出来就是 CSS 的
+  // right:-8px，外观不变）
+  if (ring) ring.addEventListener('mouseenter', () => placeCtxTip(v));
+});
 // 对话区选中文字浮窗：松开鼠标出、选区消失/滚动/点外部收起；点浮窗不冲掉选区
 $('sel-pop').addEventListener('mousedown', (e) => e.preventDefault());
 $('sel-pop').addEventListener('click', (e) => {
