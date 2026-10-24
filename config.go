@@ -67,7 +67,7 @@ type Config struct {
 	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
 	// 上下文压缩设置
 	CompactMode      string  `json:"compactMode"`      // rule=规则压缩(默认) llm=模型摘要 off=关闭
-	KeepChars        int     `json:"keepChars"`        // 自动压缩的保留预算（字）：从最新一轮往前累计模型可见字数，装得下的整轮保留——轮是原子单位，至少保 1 轮
+	KeepChars        int     `json:"keepChars"`        // 自动压缩的保留预算（字）：从最新往前累计模型可见字数，预算耗尽处（命中点）所在的轮整轮保留——轮首可以是用户消息，也可以是数字助理转发消息；命中轮自身超预算（巨轮）时回退行级窗口，至少保最近一条原文
 	CompactThreshold float64 `json:"compactThreshold"` // 自动压缩触发阈值（估算 token 占窗口比例，0.8/0.9）
 	// 文件快照保留策略：按天超龄清理是主力（旧配置缺省回落默认值；-1 = 该项关闭）。
 	// 自动池管 write/edit 的小快照；手动池（snapshot_file，往往是

@@ -637,11 +637,13 @@ func visibleSize(m *StoredMessage) int {
 }
 
 // keepStartSeq 按保留预算（KeepChars，字）算保留区的起点 seq：从最新一条往前
-// 累计模型可见字数，装得下的保留原文（不折叠），装不下的折叠。**不按「轮」对齐**
-// ——完整一轮的原子性已去掉：巨轮也能只折前半段、保留最近一段原文（单轮由几十次
-// 工具调用拼成时一轮即可百万 token，按轮保等于压缩失效；但也不能把整轮折光，
-// 近 KeepChars 字的近期上下文要原样留给模型）。
-// 保留区起点若落在工具结果上，往前扩到该步的助手调用行，避免拆散调用/结果配对
+// 累计模型可见字数，预算耗尽处（命中点）所在的轮**整轮保留**——起点扩到该轮
+// 的起始行。轮首不必是用户亲发的消息：数字助理转发消息（report/aiuser）同权
+// 开轮（见 splitRounds），主对话里大部分回合由转发消息开启，同样能作为保留区
+// 的边界——否则按用户消息数轮会把几十个回合算成一个超长轮，窗口形同虚设。
+// 巨轮例外：命中轮自身就超预算（单轮由几十次工具调用拼成时一轮可达百万字，
+// 整轮保等于压缩失效）时回退行级窗口——只折巨轮的前半段，保留最近一段原文；
+// 起点落在工具结果上时往前扩到该步的助手调用行，避免拆散调用/结果配对
 //（宁可略超预算，也不让窗口从一个孤立的 tool 结果开始）。
 func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
 	idx := -1
@@ -649,7 +651,11 @@ func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
 	for i := len(raw) - 1; i >= 0; i-- {
 		s := visibleSize(raw[i])
 		if total+s > a.Cfg.KeepChars && idx >= 0 {
-			break
+			// 命中点：这一行装不下了。它所在的轮不超预算就整轮保留
+			if start, ok := a.hitRoundStart(raw, i); ok {
+				return start
+			}
+			break // 巨轮：回退行级窗口
 		}
 		total += s
 		idx = i
@@ -664,9 +670,32 @@ func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
 	return raw[idx].Seq
 }
 
+// hitRoundStart 返回 raw[i] 所在轮的起始 seq；该轮自身的可见字数超预算（巨轮，
+// 整轮保等于压缩失效）时 ok=false，调用方回退行级窗口。命中行总有尺寸、必在
+// 某轮内（零尺寸的归档行 summary/prompt/request/audit/inherit 不会成为命中行）。
+func (a *App) hitRoundStart(raw []*StoredMessage, i int) (int64, bool) {
+	seq := raw[i].Seq
+	for _, r := range splitRounds(raw) {
+		if seq < r.startSeq || seq > r.endSeq {
+			continue
+		}
+		size := 0
+		for _, m := range raw {
+			if m.Seq >= r.startSeq && m.Seq <= r.endSeq {
+				size += visibleSize(m)
+			}
+		}
+		if size > a.Cfg.KeepChars {
+			return 0, false
+		}
+		return r.startSeq, true
+	}
+	return 0, false
+}
+
 // ruleCompactAuto 阈值触发/溢出兜底的自动入口：把保留窗口之外、尚未折叠的
-// 行折叠掉。keep<0 表示自动触发——按 KeepChars 字数预算保留最近约 N 字原文
-//（行级、不按轮：巨轮也能只折前半段，近 N 字原样留给模型）；keep=0 表示全部
+// 行折叠掉。keep<0 表示自动触发——按 KeepChars 字数预算保留最近的完整轮
+//（命中轮整轮保留，见 keepStartSeq；巨轮回退行级窗口）；keep=0 表示全部
 // 折叠（溢出兜底）；keep>0 表示只留最近 keep 轮（溢出兜底的两级：先只留 1 轮，
 // 再全部折叠）。返回折叠的行数（0 = 没有可折叠的）。
 func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
@@ -678,7 +707,7 @@ func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
 		return 0
 	}
 	if keep < 0 {
-		// 自动：保留最近约 KeepChars 字原文（行级，不按轮），其余折叠
+		// 自动：按 KeepChars 预算保留最近的完整轮（命中轮整轮保留），其余折叠
 		start := a.keepStartSeq(raw)
 		if start <= 1 {
 			return 0
@@ -774,10 +803,12 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 }
 
 // foldUpTo 行级折叠：把 endSeq 及更早、尚未折叠的行按一级规则折叠掉（自动预算
-// 压缩用）。**不按轮对齐**——单轮由几十次工具调用拼成时一轮可达百万字，只折它
-// 的前半段也能立刻把上下文降下来，同时把最近约 KeepChars 字原文原样留给模型。
-// 与 foldRounds 的差别只在粒度：行级更细，所以这里不做轮级那套「二级升级」；
-// 反复触发仍压不动时由 overflowCompact 的按轮全折兜底。
+// 压缩用）。endSeq 由 keepStartSeq 决定：命中轮不超预算时边界对齐到轮首，这里
+// 折的实际是整轮整轮的历史；命中轮是巨轮时边界落在轮中间——只折它的前半段也能
+// 立刻把上下文降下来，最近约 KeepChars 字原文原样留给模型。
+// 与 foldRounds 的差别只在粒度：行级更细，所以这里不做轮级那套「二级升级」
+//（也避免每次自动压缩改写旧折叠行、持续打断 KV 缓存）；反复触发仍压不动时由
+// overflowCompact 的按轮全折兜底。
 // 返回新折叠的行数（0 = 没有可折叠的）。
 func (a *App) foldUpTo(sess *SessionMeta, raw []*StoredMessage, endSeq int64) int {
 	folded, from := 0, int64(0)
@@ -936,8 +967,8 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 			return "", fmt.Errorf("第 %d 条之前没有可压缩的回合", upTo)
 		}
 	case keepTail < 0:
-		// 自动触发：与规则压缩同一口径——保留最近约 KeepChars 字原文，摘要覆盖
-		// 到保留区起点之前那一条（保留区起点落在工具结果上时已往前扩到调用行）
+		// 自动触发：与规则压缩同一口径——按 KeepChars 预算保留最近的完整轮
+		//（命中轮整轮保留，巨轮回退行级窗口），摘要覆盖到保留区起点之前那一条
 		if st := a.keepStartSeq(raw); st > 1 {
 			segEnd = st - 1
 		}

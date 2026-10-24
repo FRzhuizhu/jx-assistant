@@ -211,7 +211,8 @@ func TestRuleCompactScopeAndIdempotent(t *testing.T) {
 }
 
 // 自动阈值触发（rule 模式零模型调用）与溢出兜底只留最近一轮。
-// 保留窗口走字数预算：每个带工具的种子轮约 870 字，预算 2000 → 恰好保 2 轮。
+// 保留窗口走字数预算 + 按轮对齐：每个带工具的种子轮约 870 字，预算 2000 时
+// 命中点落在二轮的调用行 → 二轮整轮保留，只折一轮（四轮、三轮全在窗口内）。
 func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	a := newCompactTestApp(t)
 	a.Cfg.KeepChars = 2000
@@ -219,8 +220,8 @@ func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	if err := a.Store.Create(sess); err != nil {
 		t.Fatal(err)
 	}
-	seedRound(t, a, "s1", "一轮", true)
-	seedRound(t, a, "s1", "二轮", true)
+	_, _, _, final1 := seedRound(t, a, "s1", "一轮", true)
+	r2user, r2call, r2tool, _ := seedRound(t, a, "s1", "二轮", true)
 	_, _, _, final3 := seedRound(t, a, "s1", "三轮", true)
 	seedRound(t, a, "s1", "四轮", true)
 
@@ -229,8 +230,17 @@ func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	if err != nil || !cp {
 		t.Fatalf("阈值应触发 rule 折叠, got cp=%v err=%v", cp, err)
 	}
+	if got := rowBySeq(t, a, "s1", final1).Compact; got == "" {
+		t.Fatal("窗口外的一轮应已折叠")
+	}
+	// 命中轮（二轮）整轮保留：开轮的用户行、调用行、工具结果都原样在窗口里
+	for _, seq := range []int64{r2user, r2call, r2tool} {
+		if got := rowBySeq(t, a, "s1", seq).Compact; got != "" {
+			t.Fatalf("命中轮应整轮保留, seq=%d got compact=%q", seq, got)
+		}
+	}
 	if got := rowBySeq(t, a, "s1", final3).Compact; got != "" {
-		t.Fatalf("保留窗口（最近2轮）内不应折叠, got %q", got)
+		t.Fatalf("保留窗口内不应折叠, got %q", got)
 	}
 	// 再次触发：没有可折的 → false
 	cp, err = a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000)
@@ -243,6 +253,91 @@ func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	}
 	if got := rowBySeq(t, a, "s1", final3).Compact; got == "" {
 		t.Fatal("溢出兜底应折叠三轮（只留最近1轮）")
+	}
+}
+
+// 自动压缩保留窗口按轮对齐的另一半：轮首可以是数字助理转发的消息（aiuser/
+// report）——主对话里大部分回合由转发消息开启，若只认用户亲发的消息开轮，
+// 几十个回合会被算成一个超长轮、窗口形同虚设；命中轮整轮保留的语义下，
+// 边界落在转发消息上即可。
+func TestAutoCompactRoundStartsAtForwardedMessage(t *testing.T) {
+	a := newCompactTestApp(t)
+	a.Cfg.KeepChars = 2000
+	sess := &SessionMeta{ID: "s1", Mode: "assistant"}
+	if err := a.Store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	// 每回合 = 开轮行 + 调用行(思考+800字参数) + 工具结果 + 结论，约 840 字
+	round := func(label, openKind string) (open, call, tool, final int64) {
+		next := func() int64 {
+			all, err := a.Store.RawMessagesAll("s1")
+			if err != nil {
+				t.Fatalf("读历史失败: %v", err)
+			}
+			return int64(len(all) + 1)
+		}
+		args, _ := json.Marshal(map[string]any{"content": strings.Repeat("字", 800)})
+		open = next()
+		if err := a.Store.AppendRow("s1", &StoredMessage{
+			Message: TextMessage("user", label+"的指令"), Kind: openKind, CreatedAt: "2026-01-02 10:00:00",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		call = next()
+		if err := a.Store.AppendRow("s1", &StoredMessage{
+			Message: Message{Role: "assistant", ToolCalls: []ToolCall{{
+				ID: "c-" + label, Type: "function", Function: ToolCallFunc{Name: "write", Arguments: string(args)},
+			}}}, Thinking: label + "的思考", Kind: kindChat, CreatedAt: "2026-01-02 10:00:01",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tool = next()
+		if err := a.Store.AppendRow("s1", &StoredMessage{
+			Message: Message{Role: "tool", Content: label + "写入成功", ToolCallID: "c-" + label},
+			Kind:    kindChat, CreatedAt: "2026-01-02 10:00:02",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		final = next()
+		if err := a.Store.AppendRow("s1", &StoredMessage{
+			Message: TextMessage("assistant", label+"的结论"), Thinking: label + "的结论思考",
+			Kind: kindChat, CreatedAt: "2026-01-02 10:00:03",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	// 只有第一回合是真人用户消息开轮，其余都由数字助理的转发消息开启
+	_, _, _, final1 := round("甲", kindChat)
+	r2open, r2call, r2tool, r2final := round("乙", kindAiUser)
+	r3open, _, _, _ := round("丙", kindReport)
+	round("丁", kindAiUser)
+
+	raw, err := a.Store.RawMessagesAll("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 预算 2000：丁丙两轮(约1680)装得下，命中点落在乙轮的调用行 → 乙轮整轮
+	// 保留，保留区起点 = 乙轮的 aiuser 开轮行（转发消息即可作边界）
+	if got := a.keepStartSeq(raw); got != r2open {
+		t.Fatalf("保留区起点应=乙轮的转发消息行(%d), got %d", r2open, got)
+	}
+	if n := a.ruleCompactAuto(sess, -1); n == 0 {
+		t.Fatal("自动压缩应折掉甲轮")
+	}
+	if got := rowBySeq(t, a, "s1", final1).Compact; got == "" {
+		t.Fatal("窗口外的甲轮应已折叠")
+	}
+	for _, seq := range []int64{r2open, r2call, r2tool, r2final} {
+		if got := rowBySeq(t, a, "s1", seq).Compact; got != "" {
+			t.Fatalf("命中轮(乙)应整轮保留, seq=%d got compact=%q", seq, got)
+		}
+	}
+	if got := rowBySeq(t, a, "s1", r2open).Kind; got != kindAiUser {
+		t.Fatalf("边界行应是 aiuser 转发消息, got kind=%q", got)
+	}
+	if got := rowBySeq(t, a, "s1", r3open).Kind; got != kindReport {
+		t.Fatalf("丙轮开轮行应是 report, got kind=%q", got)
 	}
 }
 
@@ -395,8 +490,9 @@ func TestForkPreservesCompactAndThinking(t *testing.T) {
 	}
 }
 
-// 字数预算保留算法（行级）：从最新一条往前累计模型可见字数，装得下的保留原文；
-// 命中点不按轮对齐——巨轮自身超预算时也保它最近的一条原文（保留窗口不能为空）。
+// 字数预算保留算法：从最新一条往前累计模型可见字数，预算耗尽处（命中点）所在
+// 的轮整轮保留——命中轮不超预算时保留区起点对齐到轮首；巨轮自身超预算时回退
+// 行级窗口，保最近一条原文（保留窗口不能为空）。
 func TestKeepStartSeq(t *testing.T) {
 	a := newCompactTestApp(t)
 	sess := &SessionMeta{ID: "s1", Mode: "task"}
@@ -412,11 +508,11 @@ func TestKeepStartSeq(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 预算 30：丙两行(14) + 乙两行(14)=28 装得下，再装甲的结论行(10)=38 超
-	// → 保留区从乙轮的用户行(seq 3)起
+	// 预算 30：丙乙两轮(28)装得下，命中点落在甲轮的结论行——甲轮(14字)自身
+	// 不超预算，整轮保留 → 保留区从第 1 条起（宁可略超预算，也不留半轮）
 	a.Cfg.KeepChars = 30
-	if got := a.keepStartSeq(raw); got != 3 {
-		t.Fatalf("预算 30 的保留区应从第 3 条起, got %d", got)
+	if got := a.keepStartSeq(raw); got != 1 {
+		t.Fatalf("预算 30 的保留区应整轮保到第 1 条, got %d", got)
 	}
 	// 预算大到装下全部 → 从第一条起
 	a.Cfg.KeepChars = 1000
