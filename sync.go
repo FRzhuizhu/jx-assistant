@@ -145,6 +145,13 @@ func companySyncOnce(a *App, hintServer string) {
 		return
 	}
 	noteCompanySyncOK(a)
+	// 内网/外网线路状态（llm.go setAltPreferred，翻转即广播 providers 事件刷新
+	// 模型菜单徽标）：公告只能从公网拿到 = 出公司——直接置「优先外网」，下一通
+	// 电话不再先白等内网拨号超时；内网候选可达则回到内网优先。仅配了外网地址
+	// 的公司通道参与。
+	if p := wizardProvider(a); p != nil && p.PublicBaseURL != "" {
+		setAltPreferred(wizardProviderID, fromPublic)
+	}
 	// 公司通道被删：按原姓名重新领配置包重建（公告里没有 key，必须走 provision）
 	if wizardProvider(a) == nil {
 		src := server

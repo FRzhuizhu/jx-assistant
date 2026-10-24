@@ -2490,6 +2490,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .pv-name { font-size: 13px; }
 .pv-meta { font-size: 12px; color: var(--text-3); }
 .pv-off-tag { font-size: 11px; color: var(--amber); border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; line-height: 17px; flex-shrink: 0; }
+.pv-via-tag { font-size: 11px; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; line-height: 17px; flex-shrink: 0; background: var(--chip, #f2f3f5); }
+.pv-via-tag.wan { color: #1f9d55; border-color: currentColor; background: #e6f6ec; }
 .pv-head.off .pv-name { text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: var(--text-3); }
 .pv-toggle { flex-shrink: 0; }
 .pv-edit { margin-left: auto; font-size: 12px; color: var(--text-3); }

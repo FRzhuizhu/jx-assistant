@@ -6491,7 +6491,11 @@ function renderModelPop(view) {
   let lastProv = '';
   for (const m of state.models || []) {
     if (m.providerId !== lastProv) {
-      html += `<div class="pop-group">${esc(m.providerName)}${m.providerOff ? '（已停用）' : ''}</div>`;
+      // 分组头状态：停用=置灰「已停用」；公司通道外网兜底生效=绿色「外网通道中」
+      // （通道仍可用，只是走的公网地址——不再让用户误以为不可用）
+      const viaBadge = !m.providerOff && m.providerVia === 'wan'
+        ? '（<span style="color:var(--green,#1f9d55)">外网通道中</span>）' : '';
+      html += `<div class="pop-group">${esc(m.providerName)}${m.providerOff ? '（已停用）' : viaBadge}</div>`;
       lastProv = m.providerId;
     }
     const k = m.providerId + '|' + m.modelId;

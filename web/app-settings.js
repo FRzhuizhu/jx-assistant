@@ -120,6 +120,8 @@ function loadProvDraft(c) {
     enabled: p.enabled !== false,   // 手动启停开关（服务商卡片头）
     autoDisabled: !!p.autoDisabled, // 公司通道自动停用（连不上服务端）
     company: !!p.company,           // 公司内部通道（删除提示/状态文案用）
+    publicBaseURL: p.publicBaseURL || '', // 外网备用地址（服务端下发，只读展示）
+    via: p.via || '',               // 公司通道当前线路：lan=内网 / wan=外网
     models: (p.models || []).map((m) => ({
       id: m.id || '', name: m.name || '',
       contextWindow: m.contextWindow || 0, maxOutput: m.maxOutput || 0,
@@ -573,12 +575,19 @@ function buildProvCard(p, key) {
   const offTag = p.autoDisabled
     ? '<span class="pv-off-tag" title="连不上公司服务端时自动停用，恢复可达自动启用">已自动停用 · 服务端不可达</span>'
     : (p.enabled === false ? '<span class="pv-off-tag">已停用</span>' : '');
+  // 公司通道的线路徽标（配了外网地址才有）：外网兜底生效时明确显示「外网通道中」，
+  // 不再让用户以为通道不可用；内网期间显示「内外网」提示具备双地址。
+  const viaTag = !p.autoDisabled && p.publicBaseURL
+    ? (p.via === 'wan'
+        ? '<span class="pv-via-tag wan" title="内网地址连不上，已自动改走外网地址；回公司内网恢复后自动切回">外网通道中</span>'
+        : '<span class="pv-via-tag" title="配有外网备用地址：内网连不上时自动切换，恢复后切回">内外网</span>')
+    : '';
   const head = document.createElement('div');
   head.className = 'pv-head' + (p.enabled === false || p.autoDisabled ? ' off' : '');
   head.innerHTML =
     `<span class="pv-dot ${configured ? 'ok' : 'no'}" title="${configured ? '密钥已配置' : '未配置密钥'}"></span>` +
     `<b class="pv-name">${esc((tp && tp.name) || p.name || '未命名提供方')}</b>` +
-    offTag +
+    offTag + viaTag +
     `<span class="pv-meta">${p.models.length} 个模型</span>` +
     (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '');
   // 启停开关：停用的提供方不参与默认选择与会话解析（出了公司自动切到可用服务商
@@ -692,6 +701,23 @@ function buildProvCard(p, key) {
     two.appendChild(cellName);
     two.appendChild(cellUrl);
     form.appendChild(two);
+  }
+
+  // 公司通道的外网备用地址（服务端公告下发，只读展示；一套 key、一套模型配置，
+  // 内外网自动切换——见 llm.go StreamChat 的故障转移）
+  if (p.publicBaseURL) {
+    const lblPub = document.createElement('div');
+    lblPub.className = 'pf-label';
+    lblPub.textContent = '外网地址（内外网自动切换）';
+    form.appendChild(lblPub);
+    const pubFixed = document.createElement('div');
+    pubFixed.className = 'pf-fixed';
+    pubFixed.textContent = p.publicBaseURL + (p.via === 'wan' ? '（当前走外网）' : '（当前走内网）');
+    form.appendChild(pubFixed);
+    const pubNote = document.createElement('div');
+    pubNote.className = 'pf-note';
+    pubNote.textContent = '由公司服务端统一下发，无需手动切换：内网地址连不上时自动改走此地址，回公司内网恢复后自动切回。';
+    form.appendChild(pubNote);
   }
 
   // API 密钥：绝不回显，只标「已配置」，输入可替换

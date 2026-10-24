@@ -211,6 +211,14 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	go a.snapshotJanitor()
 	// 公司接入自动同步（sync.go）：跟随服务端变化（模型/公司名/地址迁移）
 	go startCompanySyncer(a)
+	// 公司通道 内网/外网 状态翻转的通知（llm.go setAltPreferred）：广播 providers
+	// 事件，模型菜单徽标与设置页状态即时刷新（不挂则要等前端下次拉取才跟上）。
+	altPrefNotify = func(providerID string, preferAlt bool) {
+		if providerID != wizardProviderID {
+			return
+		}
+		a.broadcast(Event{Type: "providers"})
+	}
 	// 远程外壳版本代数恢复（一键清缓存的计数，remoteaccess.go）
 	a.loadShellEpoch()
 	return a, nil
@@ -894,15 +902,24 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 		ContextWindow   int      `json:"contextWindow,omitempty"`
 		ReasoningLevels []string `json:"reasoningLevels,omitempty"`
 		ProviderOff     bool     `json:"providerOff,omitempty"` // 所属提供方已停用（手动或自动）
+		ProviderVia     string   `json:"providerVia,omitempty"` // 公司通道当前线路：lan=内网 / wan=外网（配了外网地址才有值）
 	}
 	items := []modelItem{}
 	for _, p := range a.Cfg.Providers {
+		via := ""
+		if p.ID == wizardProviderID && p.PublicBaseURL != "" {
+			if companyViaPublic() {
+				via = "wan"
+			} else {
+				via = "lan"
+			}
+		}
 		for _, m := range p.Models {
 			levels := m.ReasoningLevels
 			if len(levels) == 0 { // 老配置未存档位：按 ID 现场推断
 				levels = guessReasoningLevels(m.ID)
 			}
-			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow, levels, !p.IsSelectable()})
+			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow, levels, !p.IsSelectable(), via})
 		}
 	}
 	t := a.DefaultTarget()
@@ -1119,16 +1136,18 @@ func (a *App) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	type providerView struct {
-		ID           string     `json:"id"`
-		Name         string     `json:"name"`
-		BaseURL      string     `json:"baseURL"`
-		APIKeyMasked string     `json:"apiKeyMasked"`
-		Preset       bool       `json:"preset"`
-		PresetURL    string     `json:"presetURL,omitempty"`
-		Models       []ModelCfg `json:"models"`
-		Enabled      bool       `json:"enabled"`                // 手动启停（解析后：nil=开）
-		AutoDisabled bool       `json:"autoDisabled,omitempty"` // 公司通道自动停用（连不上服务端）
-		Company      bool       `json:"company,omitempty"`      // 公司内部通道（wizardProviderID）
+		ID            string     `json:"id"`
+		Name          string     `json:"name"`
+		BaseURL       string     `json:"baseURL"`
+		APIKeyMasked  string     `json:"apiKeyMasked"`
+		Preset        bool       `json:"preset"`
+		PresetURL     string     `json:"presetURL,omitempty"`
+		Models        []ModelCfg `json:"models"`
+		Enabled       bool       `json:"enabled"`                // 手动启停（解析后：nil=开）
+		AutoDisabled  bool       `json:"autoDisabled,omitempty"` // 公司通道自动停用（连不上服务端）
+		Company       bool       `json:"company,omitempty"`      // 公司内部通道（wizardProviderID）
+		PublicBaseURL string     `json:"publicBaseURL,omitempty"` // 外网备用地址（公司通道由服务端下发，只读展示）
+		Via           string     `json:"via,omitempty"`           // 公司通道当前线路：lan/wan（配了外网地址才有值）
 	}
 	providers := []providerView{}
 	for _, p := range a.Cfg.Providers {
@@ -1136,7 +1155,14 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL,
 			APIKeyMasked: maskKey(p.APIKey), Models: p.Models,
 			Enabled: p.Enabled == nil || *p.Enabled, AutoDisabled: p.AutoDisabled,
-			Company: p.ID == wizardProviderID,
+			Company: p.ID == wizardProviderID, PublicBaseURL: p.PublicBaseURL,
+		}
+		if pv.Company && p.PublicBaseURL != "" {
+			if companyViaPublic() {
+				pv.Via = "wan"
+			} else {
+				pv.Via = "lan"
+			}
 		}
 		if tpl, ok := PresetByID(p.ID); ok {
 			pv.Preset = true

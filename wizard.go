@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,8 +29,13 @@ import (
 const (
 	wizardDiscoverTimeout = 2 * time.Second
 	wizardProviderID      = "company-internal" // 内部提供方的固定 id（重跑即替换）
-	wizardUDPProbe        = 2228               // 与服务端 discovery.go 约定的 UDP 端口
 )
+
+// wizardUDPProbes 发现探测的约定 UDP 端口：向广播地址的这些端口各发一份探测。
+// UDP 包必须指定端口（没有"全端口广播"）——2026-10-25 起服务端 UDP 发现跟随其
+// TCP 主口（生产=2227），历史约定是 2228；两个都发，新老服务端与本机测试实例
+// （:PORT）都能被发现，应答内容自带服务端实际地址（去重见 udpDiscoverServers）。
+var wizardUDPProbes = []int{2227, 2228}
 
 // wizardServer 一个候选服务端。
 type wizardServer struct {
@@ -238,17 +244,20 @@ func udpDiscoverServers(company string) []wizardServer {
 }
 
 // broadcastTargets 广播目标：255.255.255.255 + 各接口的子网定向广播地址
-// （后者在部分路由器/AP 屏蔽全网广播时仍可达）。
+// （后者在部分路由器/AP 屏蔽全网广播时仍可达），每个地址 × 每个约定端口。
 func broadcastTargets() []*net.UDPAddr {
 	targets := []*net.UDPAddr{}
 	seen := map[string]bool{}
 	appendAddr := func(ip string) {
-		if seen[ip] {
-			return
-		}
-		seen[ip] = true
-		if addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, wizardUDPProbe)); err == nil {
-			targets = append(targets, addr)
+		for _, port := range wizardUDPProbes {
+			key := net.JoinHostPort(ip, strconv.Itoa(port))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if addr, err := net.ResolveUDPAddr("udp4", key); err == nil {
+				targets = append(targets, addr)
+			}
 		}
 	}
 	appendAddr("255.255.255.255")

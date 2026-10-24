@@ -295,19 +295,37 @@ func fillReasoningStub(req *ChatRequest) {
 	}
 }
 
+// altPrefNotify 「优先外网」状态翻转的通知钩子（NewApp 挂上：公司通道翻转时广播
+// providers 事件，前端模型菜单的 内网/外网 徽标与设置页状态即时刷新）。
+var altPrefNotify func(providerID string, preferAlt bool)
+
+// setAltPreferred 写入提供方的「优先外网」状态，翻转即通知（状态未变不打扰）。
+func setAltPreferred(providerID string, preferAlt bool) {
+	if providerID == "" {
+		return
+	}
+	if v, ok := altPreferred.Load(providerID); ok && v.(bool) == preferAlt {
+		return
+	}
+	altPreferred.Store(providerID, preferAlt)
+	if altPrefNotify != nil {
+		altPrefNotify(providerID, preferAlt)
+	}
+}
+
+// companyViaPublic 公司通道当前是否在走外网（模型菜单徽标与设置页状态用）：
+// 「上次成功走的是外网地址」或「公告只能从公网拿到」（sync.go 出公司兜底）。
+func companyViaPublic() bool {
+	v, ok := altPreferred.Load(wizardProviderID)
+	return ok && v.(bool)
+}
+
 // markAltPreferred 记住本次成功的地址形态；没有备用地址的提供方不参与。
 func markAltPreferred(target LLMTarget, preferAlt bool) {
 	if target.AltBaseURL == "" || target.ProviderID == "" {
 		return
 	}
-	if v, ok := altPreferred.Load(target.ProviderID); ok && v.(bool) == preferAlt {
-		return
-	}
-	if preferAlt {
-		altPreferred.Store(target.ProviderID, true)
-	} else {
-		altPreferred.Store(target.ProviderID, false)
-	}
+	setAltPreferred(target.ProviderID, preferAlt)
 }
 
 // streamChatOnce 向单个地址发一轮流式请求（StreamChat 的主/备用共用体）。
