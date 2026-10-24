@@ -154,9 +154,11 @@ async function openSettings(pane) {
   provNew = null;
   resetProvDraft(c);
   renderProvCards();
-  selRefs.compactMode.set(c.compactMode || 'rule');
+  selRefs.compactMode.set(c.compactMode === 'llm' ? 'llm' : 'rule');
   $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
-  selRefs.compactThreshold.set(String(c.compactThreshold || 0.8));
+  $('set-compact-rulepct').value = c.compactRulePct != null ? c.compactRulePct : 60;
+  $('set-compact-llmpct').value = c.compactLlmPct != null ? c.compactLlmPct : 80;
+  $('set-compact-cooldown').value = c.compactCooldown != null ? c.compactCooldown : 1;
   // 常规页：文件备份（服务端配置，改动即时保存）
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
@@ -988,11 +990,14 @@ async function saveSettings() {
   // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
   // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
   if (!(await saveProviderDrafts())) return;
+  const clampPct = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0));
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
       keepChars: parseInt($('set-keepchars').value, 10) || 100000,
-      threshold: parseFloat(selRefs.compactThreshold.get()) || 0.8,
+      rulePct: clampPct($('set-compact-rulepct').value),
+      llmPct: clampPct($('set-compact-llmpct').value),
+      cooldown: Math.max(0, parseInt($('set-compact-cooldown').value, 10) || 0),
     },
   };
   try {
@@ -1179,6 +1184,22 @@ $('set-company-on').onchange = async () => {
 let lastRemoteEntry = ''; // 入口链接快照：复制用 + 二维码按它增量重绘
 let remotePollTimer = 0; // 连接异步成立：未连上时短轮询刷新状态文案
 
+// 搜索服务「当前实际生效地址」：显示后端算好的 base（填了=填的，空=市场同源），
+// 让用户一眼知道现在 AI 搜索打在哪个服务端；算不出来（两处都没填/地址非法）时
+// 给明确原因，而不是留一行空白。
+function syncSearchState(c) {
+  const el = $('set-search-endpoint');
+  if (!el) return;
+  const custom = (c.searchURL || '').trim();
+  const ep = (c.searchEndpoint || '').trim();
+  if (ep) {
+    el.innerHTML = '当前生效：<b>' + esc(ep) + '</b>　' + (custom ? '（用的是这里填的地址）' : '（跟随市场服务器同源）');
+  } else {
+    el.innerHTML = '<span style="color:var(--danger)">当前不可用：'
+      + esc(c.searchEndpointErr || '尚未配置搜索服务地址') + '</span>';
+  }
+}
+
 function syncRemoteState(c) {
   const ra = c.remoteAccess || {};
   $('set-remote-state').textContent = ra.connected
@@ -1216,6 +1237,10 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
   // 市场服务器（market.go）与公司接入（wizard.go）：与远程接入字段同一套「回显+单字段 PATCH」
   if (document.activeElement !== $('set-market-url')) $('set-market-url').value = c.marketURL || '';
+  // 搜索服务（websearch.go 的 searchEndpointBase）：填了用填的、空则跟随市场同源；
+  // 生效地址由后端算好下发（searchEndpoint），这里只负责原样显示
+  if (document.activeElement !== $('set-search-url')) $('set-search-url').value = c.searchURL || '';
+  syncSearchState(c);
   if (document.activeElement !== $('set-publisher-name')) $('set-publisher-name').value = c.publisherName || '';
   if (document.activeElement !== $('set-registry-url')) $('set-registry-url').value = c.registryURL || '';
   if (document.activeElement !== $('set-update-url')) $('set-update-url').value = (c.updateURL === 'off' ? 'off' : (c.updateURL || ''));
@@ -1292,6 +1317,9 @@ $('btn-remote-pk-new').onclick = async () => {
 };
 // 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
 bindRemoteInput('set-market-url', 'marketURL');
+// 搜索服务：同一套「改动即存」；留空 = 跟随市场同源。非法地址由后端 400 拦下
+// （searchURL 不合法），这里 alert 出原因并回滚为服务端值
+bindRemoteInput('set-search-url', 'searchURL');
 // 网页托管平台：从市场地址推导服务端根，打开 <根>/sites（与市场同一台 jxai-server）
 $('btn-open-sites').onclick = async () => {
   const raw = ($('set-market-url').value || '').trim();
@@ -1798,13 +1826,8 @@ makeSelect('sel-midrun', 'midrun', [
   { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
 ], (v) => lsSet('jx.midrun', v));
 makeSelect('sel-compact-mode', 'compactMode', [
-  { v: 'rule', label: '规则压缩（零成本，默认）' },
-  { v: 'llm', label: '模型摘要（达阈值自动+手动）' },
-  { v: 'off', label: '关闭' },
-], null);
-makeSelect('sel-compact-threshold', 'compactThreshold', [
-  { v: '0.8', label: '80%' },
-  { v: '0.9', label: '90%' },
+  { v: 'rule', label: '规则折叠（默认）' },
+  { v: 'llm', label: '模型摘要' },
 ], null);
 
 /* ---------- 技能管理（/api/skills：自带只读展示，用户可加/开关/删） ---------- */

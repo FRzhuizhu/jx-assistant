@@ -1051,44 +1051,133 @@ func summarizeInstructionFor(sess *SessionMeta) string {
 // callSummarizer 已并入上下文引擎（ContextEngine.CallSummarizer）：摘要调用
 // 要把对话历史发给模型，拼装与发送归引擎统一口径，此处不再保留旁路。
 
-// maybeAutoCompact 在每次请求组装后检查：估算 token 超过阈值（CompactThreshold×
-// 窗口）就自动压缩——rule 模式做规则折叠（零模型调用），llm 模式生成摘要。
+// maybeAutoCompact 在每次请求组装后检查自动压缩——两条独立阈值、模型优先：
+//   - 估算 token ≥ 模型阈值（CompactLlmPct>0）→ 生成模型摘要：模型阈值配得比
+//     规则高（默认 80% vs 60%），到这一步说明规则折叠已压不动，交给摘要兜底
+//   - 估算 token ≥ 规则阈值（CompactRulePct>0）且不在冷却期 → 规则折叠（零模型调用）
+//
+// 规则路径带按轮冷却（CompactCooldown）：压不动（保留窗口起点=1、无可折）时
+// 避免每步空转重算；冷却只作用于规则路径，模型摘要不冷却（高阈值本就少见，
+// 失败也该有明确报错）。roundEnd=true 表示轮末固定检查（模型最终输出刚落库），
+// 不受冷却限制——保证「整轮结束时再判断一次」。
 // 返回是否发生了压缩：true 时调用方应重新组装请求，避免带着超限前的旧消息发出。
-func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int) (bool, error) {
-	if a.Cfg.CompactMode == "off" || ctxWindow <= 0 {
+func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int, roundEnd bool) (bool, error) {
+	if ctxWindow <= 0 {
 		return false, nil
 	}
-	if estimateTokens(msgs) < int(float64(ctxWindow)*a.Cfg.CompactThreshold) {
+	est := estimateTokens(msgs)
+	if a.Cfg.CompactLlmPct > 0 && est >= windowPctTokens(ctxWindow, a.Cfg.CompactLlmPct) {
+		_, err := a.doSummarize(sess, "auto", -1, 0)
+		return err == nil, err
+	}
+	if a.Cfg.CompactRulePct <= 0 || est < windowPctTokens(ctxWindow, a.Cfg.CompactRulePct) {
 		return false, nil
 	}
-	if a.Cfg.CompactMode == "rule" {
-		return a.ruleCompactAuto(sess, -1) > 0, nil
+	if roundEnd {
+		a.ruleCompactRoundEndEnter(sess) // 轮末固定放行一次，并以此为下一轮冷却基准
+	} else if !a.ruleCompactTryEnter(sess) {
+		return false, nil // 同轮冷却中：静默跳过（审计行已按轮去重落过）
 	}
-	_, err := a.doSummarize(sess, "auto", -1, 0)
-	return err == nil, err
+	return a.ruleCompactAuto(sess, -1) > 0, nil
 }
 
-// overflowCompact 是上下文超限的兜底：最大化压缩一次。rule 模式规则折叠到
-// 只留最近 1 轮（零模型调用），压不动（最近一轮自身超预算）就全部折叠；
-// llm 模式生成只留最近 1 轮的摘要，仍压不动就摘要全部历史。
-func (a *App) overflowCompact(sess *SessionMeta) error {
-	if a.Cfg.CompactMode == "off" {
-		return fmt.Errorf("上下文超限且压缩已关闭，请手动精简会话或开启压缩")
+// windowPctTokens 算「窗口 × 百分比阈值」的 token 数。
+func windowPctTokens(ctxWindow, pct int) int {
+	return int(float64(ctxWindow) * float64(pct) / 100)
+}
+
+// compactMark 是规则自动压缩的按轮冷却标记（存的轮序号一律 +1，零值=从未）：
+// attemptRound 记上次尝试所在轮，skipLogged 记已落过冷却审计行的轮（每轮最多一条）。
+type compactMark struct {
+	attemptRound int
+	skipLogged   int
+}
+
+// ruleCompactTryEnter 判定规则压缩冷却并登记本次尝试，返回是否放行。冷却按轮
+// 计：轮中检查距上次尝试不足 CompactCooldown 轮即冷却（跳过时落一条审计行，
+// 每轮最多一条，供排查「为什么没压缩」）；冷却 0 = 不冷却，每步都可尝试。
+// 轮末检查不走这里（maybeAutoCompact 的 roundEnd 分支经 ruleCompactRoundEndEnter
+// 固定放行）。
+func (a *App) ruleCompactTryEnter(sess *SessionMeta) bool {
+	if a.Cfg.CompactCooldown <= 0 {
+		return true
 	}
-	if a.Cfg.CompactMode == "rule" {
-		// 先折叠到只留最近 1 轮；压不动（最近一轮自身就超预算，前面又都已折叠）
-		// 时全部折叠——否则百万级单轮永远压不下去，兜底形同虚设。
+	cur := a.currentRoundIndex(sess.ID) // 0 基轮序号
+	if cur < 0 {
+		return true // 拿不到轮信息（库读失败/空会话）：不拦，宁可多试一次
+	}
+	a.compactMu.Lock()
+	mark := a.compactAttempts[sess.ID]
+	a.compactMu.Unlock()
+	if cur+1-mark.attemptRound < a.Cfg.CompactCooldown {
+		if mark.skipLogged != cur+1 {
+			a.auditWrite(sess, map[string]any{"type": "compact_cooldown",
+				"round_index": cur, "last_attempt_round": mark.attemptRound - 1})
+			a.compactMu.Lock()
+			m := a.compactAttempts[sess.ID]
+			m.skipLogged = cur + 1
+			a.compactAttempts[sess.ID] = m
+			a.compactMu.Unlock()
+		}
+		return false
+	}
+	a.compactMu.Lock()
+	if a.compactAttempts == nil {
+		a.compactAttempts = map[string]compactMark{}
+	}
+	a.compactAttempts[sess.ID] = compactMark{attemptRound: cur + 1}
+	a.compactMu.Unlock()
+	return true
+}
+
+// ruleCompactRoundEndEnter 是轮末检查的冷却登记：每轮固定放行一次（用户语义：
+// 轮中触发过一次后整轮不再触发，整轮结束再判断一次），登记后下一轮的轮中
+// 检查以此为基准计冷却。
+func (a *App) ruleCompactRoundEndEnter(sess *SessionMeta) {
+	cur := a.currentRoundIndex(sess.ID)
+	if cur < 0 {
+		return
+	}
+	a.compactMu.Lock()
+	if a.compactAttempts == nil {
+		a.compactAttempts = map[string]compactMark{}
+	}
+	a.compactAttempts[sess.ID] = compactMark{attemptRound: cur + 1}
+	a.compactMu.Unlock()
+}
+
+// currentRoundIndex 取会话当前轮（最后一个轮）在 splitRounds 里的序号（0 基）；
+// 读库失败或没有轮时返回 -1。轮 = 用户/数字助理转发消息开轮到模型最终输出。
+func (a *App) currentRoundIndex(sessID string) int {
+	raw, err := a.Store.RawMessagesAll(sessID)
+	if err != nil {
+		return -1
+	}
+	return len(splitRounds(raw)) - 1
+}
+
+// overflowCompact 是上下文超限的兜底：最大化压缩一次，按配置里实际启用的路
+// 走（真超限时能用的都用），不再按 CompactMode 二选一——规则的先折（零模型
+// 调用、立即见效）：折到只留最近 1 轮，压不动（最近一轮自身超预算，前面又都
+// 已折叠）就全部折叠，否则百万级单轮永远压不下去；仍压不动且模型阈值启用时
+// 生成摘要（先摘要到只留 1 轮，再摘要全部历史）。
+func (a *App) overflowCompact(sess *SessionMeta) error {
+	if a.Cfg.CompactRulePct > 0 {
 		if a.ruleCompactAuto(sess, 1) > 0 || a.ruleCompactAuto(sess, 0) > 0 {
 			return nil
 		}
+	}
+	if a.Cfg.CompactLlmPct > 0 {
+		if _, err := a.doSummarize(sess, "manual", 1, 0); err == nil {
+			return nil
+		}
+		_, err := a.doSummarize(sess, "manual", 0, 0)
+		return err
+	}
+	if a.Cfg.CompactRulePct > 0 {
 		return fmt.Errorf("没有可折叠的回合（上下文超限可能来自系统提示词或工具目录本身）")
 	}
-	// llm：先摘要到只留最近 1 轮；仍压不动就摘要全部历史。
-	if _, err := a.doSummarize(sess, "manual", 1, 0); err == nil {
-		return nil
-	}
-	_, err := a.doSummarize(sess, "manual", 0, 0)
-	return err
+	return fmt.Errorf("上下文超限且规则/模型自动压缩均未启用，请开启其一或手动精简会话")
 }
 
 // isOverflowError 判断模型错误是否为上下文超限。

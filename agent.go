@@ -1206,9 +1206,9 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		// 目录/消息视图/视觉内联/env 快照留痕/token 估算/前缀指纹都归引擎）
 		pack := a.ctxEngine().Assemble(sess, emit)
 		msgs := pack.Msgs
-		// 自动压缩（估算 token 达阈值触发；rule 模式零模型调用）：压缩改写了
-		// 历史视图，重新组装后再发，避免带着超限前的旧消息撞网关
-		if cp, cerr := a.maybeAutoCompact(sess, msgs, target.ContextWindow); cerr != nil {
+		// 自动压缩（双阈值：规则阈值先零成本折叠、模型阈值摘要兜底；规则路径带
+		// 按轮冷却）：压缩改写了历史视图，重新组装后再发，避免带着超限前的旧消息撞网关
+		if cp, cerr := a.maybeAutoCompact(sess, msgs, target.ContextWindow, false); cerr != nil {
 			emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
 			a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
 		} else if cp {
@@ -1390,6 +1390,16 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				return errors.New("模型本轮只返回了思考内容，没有给出正文，可点重试")
 			} else {
 				return errors.New("模型本轮没有返回任何内容，可点重试")
+			}
+			// 轮末压缩检查：一轮结束（最终输出刚落库）固定再判断一次——轮中的
+			// 规则压缩带按轮冷却（压不动时不空转重试），轮末这次不受冷却限制。
+			// 用 buildContext 轻量组装估算（不走 Assemble，避免多落一条 prompt
+			// 留痕行）；压缩只改写历史视图，下一轮开始会重新组装，这里无需回填。
+			if cp, cerr := a.maybeAutoCompact(sess, a.buildContext(sess, ""), target.ContextWindow, true); cerr != nil {
+				emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
+				a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
+			} else if cp {
+				a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 			}
 			// 本轮将结束时来了插话：不收尾，带着插话继续下一轮
 			if interjectsBefore(emit) {

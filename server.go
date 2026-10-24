@@ -52,6 +52,8 @@ type App struct {
 
 	mu              sync.Mutex
 	sessLocks       map[string]*sync.Mutex
+	compactMu       sync.Mutex             // 规则自动压缩冷却状态锁（context.go）
+	compactAttempts map[string]compactMark // 会话id → 规则压缩冷却标记（上次尝试轮序号/审计去重轮）
 	runMu           sync.Mutex
 	runners         map[string]*sessionRun // 正在执行的会话（含后台派发）
 	permMu          sync.Mutex
@@ -1153,6 +1155,12 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		presets = append(presets, presetView{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, Note: p.Note})
 	}
 	t := a.DefaultTarget()
+	// 搜索服务的「当前生效地址」：交给前端原样显示（空/报错即「还打不出去」）
+	searchBase, searchBaseErr := a.searchEndpointBase()
+	searchBaseErrText := ""
+	if searchBaseErr != nil {
+		searchBaseErrText = searchBaseErr.Error()
+	}
 	writeJSON(w, 200, map[string]any{
 		"baseURL":          t.BaseURL,
 		"apiKeyMasked":     maskKey(t.APIKey),
@@ -1166,6 +1174,12 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
 		"marketURL":        a.Cfg.MarketURL,
 		"publisherName":    a.Cfg.PublisherName,
+		// 搜索服务（web_search）：searchURL 填了就用它，空则跟随市场同源。
+		// endpoint 是后端此刻真正会打的那个 base（含上面的回退结果），设置页
+		// 直接把它显示给用户——「现在搜索走哪」一眼可见，不用自己推。
+		"searchURL":         a.Cfg.SearchURL,
+		"searchEndpoint":    searchBase,
+		"searchEndpointErr": searchBaseErrText,
 		// 公司接入的「身份三件套」：只用于向导表单预填（重跑接入向导、以及新版
 		// 一次性重新接入失败时弹出的向导），不含任何密钥
 		"wizardCompany":    a.Cfg.WizardCompany,
@@ -1207,6 +1221,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		RemoteHost      *string `json:"remoteHost"`     // 中继网关地址（域名或 IP，不带协议与端口）
 		RemotePort      *int    `json:"remotePort"`     // 中继网关端口
 		MarketURL       *string `json:"marketURL"`      // 市场（技能/组件/插件）服务器清单地址
+		SearchURL       *string `json:"searchURL"`      // 搜索服务地址（web_search 的 /api/search 网关；空=跟随市场同源）
 		PublisherName   *string `json:"publisherName"`  // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
 		WizardDone      *bool   `json:"wizardDone"`     // 首启向导：完成/跳过（不再自动弹）
 		CompanyLinkOff  *bool   `json:"companyLinkOff"` // 公司接入停用（设置·网络访问开关）：不弹向导、向导接口拒绝、同步器停转
@@ -1217,10 +1232,13 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		MaxSteps        *int    `json:"maxSteps"`
 		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
 		SnapshotDays    *int    `json:"snapshotDays"`    // 快照自动清理天数（-1=永不过期）
-		Compact         *struct {
-			Mode      string  `json:"mode"`
-			KeepChars *int    `json:"keepChars"`
-			Threshold float64 `json:"threshold"`
+		Compact *struct {
+			Mode      string `json:"mode"`
+			KeepChars *int   `json:"keepChars"`
+			Threshold float64 `json:"threshold"` // 旧字段（0.8/0.9）：兼容旧页面提交仍接受，新逻辑不读
+			RulePct   *int   `json:"rulePct"`   // 规则自动压缩阈值（0-100，0=关闭）
+			LlmPct    *int   `json:"llmPct"`    // 模型自动压缩阈值（0-100，0=关闭）
+			Cooldown  *int   `json:"cooldown"`  // 规则压缩冷却（轮，0=不冷却）
 		} `json:"compact"`
 		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：设置页换点缀色时同步写进来
 		AskAlert    *struct {
@@ -1333,6 +1351,23 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.marketCache = marketCacheEntry{} // 换市场源：缓存作废
 		a.marketMu.Unlock()
 	}
+	// 搜索服务地址：留空 = 跟随市场同源（searchEndpointBase 的回退链不动），
+	// 填了必须能解析出 http(s) 的 origin——保存时就拦住，不让它拖到用户搜
+	// 索时才报错。错误口径与 web_search 运行期一致（searchURL 不合法）。
+	if v := body.SearchURL; v != nil {
+		u := strings.TrimSpace(*v)
+		if u != "" {
+			if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+				writeErr(w, 400, "searchURL 不合法: "+u+"（需为 http(s) 地址，如 https://search.example.com；留空则跟随市场服务器同源）")
+				return
+			}
+			if _, err := marketOrigin(u); err != nil {
+				writeErr(w, 400, "searchURL 不合法: "+u)
+				return
+			}
+		}
+		a.Cfg.SearchURL = u
+	}
 	if v := body.PublisherName; v != nil {
 		name := strings.TrimSpace(*v)
 		if len([]rune(name)) > 32 {
@@ -1399,14 +1434,36 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.Cfg.SnapshotDays = *body.SnapshotDays
 	}
 	if body.Compact != nil {
-		if body.Compact.Mode != "" {
-			a.Cfg.CompactMode = body.Compact.Mode
+		if body.Compact.Mode == "rule" || body.Compact.Mode == "llm" {
+			a.Cfg.CompactMode = body.Compact.Mode // off 不再是合法值（自动压缩开关由两个阈值表达）
 		}
 		if body.Compact.KeepChars != nil && *body.Compact.KeepChars > 0 {
 			a.Cfg.KeepChars = *body.Compact.KeepChars
 		}
 		if body.Compact.Threshold > 0.5 && body.Compact.Threshold < 1 {
 			a.Cfg.CompactThreshold = body.Compact.Threshold
+		}
+		clampPct := func(v int) int {
+			if v < 0 {
+				return 0
+			}
+			if v > 100 {
+				return 100
+			}
+			return v
+		}
+		if body.Compact.RulePct != nil {
+			a.Cfg.CompactRulePct = clampPct(*body.Compact.RulePct)
+		}
+		if body.Compact.LlmPct != nil {
+			a.Cfg.CompactLlmPct = clampPct(*body.Compact.LlmPct)
+		}
+		if body.Compact.Cooldown != nil {
+			v := *body.Compact.Cooldown
+			if v < 0 {
+				v = 0
+			}
+			a.Cfg.CompactCooldown = v
 		}
 	}
 	// 询问提醒三键合并（只传变的键）：afterSec 钳 30-600；text 去空白，空串
@@ -2069,15 +2126,12 @@ func (a *App) startupIntegrityLabelRestore(primary string) {
 }
 
 // handleCompact 手动压缩：按按钮位置（body.upTo）压缩该回合及更早的内容。
-// rule 模式即时规则折叠（零模型调用，毫秒级）；llm 模式生成覆盖到该轮的摘要；
-// 空请求体时按自动压缩的同一字数预算划保留范围。已有摘要永不重压，多次叠加。
+// CompactMode（设置页「手动压缩按钮的默认行为」）决定走哪条路：rule 即时规则
+// 折叠（零模型调用，毫秒级）；llm 生成覆盖到该轮的摘要。空请求体时按自动压缩
+// 的同一字数预算划保留范围。已有摘要永不重压，多次叠加。
 func (a *App) handleCompact(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
-		return
-	}
-	if a.Cfg.CompactMode == "off" {
-		writeErr(w, 409, "上下文压缩已在设置中关闭")
 		return
 	}
 	if a.IsRunning(m.ID) {

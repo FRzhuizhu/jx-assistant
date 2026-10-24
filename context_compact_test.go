@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -216,6 +218,7 @@ func TestRuleCompactScopeAndIdempotent(t *testing.T) {
 func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	a := newCompactTestApp(t)
 	a.Cfg.KeepChars = 2000
+	a.Cfg.CompactLlmPct = 0 // 专测规则路径：模型阈值关闭（默认 80% 会抢先把请求引去摘要）
 	sess := &SessionMeta{ID: "s1", Mode: "task"}
 	if err := a.Store.Create(sess); err != nil {
 		t.Fatal(err)
@@ -225,8 +228,8 @@ func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	_, _, _, final3 := seedRound(t, a, "s1", "三轮", true)
 	seedRound(t, a, "s1", "四轮", true)
 
-	// 估算超阈值（10000 字 ≈ 7500 token ≥ 5000×0.8）→ 触发规则折叠
-	cp, err := a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000)
+	// 估算超阈值（10000 字 ≈ 7500 token ≥ 5000×0.6）→ 触发规则折叠
+	cp, err := a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000, false)
 	if err != nil || !cp {
 		t.Fatalf("阈值应触发 rule 折叠, got cp=%v err=%v", cp, err)
 	}
@@ -242,10 +245,10 @@ func TestAutoCompactThresholdAndOverflow(t *testing.T) {
 	if got := rowBySeq(t, a, "s1", final3).Compact; got != "" {
 		t.Fatalf("保留窗口内不应折叠, got %q", got)
 	}
-	// 再次触发：没有可折的 → false
-	cp, err = a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000)
+	// 再次触发：同轮冷却中（冷却命中即静默跳过，没有可折的同样返回 false）
+	cp, err = a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000, false)
 	if err != nil || cp {
-		t.Fatalf("无可折应返回 false, got cp=%v err=%v", cp, err)
+		t.Fatalf("同轮再触发应被冷却挡住, got cp=%v err=%v", cp, err)
 	}
 	// 溢出兜底：只留最近 1 轮 → 三轮也被折叠
 	if err := a.overflowCompact(sess); err != nil {
@@ -490,6 +493,158 @@ func TestForkPreservesCompactAndThinking(t *testing.T) {
 	}
 }
 
+// 双阈值选路：估算 token 在两阈值之间走规则折叠（零模型调用）；达到模型阈值
+// 优先生成摘要（mock 提供方，离线不发请求）；任一阈值为 0 即关闭该路。
+func TestMaybeAutoCompactDualThreshold(t *testing.T) {
+	a := newCompactTestApp(t)
+	a.Cfg.Providers = []ProviderCfg{{
+		ID: "mock", Name: "离线演示", BaseURL: "mock",
+		Models: []ModelCfg{{ID: "mock-1", Name: "演示模型"}},
+	}}
+	a.Cfg.KeepChars = 1000 // 保留窗口收紧，压掉一轮之外的早期轮
+	s1 := &SessionMeta{ID: "s1", Mode: "task"}
+	if err := a.Store.Create(s1); err != nil {
+		t.Fatal(err)
+	}
+	s2 := &SessionMeta{ID: "s2", Mode: "task"}
+	if err := a.Store.Create(s2); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, final1 := seedRound(t, a, "s1", "一轮", true)
+	seedRound(t, a, "s1", "二轮", true)
+	seedRound(t, a, "s1", "三轮", true)
+	// 窗口 10000：规则线 6000、模型线 8000。估算 10000 字 ≈ 7500 token，两线之间
+	// → 规则折叠：一轮折掉、不产生摘要行
+	cp, err := a.maybeAutoCompact(s1, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 10000, false)
+	if err != nil || !cp {
+		t.Fatalf("两线之间应走规则折叠, got cp=%v err=%v", cp, err)
+	}
+	if got := rowBySeq(t, a, "s1", final1).Compact; got == "" {
+		t.Fatal("规则路径应折掉一轮")
+	}
+	if raw, _ := a.Store.RawMessagesAll("s1"); countKind(raw, kindSummary) != 0 {
+		t.Fatal("两线之间不该生成摘要")
+	}
+	// 估算 11000 字 ≈ 8250 token ≥ 模型线 → 摘要兜底：落一条自动摘要、不动折叠标记
+	for _, label := range []string{"甲", "乙", "丙"} {
+		seedRound(t, a, "s2", label, true)
+	}
+	cp, err = a.maybeAutoCompact(s2, []Message{TextMessage("user", strings.Repeat("长", 11000))}, 10000, false)
+	if err != nil || !cp {
+		t.Fatalf("达模型线应走摘要, got cp=%v err=%v", cp, err)
+	}
+	raw, _ := a.Store.RawMessagesAll("s2")
+	if countKind(raw, kindSummary) != 1 {
+		t.Fatalf("应落一条自动摘要, got %d", countKind(raw, kindSummary))
+	}
+	for _, m := range raw {
+		if m.Compact != "" {
+			t.Fatalf("摘要路径不该动折叠标记, seq=%d got %q", m.Seq, m.Compact)
+		}
+	}
+	// 任一阈值为 0 即关闭该路：规则关、模型开，两线之间不再压缩
+	s3 := &SessionMeta{ID: "s3", Mode: "task"}
+	if err := a.Store.Create(s3); err != nil {
+		t.Fatal(err)
+	}
+	seedRound(t, a, "s3", "一轮", true)
+	seedRound(t, a, "s3", "二轮", true)
+	a.Cfg.CompactRulePct = 0
+	cp, err = a.maybeAutoCompact(s3, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 10000, false)
+	if err != nil || cp {
+		t.Fatalf("规则阈值 0 且未达模型线应不压缩, got cp=%v err=%v", cp, err)
+	}
+}
+
+// countKind 数历史里某 kind 的行数（测试断言用）。
+func countKind(msgs []*StoredMessage, kind string) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// 规则压缩按轮冷却：轮中一次尝试后同轮冷却（审计行每轮最多一条）、轮末检查
+// 固定放行、新轮恢复；冷却 0 = 不冷却。
+func TestRuleCompactCooldown(t *testing.T) {
+	a := newCompactTestApp(t) // DefaultConfig：冷却 1 轮
+	sess := &SessionMeta{ID: "s1", Mode: "task"}
+	if err := a.Store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	seedRound(t, a, "s1", "一轮", false)
+	if !a.ruleCompactTryEnter(sess) {
+		t.Fatal("首次尝试应放行")
+	}
+	if a.ruleCompactTryEnter(sess) {
+		t.Fatal("同轮第二次应冷却")
+	}
+	if a.ruleCompactTryEnter(sess) {
+		t.Fatal("同轮第三次仍应冷却")
+	}
+	raw, _ := a.Store.RawMessagesAll("s1")
+	n := 0
+	for _, m := range raw {
+		if m.Kind == kindAudit && strings.Contains(m.Text(), "compact_cooldown") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("冷却审计行应每轮最多一条, got %d", n)
+	}
+	// 轮末固定放行（并以此为下一轮的冷却基准）
+	a.ruleCompactRoundEndEnter(sess)
+	// 新一轮恢复
+	seedRound(t, a, "s1", "二轮", false)
+	if !a.ruleCompactTryEnter(sess) {
+		t.Fatal("新轮应放行")
+	}
+	// 冷却 0 = 不冷却：同轮连续放行
+	a.Cfg.CompactCooldown = 0
+	if !a.ruleCompactTryEnter(sess) || !a.ruleCompactTryEnter(sess) {
+		t.Fatal("冷却 0 应每步放行")
+	}
+}
+
+// 双阈值迁移：老配置（单模式+单阈值）读入时补默认 规则60%/模型80%/冷却1轮，
+// 旧 off 保持自动压缩全关并把模式归一为 rule（手动按钮的默认行为总要有一个）；
+// 新键齐全的配置原样保留（含显式 0）。旧字段 compactMode/compactThreshold
+// 原样保留，供旧版 exe 回滚。
+func TestConfigCompactDualThresholdMigration(t *testing.T) {
+	run := func(content string) *Config {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig 失败: %v", err)
+		}
+		return cfg
+	}
+	cfg := run(`{"compactMode":"llm","compactThreshold":0.9}`)
+	if cfg.CompactRulePct != 60 || cfg.CompactLlmPct != 80 || cfg.CompactCooldown != 1 {
+		t.Fatalf("老配置应迁移为 60/80/1, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
+	}
+	if cfg.CompactMode != "llm" || cfg.CompactThreshold != 0.9 {
+		t.Fatalf("旧字段应原样保留, got mode=%q threshold=%v", cfg.CompactMode, cfg.CompactThreshold)
+	}
+	cfg = run(`{"compactMode":"off","compactThreshold":0.8}`)
+	if cfg.CompactRulePct != 0 || cfg.CompactLlmPct != 0 {
+		t.Fatalf("旧 off 应迁移为自动压缩全关, got %d/%d", cfg.CompactRulePct, cfg.CompactLlmPct)
+	}
+	if cfg.CompactMode != "rule" {
+		t.Fatalf("off 应归一为 rule, got %q", cfg.CompactMode)
+	}
+	cfg = run(`{"compactMode":"rule","compactRulePct":50,"compactLlmPct":0,"compactCooldown":2}`)
+	if cfg.CompactRulePct != 50 || cfg.CompactLlmPct != 0 || cfg.CompactCooldown != 2 {
+		t.Fatalf("显式新键应原样保留, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
+	}
+}
+
 // 字数预算保留算法：从最新一条往前累计模型可见字数，预算耗尽处（命中点）所在
 // 的轮整轮保留——命中轮不超预算时保留区起点对齐到轮首；巨轮自身超预算时回退
 // 行级窗口，保最近一条原文（保留窗口不能为空）。
@@ -533,12 +688,13 @@ func TestKeepStartSeq(t *testing.T) {
 	}
 	raw, _ = a.Store.RawMessagesAll("s1")
 	a.Cfg.KeepChars = 10000
+	a.Cfg.CompactLlmPct = 0 // 专测规则路径
 	if got := a.keepStartSeq(raw); got != 8 {
 		t.Fatalf("巨轮独大时保留区应只剩最后一条(8), got %d", got)
 	}
 	// 端到端：阈值触发后按预算行级折叠——巨轮自身超预算，整轮前面的行都要折，
 	// 否则上下文压不动（回归：此前报「没有可折叠的回合」但上下文仍超长）。
-	cp, err := a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000)
+	cp, err := a.maybeAutoCompact(sess, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 5000, false)
 	if err != nil || !cp {
 		t.Fatalf("阈值应触发折叠, cp=%v err=%v", cp, err)
 	}
