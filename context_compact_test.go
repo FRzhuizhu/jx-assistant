@@ -525,22 +525,25 @@ func TestMaybeAutoCompactDualThreshold(t *testing.T) {
 	if raw, _ := a.Store.RawMessagesAll("s1"); countKind(raw, kindSummary) != 0 {
 		t.Fatal("两线之间不该生成摘要")
 	}
-	// 估算 11000 字 ≈ 8250 token ≥ 模型线 → 摘要兜底：落一条自动摘要、不动折叠标记
+	// 估算 11000 字 ≈ 8250 token，两线都超 → **规则先折**（同一时刻只走一条通道）；
+	// 再查一次（同轮冷却挡住规则通道、上下文估算未变仍超模型线）→ 摘要兜底
 	for _, label := range []string{"甲", "乙", "丙"} {
 		seedRound(t, a, "s2", label, true)
 	}
 	cp, err = a.maybeAutoCompact(s2, []Message{TextMessage("user", strings.Repeat("长", 11000))}, 10000, false)
 	if err != nil || !cp {
-		t.Fatalf("达模型线应走摘要, got cp=%v err=%v", cp, err)
+		t.Fatalf("两线都超第一遍应走规则折叠, got cp=%v err=%v", cp, err)
+	}
+	if raw, _ := a.Store.RawMessagesAll("s2"); countKind(raw, kindSummary) != 0 {
+		t.Fatal("第一遍只折叠，不该生成摘要")
+	}
+	cp, err = a.maybeAutoCompact(s2, []Message{TextMessage("user", strings.Repeat("长", 11000))}, 10000, false)
+	if err != nil || !cp {
+		t.Fatalf("第二遍（规则冷却中、仍超模型线）应走摘要, got cp=%v err=%v", cp, err)
 	}
 	raw, _ := a.Store.RawMessagesAll("s2")
 	if countKind(raw, kindSummary) != 1 {
 		t.Fatalf("应落一条自动摘要, got %d", countKind(raw, kindSummary))
-	}
-	for _, m := range raw {
-		if m.Compact != "" {
-			t.Fatalf("摘要路径不该动折叠标记, seq=%d got %q", m.Seq, m.Compact)
-		}
 	}
 	// 任一阈值为 0 即关闭该路：规则关、模型开，两线之间不再压缩
 	s3 := &SessionMeta{ID: "s3", Mode: "task"}
@@ -553,6 +556,30 @@ func TestMaybeAutoCompactDualThreshold(t *testing.T) {
 	cp, err = a.maybeAutoCompact(s3, []Message{TextMessage("user", strings.Repeat("长", 10000))}, 10000, false)
 	if err != nil || cp {
 		t.Fatalf("规则阈值 0 且未达模型线应不压缩, got cp=%v err=%v", cp, err)
+	}
+	// 阈值反着配（规则 80 / 模型 60）：估算 65% 达模型线而未达规则线 → 直接走
+	// 摘要，规则通道不参与
+	s4 := &SessionMeta{ID: "s4", Mode: "task"}
+	if err := a.Store.Create(s4); err != nil {
+		t.Fatal(err)
+	}
+	seedRound(t, a, "s4", "一轮", true)
+	seedRound(t, a, "s4", "二轮", true)
+	seedRound(t, a, "s4", "三轮", true)
+	a.Cfg.CompactRulePct = 80
+	a.Cfg.CompactLlmPct = 60
+	cp, err = a.maybeAutoCompact(s4, []Message{TextMessage("user", strings.Repeat("长", 8700))}, 10000, false)
+	if err != nil || !cp {
+		t.Fatalf("阈值反配时达模型线应走摘要, got cp=%v err=%v", cp, err)
+	}
+	raw, _ = a.Store.RawMessagesAll("s4")
+	if countKind(raw, kindSummary) != 1 {
+		t.Fatalf("应落一条自动摘要, got %d", countKind(raw, kindSummary))
+	}
+	for _, m := range raw {
+		if m.Compact != "" {
+			t.Fatalf("未达规则线不该动折叠标记, seq=%d got %q", m.Seq, m.Compact)
+		}
 	}
 }
 

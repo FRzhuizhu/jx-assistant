@@ -1206,12 +1206,19 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		// 目录/消息视图/视觉内联/env 快照留痕/token 估算/前缀指纹都归引擎）
 		pack := a.ctxEngine().Assemble(sess, emit)
 		msgs := pack.Msgs
-		// 自动压缩（双阈值：规则阈值先零成本折叠、模型阈值摘要兜底；规则路径带
-		// 按轮冷却）：压缩改写了历史视图，重新组装后再发，避免带着超限前的旧消息撞网关
-		if cp, cerr := a.maybeAutoCompact(sess, msgs, target.ContextWindow, false); cerr != nil {
-			emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
-			a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
-		} else if cp {
+		// 自动压缩（双阈值、规则通道优先；规则路径带按轮冷却）：压缩改写了历史
+		// 视图，重新组装后再查一次——最多两遍（先规则折叠，降下来后仍达模型
+		// 阈值再摘要），避免带着超限前的旧消息撞网关，也避免两通道同时触发
+		for pass := 0; pass < 2; pass++ {
+			cp, cerr := a.maybeAutoCompact(sess, msgs, target.ContextWindow, false)
+			if cerr != nil {
+				emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
+				a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
+				break
+			}
+			if !cp {
+				break
+			}
 			pack = a.ctxEngine().Assemble(sess, emit)
 			msgs = pack.Msgs
 		}
@@ -1393,12 +1400,23 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			}
 			// 轮末压缩检查：一轮结束（最终输出刚落库）固定再判断一次——轮中的
 			// 规则压缩带按轮冷却（压不动时不空转重试），轮末这次不受冷却限制。
-			// 用 buildContext 轻量组装估算（不走 Assemble，避免多落一条 prompt
-			// 留痕行）；压缩只改写历史视图，下一轮开始会重新组装，这里无需回填。
-			if cp, cerr := a.maybeAutoCompact(sess, a.buildContext(sess, ""), target.ContextWindow, true); cerr != nil {
-				emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
-				a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
-			} else if cp {
+			// 与步中同一套「规则优先、最多两遍」：先折，重新估算后仍达模型阈值
+			// 再摘要。用 buildContext 轻量组装估算（不走 Assemble，避免多落一条
+			// prompt 留痕行）；压缩只改写历史视图，下一轮开始会重新组装。
+			roundEndCompacted := false
+			for pass := 0; pass < 2; pass++ {
+				cp, cerr := a.maybeAutoCompact(sess, a.buildContext(sess, ""), target.ContextWindow, true)
+				if cerr != nil {
+					emit(Event{Type: "error", Error: "自动压缩失败: " + cerr.Error()})
+					a.auditWrite(sess, map[string]any{"type": "error", "error": "自动压缩失败: " + cerr.Error()})
+					break
+				}
+				if !cp {
+					break
+				}
+				roundEndCompacted = true
+			}
+			if roundEndCompacted {
 				a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 			}
 			// 本轮将结束时来了插话：不收尾，带着插话继续下一轮

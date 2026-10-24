@@ -1051,34 +1051,46 @@ func summarizeInstructionFor(sess *SessionMeta) string {
 // callSummarizer 已并入上下文引擎（ContextEngine.CallSummarizer）：摘要调用
 // 要把对话历史发给模型，拼装与发送归引擎统一口径，此处不再保留旁路。
 
-// maybeAutoCompact 在每次请求组装后检查自动压缩——两条独立阈值、模型优先：
-//   - 估算 token ≥ 模型阈值（CompactLlmPct>0）→ 生成模型摘要：模型阈值配得比
-//     规则高（默认 80% vs 60%），到这一步说明规则折叠已压不动，交给摘要兜底
-//   - 估算 token ≥ 规则阈值（CompactRulePct>0）且不在冷却期 → 规则折叠（零模型调用）
+// maybeAutoCompact 在每次请求组装后检查自动压缩——两条独立阈值、规则通道优先：
+//   - 估算 token ≥ 规则阈值（CompactRulePct>0）→ 先做零成本规则折叠。同一时刻
+//     只走一条通道：折叠成功即返回，调用方重新组装后用降下来的估算**再查一次**，
+//     仍达模型阈值才轮到摘要——通常折完就降回线以下，模型调用就省下了。
+//   - 估算 token ≥ 模型阈值（CompactLlmPct>0）→ 生成模型摘要兜底。规则关闭
+//    （0%）、规则压不动（折无可折）、冷却中、阈值反着配（模型线低于规则线），
+//     都自然落到这条通道——它是最后防线，不受冷却限制。
 //
 // 规则路径带按轮冷却（CompactCooldown）：压不动（保留窗口起点=1、无可折）时
 // 避免每步空转重算；冷却只作用于规则路径，模型摘要不冷却（高阈值本就少见，
 // 失败也该有明确报错）。roundEnd=true 表示轮末固定检查（模型最终输出刚落库），
 // 不受冷却限制——保证「整轮结束时再判断一次」。
-// 返回是否发生了压缩：true 时调用方应重新组装请求，避免带着超限前的旧消息发出。
+// 返回是否发生了压缩：true 时调用方应重新组装请求（并再查一次，最多两遍：
+// 先规则、后模型），避免带着超限前的旧消息发出。
 func (a *App) maybeAutoCompact(sess *SessionMeta, msgs []Message, ctxWindow int, roundEnd bool) (bool, error) {
 	if ctxWindow <= 0 {
 		return false, nil
 	}
 	est := estimateTokens(msgs)
+	// 规则通道优先：先折，折出东西就交回调用方重查——est 是折叠前的估算，
+	// 模型通道不能用旧 est 判断折叠后的上下文
+	if a.Cfg.CompactRulePct > 0 && est >= windowPctTokens(ctxWindow, a.Cfg.CompactRulePct) {
+		if roundEnd {
+			a.ruleCompactRoundEndEnter(sess) // 轮末固定放行一次，并以此为下一轮冷却基准
+			if a.ruleCompactAuto(sess, -1) > 0 {
+				return true, nil
+			}
+		} else if a.ruleCompactTryEnter(sess) {
+			if a.ruleCompactAuto(sess, -1) > 0 {
+				return true, nil
+			}
+		}
+	}
+	// 模型通道：到这里 est 仍是当前上下文的真实估算（规则没触发、没折出东西、
+	// 或冷却中被跳过——上下文都没变）
 	if a.Cfg.CompactLlmPct > 0 && est >= windowPctTokens(ctxWindow, a.Cfg.CompactLlmPct) {
 		_, err := a.doSummarize(sess, "auto", -1, 0)
 		return err == nil, err
 	}
-	if a.Cfg.CompactRulePct <= 0 || est < windowPctTokens(ctxWindow, a.Cfg.CompactRulePct) {
-		return false, nil
-	}
-	if roundEnd {
-		a.ruleCompactRoundEndEnter(sess) // 轮末固定放行一次，并以此为下一轮冷却基准
-	} else if !a.ruleCompactTryEnter(sess) {
-		return false, nil // 同轮冷却中：静默跳过（审计行已按轮去重落过）
-	}
-	return a.ruleCompactAuto(sess, -1) > 0, nil
+	return false, nil
 }
 
 // windowPctTokens 算「窗口 × 百分比阈值」的 token 数。
