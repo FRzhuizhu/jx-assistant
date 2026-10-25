@@ -236,6 +236,22 @@ func (a *App) listSkills() (*SkillLists, error) {
 	return out, nil
 }
 
+// userSkillAvailable 某个用户技能当前是否可用（目录里有 SKILL.md 且未被
+// 停用）。web_search 的兜底提示用它决定要不要指引模型改走「本机网络搜索」
+// 技能——技能被删除或停用时提示随之消失，保证摘除干净、不留悬空指引。
+func (a *App) userSkillAvailable(id string) bool {
+	list, err := a.listSkills()
+	if err != nil {
+		return false
+	}
+	for _, s := range list.User {
+		if s.ID == id {
+			return s.Enabled
+		}
+	}
+	return false
+}
+
 // addUserSkill 安装一个用户技能到 技能/user/<id>/：srcPath 是本机技能目录
 // （整目录复制）、ZIP 压缩包（解压后安装）或单个 .md 说明文件（包装成
 // <文件名>/SKILL.md 再安装）。安装器本质只是帮用户把文件挪到位——手动把

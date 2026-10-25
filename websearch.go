@@ -19,6 +19,11 @@
 // X-Jxai-Conversation 头（值=发起搜索的会话 id，服务端按对话轮询搜索
 // 引擎——同一对话始终同一引擎、不同对话交替，缺省退化按用户轮询）；
 // 服务端地址取 config.searchURL，空则跟随市场地址同源（marketOrigin）。
+//
+// 服务端走不通（未配置/不可达/网关报错）时的兜底：错误文案附加改道指引，
+// 让模型转用「本机网络搜索」技能（技能/user/web-search-local/，用本机网络
+// 直调搜索 API）。指引仅在技能可用时附加（searchErrHint→userSkillAvailable），
+// 技能被停用或摘除后指引自动消失——兜底能力整体可插拔，不进工具定义。
 package main
 
 import (
@@ -96,14 +101,14 @@ func (a *App) runWebSearch(t *toolContext, args json.RawMessage) (string, error)
 	}
 	base, err := a.searchEndpointBase()
 	if err != nil {
-		return "", err
+		return "", a.searchErrHint(err)
 	}
 	ctx, cancel := context.WithTimeout(t.ctx, 35*time.Second)
 	defer cancel()
 	payload, _ := json.Marshal(map[string]any{"query": query, "count": count})
 	req, err := a.marketRequest(ctx, http.MethodPost, base+"/api/search", bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return "", a.searchErrHint(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// sess 在 authorize（permModeOf）处已保证非空；服务端按此头对对话轮询搜索引擎
@@ -111,25 +116,41 @@ func (a *App) runWebSearch(t *toolContext, args json.RawMessage) (string, error)
 	client := &http.Client{Timeout: 35 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("连接服务端失败（%s）: %w", base, err)
+		return "", a.searchErrHint(fmt.Errorf("连接服务端失败（%s）: %w", base, err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	var out searchResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		if resp.StatusCode >= 400 {
-			return "", fmt.Errorf("搜索失败（HTTP %d）: %s", resp.StatusCode, truncateRunes(string(body), 300))
+			return "", a.searchErrHint(fmt.Errorf("搜索失败（HTTP %d）: %s", resp.StatusCode, truncateRunes(string(body), 300)))
 		}
-		return "", fmt.Errorf("服务端响应无法解析（HTTP %d）", resp.StatusCode)
+		return "", a.searchErrHint(fmt.Errorf("服务端响应无法解析（HTTP %d）", resp.StatusCode))
 	}
 	if resp.StatusCode >= 400 {
 		msg := out.Error
 		if msg == "" {
 			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		return "", fmt.Errorf("搜索失败: %s", msg)
+		return "", a.searchErrHint(fmt.Errorf("搜索失败: %s", msg))
 	}
 	return renderSearchResults(query, out), nil
+}
+
+// localSearchSkillID 「本机网络搜索」技能（web_search 连不上服务端时的本机
+// 兜底）的技能 id。技能本体在 技能/user/web-search-local/：清单行自带
+// 「仅当 web_search 失败时使用」的分流语义，这里的指引是第二道桥——模型
+// 调 web_search 落空时，错误文案直接告诉它改道。
+const localSearchSkillID = "web-search-local"
+
+// searchErrHint 服务端搜索走不通时的改道指引：仅当「本机网络搜索」技能
+// 可用（存在且启用）时附加，技能被摘除/停用时指引随之消失。参数自身的
+// 错误（query 为空等）不走这里——那是模型自己的问题，换搜索引擎无济于事。
+func (a *App) searchErrHint(err error) error {
+	if err == nil || !a.userSkillAvailable(localSearchSkillID) {
+		return err
+	}
+	return fmt.Errorf("%w；可改用「本机网络搜索」技能兜底：先 read_skill（id=%s）读用法，再用本机网络搜索", err, localSearchSkillID)
 }
 
 // searchEndpointBase 服务端地址：searchURL 优先，空则取市场地址同源。
