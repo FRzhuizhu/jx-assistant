@@ -1040,7 +1040,7 @@ const subDone = {}; // 子会话id -> 是否已完成（内存态；跨刷新由
 const dotDone = {};     // 会话id -> 完成未查看（绿点）
 
 /* ---------- 首页草稿与弹层开合（弹出面板系统的共享半边） ---------- */
-// tools 默认带 'browser'：权限档位＝工作区内读写时默认开启「操作浏览器」（后端
+// tools 默认带 'browser'：权限档位＝修改工作区时默认开启「操作浏览器」（后端
 // perm.go 的 capDefaultsForMode 是同一策略的唯一权威）。芯片上默认就是勾选态，
 // 用户取消后前端显式传空数组，后端尊重用户、不再覆盖。
 const homeDraft = { mode: 'office', permission: 'workspace-write', provider: '', model: '', thinking: '', tools: ['browser'], planMode: false, goalMode: false, goalText: '', remote: null, quote: '' };

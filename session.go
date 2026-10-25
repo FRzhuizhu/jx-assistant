@@ -15,7 +15,7 @@ import (
 //      用户：先确认需求再动手、全程大白话讲解）
 //      skill-create=创建技能模式（用户演示操作→沉淀 SKILL.md 技能；默认完全访问，
 //      配套演示记录器 demo_record_* 与 register_skill，见 recorder.go / agent.go）
-// permission: workspace-write=工作区内读写 full=完全访问 read-only=只读
+// permission: workspace-write=修改工作区 full=完全访问 read-only=只读
 // （后端权限引擎强制执行，见 perm.go；tools 为启用的能力开关 id 列表：
 // unsandboxed=允许工作区外执行命令、sandbox-write=只读档下沙箱内写入、
 // browser/computer=操作浏览器/电脑；完全访问模式下 unsandboxed/browser/

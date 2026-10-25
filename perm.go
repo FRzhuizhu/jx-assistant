@@ -42,11 +42,11 @@ import (
 )
 
 const (
-	permReadOnly    = "read-only"       // 只读（沙箱内执行但无任何写授权）
-	permWorkspace   = "workspace-write" // 工作区内读写（默认）
+	permReadOnly    = "read-only"       // 全电脑只读（沙箱内执行但无任何写授权）
+	permWorkspace   = "workspace-write" // 修改工作区（默认）
 	permFull        = "full"            // 完全访问（不受限）
 	capUnsandboxed  = "unsandboxed"     // 能力：允许沙箱外（不受限）执行命令
-	capSandboxWrite = "sandbox-write"   // 能力：允许命令在沙箱内写入（只读档位下）
+	capSandboxWrite = "sandbox-write"   // 能力：允许命令在沙箱内写入（全电脑只读档位下）
 	capBrowser      = "browser"         // 能力：允许操作浏览器（browser_* 工具）
 	capComputer     = "computer"        // 能力：允许操作电脑（computer_* 工具）
 	capDevice       = "device"          // 能力：允许操作手机（device_* / adb_* 工具，仅安卓）
@@ -167,7 +167,7 @@ func requireNotReadOnly(t *toolContext, what string) error {
 	if permModeOf(t.sess) != permReadOnly {
 		return nil
 	}
-	return fmt.Errorf("只读模式下 %s 不可用：本会话禁止一切写入/执行通道。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档（弹审批卡，批准后立即生效）；或请用户把权限芯片切到「工作区内读写」后再试", what)
+	return fmt.Errorf("全电脑只读模式下 %s 不可用：本会话禁止一切写入/执行通道。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档（弹审批卡，批准后立即生效）；或请用户把权限芯片切到「修改工作区」后再试", what)
 }
 
 // bundleFullAccessCaps 把完全访问捆绑的能力并入 tools（纯内存合并，不落库；
@@ -204,7 +204,7 @@ func stripFullAccessCaps(tools []string) []string {
 
 // capDefaultsForMode 返回某模式/权限档位下新会话的**默认能力开关**（唯一权威，
 // 前端 web/app-chat.js 的 applyCapDefaults 与它同一策略）。现行策略只有一条：
-// 「工作区内读写」默认开启「操作浏览器」——模型看网页是常态动作，默认给上；
+// 「修改工作区」默认开启「操作浏览器」——模型看网页是常态动作，默认给上；
 // 用户随时可在权限芯片里取消，显式取消不被覆盖（见各调用点的 tools 是否为 nil）。
 // 只对真会注册 browser_* 的模式生效（toolsFor：task/office/coding/
 // beginner-coding/skill-create）；只读、完全访问、aux/assistant 不在默认之列——
@@ -221,7 +221,7 @@ func capDefaultsForMode(mode, perm string) []string {
 }
 
 // mergeCapDefaults 把默认能力并入 tools（纯内存合并，不落库）：会话创建、以及
-// 「从完全访问切回工作区内读写」（捆绑项被 strip 掉之后，默认项照旧要在）。
+// 「从完全访问切回修改工作区」（捆绑项被 strip 掉之后，默认项照旧要在）。
 func mergeCapDefaults(tools []string, mode, perm string) []string {
 	def := capDefaultsForMode(mode, perm)
 	if len(def) == 0 {
@@ -273,7 +273,7 @@ func (a *App) switchSessionPerm(s *SessionMeta, mode string) {
 	a.broadcast(Event{Type: "session_updated", SessionID: s.ID, Permission: permModeOf(s), Tools: s.Tools})
 }
 
-// permModeOf 返回会话的权限模式（未设置时默认工作区内读写）。
+// permModeOf 返回会话的权限模式（未设置时默认修改工作区）。
 func permModeOf(s *SessionMeta) string {
 	switch s.Permission {
 	case permReadOnly, permFull, permWorkspace:
@@ -289,11 +289,11 @@ func permModeOf(s *SessionMeta) string {
 func permModeLabel(mode string) string {
 	switch mode {
 	case permReadOnly:
-		return "只读"
+		return "全电脑只读"
 	case permFull:
 		return "完全访问"
 	default:
-		return "工作区内读写"
+		return "修改工作区"
 	}
 }
 
@@ -322,7 +322,7 @@ func capZh(cap string) string {
 	case capUnsandboxed:
 		return "允许工作区外执行命令"
 	case capSandboxWrite:
-		return "只读档下允许沙箱内写入"
+		return "全电脑只读档下允许沙箱内写入"
 	case capBrowser:
 		return "操作浏览器"
 	case capComputer:
@@ -337,14 +337,14 @@ func capZh(cap string) string {
 func capEffectDesc(cap string, on bool) string {
 	onDesc := map[string]string{
 		capUnsandboxed:  "沙箱外执行命令不再逐次审批（常设授权）",
-		capSandboxWrite: "只读档下命令可在沙箱内写入",
+		capSandboxWrite: "全电脑只读档下命令可在沙箱内写入",
 		capBrowser:      "browser_* 工具现在可用",
 		capComputer:     "computer_* 工具现在可用",
 		capDevice:       "device_* / adb_* 工具现在可用",
 	}
 	offDesc := map[string]string{
 		capUnsandboxed:  "命令升级恢复逐次审批",
-		capSandboxWrite: "只读档下命令恢复禁止写入",
+		capSandboxWrite: "全电脑只读档下命令恢复禁止写入",
 		capBrowser:      "browser_* 工具调用将被拒绝",
 		capComputer:     "computer_* 工具调用将被拒绝",
 		capDevice:       "device_* / adb_* 工具调用将被拒绝",
@@ -1007,7 +1007,7 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 			return t.app.issueGrant(t.sess.ID, act.Tool, "write", "写文件 "+act.Path, sandboxPolicyForMode(mode)), nil
 		}
 		// 升级申请（拒绝驱动）：只读档按目标给「够用的最宽档」——写围栏内的
-		// 目标申请 workspace-write 就够（「始终允许」= 会话切到工作区内读写，
+		// 目标申请 workspace-write 就够（「始终允许」= 会话切到修改工作区，
 		// 不再一跳到顶）；围栏外目标才要 full。「允许」= 本次按申请档执行。
 		needFull := blocked == "workspace-write" || (blocked == "read-only" && !t.writeFenceAllows(act.Path))
 		req := strings.TrimSpace(act.EscalateTo)
@@ -1030,7 +1030,7 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 			}
 			scope := "写入工作区外"
 			if want == permWorkspace {
-				scope = "写入（当前会话为只读）"
+				scope = "写入（当前会话为全电脑只读）"
 			}
 			summary := fmt.Sprintf("提升为「%s」以%s：%s｜理由：%s", permModeLabel(want), scope, truncateRunes(act.Path, 160), truncateRunes(just, 120))
 			if t.emit != nil {
@@ -1059,7 +1059,7 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 			if !needFull {
 				wider = permWorkspace
 			}
-			return nil, fmt.Errorf("[sandbox: file access denied under read-only mode]\n目标 %s（当前会话为只读）。可在重试时带 sandbox_permissions=%s 与一句 justification 申请放行（弹审批由用户决定）；也可用 request_permission 直接申请切档，或让用户把权限芯片切到「工作区内读写」", act.Path, wider)
+			return nil, fmt.Errorf("[sandbox: file access denied under read-only mode]\n目标 %s（当前会话为全电脑只读）。可在重试时带 sandbox_permissions=%s 与一句 justification 申请放行（弹审批由用户决定）；也可用 request_permission 直接申请切档，或让用户把权限芯片切到「修改工作区」", act.Path, wider)
 		}
 		return nil, fmt.Errorf("[sandbox: file access denied under workspace-write mode]\n目标 %s 不在工作区 %s 与系统临时目录内。可在重试时带 sandbox_permissions=full 与一句 justification 申请把会话提升为完全访问（弹审批由用户决定）", act.Path, t.workspace())
 
@@ -1077,7 +1077,7 @@ func (t *toolContext) authorize(act permAction) (*Grant, error) {
 		policy := sandboxPolicyForMode(mode)
 		// 用户常设授权「允许工作区外执行命令」= 关闭命令沙箱：勾选即默认
 		// 沙箱外执行（run_command / run_python / 后台作业同一把锁），不再是
-		// 「升级时免审批」。设计意图：这一档是工作区内读写与完全访问之间的
+		// 「升级时免审批」。设计意图：这一档是修改工作区与完全访问之间的
 		// 中间档——命令通道全开（可写任意位置），但 browser_* / computer_* /
 		// device_* 仍按各自能力开关把守、不捆绑点亮，因此不叫完全访问。
 		// 危险命令护栏不受影响（它是独立于沙箱的一层，上面已检查）。

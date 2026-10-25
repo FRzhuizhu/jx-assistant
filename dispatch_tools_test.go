@@ -156,7 +156,7 @@ func TestResolveDispatchMode(t *testing.T) {
 }
 
 // 权限拧钮：只能同等或降权，绝不允许增权；超出即拒绝（不静默钳制）。
-// 不传＝工作区内读写，但本会话权限更窄时取本会话权限（只降不升）。
+// 不传＝修改工作区，但本会话权限更窄时取本会话权限（只降不升）。
 func TestDispatchPermissionNeverEscalates(t *testing.T) {
 	cases := []struct {
 		self, req   string

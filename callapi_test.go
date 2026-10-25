@@ -44,7 +44,7 @@ func TestCallAPICatalogFull(t *testing.T) {
 	}
 	// 每条都标注最低权限档（三档之一）
 	for _, l := range strings.Split(cat, "\n") {
-		if !strings.Contains(l, "[只读]") && !strings.Contains(l, "[工作区内读写]") && !strings.Contains(l, "[完全访问]") {
+		if !strings.Contains(l, "[全电脑只读]") && !strings.Contains(l, "[修改工作区]") && !strings.Contains(l, "[完全访问]") {
 			t.Fatalf("目录每行都应标注最低权限档，got：%q", l)
 		}
 	}
@@ -233,8 +233,8 @@ func TestCallAPIRejectsUnknownAndLowPerm(t *testing.T) {
 	ro := mkCallAPISession(t, a, "t-ro", permReadOnly)
 	_, err = runCallAPI(ro, mustArgs(t, map[string]any{"path": "/api/sessions", "method": "POST",
 		"params": map[string]any{"title": "不该建出来"}}))
-	if err == nil || !strings.Contains(err.Error(), "工作区内读写") {
-		t.Fatalf("只读档调写接口应被权限闸拒绝（说明需要什么档），got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "修改工作区") {
+		t.Fatalf("全电脑只读档调写接口应被权限闸拒绝（说明需要什么档），got %v", err)
 	}
 	if sessions, _ := a.Store.List(); len(sessions) != 3 { // main + t-ws2 + t-ro，被拒调用不添会话
 		t.Fatalf("被拒的调用不该建出会话（现有 %d 个）", len(sessions))
@@ -318,7 +318,7 @@ func TestCallAPIToolRegistrationAndEnv(t *testing.T) {
 			desc = tl.Spec.Function.Description
 		}
 	}
-	for _, want := range []string{"GET /api/status [只读]", "POST /api/sessions [工作区内读写]", "⚠ DELETE /api/sessions/{id}"} {
+	for _, want := range []string{"GET /api/status [全电脑只读]", "POST /api/sessions [修改工作区]", "⚠ DELETE /api/sessions/{id}"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("call_api 工具说明应含完整目录（%s）：\n%s", want, desc)
 		}

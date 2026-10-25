@@ -460,12 +460,12 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 func requestPermissionTool() Tool {
 	return Tool{
 		Spec: toolSpec("request_permission",
-			"申请把当前会话的权限档位调宽（只读 → 工作区内读写 → 完全访问），弹审批卡由用户决定，批准后立即生效（权限芯片同步刷新）。适用于：任务确需写入而当前只读（git_sync、MCP 连接器、register_skill 等通道在只读档整体不可用），或可预判要连续多个写动作（一次申请比逐个撞墙申请高效）。仅在被真实拦住或明确预判做不了时使用，不要为省事预防性申请；用户拒绝或超时后本轮终局：如实说明并停止，不要绕过。",
+			"申请把当前会话的权限档位调宽（全电脑只读 → 修改工作区 → 完全访问），弹审批卡由用户决定，批准后立即生效（权限芯片同步刷新）。适用于：任务确需写入而当前全电脑只读（git_sync、MCP 连接器、register_skill 等通道在全电脑只读档整体不可用），或可预判要连续多个写动作（一次申请比逐个撞墙申请高效）。仅在被真实拦住或明确预判做不了时使用，不要为省事预防性申请；用户拒绝或超时后本轮终局：如实说明并停止，不要绕过。",
 			objSchema(map[string]any{
 				"target": map[string]any{
 					"type":        "string",
 					"enum":        []string{permWorkspace, permFull, "danger-full-access"},
-					"description": "申请切到的权限档：workspace-write（工作区内读写）或 full / danger-full-access（完全访问），必须比当前档宽",
+					"description": "申请切到的权限档：workspace-write（修改工作区）或 full / danger-full-access（完全访问），必须比当前档宽",
 				},
 				"justification": strProp("一句话向用户说明为什么要调宽权限（展示在审批卡上）"),
 			}, "target", "justification")),

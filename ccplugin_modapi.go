@@ -518,7 +518,7 @@ func wrapFS[T any](h *modHost, fn func(path string) T) func(goja.FunctionCall) g
 // requireWrite 敏感操作门控：read-only 会话拒绝（Claude 无此闸，见差异清单）。
 func (h *modHost) requireWrite(sess *modSessCtx) {
 	if sess != nil && sess.Sess != nil && sess.Sess.Permission == "read-only" {
-		panic(h.vm.NewTypeError("当前会话是只读模式，mod 的写/执行操作被拒绝。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档，或请用户把权限芯片切到「工作区内读写」后再试"))
+		panic(h.vm.NewTypeError("当前会话是全电脑只读模式，mod 的写/执行操作被拒绝。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档，或请用户把权限芯片切到「修改工作区」后再试"))
 	}
 }
 

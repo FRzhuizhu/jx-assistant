@@ -258,7 +258,7 @@ dispatch_task 的可选参数与人工在界面新建工作任务**一一对应*
 - **模型（model）**：任务性质与默认模型不匹配时按需覆盖（需要更强的推理、或用户点名了某个模型）。**要写完整格式 providerId/modelId**（如 zhipu-coding/glm-5.3）——环境快照的「可用模型清单」列着配置里的全部渠道与模型，照它选；同一个模型名可能由多个渠道提供，只写裸模型名会落到你当前的渠道上，那个渠道不提供它就直接报错。不传沿用默认。
 - **计划模式（plan_mode）**：改动面大、跨多文件、有风险，或用户说了「先给个方案」→ plan_mode=true，让新任务先只读调研、提交计划等用户批准后再动手；小活儿不传。
 - **附件（attachments）**：用户已经给了现成文件（本机绝对路径）→ 用 attachments 把路径带上，新任务开轮就有文件，不必再让用户传一遍；路径不存在、是目录，或新任务是远程工作区时会直接报错不派发。
-- **权限（permission）**：不传＝工作区内读写（你自己权限更窄时取你的权限）。**只能降不能升**：不得高于你当前的权限档（见环境快照的「权限模式」行），超出会被**拒绝并报错**，不会静默生效——绝不要试图借派发给自己或派出去的会话提权。只有看、不需要改的任务（纯调研、查资料、审阅）按需降为 read-only（只读）；要写文件、跑命令的任务别降档。
+- **权限（permission）**：不传＝修改工作区（你自己权限更窄时取你的权限）。**只能降不能升**：不得高于你当前的权限档（见环境快照的「权限模式」行），超出会被**拒绝并报错**，不会静默生效——绝不要试图借派发给自己或派出去的会话提权。只有看、不需要改的任务（纯调研、查资料、审阅）按需降为 read-only（全电脑只读）；要写文件、跑命令的任务别降档。
 
 **办公任务（office 模式）的派发要点**：
 
@@ -554,24 +554,24 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	switch mode {
 	case permReadOnly:
 		if isAndroidRuntime {
-			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；文件工具禁止写入。本机命令无 OS 级沙箱（安卓），不要执行会产生写入副作用的命令\n")
+			b.WriteString("- 权限模式：全电脑只读——可读文件、检索内容、抓取网页；文件工具禁止写入。本机命令无 OS 级沙箱（安卓），不要执行会产生写入副作用的命令\n")
 		} else if hasCapability(sess, capUnsandboxed) {
-			b.WriteString("- 权限模式：只读——文件工具禁止写入；但已开启「允许工作区外执行命令」：命令（run_command / run_python）默认不经沙箱、直接执行，可产生写入（用户常设授权）。文件写入请走命令或在权限芯片调整档位\n")
+			b.WriteString("- 权限模式：全电脑只读——文件工具禁止写入；但已开启「允许工作区外执行命令」：命令（run_command / run_python）默认不经沙箱、直接执行，可产生写入（用户常设授权）。文件写入请走命令或在权限芯片调整档位\n")
 		} else {
-			b.WriteString("- 权限模式：只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
+			b.WriteString("- 权限模式：全电脑只读——可读文件、检索内容、抓取网页；命令可在 OS 沙箱内执行但被禁止任何写入（read-only 沙箱）\n")
 		}
 		// 只读档通道公告：被拒后怎么申请、哪些通道整体不可用——模型不用撞墙试
-		b.WriteString("- 只读档提权：文件写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full（或 danger-full-access）+ 一句 justification 重试一次即可申请放行（弹审批）；要连续多个写动作或用整档不可用的通道时，用 request_permission(target, justification) 一次性申请切档（弹审批卡，批准后立即生效）\n")
-		b.WriteString("- 只读档不可用通道：git_sync、MCP 连接器（mcp_read_connector / mcp_call_tool / 插件 mcp__*）、register_skill、CC 插件 mod 的写/执行——一律被拦，报错都带申请出路；需要时先 request_permission 切档再用\n")
+		b.WriteString("- 全电脑只读档提权：文件写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full（或 danger-full-access）+ 一句 justification 重试一次即可申请放行（弹审批）；要连续多个写动作或用整档不可用的通道时，用 request_permission(target, justification) 一次性申请切档（弹审批卡，批准后立即生效）\n")
+		b.WriteString("- 全电脑只读档不可用通道：git_sync、MCP 连接器（mcp_read_connector / mcp_call_tool / 插件 mcp__*）、register_skill、CC 插件 mod 的写/执行——一律被拦，报错都带申请出路；需要时先 request_permission 切档再用\n")
 	case permFull:
 		b.WriteString("- 权限模式：完全访问——读写与命令不受限（助手自身配置/数据仍受保护）；已捆绑开启「允许工作区外执行命令」「操作浏览器」「操作电脑」能力\n")
 	default:
 		if isAndroidRuntime {
-			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在内置 Linux 运行时（Termux）里执行，始终处于安卓应用沙箱内（应用 uid + SELinux；安卓内核禁用 Landlock，无 OS 级命令沙箱，文件边界由文件工具围栏把守），联网不限\n")
+			b.WriteString("- 权限模式：修改工作区——文件写入仅限工作区；命令在内置 Linux 运行时（Termux）里执行，始终处于安卓应用沙箱内（应用 uid + SELinux；安卓内核禁用 Landlock，无 OS 级命令沙箱，文件边界由文件工具围栏把守），联网不限\n")
 		} else if hasCapability(sess, capUnsandboxed) {
-			b.WriteString("- 权限模式：工作区内读写——文件工具（write/edit）仍只允许写工作区与临时目录；已开启「允许工作区外执行命令」：命令（run_command / run_python / 后台作业）默认不经沙箱、直接执行，可读写任意位置（用户常设授权，无需再带 sandbox_permissions 申请）；危险命令护栏仍生效。浏览器/电脑/手机工具仍按各自能力开关把守——这一档命令全开但不算完全访问\n")
+			b.WriteString("- 权限模式：修改工作区——文件工具（write/edit）仍只允许写工作区与临时目录；已开启「允许工作区外执行命令」：命令（run_command / run_python / 后台作业）默认不经沙箱、直接执行，可读写任意位置（用户常设授权，无需再带 sandbox_permissions 申请）；危险命令护栏仍生效。浏览器/电脑/手机工具仍按各自能力开关把守——这一档命令全开但不算完全访问\n")
 		} else {
-			b.WriteString("- 权限模式：工作区内读写——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
+			b.WriteString("- 权限模式：修改工作区——文件写入仅限工作区；命令在 OS 级沙箱内执行（workspace-write）：只能写工作区与沙箱私有临时目录，联网不限\n")
 		}
 	}
 	// 可调接口目录（call_api 的清单）已从环境快照挪进 call_api 工具定义
@@ -606,7 +606,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		if sess.Remote != nil {
 			b.WriteString("- git 远程操作（fetch/pull/push/clone）在命令沙箱内会失败；远程同步工具 git_sync 不支持 SSH 远程工作区会话，请在远程目录内用 run_command 操作\n")
 		} else {
-			b.WriteString("- git：本地操作（status/add/commit/log 等）在命令沙箱内正常，直接 run_command；远程操作（fetch/pull/push/clone）沙箱内**必失败**（与权限档无关，是受限令牌的硬限制），用 git_sync 工具（宿主通道，凭据走系统 git 配置，只读档不可用；完全访问或已开「允许工作区外执行命令」时也可直接用命令行）\n")
+			b.WriteString("- git：本地操作（status/add/commit/log 等）在命令沙箱内正常，直接 run_command；远程操作（fetch/pull/push/clone）沙箱内**必失败**（与权限档无关，是受限令牌的硬限制），用 git_sync 工具（宿主通道，凭据走系统 git 配置，全电脑只读档不可用；完全访问或已开「允许工作区外执行命令」时也可直接用命令行）\n")
 		}
 	}
 	// 能力开关只对带这些工具的模式（task/office/coding/beginner-coding/skill-create）

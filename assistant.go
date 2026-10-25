@@ -123,7 +123,7 @@ func dispatchTaskTool() Tool {
 				"mode":        strProp("可选：工作模式，取值与人工新建会话的模式下拉同一份清单（" + chatModesDoc() + "）；按任务性质选——办公文档/表格/资料选 office，改代码/编译排障选 coding，用户不懂编程的编程需求选 beginner-coding，把做法沉淀成技能教程选 skill-create。不填＝通用工作任务（task，与改动前一致）"),
 				"plan_mode":   boolProp("可选：true＝让新任务以计划模式启动（与人工建会话勾选「计划模式」一致）：它先只读调研、提交计划等用户批准后才动手；适合改动面大、跨多文件、有风险的任务"),
 				"attachments": arrayProp("可选：附件文件路径列表（本机绝对路径，如 D:\\资料\\需求.docx）。文件会复制进新任务的工作区并登记为上传（交付时可用 deliver_file 交回用户原处），与人工建会话上传附件完全一致；路径不存在、是目录，或新任务是远程工作区时，整个派发被拒绝并报错", strProp("本机文件绝对路径，如 D:\\资料\\需求.docx")),
-				"permission":  strProp("可选：新任务的权限档，取值 read-only（只读）/ workspace-write（工作区内读写）/ full（完全访问），与权限面板同一套档位。只能**同等或降权**——不得高于本会话（数字助理）当前权限（见环境快照的「权限模式」行），超出即拒绝并报错（不静默钳制）。不填＝工作区内读写（本会话权限更窄时取本会话权限）。要改文件、跑命令的任务别降档；只读调研/查看可降为 read-only"),
+				"permission":  strProp("可选：新任务的权限档，取值 read-only（全电脑只读）/ workspace-write（修改工作区）/ full（完全访问），与权限面板同一套档位。只能**同等或降权**——不得高于本会话（数字助理）当前权限（见环境快照的「权限模式」行），超出即拒绝并报错（不静默钳制）。不填＝修改工作区（本会话权限更窄时取本会话权限）。要改文件、跑命令的任务别降档；全电脑只读调研/查看可降为 read-only"),
 			}, "task")),
 		Run: runDispatchTask,
 	}
@@ -280,7 +280,7 @@ func resolveDispatchMode(req string) (string, error) {
 // 的会话提权）。超出即拒绝并给明确报错：不静默钳制——钳制会让模型以为已按请求
 // 生效，报错才能让它改口，或先请用户把本会话权限调宽。
 // 档位与权限面板同一套（read-only / workspace-write / full；danger-full-access
-// 按别名折成 full，与 request_permission 同口径）。不传＝沿用「工作区内读写」
+// 按别名折成 full，与 request_permission 同口径）。不传＝沿用「修改工作区」
 // 这一既有默认，本会话权限更窄时取本会话权限（只降不升）。
 func (t *toolContext) dispatchPermission(req string) (string, error) {
 	cur := permModeOf(t.sess)
@@ -295,7 +295,7 @@ func (t *toolContext) dispatchPermission(req string) (string, error) {
 		return permWorkspace, nil
 	}
 	if req != permReadOnly && req != permWorkspace && req != permFull {
-		return "", fmt.Errorf("permission=%q 不是有效档位：只能是 %s（只读）/ %s（工作区内读写）/ %s（完全访问）", req, permReadOnly, permWorkspace, permFull)
+		return "", fmt.Errorf("permission=%q 不是有效档位：只能是 %s（全电脑只读）/ %s（修改工作区）/ %s（完全访问）", req, permReadOnly, permWorkspace, permFull)
 	}
 	if sandboxPolicyRank(req) > sandboxPolicyRank(cur) {
 		return "", fmt.Errorf("permission=%s 超出本会话当前权限（%s）：派发只能同等或降权，绝不允许增权。请改为「%s」或更窄的档位重试；确需更宽权限时，先请用户把本会话（数字助理）的权限调宽再派发",
@@ -368,7 +368,7 @@ func (a *App) dispatchSubTool() Tool {
 				"workspace":  strProp("可选：子对话的工作目录（绝对路径），默认沿用当前工作区；与 remote_workspace 互斥"),
 				"remote_workspace": strProp("可选：子对话使用的 SSH 远程工作区（本对话的二号工作区），取值照抄环境快照「可派发远程工作区」行里的完整地址（user@host:dir）。与 workspace 互斥；不填＝沿用当前环境（本会话挂了远程则继承同一远程）"),
 				"model":      strProp("可选：覆盖专家预设的模型，格式 providerId/modelId（如 deepseek/deepseek-v4-pro）或纯 modelId；不填用预设默认模型或全局默认"),
-				"permission": strProp("可选：子对话的权限档，取值 read-only（只读）/ workspace-write（工作区内读写）/ full（完全访问）。只能**同等或降权**——不得高于本会话（数字助理）当前权限，超出即拒绝并报错（不静默钳制）。不填＝工作区内读写（本会话权限更窄时取本会话权限）"),
+				"permission": strProp("可选：子对话的权限档，取值 read-only（全电脑只读）/ workspace-write（修改工作区）/ full（完全访问）。只能**同等或降权**——不得高于本会话（数字助理）当前权限，超出即拒绝并报错（不静默钳制）。不填＝修改工作区（本会话权限更窄时取本会话权限）"),
 			}, "task")),
 		Run: runDispatchSub,
 	}
@@ -612,7 +612,7 @@ func sendToSessionTool() Tool {
 			objSchema(map[string]any{
 				"session_id": strProp("目标会话 id，来自 list_sessions"),
 				"task":       strProp("完整、自足的一段需求"),
-				"permission": strProp("可选：这条新需求使用的权限档，取值 read-only（只读）/ workspace-write（工作区内读写）/ full（完全访问）。只能**同等或降权**——不得高于本会话（数字助理）当前权限，也不得高于该会话自己的当前权限（既有会话的档位不能被这条需求抬高），超出即拒绝并报错（不静默钳制）。不填＝沿用该会话当前的权限档，不做任何改动"),
+				"permission": strProp("可选：这条新需求使用的权限档，取值 read-only（全电脑只读）/ workspace-write（修改工作区）/ full（完全访问）。只能**同等或降权**——不得高于本会话（数字助理）当前权限，也不得高于该会话自己的当前权限（既有会话的档位不能被这条需求抬高），超出即拒绝并报错（不静默钳制）。不填＝沿用该会话当前的权限档，不做任何改动"),
 			}, "session_id", "task")),
 		Run: runSendToSession,
 	}

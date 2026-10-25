@@ -12,7 +12,7 @@ func TestEnvUpdateMessageTiers(t *testing.T) {
 	prev := "# 运行环境快照（最新，取代更早的快照）\n" +
 		"- 操作系统：Windows 11\n" +
 		"- 工作区目录：D:\\demo\n" +
-		"- 权限模式：工作区内读写——文件写入仅限工作区\n"
+		"- 权限模式：修改工作区——文件写入仅限工作区\n"
 
 	t.Run("纯新增走补充消息", func(t *testing.T) {
 		cur := prev + "- 能力：已开启「操作浏览器」——可用 browser_* 工具\n"
@@ -52,7 +52,7 @@ func TestEnvUpdateMessageTiers(t *testing.T) {
 		cur := "# 运行环境快照（最新，取代更早的快照）\n" +
 			"- 操作系统：Windows 11\n" +
 			"- 工作区目录：D:\\other\n" + // 同 key 新值
-			"- 权限模式：工作区内读写——文件写入仅限工作区\n"
+			"- 权限模式：修改工作区——文件写入仅限工作区\n"
 		got := envUpdateMessage(prev, cur)
 		if !strings.HasPrefix(got, "# 运行环境快照（完整重发") {
 			t.Fatalf("同 key 换值应完整重发，got 首行: %q", firstLine(got))

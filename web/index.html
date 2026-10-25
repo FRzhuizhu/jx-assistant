@@ -241,7 +241,7 @@
             </button>
             <button id="perm-chip" class="chip-btn" title="权限与能力设置">
               <svg id="perm-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
-              <span id="perm-chip-label">工作区内读写</span>
+              <span id="perm-chip-label">修改工作区</span>
               <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
             </button>
             <span id="mode-flags" class="mode-flags hidden">
@@ -333,7 +333,7 @@
                   </button>
                   <button id="sub-perm-chip" class="chip-btn" title="权限与能力设置">
                     <svg id="sub-perm-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
-                    <span id="sub-perm-chip-label">工作区内读写</span>
+                    <span id="sub-perm-chip-label">修改工作区</span>
                     <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
                   </button>
                   <span id="sub-mode-flags" class="mode-flags hidden">
@@ -1022,10 +1022,10 @@
       <div class="perm-col-title">权限</div>
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
-        只读</span><input type="radio" name="perm" value="read-only"></label>
+        全电脑只读</span><input type="radio" name="perm" value="read-only"></label>
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        工作区内读写</span><input type="radio" name="perm" value="workspace-write" checked></label>
+        修改工作区</span><input type="radio" name="perm" value="workspace-write" checked></label>
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
         完全访问</span><input type="radio" name="perm" value="full"></label>

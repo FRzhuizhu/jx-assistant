@@ -81,7 +81,7 @@ func (a *App) createSession(p createSessionParams) (*SessionMeta, error) {
 		}
 		// 数字经理主对话（新装机首启自动创建的那个）默认完全访问：派发
 		// 「只能同等或降权」，总控自己先站到最高档，派出去的任务才有完整的
-		// 档位空间（任务默认仍是工作区内读写）；入口显式传权限则尊重。已建
+		// 档位空间（任务默认仍是修改工作区）；入口显式传权限则尊重。已建
 		// 主对话的权限存在会话库里，不受这个默认影响。
 		if mode == "assistant" {
 			perm = permFull
@@ -160,7 +160,7 @@ func (a *App) createSession(p createSessionParams) (*SessionMeta, error) {
 	if permModeOf(m) == permFull {
 		m.Tools = bundleFullAccessCaps(m.Tools) // 完全访问：预设捆绑能力一并点亮
 	} else if p.Tools == nil {
-		// 请求没带能力开关（tools 字段缺席）：按默认策略补（工作区内读写默认
+		// 请求没带能力开关（tools 字段缺席）：按默认策略补（修改工作区默认
 		// 开启「操作浏览器」）。显式传空数组 = 用户主动取消勾选，尊重用户。
 		m.Tools = mergeCapDefaults(m.Tools, m.Mode, permModeOf(m))
 	}
@@ -210,7 +210,7 @@ func applyPermissionChange(m *SessionMeta, perm string, toolsExplicit bool) bool
 	case permModeOf(m) == permFull:
 		m.Tools = bundleFullAccessCaps(m.Tools)
 	case was == permFull && !toolsExplicit:
-		// 从完全访问切回：捆绑能力随之取消，默认能力补回来（工作区内读写
+		// 从完全访问切回：捆绑能力随之取消，默认能力补回来（修改工作区
 		// 默认开启「操作浏览器」——切回时同时打开它）
 		m.Tools = mergeCapDefaults(stripFullAccessCaps(m.Tools), m.Mode, permModeOf(m))
 	}

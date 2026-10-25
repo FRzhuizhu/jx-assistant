@@ -78,31 +78,31 @@ func countEnvRows(t *testing.T, a *App, sid string) int {
 	return n
 }
 
-// 场景一：升档（工作区内读写 → 完全访问，捆绑能力点亮）。
+// 场景一：升档（修改工作区 → 完全访问，捆绑能力点亮）。
 func TestPermChangeNoteUpgrade(t *testing.T) {
 	s := &SessionMeta{Permission: "full",
 		Tools: []string{capUnsandboxed, capBrowser, capComputer, capDevice}}
 	note := permChangeNote(permSrcPanel, "workspace-write", []string{capBrowser}, s)
 	wantAll(t, note, "升档注记",
 		"权限变更：",
-		"权限模式：工作区内读写 → 完全访问",
+		"权限模式：修改工作区 → 完全访问",
 		"新增授权：完全访问——文件读写与命令执行不再受沙箱限制",
-		"取消授权：工作区内读写——「文件写入仅限工作区",
+		"取消授权：修改工作区——「文件写入仅限工作区",
 		"来源："+permSrcPanel+"，立即生效")
 	if strings.Contains(note, "\n") {
 		t.Fatalf("注记必须是单行（追加进快照尾部的注记行）：\n%s", note)
 	}
 }
 
-// 场景二：降档（完全访问 → 工作区内读写，捆绑能力随档位取消）。
+// 场景二：降档（完全访问 → 修改工作区，捆绑能力随档位取消）。
 func TestPermChangeNoteDowngrade(t *testing.T) {
 	s := &SessionMeta{Permission: "workspace-write", Tools: []string{capBrowser}}
 	note := permChangeNote(permSrcPanel, "full",
 		[]string{capUnsandboxed, capBrowser, capComputer, capDevice}, s)
 	wantAll(t, note, "降档注记",
-		"权限模式：完全访问 → 工作区内读写",
+		"权限模式：完全访问 → 修改工作区",
 		"取消授权：完全访问——「文件读写与命令执行不再受沙箱限制（助手自身配置/数据仍受保护）」的旧规则不再适用",
-		"新增授权：工作区内读写——文件写入仅限工作区")
+		"新增授权：修改工作区——文件写入仅限工作区")
 }
 
 // 场景三：仅能力开关变化（权限模式不变，逐项说新增/取消与效果）。
@@ -110,7 +110,7 @@ func TestPermChangeNoteCapsOnly(t *testing.T) {
 	s := &SessionMeta{Permission: "workspace-write", Tools: []string{capBrowser, capComputer}}
 	note := permChangeNote(permSrcApproval, "workspace-write", []string{capBrowser}, s)
 	wantAll(t, note, "能力开关注记",
-		"权限模式不变（工作区内读写）",
+		"权限模式不变（修改工作区）",
 		"新增能力：「操作电脑」computer_* 工具现在可用")
 
 	rev := permChangeNote(permSrcApproval, "workspace-write", []string{capBrowser, capDevice}, s)
@@ -140,7 +140,7 @@ func TestPermNoteRidesEnvSnapshot(t *testing.T) {
 		Tools: []string{capBrowser}, CreatedAt: "2026-10-08 09:00:00"}
 	mustCreateSession(t, a, sess)
 
-	env := "# 运行环境快照\n- 权限模式：工作区内读写\n"
+	env := "# 运行环境快照\n- 权限模式：修改工作区\n"
 	if got := a.maybeAppendEnvSnapshot(sess, env, nil); got != env {
 		t.Fatalf("首份快照应原样落库，得到：\n%s", got)
 	}
@@ -155,7 +155,7 @@ func TestPermNoteRidesEnvSnapshot(t *testing.T) {
 	env2 := "# 运行环境快照\n- 权限模式：完全访问\n"
 	got := a.maybeAppendEnvSnapshot(sess, env2, nil)
 	wantAll(t, got, "升档后的快照",
-		"- 权限模式：完全访问", "（权限变更：权限模式：工作区内读写 → 完全访问")
+		"- 权限模式：完全访问", "（权限变更：权限模式：修改工作区 → 完全访问")
 	if n := countEnvRows(t, a, "s1"); n != 2 {
 		t.Fatalf("注记应随新快照落第二条 env 行，行数 = %d", n)
 	}
@@ -223,7 +223,7 @@ func TestPatchSessionLandsEnvImmediately(t *testing.T) {
 	}
 	row := lastEnvRow(t, a, "s1")
 	wantAll(t, row, "PATCH 即落的快照",
-		"权限模式：完全访问", "（权限变更：权限模式：工作区内读写 → 完全访问", permSrcPanel)
+		"权限模式：完全访问", "（权限变更：权限模式：修改工作区 → 完全访问", permSrcPanel)
 
 	// 注记已随行消费，不留暂存；没有 report 行（走 env 通道）
 	if note := a.takePermNote("s1"); note != "" {
@@ -480,7 +480,7 @@ func TestRequestPermissionTool(t *testing.T) {
 	if e := <-errc; e != nil {
 		t.Fatalf("替用户点「允许」失败: %v", e)
 	}
-	if !strings.Contains(out, "工作区内读写") {
+	if !strings.Contains(out, "修改工作区") {
 		t.Fatalf("成功文案应说明新档：%s", out)
 	}
 	if permModeOf(sess) != permWorkspace {

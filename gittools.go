@@ -82,7 +82,7 @@ func runGitSync(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	// 只读档：fetch/pull/push 都会写（远程跟踪分支/合并/推送），属于写操作
 	if permModeOf(t.sess) == permReadOnly {
-		return "", errors.New("只读模式下 git_sync 不可用：本工具会更新远程仓库与本地远程跟踪分支，属于写操作。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档（弹审批卡，批准后立即生效）；或请用户把权限切到工作区内读写后再试")
+		return "", errors.New("全电脑只读模式下 git_sync 不可用：本工具会更新远程仓库与本地远程跟踪分支，属于写操作。可用 request_permission(target=workspace-write, justification=…) 向用户申请切换权限档（弹审批卡，批准后立即生效）；或请用户把权限切到修改工作区后再试")
 	}
 	// 模型词汇归一到 gitSync 的 op（整套同步在 gitSync 里是空串）
 	op := strings.TrimSpace(p.Op)

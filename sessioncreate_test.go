@@ -34,7 +34,7 @@ func TestCreateSessionDefaults(t *testing.T) {
 		t.Fatalf("模式未知应退 task、权限默认 workspace-write: %+v", m)
 	}
 	if len(m.Tools) == 0 {
-		t.Fatal("tools 缺席应补默认能力（工作区内读写默认开「操作浏览器」）")
+		t.Fatal("tools 缺席应补默认能力（修改工作区默认开「操作浏览器」）")
 	}
 	// 创建技能模式默认完全访问 + 捆绑能力
 	m2, err := a.createSession(createSessionParams{Mode: "skill-create"})
