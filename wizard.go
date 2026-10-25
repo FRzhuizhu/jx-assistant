@@ -39,7 +39,7 @@ var wizardUDPProbes = []int{2227, 2228}
 
 // wizardServer 一个候选服务端。
 type wizardServer struct {
-	Server  string `json:"server"`         // 如 http://192.168.1.10:PORT
+	Server  string `json:"server"`         // 如 https://example.com:PORT（发现应答/登记查询给的完整地址）
 	Name    string `json:"name,omitempty"` // 服务端市场名
 	Company string `json:"company"`        // 应答身份（与探测口令一致）
 	Src     string `json:"src"`            // lan=局域网发现 / registry=总服务器查询
@@ -315,7 +315,8 @@ func wizardRegistryLookup(registryURL, company string) ([]wizardServer, error) {
 	out := []wizardServer{}
 	for _, addr := range rec.Addrs {
 		out = append(out, wizardServer{
-			Server:  fmt.Sprintf("http://%s:%d", strings.Trim(addr, "[]"), rec.Port),
+			// 服务端业务只走 TLS（2026-10-25 明文停用），登记地址按 https 拼
+			Server:  fmt.Sprintf("https://%s:%d", strings.Trim(addr, "[]"), rec.Port),
 			Company: rec.Company, Src: "registry",
 		})
 	}
@@ -344,7 +345,7 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !strings.HasPrefix(server, "http://") && !strings.HasPrefix(server, "https://") {
-		server = "http://" + server // 容错：裸地址自动补协议
+		server = "https://" + server // 容错：裸地址按 https 补协议（明文已停用）
 	}
 
 	// ① 验证是 jxai-server（healthz）

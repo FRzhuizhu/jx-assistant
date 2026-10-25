@@ -1,9 +1,10 @@
 // 远程接入（公网中继）——家侧桥接端，对标聊天服务 p2p.js 的中继通道。
 //
 // 架构（RustDesk 式，与 C:\Users\54358\Videos\AI\deploy-210 上已跑通的网关同协议）：
-//   - 210 网关只做 ID 注册与密文中转：本端出站长连 ws://<host>:<port>/hub 注册设备号，
-//     手机等外部设备打开 http://<host>:<port>/a/<设备号>#pk=<配对密钥> 的通用配对页
-//     （gate.html），直连打洞不适用本实现（未接 PeerJS），自动落到 POST /relay 加密中继
+//   - 210 网关只做 ID 注册与密文中转：本端出站长连 wss://<host>:<port>/hub 注册设备号
+//     （2026-10-25 明文停用，只走 TLS；网关明文口仅 308 重定向），手机等外部设备打开
+//     https://<host>:<port>/a/<设备号>#pk=<配对密钥> 的通用配对页（gate.html），
+//     直连打洞不适用本实现（未接 PeerJS），自动落到 POST /relay 加密中继
 //   - 帧内容 AES-256-GCM 端到端加密（key = SHA-256(pairKey)），网关只见密文
 //   - 中继请求解密后桥接到本机回环的 HTTP 服务（/api/ 白名单），响应按 16KB 分帧
 //     流式回传——SSE 对话流/事件流天然兼容；210 对单请求有 150s 上限，前端已有的
@@ -230,19 +231,15 @@ func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCf
 
 // run 建立并守护一条 hub 连接，返回「本次连接是否成功注册过」。
 func (h *hubCtx) run() bool {
-	// wss 优先：网关有正规证书（Let's Encrypt）时引擎侧全程加密。
-	// TLS 失败再退回明文 ws——兼容自签/无证书的老网关与企业内网部署，日志留痕。
-	dial := func(scheme string) (net.Conn, *bufio.Reader, ws.Handshake, error) {
+	// 只走 wss（2026-10-25 明文停用）：网关 TLS 侧有正式证书，连接失败不再
+	// 降级明文 ws——如实记错误，由用户排查网络/证书，不静默走不加密链路。
+	dial := func() (net.Conn, *bufio.Reader, ws.Handshake, error) {
 		return (&ws.Dialer{Timeout: 15 * time.Second}).Dial(
-			context.Background(), fmt.Sprintf("%s://%s:%d/hub", scheme, h.cfg.Host, h.cfg.Port))
+			context.Background(), fmt.Sprintf("wss://%s:%d/hub", h.cfg.Host, h.cfg.Port))
 	}
-	conn, br, _, err := dial("wss")
+	conn, br, _, err := dial()
 	if err != nil {
-		log.Printf("[远程] wss 连接网关失败（%v），退回明文 ws 兼容旧网关", err)
-		conn, br, _, err = dial("ws")
-	}
-	if err != nil {
-		remoteLastError.Store(fmt.Sprintf("连接网关失败: %v", err))
+		remoteLastError.Store(fmt.Sprintf("wss 连接网关失败: %v", err))
 		return h.registered
 	}
 	h.conn = conn

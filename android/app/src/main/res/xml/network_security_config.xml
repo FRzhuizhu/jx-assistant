@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 网络安全策略（2026-10-25 明文停用）：远程传输一律 https/wss，明文 cleartext
+     仅放行本机回环 127.0.0.1——壳的 WebView 与设备桥都只连本机引擎（引擎再以
+     TLS 出网）。其余目标强制加密，误配 http 地址时直接连接失败而非明文裸奔。 -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

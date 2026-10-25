@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -428,6 +429,30 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.RemoteAccess.RegKey = def.RemoteAccess.RegKey
 	}
 	ensureRemoteIdentity(cfg, path)
+	// 一次性迁移（2026-10-25 明文停用）：存量配置里指向自家服务端的明文 http://
+	// 地址（向导/市场/搜索/更新/公司通道 baseURL）统一收敛到
+	// https://example.com:PORT——TLS 证书只覆盖域名，IP 直连的 https 证书校验必
+	// 失败；服务端明文口只剩 308 重定向。用户自配的第三方明文地址一律不碰。
+	plainSelfMigrated := false
+	swapPlain := func(u string) string {
+		nu, ok := migrateLegacyPlainURL(u)
+		if ok {
+			plainSelfMigrated = true
+		}
+		return nu
+	}
+	cfg.WizardServer = swapPlain(cfg.WizardServer)
+	cfg.WizardPublicServer = swapPlain(cfg.WizardPublicServer)
+	cfg.MarketURL = swapPlain(cfg.MarketURL)
+	cfg.SearchURL = swapPlain(cfg.SearchURL)
+	cfg.UpdateURL = swapPlain(cfg.UpdateURL)
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID != wizardProviderID {
+			continue // 只迁公司通道；私人提供方（本地 Ollama 等）的明文地址不动
+		}
+		cfg.Providers[i].BaseURL = swapPlain(cfg.Providers[i].BaseURL)
+		cfg.Providers[i].PublicBaseURL = swapPlain(cfg.Providers[i].PublicBaseURL)
+	}
 	// 更新检查：老配置没有这一键时补默认发布源；显式 "off" 原样保留
 	// （转成空的话，下一次保存配置又会被补回默认，用户就关不掉了）
 	if cfg.UpdateURL == "" {
@@ -472,13 +497,40 @@ func LoadConfig(path string) (*Config, error) {
 	// 步数上限从历次默认迁移过（旧默认 → 不限制）：立即落盘，让设置页读数、
 	// 配置文件与运行时三者一致（免得用户看到配置文件里还是 200，以为没生效；
 	// 其他补全都留给下一次保存）
-	if maxStepsBumped || remoteHostMigrated || compactMigrated {
+	if maxStepsBumped || remoteHostMigrated || compactMigrated || plainSelfMigrated {
 		if err := cfg.Save(path); err != nil {
 			log.Printf("回写配置迁移失败: %v", err)
 		}
 	}
 	cfg.syncLegacyFields()
 	return cfg, nil
+}
+
+// legacyPlainHosts 自家服务端的已知地址——存量配置里可能以明文 http:// 记录
+//（历史网关域名、内网 IP、外网域名），明文停用后统一收敛到正式域名。
+var legacyPlainHosts = []string{"example.com", "jxaizz.cn", "nas.example.org", "192.0.2.210"}
+
+// migrateLegacyPlainURL 把「http://<自家host>[:任意端口]<路径…>」迁到
+// https://example.com:PORT<路径…>（端口无关：2227/2228 是服务端口、3000/3001 是
+// 内网明文直连 new-api 的历史下发，一律收敛到服务端 TLS 口；provider baseURL
+// 的 /v1 路径随地址完整保留）。host 不在自家清单（用户自配的第三方明文服务）
+// 原样返回。幂等：迁过即 https，不再匹配。
+func migrateLegacyPlainURL(u string) (string, bool) {
+	if !strings.HasPrefix(u, "http://") {
+		return u, false
+	}
+	pu, err := url.Parse(u)
+	if err != nil || pu.Hostname() == "" {
+		return u, false
+	}
+	for _, x := range legacyPlainHosts {
+		if pu.Hostname() == x {
+			pu.Scheme = "https"
+			pu.Host = "example.com:PORT"
+			return pu.String(), true
+		}
+	}
+	return u, false
 }
 
 // syncLegacyFields 让旧字段与第一个 provider 保持一致，老版本 exe 回退时仍能读。

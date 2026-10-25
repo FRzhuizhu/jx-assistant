@@ -467,7 +467,7 @@
       <label class="strong">姓名<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
       <div class="wz-either"><b>公司名称与服务器地址，两项填其中一项即可</b></div>
       <label>公司名称<input id="wz-company" placeholder="局域网内自动发现（配对口令）" autocomplete="off"></label>
-      <label>服务器地址<input id="wz-server" placeholder="如 192.168.1.10:PORT（与上项二选一）" autocomplete="off" spellcheck="false"></label>
+      <label>服务器地址<input id="wz-server" placeholder="如 example.com:PORT（与上项二选一，自动按 https）" autocomplete="off" spellcheck="false"></label>
     </div>
     <div id="wz-result" class="remote-result hidden"></div>
     <div class="modal-actions">
@@ -711,7 +711,7 @@
             <h4>市场（技能 / 组件 / 插件）</h4>
             <div class="set-field">
               <div class="sf-label">市场服务器</div>
-              <input id="set-market-url" class="pf-input" placeholder="http://网关地址:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
+              <input id="set-market-url" class="pf-input" placeholder="https://example.com:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
               <p class="sf-desc">市场的清单地址；填好即用，改动即时生效。留空则市场页显示未配置。</p>
             </div>
             <div class="set-field">
@@ -761,7 +761,7 @@
             </div>
             <div class="set-field">
               <div class="sf-label">更新检查源</div>
-              <input id="set-update-url" class="pf-input" placeholder="http://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
+              <input id="set-update-url" class="pf-input" placeholder="https://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
               <p class="sf-desc">软件更新检查地址（填 off 关闭检查）；接入向导会自动填好。每 6 小时检查一次，有新版会在页顶提示。检查与安装操作在 设置 · 关于 · 软件更新。</p>
             </div>
           </div>
