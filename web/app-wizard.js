@@ -79,13 +79,13 @@ async function wzConnect() {
   try {
     let target = server;
     if (!target) {
-      wzSetResult('busy', '正在局域网内查找「' + esc(company) + '」的服务端…（约 2 秒）');
+      wzSetResult('busy', '正在查找「' + esc(company) + '」的服务端…（先搜局域网约 2 秒，外网自动转问总服务器）');
       const d = await api('/api/wizard/discover', { method: 'POST', body: JSON.stringify({ company }) });
       const list = d.servers || [];
       if (!list.length) {
-        wzSetResult('bad', '局域网没有发现「' + esc(company) + '」的服务端' +
-          '。<br>请确认：本机与公司服务端在同一网段；或改填服务器地址；或在 设置·网络访问 ' +
-          '配置总服务器地址后再试。');
+        wzSetResult('bad', d.registryMiss
+          ? '该公司名在总服务器上未登记。'
+          : '没有找到「' + esc(company) + '」的服务端。<br>请确认：本机与公司服务端在同一网段；或改填服务器地址；或在 设置·网络访问 检查总服务器地址后再试。');
         return;
       }
       target = list[0].server;

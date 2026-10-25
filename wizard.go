@@ -195,15 +195,21 @@ func (a *App) handleWizardDiscover(w http.ResponseWriter, r *http.Request) {
 	for _, s := range udpDiscoverServers(company) {
 		add(s)
 	}
-	// 总服务器查询兜底：广播被隔离（访客 Wi-Fi / 跨 VLAN）时按公司名查登记簿
-	if reg := strings.TrimSpace(a.Cfg.RegistryURL); reg != "" {
-		if servers, err := wizardRegistryLookup(reg, company); err == nil {
-			for _, s := range servers {
-				add(s)
+	// 总服务器查询兜底（串行：内网广播收满 2s 超时窗口后才问）——外网客户端
+	// 的主路径：按公司名查总服务器拿该公司的对外地址（registry server 字段）。
+	registryMiss := false
+	if len(found) == 0 {
+		if reg := strings.TrimSpace(a.Cfg.RegistryURL); reg != "" {
+			servers, err := wizardRegistryLookup(reg, company)
+			if err == nil {
+				for _, s := range servers {
+					add(s)
+				}
+				registryMiss = len(servers) == 0 // 查到了但 404 未登记：给用户准确的文案
 			}
 		}
 	}
-	writeJSON(w, 200, map[string]any{"servers": found})
+	writeJSON(w, 200, map[string]any{"servers": found, "registryMiss": registryMiss})
 }
 
 // udpDiscoverServers 向 255.255.255.255 与各接口子网广播地址发探测，收满超时窗口。
@@ -291,7 +297,12 @@ func broadcastTargets() []*net.UDPAddr {
 }
 
 // wizardRegistryLookup 按公司名向总服务器查登记的服务端地址（404=未登记，返回空）。
+// 响应的 server 完整地址字段优先（外网接入关键：登记的 publicServer 域名地址），
+// 老服务端没有该字段时退回按 addrs 拼内网地址。
 func wizardRegistryLookup(registryURL, company string) ([]wizardServer, error) {
+	if registryURL == "off" {
+		return nil, nil // 显式禁用总服务器查询（设置·网络访问）
+	}
 	u := strings.TrimRight(registryURL, "/") + "/registry/lookup?company=" + url.QueryEscape(company)
 	resp, err := wizardHTTP.Get(u)
 	if err != nil {
@@ -306,6 +317,7 @@ func wizardRegistryLookup(registryURL, company string) ([]wizardServer, error) {
 	}
 	var rec struct {
 		Company string   `json:"company"`
+		Server  string   `json:"server"` // 完整地址（新服务端下发；外网接入用）
 		Addrs   []string `json:"addrs"`
 		Port    int      `json:"port"`
 	}
@@ -313,6 +325,10 @@ func wizardRegistryLookup(registryURL, company string) ([]wizardServer, error) {
 		return nil, err
 	}
 	out := []wizardServer{}
+	if s := strings.TrimRight(strings.TrimSpace(rec.Server), "/"); s != "" {
+		out = append(out, wizardServer{Server: s, Company: rec.Company, Src: "registry"})
+		return out, nil
+	}
 	for _, addr := range rec.Addrs {
 		out = append(out, wizardServer{
 			// 服务端业务只走 TLS（2026-10-25 明文停用），登记地址按 https 拼

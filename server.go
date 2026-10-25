@@ -1335,13 +1335,19 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if body.RemoteEnabled != nil {
 		a.Cfg.RemoteAccess.Enabled = *body.RemoteEnabled
 	}
+	// 远程访问身份（设备名/配对密钥）：网关确认制——中继开启且网关在线时，先在
+	// 当前已注册连接上凭旧凭据完成网关侧改名/改密（防本地先改导致登记簿凭据
+	// 脱节把自己锁死），成功才落盘；中继未启用时本地直改（无网关身份要同步）。
+	var nextID, nextPK string
+	var wantChange bool
 	if v := body.RemoteMyID; v != nil {
 		id := strings.TrimSpace(*v)
 		if !validRemoteID(id) {
 			writeErr(w, 400, "设备号需为 2~32 位字母/数字/中划线/下划线")
 			return
 		}
-		a.Cfg.RemoteAccess.MyID = id
+		nextID = id
+		wantChange = true
 	}
 	if v := body.RemotePairKey; v != nil {
 		pk := strings.TrimSpace(*v)
@@ -1349,7 +1355,25 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "配对密钥需为 8~64 位可打印字符")
 			return
 		}
-		a.Cfg.RemoteAccess.PairKey = pk
+		nextPK = pk
+		wantChange = true
+	}
+	if wantChange {
+		cur := a.Cfg.RemoteAccess
+		if nextID == "" {
+			nextID = cur.MyID
+		}
+		if nextPK == "" {
+			nextPK = cur.PairKey
+		}
+		if (nextID != cur.MyID || nextPK != cur.PairKey) && cur.Enabled && cur.Host != "" {
+			if err := a.requestHubUpdate(nextID, nextPK); err != nil {
+				writeErr(w, 409, "网关未确认身份修改："+err.Error())
+				return
+			}
+		}
+		a.Cfg.RemoteAccess.MyID = nextID
+		a.Cfg.RemoteAccess.PairKey = nextPK
 	}
 	if v := body.RemoteHost; v != nil {
 		h := strings.TrimSpace(*v)

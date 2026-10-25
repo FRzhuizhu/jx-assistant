@@ -28,7 +28,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -59,7 +61,22 @@ const (
 	relayMaxBody    = 64 << 20         // 单请求体上限（与 p2p.js / 210 对齐）
 	relayChunkSize  = 16 * 1024        // 响应分帧大小（DataChannel/中继链路友好）
 	relayBridgeHost = "127.0.0.1"      // 桥接目标固定走本机回环
+	relayUpdTimeout = 8 * time.Second  // 设置页改名/改密在 hub 连接上的确认超时
 )
+
+// hubAuthKey /hub 注册的设备凭据：由 PairKey 派生（域独立于中继端到端密钥
+// relayKey=SHA256(PairKey)——网关只存它的哈希，推不出中继密钥）。2026-10-25
+// 起网关按「用户名+凭据」的登记簿准入：TOFU 首登记、凭据不符即拒（防冒充
+// 顶号），取代人人相同的全局口令。
+func hubAuthKey(pairKey string) string {
+	k := sha256.Sum256([]byte("jxai-hub-auth:" + pairKey))
+	return hex.EncodeToString(k[:])
+}
+
+// activeHub 当前已注册的 hub 连接（设置页改名/改密在它上面做网关确认）。
+// 注册成功置入、连接废弃时对己清理；读侧允许短暂读到已死连接（发送/等回帧
+// 自然超时，调用方按「网关未连接」处理）。
+var activeHub atomic.Pointer[hubCtx]
 
 // remoteHubStatus 供设置页展示与编辑的通道状态（含身份字段：设置页的
 // 设备号/密钥/网关输入框由此回显）。
@@ -90,6 +107,9 @@ type hubCtx struct {
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc // rid → 进行中桥接请求的中止句柄
+
+	updMu   sync.Mutex
+	updWait chan string // 在途改名/改密的回帧通道（"ok" / "fail:reason"）；nil=无
 
 	lastPong atomic.Int64 // unix ms；任何入站数据/pong 都刷新
 }
@@ -245,6 +265,7 @@ func (h *hubCtx) run() bool {
 	h.conn = conn
 	h.lastPong.Store(time.Now().UnixMilli())
 	defer func() {
+		activeHub.CompareAndSwap(h, nil) // 连接废弃：让设置页的网关确认入口回到「未连接」
 		h.mu.Lock()
 		for rid, cancel := range h.cancels { // 掐断所有进行中的桥接请求
 			cancel()
@@ -269,8 +290,10 @@ func (h *hubCtx) run() bool {
 		}
 	}()
 
-	// 注册并等 regok（15s 超时对齐 p2p.js 的 auth 窗口）
-	if err := h.sendJSON(map[string]any{"t": "register", "id": h.cfg.MyID, "key": h.cfg.RegKey}); err != nil {
+	// 注册并等 regok（15s 超时对齐 p2p.js 的 auth 窗口）。auth=PairKey 派生的
+	// 设备凭据（新网关按登记簿准入）；key 同时带 legacy 全局口令——旧网关只认
+	// key，一次注册双栖兼容，无需探测网关版本。
+	if err := h.sendJSON(map[string]any{"t": "register", "id": h.cfg.MyID, "key": h.cfg.RegKey, "auth": hubAuthKey(h.cfg.PairKey)}); err != nil {
 		remoteLastError.Store(fmt.Sprintf("注册帧发送失败: %v", err))
 		return h.registered
 	}
@@ -348,10 +371,11 @@ func (h *hubCtx) run() bool {
 		}
 		h.lastPong.Store(time.Now().UnixMilli())
 		var f struct {
-			T   string `json:"t"`
-			Rid string `json:"rid"`
-			Iv  string `json:"iv"`
-			Ct  string `json:"ct"`
+			T      string `json:"t"`
+			Rid    string `json:"rid"`
+			Iv     string `json:"iv"`
+			Ct     string `json:"ct"`
+			Reason string `json:"reason"` // regfail 的原因（注册被拒/改名失败）
 		}
 		if json.Unmarshal(data, &f) != nil || f.T == "" {
 			continue
@@ -360,6 +384,7 @@ func (h *hubCtx) run() bool {
 		case "regok":
 			first := !h.registered
 			h.registered = true
+			activeHub.Store(h) // 设置页改名/改密在当前已注册连接上做网关确认
 			remoteConnected.Store(true)
 			remoteLastError.Store("")
 			// 日志节流：重连风暴时按分钟记一次，别把日志刷爆（历史上一夜两万行）
@@ -388,8 +413,94 @@ func (h *hubCtx) run() bool {
 				delete(h.cancels, f.Rid)
 			}
 			h.mu.Unlock()
+		case "updateok":
+			// 设置页改名/改密的确认回帧（requestUpdate 等在这里）
+			h.deliverUpdateResult("ok")
+		case "regfail":
+			if h.registered {
+				// 注册已完成后的 regfail 只属于在途的改名/改密
+				h.deliverUpdateResult("fail:" + f.Reason)
+				continue
+			}
+			// 注册被拒（新网关登记簿校验）：如实记错误并断开。凭据不匹配多半是
+			// 设备名被他人登记（或本机 PairKey 被重置过）——联系管理员在管理页
+			// 「设备」页签处理，绝不静默换名绕过。
+			msg := "网关拒绝注册：" + f.Reason
+			switch f.Reason {
+			case "keyMismatch":
+				msg += "（该用户名已被其他设备登记：换一个设备号，或联系管理员在管理页移除旧登记）"
+			case "badName":
+				msg += "（设备号需为 2~32 位字母/数字/中划线/下划线）"
+			}
+			remoteLastError.Store(msg)
+			log.Printf("[远程] %s，断开", msg)
+			return h.registered
 		}
 	}
+}
+
+// deliverUpdateResult 把改名/改密的回帧投给等待者（无等待者则丢弃）。
+func (h *hubCtx) deliverUpdateResult(r string) {
+	h.updMu.Lock()
+	defer h.updMu.Unlock()
+	if h.updWait != nil {
+		select {
+		case h.updWait <- r:
+		default:
+		}
+	}
+}
+
+// requestUpdate 在当前已注册连接上凭旧凭据换新名/新密钥（网关确认制——设置页
+// 改身份必须先经网关落账，防本地先改导致新旧凭据脱节被锁死）。返回 nil=网关
+// 已确认，调用方随后落盘并热重启中继。
+func (h *hubCtx) requestUpdate(curID, curAuth, newID, newAuth string) error {
+	h.updMu.Lock()
+	if h.updWait != nil {
+		h.updMu.Unlock()
+		return errors.New("已有一次身份修改在进行中")
+	}
+	ch := make(chan string, 1)
+	h.updWait = ch
+	h.updMu.Unlock()
+	defer func() {
+		h.updMu.Lock()
+		h.updWait = nil
+		h.updMu.Unlock()
+	}()
+	if err := h.sendJSON(map[string]any{
+		"t": "update", "curId": curID, "curKey": curAuth, "nid": newID, "nkey": newAuth,
+	}); err != nil {
+		return fmt.Errorf("更新帧发送失败: %w", err)
+	}
+	select {
+	case r := <-ch:
+		if r == "ok" {
+			return nil
+		}
+		reason := strings.TrimPrefix(r, "fail:")
+		switch reason {
+		case "nameTaken":
+			return errors.New("该用户名已被占用，换一个再试")
+		case "keyMismatch":
+			return errors.New("当前凭据与网关登记不符（设备名可能被他人登记或本机密钥被重置），请联系管理员在管理页「设备」页签处理")
+		default:
+			return errors.New("网关拒绝：" + reason)
+		}
+	case <-time.After(relayUpdTimeout):
+		return errors.New("网关确认超时（通道可能已断开），稍后重试")
+	}
+}
+
+// requestHubUpdate 设置页改设备名/配对密钥的网关确认入口：在当前已注册的
+// hub 连接上完成（app 层取当前配置做旧凭据）。newID/newPairKey 为目标值。
+func (a *App) requestHubUpdate(newID, newPairKey string) error {
+	h := activeHub.Load()
+	if h == nil || !h.registered {
+		return errors.New("网关未连接：请先开启远程接入并连上网关再修改")
+	}
+	cur := a.Cfg.RemoteAccess
+	return h.requestUpdate(cur.MyID, hubAuthKey(cur.PairKey), newID, hubAuthKey(newPairKey))
 }
 
 /* ---------- 中继封包：AES-256-GCM，与 p2p.js sealFrame/openPack 逐字节兼容 ---------- */

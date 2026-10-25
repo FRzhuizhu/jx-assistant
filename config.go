@@ -230,7 +230,7 @@ type RemoteAccessCfg struct {
 	Port    int    `json:"port"`
 	MyID    string `json:"myId"`
 	PairKey string `json:"pairKey"`
-	RegKey  string `json:"regKey"`
+	RegKey  string `json:"regKey"` // legacy 全局口令：仅旧网关兼容用；准入实际凭据=PairKey 派生（hubAuthKey）
 }
 
 // 步数上限（一条消息触发的任务里，模型调用＋工具执行的连续步数）：0 或负数 =
@@ -293,8 +293,9 @@ func DefaultConfig() *Config {
 			Host:    "example.com",
 			Port:    2227,
 			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
-			RegKey:  "chat_p2p_v1",
+			RegKey:  "chat_p2p_v1", // legacy 全局口令：仅兼容未升级的旧网关；注册凭据实际走 PairKey 派生的 auth（remoteaccess.go hubAuthKey）
 		},
+		RegistryURL: "https://example.com:PORT", // 总服务器（公司名查询的入口）：内网发现超时后按公司名查它拿接入地址；"off"=禁用
 		UpdateURL:  "https://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
 		UpdateMode: "auto",
 		AskAlert:   AskAlertCfg{AfterSec: askAlertDefaultSec, Text: askAlertDefaultText},
@@ -452,6 +453,11 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.Providers[i].BaseURL = swapPlain(cfg.Providers[i].BaseURL)
 		cfg.Providers[i].PublicBaseURL = swapPlain(cfg.Providers[i].PublicBaseURL)
+	}
+	// 总服务器（公司名查询入口）：老配置没有这一键时补默认——外网客户端按
+	// 公司名查它拿接入地址（内网发现超时后走）；显式 "off" 原样保留（禁用查询）。
+	if cfg.RegistryURL == "" {
+		cfg.RegistryURL = def.RegistryURL
 	}
 	// 更新检查：老配置没有这一键时补默认发布源；显式 "off" 原样保留
 	// （转成空的话，下一次保存配置又会被补回默认，用户就关不掉了）
