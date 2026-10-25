@@ -12,7 +12,10 @@
  *   - 跟随当前会话的工作区（右栏跟对话走：会话切换经 rpRegister 的
  *     saveSession/restoreSession 统一恢复，选过的仓库一并记在该对话名下；
  *     'message:done' 自动刷新——AI 在对话里做的提交/合并，图谱随后就变）；
- *     面板打开 / 切仓库 / 页面重新可见时刷新一次，另有 12 秒轻量轮询（仅 status）。
+ *     面板打开 / 切仓库 / 页面重新可见时刷新一次（附带探一次远程 fetch，让
+ *     ahead/behind 跟上实际），另有 12 秒轻量轮询（仅 status，不碰网络）；
+ *     「⟳ 刷新」手动触发时探远程的结果（含失败原因）显示在状态条，不静默；
+ *     首屏数据未到显示「加载中」，不再画「(游离 HEAD)」式的误导空状态。
  *
  * 安全与边界（与宿主半边 gitpanel.go 对应）：仓库只能选宿主扫描出的候选；
  * 写操作：暂存 / 取消暂存 / 提交 / 切换本地分支（分支名限宿主列出的清单，
@@ -130,8 +133,8 @@
     aiBusy: false,        // AI 摘要生成中（跨刷新保留：按钮文案/禁用不被轮询复位）
     commitBusy: false,    // 提交进行中（同上：防刷新后按钮回活、重复提交）
     pullBusy: false,      // 拉取进行中（提交栏「↓ 拉取」按钮）
-    fetchBusy: false,     // 后台探远程状态进行中（refreshAll 触发，静默）
     pushBusy: false,      // 推送进行中（提交栏「↑ 推送」按钮）
+    loaded: false,        // 首轮 status 已返回：未返回前界面画「加载中」，不画误导的空状态
     opError: '',          // 操作类错误（用户点出来的）：轮询不抹，下一次成功操作才清
     timer: null,
   };
@@ -208,6 +211,7 @@
   /* ---------- 挂载点 ---------- */
 
   let root = null; // #rp-view-git 容器
+  let refreshBtn = null; // 顶栏「⟳ 刷新」按钮：手动探远程时加 busy 类转圈（样式在 client.css）
 
   function buildDom() {
     root = el('div', 'rp-view gitp');
@@ -224,7 +228,12 @@
       // 仓库换了：提交信息框清空，别把上一个仓库的信息提交到另一个仓库
       S.commitMsg = '';
       S.opError = '';
+      // 文件清单也清回「加载中」态并重画：新仓库数据到达前的空档里
+      // 不继续挂着上一个仓库的改动清单与分支行
+      S.groups = { staged: [], unstaged: [], untracked: [], conflicted: [] };
+      S.loaded = false;
       syncCommitBar();
+      render();
       refreshAll();
     };
     top.appendChild(repoSel);
@@ -239,8 +248,9 @@
     layoutBtn.onclick = toggleLayout;
     top.appendChild(layoutBtn);
     const refresh = el('button', 'gitp-icon-btn', '⟳');
-    refresh.title = '刷新';
-    refresh.onclick = refreshAll;
+    refresh.title = '刷新：重读仓库状态，并联网探一次远程（结果显示在状态条）';
+    refresh.onclick = () => refreshAll(true); // 手动刷新：探远程的结果要反馈出来
+    refreshBtn = refresh;
     top.appendChild(refresh);
     root.appendChild(top);
 
@@ -367,6 +377,7 @@
       o.title = r.path;
       sel.appendChild(o);
     }
+    if (!S.repos.length) sel.appendChild(el('option', null, S.loaded ? '（没有找到仓库）' : '加载中…'));
     sel.value = S.repo;
     if (!S.repo && S.repos.length) sel.value = S.repos[0].path;
 
@@ -525,17 +536,44 @@
     if (handOff) await suggestTask(handOff);
   }
 
-  /* 面板刷新时后台探一次远程状态（sync op=fetch）：让「拉取/推送」按钮的
-   * ahead/behind 跟上远程实际情况（status 本身只读本地跟踪分支，不碰网络）。
-   * 静默失败——无网/凭据问题不打扰，用户点按钮时后端还会再 fetch 兜底。 */
-  async function pokeRemote() {
-    if (S.fetchBusy) return;
-    S.fetchBusy = true;
-    try {
-      await gitPost('sync', { op: 'fetch' });
-      await loadStatus(); // 拿新的 ahead/behind 刷按钮（仅探，不动工作区）
-    } catch (e) { /* 静默 */ }
-    S.fetchBusy = false;
+  /* 面板刷新时探一次远程状态（sync op=fetch）：让 ahead/behind 跟上远程实际
+   * 情况（status 只读本地跟踪分支，不碰网络）。进行中的探查共用同一次：
+   * 手动点「⟳ 刷新」撞上正在跑的后台探查时，等待并复用同一结果。
+   * 自动场景（面板打开/切仓库/页面重新可见）静默——无网/凭据问题不打扰；
+   * 手动刷新必须给结果：此前失败被完全吞掉（后端 op=fetch 失败也返回
+   * 200 + summary），用户按了刷新却永远不知道远程状态其实没取到。 */
+  let fetching = null; // 进行中的 op=fetch promise（含随后补读的一次 status）
+  function pokeRemote(manual) {
+    if (!fetching) {
+      fetching = (async () => {
+        let r;
+        try {
+          const d = await gitPost('sync', { op: 'fetch' });
+          await loadStatus(); // 拿新的 ahead/behind 刷按钮与分支行（仅探，不动工作区）
+          // 成败都写在 summary 里：失败「获取远程状态失败：…」、无上游
+          // needHelp=true，后端对这些同样返回 200
+          r = { ok: !d.needHelp && !/失败/.test(d.summary || ''), summary: d.summary || '' };
+        } catch (e) {
+          r = { ok: false, summary: e.message };
+        }
+        fetching = null; // 完成后才放行下一次探查
+        return r;
+      })();
+    }
+    if (!manual) return; // 自动场景：静默
+    const job = fetching;
+    if (refreshBtn) refreshBtn.classList.add('busy'); // 探远程要走网络（最长 20 秒）：转圈
+    job.then((r) => {
+      if (refreshBtn) refreshBtn.classList.remove('busy');
+      if (r.ok) {
+        S.error = '';
+        S.opError = '';
+        S.note = (r.summary || '已同步远程状态') + '（' + new Date().toTimeString().slice(0, 8) + '）';
+      } else {
+        S.opError = '刷新远程状态没成功：' + (r.summary || '未知原因');
+      }
+      renderStrip();
+    });
   }
 
   /* 需要决策的 Git 操作：统一弹卡建议回对话新建工作任务，面板不代做 */
@@ -869,9 +907,15 @@
 
   /* ---------- 渲染：图谱区 ---------- */
 
+  /* 图谱浏览位置：renderGraph 重建前随时记录（图谱→图谱重画、进提交详情都
+   * 会走这里），画完恢复——轮询/远程探查带动的重画、详情返回都不打断浏览位置 */
+  let graphScrollTop = 0;
+
   function renderGraph() {
     const box = $id('gitp-graph');
     if (!box) return;
+    const prevScroll = box.querySelector('.gitp-graph-scroll');
+    if (prevScroll) graphScrollTop = prevScroll.scrollTop;
     box.innerHTML = '';
     if (S.commit) { box.appendChild(commitDetail()); return; }
 
@@ -879,8 +923,18 @@
     const bl = el('div', 'gitp-branchline');
     const cur = el('button', 'gitp-branchline-head');
     cur.appendChild(el('span', 'gitp-branch-dot'));
-    cur.appendChild(el('span', null, S.branch || '(游离 HEAD)'));
-    if (S.upstream) cur.appendChild(el('span', 'gitp-dir', '→ ' + S.upstream));
+    // 首轮数据未到时显示「加载中」：把「还没加载」画成「(游离 HEAD)」会让人
+    // 误以为仓库处于游离/未连接远程的异常状态；确实不在仓库里时明说
+    cur.appendChild(el('span', null, S.branch
+      || (S.loaded ? (S.repo ? '(游离 HEAD)' : '未找到仓库') : '加载中…')));
+    if (S.upstream) {
+      cur.appendChild(el('span', 'gitp-dir', '→ ' + S.upstream));
+      // 领先/落后徽标与展开清单、同步按钮同源（都来自最近一次 status）：
+      // 远程有更新在分支行上一眼可见——此前只藏在同步按钮文案里，
+      // 盯着分支行看不出远程有新提交
+      if (S.ahead > 0) cur.appendChild(el('span', 'gitp-chip ahead', '↑' + S.ahead));
+      if (S.behind > 0) cur.appendChild(el('span', 'gitp-chip behind', '↓' + S.behind));
+    }
     if (S.branches) {
       cur.appendChild(el('span', 'gitp-dir', '　' + S.branches.locals.length + ' 本地 · ' + S.branches.remotes.length + ' 远程'));
     }
@@ -913,7 +967,10 @@
     /* 泳道图（紧凑单行：徽标 + 主题 + 右侧暗色作者·时间） */
     const scroll = el('div', 'gitp-graph-scroll');
     if (!S.commits.length) {
-      scroll.appendChild(el('div', 'gitp-clean', S.commitsLoading ? '加载中…' : '这个仓库还没有提交'));
+      const emptyText = !S.loaded || S.commitsLoading ? '加载中…'
+        : !S.repo ? (S.reason || '当前工作目录不是 git 仓库')
+        : '这个仓库还没有提交';
+      scroll.appendChild(el('div', 'gitp-clean', emptyText));
       box.appendChild(scroll);
       return;
     }
@@ -989,6 +1046,7 @@
       scroll.appendChild(more);
     }
     box.appendChild(scroll);
+    scroll.scrollTop = graphScrollTop; // 回到重建前的浏览位置
   }
 
   async function openCommit(c) {
@@ -1101,6 +1159,10 @@
     try {
       const d = await gitGet('status');
       if (sess !== S.session || repo !== S.repo) return; // 期间已切会话/换仓库：旧响应不落地
+      // 图谱区分支行的数据源（分支/upstream/HEAD/领先落后）更新前后对比：
+      // 变了才重画图谱区。此前 status 从不重画图谱——graph 响应先到时分支行
+      // 停在初始「(游离 HEAD)」假状态，status 后到也不纠正，用户点一下才恢复
+      const graphKey = [S.branch, S.upstream, S.oid, S.ahead, S.behind].join('\x1f');
       S.repos = d.repos || [];
       S.repo = d.repo || '';
       S.branch = d.branch || '';
@@ -1111,6 +1173,7 @@
       S.groups = { staged: d.staged || [], unstaged: d.unstaged || [], untracked: d.untracked || [], conflicted: d.conflicted || [] };
       S.reason = d.reason || '';
       S.error = ''; // 只清读取类错误；S.opError（用户点操作失败的原因）留给用户读
+      S.loaded = true;
       if (S.detail) {
         // 文件在刷新后可能已消失（被提交/撤销）：退回清单
         const stillThere = S.groups.staged.concat(S.groups.unstaged, S.groups.untracked, S.groups.conflicted)
@@ -1119,6 +1182,7 @@
       }
       renderTop();
       renderChanges();
+      if ([S.branch, S.upstream, S.oid, S.ahead, S.behind].join('\x1f') !== graphKey) renderGraph();
       renderStrip();
     } catch (e) {
       S.error = e.message;
@@ -1132,7 +1196,8 @@
     const sess = S.session, repo = S.repo; // 请求发出时的会话/仓库：晚归响应据此作废
     try {
       const d = await gitGet('graph', reset ? {} : { skip: String(S.commits.length), limit: '60' });
-      if (sess !== S.session || repo !== S.repo) return; // 期间已切会话/换仓库：旧响应不落地
+      // 空仓库参数（默认第一个）的响应不受 S.repo 被填充影响：那是数据初始化不是用户换仓库
+      if (sess !== S.session || (repo && repo !== S.repo)) return;
       if (reset) S.commits = d.commits || [];
       else {
         const seen = new Set(S.commits.map((c) => c.hash));
@@ -1153,7 +1218,8 @@
     const sess = S.session, repo = S.repo; // 请求发出时的会话/仓库：晚归响应据此作废
     try {
       const d = await gitGet('branches');
-      if (sess !== S.session || repo !== S.repo) return; // 期间已切会话/换仓库：旧响应不落地
+      // 空仓库参数同 loadGraph：默认仓库的响应不因 S.repo 被填充而作废
+      if (sess !== S.session || (repo && repo !== S.repo)) return;
       S.branches = d;
       renderTop();
       renderGraph();
@@ -1167,11 +1233,13 @@
     renderStrip();
   }
 
-  function refreshAll() {
-    loadStatus();
-    loadGraph(true);
-    loadBranches();
-    pokeRemote(); // 后台探远程状态，刷新拉取/推送按钮的可用性（不阻塞面板）
+  function refreshAll(manual) {
+    // 先 status（确定默认仓库、填 S.repo），图谱与分支清单跟在后面：并发发时
+    // status 先返回会把 S.repo 从空填成默认仓库，同批 graph/branches 响应会被
+    // loadGraph/loadBranches 的「期间已换仓库」守卫整体误杀——首次打开面板
+    // （该会话还没选过仓库，S.repo 为空）必现，图谱区一直空到下一次触发
+    loadStatus().then(() => { loadGraph(true); loadBranches(); });
+    pokeRemote(manual); // 探一次远程刷新 ahead/behind：自动静默，手动（⟳ 按钮）结果写状态条
   }
 
   /* ---------- 生命周期 ---------- */
@@ -1208,7 +1276,13 @@
           S.commits = []; S.branches = null; S.detail = null; S.commit = null;
           S.commitMsg = ''; // 同上：跟着工作区一起换的还有提交信息框
           S.opError = '';
+          // 清回「加载中」态并立刻重画：此前清了数据但不重画，新会话数据到达前
+          // 界面一直残留上一个会话的仓库/分支/改动清单
+          S.repos = []; S.branch = ''; S.oid = ''; S.upstream = ''; S.ahead = 0; S.behind = 0;
+          S.groups = { staged: [], unstaged: [], untracked: [], conflicted: [] };
+          S.loaded = false;
           syncCommitBar();
+          render();
           // 数据不在这里拉：面板开着时 rpOpen('git') 的 onOpen 会 refreshAll；
           // 收着时等用户点开页签再拉
         },
@@ -1216,8 +1290,8 @@
       if (typeof rpRenderTabs === 'function') rpRenderTabs();
       render();
 
-      onMessageDone = () => { if (rpActive === 'git') { loadStatus(); loadGraph(true); } };
-      onVisible = () => { if (rpActive === 'git' && !document.hidden) loadStatus(); };
+      onMessageDone = () => { if (rpActive === 'git') loadStatus().then(() => loadGraph(true)); };
+      onVisible = () => { if (rpActive === 'git' && !document.hidden) { loadStatus(); pokeRemote(); } }; // 切回页面也探一次远程（静默）
       JX.on('message:done', onMessageDone);
       document.addEventListener('visibilitychange', onVisible);
       S.timer = setInterval(() => {

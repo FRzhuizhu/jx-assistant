@@ -267,6 +267,9 @@
 .gitp-chip.cur { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .gitp-chip.tag { color: var(--amber); background: var(--amber-bg); border-color: transparent; }
 .gitp-chip.remote { color: var(--text-2); }
+/* 分支行上的领先/落后徽标（与展开清单、同步按钮同源）：可推送=绿、待拉取=琥珀 */
+.gitp-chip.ahead { color: var(--green); background: var(--green-bg); border-color: transparent; }
+.gitp-chip.behind { color: var(--amber); background: var(--amber-bg); border-color: transparent; }
 
 .gitp-graph-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
 .gitp-crow {
