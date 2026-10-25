@@ -217,13 +217,17 @@ function fileMenuItems(view, sid, path, node) {
 }
 function deliveryMenuItems(view, sid, path, node) {
   const d = { path }; // deliveryOpenFile/Reveal 只读 path
+  // 手机端与交付卡按钮同一口径（isPhoneLikeEnv/deliveryDownloadFile 见 app-chat.js）：
+  // 「打开」换「下载」，「在文件夹中查看」是电脑的事，不出现。
+  const phone = isPhoneLikeEnv();
   const items = [
-    { label: '打开', fn: () => deliveryOpenFile(view, sid, d) },
-    { label: '在文件夹中查看', fn: () => deliveryRevealFile(view, sid, d) },
-    { sep: true },
-    { label: '预览（右栏）', fn: () => openInPanelBrowser({ session: sid, path }) },
-    { label: '复制路径', fn: () => navigator.clipboard.writeText(path).catch(() => {}) },
+    phone ? { label: '下载', fn: () => deliveryDownloadFile(sid, d) }
+      : { label: '打开', fn: () => deliveryOpenFile(view, sid, d) },
   ];
+  if (!phone) items.push({ label: '在文件夹中查看', fn: () => deliveryRevealFile(view, sid, d) });
+  items.push({ sep: true },
+    { label: '预览（右栏）', fn: () => openInPanelBrowser({ session: sid, path }) },
+    { label: '复制路径', fn: () => navigator.clipboard.writeText(path).catch(() => {}) });
   // 朗读口径：选中→念选中；否则念行内可见文字（文件名 + 大小，跳过按钮），再补
   // 上完整路径（交付行本身显示的是相对/短路径，念全路径更可听）
   const rowText = speechTextOf(node);

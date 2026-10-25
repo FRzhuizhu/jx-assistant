@@ -2032,6 +2032,34 @@ function deliveryOpenFile(view, sid, d) {
   }).catch((e) => alert('打开失败：' + e.message));
 }
 
+// 手机/平板环境（手机壳 jx-link、手机浏览器、iPad）：交付卡的「打开」换成「下载」。
+// UA 为主（壳与手机浏览器都带 Android/iPhone/Mobile），matchMedia 触屏兜底（不带
+// Mobile 字样的平板）；桌面 WebView2/Electron/电脑浏览器都不含这些、主指针是鼠标。
+function isPhoneLikeEnv() {
+  if (/(Android|iPhone|iPad|iPod|Mobile)/i.test(navigator.userAgent)) return true;
+  try { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) { return false; }
+}
+
+// 手机端交付卡的「下载」：走 GET /api/sessions/{id}/delivery/download（后端只放行
+// 已登记的交付路径）。远程模式顶层文档不在家端 origin，<a> 直链打不开——交给
+// JX_REMOTE.downloadURL（经隧道取 blob 再触发保存）；其余环境（手机壳/手机浏览
+// 器，同源）a[href] 点击即可：手机壳的 DownloadListener 接住交系统 DownloadManager
+// 落公共下载目录，手机浏览器走自己的下载。
+function deliveryDownloadFile(sid, d) {
+  const url = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
+  const name = String(d.path).replace(/\\/g, '/').split('/').pop() || '交付文件';
+  if (window.JX_REMOTE) {
+    window.JX_REMOTE.downloadURL(url, name).catch((e) => alert('下载失败：' + ((e && e.message) || e)));
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 1000);
+}
+
 function deliveryRevealFile(view, sid, d) {
   const cur = view === subView ? subState.cur : state.cur;
   if (cur && cur.remote) { alert('这是远程工作区里的文件，本机没有对应路径，无法在文件夹中定位。'); return Promise.resolve(); }
@@ -2072,9 +2100,11 @@ const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((ent
   }
 }) : null;
 
-// 交付成果卡片：deliver_result 登记的最终交付文件。每行三个动作（「打开」「右侧
-// 打开」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）都等同
-// 「打开」该文件，悬停有高亮反馈。不再提供「下载」按钮。
+// 交付成果卡片：deliver_result 登记的最终交付文件。电脑端每行三个动作（「打开」
+// 「右侧打开」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）
+// 都等同「打开」该文件，悬停有高亮反馈。手机端主按钮换成「下载」（见
+// deliveryDownloadFile）：文件落到手机上才谈得上用，「打开」在手机上只会把电脑
+// 那头的系统程序调起来，手机自己什么都看不见。
 function deliveryCard(dvs, sid, view) {
   view = view || mainView;
   const card = document.createElement('div');
@@ -2087,8 +2117,7 @@ function deliveryCard(dvs, sid, view) {
   dvs.forEach((d) => {
     const row = document.createElement('div');
     row.className = 'dc-file';
-    row.dataset.path = d.path; // 右键菜单取路径用（app-ctxmenu.js）
-    row.title = d.path + '\n点击打开这个文件';
+    row.dataset.path = d.path; // 右键菜单取路径用（app-ctxmenu.js）；title 在按钮区定下来后再按端设置
     const main = document.createElement('span'); // 文件名 + 灰色说明同属一块（.dc-main 只缩不折）
     main.className = 'dc-main';
     const nm = document.createElement('span');
@@ -2105,12 +2134,17 @@ function deliveryCard(dvs, sid, view) {
     row.appendChild(main);
     const acts = document.createElement('span');
     acts.className = 'dc-acts';
+    // 两端一套代码：电脑端主按钮「打开」（系统默认程序/右栏面板）；手机端换
+    // 「下载」并把「在文件夹中打开」收起（资源管理器是电脑的事），「右侧打开」
+    // 保留——手机右栏 iframe 照样能预览图片/网页/md。
+    const phone = isPhoneLikeEnv();
     const route = deliveryOpenRoute(view, d.path);
     const ov = document.createElement('button');
     ov.type = 'button';
     ov.className = 'dc-btn';
-    ov.textContent = '打开';
-    ov.title = route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
+    ov.textContent = phone ? '下载' : '打开';
+    ov.title = phone ? '下载到手机的下载目录'
+      : route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
       : '用系统默认程序打开这个文件';
     // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
     // 音视频、svg 这些浏览器能渲染的交付物，点它就在右栏看；md 也一样进右栏
@@ -2125,15 +2159,23 @@ function deliveryCard(dvs, sid, view) {
     rv.className = 'dc-btn';
     rv.textContent = '在文件夹中打开';
     rv.title = '在文件资源管理器中定位这个文件';
-    ov.onclick = (ev) => { ev.stopPropagation(); deliveryOpenFile(view, sid, d); };
+    ov.onclick = (ev) => {
+      ev.stopPropagation();
+      if (phone) deliveryDownloadFile(sid, d);
+      else deliveryOpenFile(view, sid, d);
+    };
     pv.onclick = (ev) => { ev.stopPropagation(); openInPanelBrowser({ session: sid, path: d.path }); };
     rv.onclick = (ev) => { ev.stopPropagation(); deliveryRevealFile(view, sid, d); };
     acts.appendChild(ov);
     acts.appendChild(pv);
-    acts.appendChild(rv);
+    if (!phone) acts.appendChild(rv);
     row.appendChild(acts);
-    // 整行可点击（含行内空白）：与「打开」等效
-    row.onclick = () => deliveryOpenFile(view, sid, d);
+    // 整行可点击（含行内空白）：与主按钮等效（电脑=打开，手机=下载）
+    row.title = d.path + (phone ? '\n点击下载这个文件' : '\n点击打开这个文件');
+    row.onclick = () => {
+      if (phone) deliveryDownloadFile(sid, d);
+      else deliveryOpenFile(view, sid, d);
+    };
     if (dcStackRO) dcStackRO.observe(row); // 折不折成上下两行，按行自身实际宽判断
     card.appendChild(row);
   });

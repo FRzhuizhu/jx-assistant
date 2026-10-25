@@ -763,8 +763,9 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 }
 
 /* 交付成果卡片：deliver_result 登记的最终交付文件。
-   每行三个动作（打开 / 右侧打开 / 在文件夹中打开），整行可点击并打开文件，
-   悬停高亮；没有「下载」按钮。字号同样 em 继承 --chat-fs。 */
+   每行动作按端自适应（app-chat.js 的 isPhoneLikeEnv）：电脑端「打开 / 右侧打开 /
+   在文件夹中打开」，整行可点击并打开文件；手机端主按钮是「下载」，「在文件夹中
+   打开」不出现。悬停高亮。字号同样 em 继承 --chat-fs。 */
 .delivery-card {
   border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: 10px; background: var(--code-bg); margin: 6px 0 18px; overflow: hidden;
@@ -773,7 +774,8 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .dc-head svg { width: 15px; height: 15px; color: var(--accent); flex: none; }
 .dc-title { font-weight: 600; font-size: .93em; }
 .dc-count { font-size: .93em; color: var(--text-3); }
-/* 行内动作按钮（打开 / 右侧打开 / 在文件夹中打开）：整行也可点，按钮各自独立。
+/* 行内动作按钮（电脑：打开 / 右侧打开 / 在文件夹中打开；手机：下载 / 右侧打开）：
+   整行也可点，按钮各自独立。
    文件名区与按钮区**地位对等**：两块的宽（文件名区最小宽 = 按钮区实际宽）
    加起来还塞不进行内可用宽时，就折成上下两行——上面「文件名 + 灰色说明」，
    下面「按钮」；塞得下就并在一行（名/说明靠左、按钮靠右）。
