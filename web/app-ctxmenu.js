@@ -217,14 +217,14 @@ function fileMenuItems(view, sid, path, node) {
 }
 function deliveryMenuItems(view, sid, path, node) {
   const d = { path }; // deliveryOpenFile/Reveal 只读 path
-  // 手机端与交付卡按钮同一口径（isPhoneLikeEnv/deliveryDownloadFile 见 app-chat.js）：
-  // 「打开」换「下载」，「在文件夹中查看」是电脑的事，不出现。
-  const phone = isPhoneLikeEnv();
+  // 远程端与交付卡按钮同一口径（isRemoteClientEnv/deliveryDownloadFile 见
+  // app-chat.js）：「打开」换「下载」，「在文件夹中查看」是本机的事，不出现。
+  const remote = isRemoteClientEnv();
   const items = [
-    phone ? { label: '下载', fn: () => deliveryDownloadFile(sid, d) }
+    remote ? { label: '下载', fn: () => deliveryDownloadFile(sid, d) }
       : { label: '打开', fn: () => deliveryOpenFile(view, sid, d) },
   ];
-  if (!phone) items.push({ label: '在文件夹中查看', fn: () => deliveryRevealFile(view, sid, d) });
+  if (!remote) items.push({ label: '在文件夹中查看', fn: () => deliveryRevealFile(view, sid, d) });
   items.push({ sep: true },
     { label: '预览（右栏）', fn: () => openInPanelBrowser({ session: sid, path }) },
     { label: '复制路径', fn: () => navigator.clipboard.writeText(path).catch(() => {}) });

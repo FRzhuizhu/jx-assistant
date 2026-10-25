@@ -2032,15 +2032,22 @@ function deliveryOpenFile(view, sid, d) {
   }).catch((e) => alert('打开失败：' + e.message));
 }
 
-// 手机/平板环境（手机壳 jx-link、手机浏览器、iPad）：交付卡的「打开」换成「下载」。
-// UA 为主（壳与手机浏览器都带 Android/iPhone/Mobile），matchMedia 触屏兜底（不带
-// Mobile 字样的平板）；桌面 WebView2/Electron/电脑浏览器都不含这些、主指针是鼠标。
-function isPhoneLikeEnv() {
-  if (/(Android|iPhone|iPad|iPod|Mobile)/i.test(navigator.userAgent)) return true;
-  try { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) { return false; }
+// 远程访问环境（发起访问的设备不是跑助手的那台电脑）：交付卡的「打开」换成
+// 「下载」——文件只在本机上，「打开」调起的是本机的系统程序，访问端什么都
+// 看不见。判据按访问位置、不看设备形态：桌面壳/Electron 的页面就跑在本机程序
+// 里（bindHost 配成局域网 IP 时壳里也不是 loopback，所以先判壳）；远程接入
+// （JX_REMOTE）必是别的设备；浏览器只认 loopback 地址为本机——手机壳、手机
+// 浏览器、局域网里别的电脑加载的都是电脑 IP。取舍：本机浏览器手动敲自己的
+// 局域网 IP 也会被当远程（下载到本机下载目录，文件仍在这台机器上，误伤很小；
+// 反过来远程点「打开」把本机程序调起来才是真问题）。
+function isRemoteClientEnv() {
+  if (bpwDesktop() || bpwElectron()) return false;
+  if (window.JX_REMOTE) return true;
+  const h = (location.hostname || '').toLowerCase();
+  return h !== 'localhost' && h !== '127.0.0.1' && h !== '::1' && h !== '[::1]';
 }
 
-// 手机端交付卡的「下载」：走 GET /api/sessions/{id}/delivery/download（后端只放行
+// 远程端交付卡的「下载」：走 GET /api/sessions/{id}/delivery/download（后端只放行
 // 已登记的交付路径）。远程模式顶层文档不在家端 origin，<a> 直链打不开——交给
 // JX_REMOTE.downloadURL（经隧道取 blob 再触发保存）；其余环境（手机壳/手机浏览
 // 器，同源）a[href] 点击即可：手机壳的 DownloadListener 接住交系统 DownloadManager
@@ -2100,11 +2107,11 @@ const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((ent
   }
 }) : null;
 
-// 交付成果卡片：deliver_result 登记的最终交付文件。电脑端每行三个动作（「打开」
+// 交付成果卡片：deliver_result 登记的最终交付文件。本机每行三个动作（「打开」
 // 「右侧打开」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）
-// 都等同「打开」该文件，悬停有高亮反馈。手机端主按钮换成「下载」（见
-// deliveryDownloadFile）：文件落到手机上才谈得上用，「打开」在手机上只会把电脑
-// 那头的系统程序调起来，手机自己什么都看不见。
+// 都等同「打开」该文件，悬停有高亮反馈。远程端（手机壳/手机浏览器/别的电脑/
+// 公网远程接入，见 isRemoteClientEnv）主按钮换成「下载」：文件落到访问的这台
+// 设备上才谈得上用，「打开」只会把本机那头的系统程序调起来，访问端看不见。
 function deliveryCard(dvs, sid, view) {
   view = view || mainView;
   const card = document.createElement('div');
@@ -2134,16 +2141,17 @@ function deliveryCard(dvs, sid, view) {
     row.appendChild(main);
     const acts = document.createElement('span');
     acts.className = 'dc-acts';
-    // 两端一套代码：电脑端主按钮「打开」（系统默认程序/右栏面板）；手机端换
-    // 「下载」并把「在文件夹中打开」收起（资源管理器是电脑的事），「右侧打开」
-    // 保留——手机右栏 iframe 照样能预览图片/网页/md。
-    const phone = isPhoneLikeEnv();
+    // 一套代码按访问位置分流（isRemoteClientEnv）：本机主按钮「打开」（系统
+    // 默认程序/右栏面板）；远程端换「下载」并把「在文件夹中打开」收起（资源
+    // 管理器是本机的事），「右侧打开」保留——远程右栏 iframe 照样能预览
+    // 图片/网页/md。
+    const remote = isRemoteClientEnv();
     const route = deliveryOpenRoute(view, d.path);
     const ov = document.createElement('button');
     ov.type = 'button';
     ov.className = 'dc-btn';
-    ov.textContent = phone ? '下载' : '打开';
-    ov.title = phone ? '下载到手机的下载目录'
+    ov.textContent = remote ? '下载' : '打开';
+    ov.title = remote ? '下载到这台设备的下载目录'
       : route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
       : '用系统默认程序打开这个文件';
     // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
@@ -2161,19 +2169,19 @@ function deliveryCard(dvs, sid, view) {
     rv.title = '在文件资源管理器中定位这个文件';
     ov.onclick = (ev) => {
       ev.stopPropagation();
-      if (phone) deliveryDownloadFile(sid, d);
+      if (remote) deliveryDownloadFile(sid, d);
       else deliveryOpenFile(view, sid, d);
     };
     pv.onclick = (ev) => { ev.stopPropagation(); openInPanelBrowser({ session: sid, path: d.path }); };
     rv.onclick = (ev) => { ev.stopPropagation(); deliveryRevealFile(view, sid, d); };
     acts.appendChild(ov);
     acts.appendChild(pv);
-    if (!phone) acts.appendChild(rv);
+    if (!remote) acts.appendChild(rv);
     row.appendChild(acts);
-    // 整行可点击（含行内空白）：与主按钮等效（电脑=打开，手机=下载）
-    row.title = d.path + (phone ? '\n点击下载这个文件' : '\n点击打开这个文件');
+    // 整行可点击（含行内空白）：与主按钮等效（本机=打开，远程=下载）
+    row.title = d.path + (remote ? '\n点击下载这个文件' : '\n点击打开这个文件');
     row.onclick = () => {
-      if (phone) deliveryDownloadFile(sid, d);
+      if (remote) deliveryDownloadFile(sid, d);
       else deliveryOpenFile(view, sid, d);
     };
     if (dcStackRO) dcStackRO.observe(row); // 折不折成上下两行，按行自身实际宽判断
@@ -6642,10 +6650,10 @@ function syncModelSubPop(view) {
 
 /* ---------- 弹出面板系统：加号菜单 / 权限面板 / 模型面板 / 目录面板 ---------- */
 
-const PERM_LABELS = { 'read-only': '只读', 'workspace-write': '工作区内读写', 'full': '完全访问' };
+const PERM_LABELS = { 'read-only': '全电脑只读', 'workspace-write': '修改工作区', 'full': '完全访问' };
 /* 窄屏（手机）输入工具栏一行排时权限芯片的短名（chip 的 data-short，CSS 换显，
    机制同左侧栏入口按钮）：全名六七个字会把模型标签挤没，短名保住可读性 */
-const PERM_SHORTS = { 'read-only': '只读', 'workspace-write': '读写', 'full': '完全' };
+const PERM_SHORTS = { 'read-only': '只读', 'workspace-write': '改工作区', 'full': '完全' };
 /* ---------- 模式前端定制点 ----------
    基础前端一套不变；工作模式要对界面做定向增补时，在自己 CHAT_MODES 那一项挂
    ui 对象：mount(view) 首次把控件挂进该视图（常驻 DOM，之后只切显隐），返回根
@@ -6789,7 +6797,7 @@ const chatModeOf = (v) => CHAT_MODES.find((m) => m.v === v) || { v: 'office', la
 // applyDraftMode：切换首页工作模式，带「创建技能」的权限联动——该模式要
 // 看懂用户演示（截屏/键鼠记录）并亲自验证技能步骤，操作电脑/浏览器是刚需，
 // 选中即默认完全访问（用户仍可在权限面板改回）；切去别的模式且权限还是
-// 本联动自动设的完全访问时，还原为工作区内读写。FULL_BUNDLED_TOOLS 的
+// 本联动自动设的完全访问时，还原为修改工作区。FULL_BUNDLED_TOOLS 的
 // 勾选随权限档联动（与权限面板同一套规则）。
 function applyDraftMode(v) {
   const fullByAuto = homeDraft.permission === 'full' && homeDraft._fullFromMode;
@@ -7059,8 +7067,8 @@ function openPlusMenu(view) {
 const FULL_BUNDLED_TOOLS = ['unsandboxed', 'browser', 'computer', 'device'];
 
 // 默认能力（后端 perm.go 的 capDefaultsForMode 是同一策略的唯一权威，这里是镜像）：
-// 「工作区内读写」默认开启「操作浏览器」，只对真会注册 browser_* 的模式生效；
-// 只读 / 完全访问不带默认项。用在「切档时把默认项补回」——完全访问 ⇄ 工作区内读写、
+// 「修改工作区」默认开启「操作浏览器」，只对真会注册 browser_* 的模式生效；
+// 只读 / 完全访问不带默认项。用在「切档时把默认项补回」——完全访问 ⇄ 修改工作区、
 // 创建技能模式 ⇄ 普通模式往返，都不能把默认能力丢掉（与后端 strip+merge 对齐）。
 const CAP_DEFAULT_MODES = ['task', 'office', 'coding', 'beginner-coding', 'skill-create'];
 function applyCapDefaults(tools, mode, perm) {
@@ -7965,7 +7973,7 @@ $('ws-pop-add').onclick = async () => {
 // 「添加远程工作目录」：打开 SSH 表单（与加号菜单里的是同一个）
 $('ws-pop-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', $('ws-row')); };
 // 权限面板：单选立即生效，多选即时收集；完全访问 ⇄ 三项捆绑能力联动
-// （切入强制勾上并置灰，切回「工作区内读写」/「只读」自动取消勾选）
+// （切入强制勾上并置灰，切回「修改工作区」/「只读」自动取消勾选）
 $('perm-pop').addEventListener('change', (e) => {
   const v = popView; // 面板是单例：改动作用在打开它的那个视图的会话上
   if (e.target.name === 'perm') {
@@ -7976,7 +7984,7 @@ $('perm-pop').addEventListener('change', (e) => {
     } else {
       const fields = { permission: e.target.value };
       if (sessionOrDraftFor(v).permission === 'full') {
-        // 从完全访问切回：捆绑点亮的三项能力随之自动取消，但默认能力要补回来（工作区内读写默认开启「操作浏览器」——切回时同时打开它）
+        // 从完全访问切回：捆绑点亮的三项能力随之自动取消，但默认能力要补回来（修改工作区默认开启「操作浏览器」——切回时同时打开它）
         const _cur = sessionOrDraftFor(v);
         fields.tools = applyCapDefaults((_cur.tools || []).filter((t) => !FULL_BUNDLED_TOOLS.includes(t)), _cur.mode, e.target.value);
       }
