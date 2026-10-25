@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -42,9 +43,11 @@ class BrowserActivity : Activity() {
     private var edgeX0 = 0f
     private var edgeY0 = 0f
 
-    // 本页里点进去的链接数：决定返回是「退这一步」还是「关掉这一层」
-    // （服务器重定向/页面自身跳转不计数，否则按返回只退了一次跳转，像没反应）
-    private var forwardLinks = 0
+    // 返回键的 stuck 判定：上次按返回时所在的地址与时刻。这次按返回时地址与上次
+    // 相同且间隔足够——上次那次 goBack 被页面吃掉了（自动跳转又推回原处、或历史里
+    // 同地址多条目按了等于没按），判定「退不动」，直接关掉这一层，别陪页面绕圈
+    private var lastBackUrl: String? = null
+    private var lastBackAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,18 +60,8 @@ class BrowserActivity : Activity() {
         findViewById<View>(R.id.btn_close).setOnClickListener { finish() }
         findViewById<View>(R.id.btn_reload).setOnClickListener { web.reload() }
         // 工具栏只是本页历史的导航（没上一级时按钮是灰的）；关掉这一层归 ✕ / 返回键
-        btnPrev.setOnClickListener {
-            if (canStepBack()) {
-                forwardLinks--
-                web.goBack()
-            }
-        }
-        btnNext.setOnClickListener {
-            if (web.canGoForward()) {
-                forwardLinks++
-                web.goForward()
-            }
-        }
+        btnPrev.setOnClickListener { if (web.canGoBack()) web.goBack() }
+        btnNext.setOnClickListener { if (web.canGoForward()) web.goForward() }
 
         setupWebView()
         syncBar() // 进来先灰掉后退/前进（此时无历史）
@@ -110,10 +103,7 @@ class BrowserActivity : Activity() {
             override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
                 val s = req.url.scheme ?: return false
                 if (s == "http" || s == "https" || s == "file") {
-                    // 用户在这页里点进去的链接才算「有上一级」：服务器重定向、页面
-                    // 自己跳转不计数，免得按返回只退了一次跳转、看着像没反应
-                    if (s != "file") forwardLinks++
-                    return false
+                    return false // 正常导航进本页历史：返回键以 WebView 历史为准逐级退
                 }
                 // tel:/mailto:/微信 一类交给系统；没有应用能接就安静地留在这一页
                 try {
@@ -138,7 +128,7 @@ class BrowserActivity : Activity() {
     }
 
     private fun syncBar() {
-        val back = canStepBack()
+        val back = web.canGoBack()
         val fwd = web.canGoForward()
         btnPrev.isEnabled = back
         btnPrev.alpha = if (back) 1f else 0.3f
@@ -146,16 +136,26 @@ class BrowserActivity : Activity() {
         btnNext.alpha = if (fwd) 1f else 0.3f
     }
 
-    private fun canStepBack(): Boolean = forwardLinks > 0 && web.canGoBack()
-
     /* ---------- 返回与手势：这一层的关闭只在这里决定 ---------- */
 
     override fun onBackPressed() {
-        // 先在「本页里点进去的链接」上退，退不动就关掉这一层回对话页。壳层的事壳里
-        // 收尾——不 evaluateJavascript 调 jxNavBack（那是电脑页的层级，在这一层上
-        // 调用只会把用户的返回吃掉）
-        if (canStepBack()) {
-            forwardLinks--
+        // 以 WebView 自己的历史为准：有上一页就退一步，退不动就关掉这一层回
+        // 对话页。不再自己数「点了几次链接」（旧的 forwardLinks 计数与真实历史
+        // 失配——页面 JS 跳转、location.replace、同地址多条目时，按返回永远退
+        // 不出这层，2026-10-25 用户实测「退到第一页后再按没反应」正出在这）。
+        // stuck 兜底：这次按返回时的地址与上次按返回时相同、且间隔已过 600ms
+        // （快速连按不算）——上次那次 goBack 被页面吃掉了（自动跳转推回原处、
+        // 或历史里同地址多条目按了等于没按），判定退不动，直接关层。壳层的事
+        // 壳里收尾——不 evaluateJavascript 调 jxNavBack（那是电脑页的层级）
+        if (web.canGoBack()) {
+            val now = SystemClock.elapsedRealtime()
+            val u = web.url
+            if (u != null && u == lastBackUrl && now - lastBackAt > 600) {
+                finish()
+                return
+            }
+            lastBackUrl = u
+            lastBackAt = now
             web.goBack()
             return
         }
