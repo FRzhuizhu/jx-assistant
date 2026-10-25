@@ -8,6 +8,7 @@
   "variants": {
     "docx": { "modules": ["docx"], "wheels": ["python-docx"] },
     "xlsx": { "modules": ["openpyxl"], "wheels": ["openpyxl"] },
-    "pptx": { "modules": ["pptx"], "wheels": ["python-pptx"] }
+    "pptx": { "modules": ["pptx"], "wheels": ["python-pptx"] },
+    "com": { "modules": ["win32com"], "wheels": ["pywin32"] }
   }
 }

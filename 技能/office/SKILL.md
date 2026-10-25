@@ -1,6 +1,6 @@
 ---
 name: office
-description: 创建、读取、修改并校验 Word（docx）/ Excel（xlsx）/ PowerPoint（pptx）文档。当输入是这三类文件，或用户要求产出/修改文档、表格、演示文稿时使用。
+description: 创建、读取、修改并校验 Word（docx）/ Excel（xlsx）/ PowerPoint（pptx）文档。当输入是这三类文件，或用户要求产出/修改文档、表格、演示文稿时使用。老式格式（.doc/.xls/.ppt）与 WPS 专有格式用 kind=com 老格式分册。
 ---
 
 # Office 文档技能
@@ -43,6 +43,28 @@ pptx → `python-pptx`。由助手的 `office_skill` 工具获取对应分册要
 - 版式页：`slide_layouts[0]`=标题页、`[1]`=标题+内容；文本在
   shape.text_frame 的 paragraph/run 层级里。
 - 图片 `add_picture` 的坐标单位是 EMU（914400 每英寸）。
+
+## com 分册要点（老式格式与 WPS 文档）
+
+适用：python 库读不了的老式 Office 格式（.doc/.xls/.ppt）与 WPS 专有
+格式（.wps/.et/.dps）——用本机已装的 Office/WPS 软件的 COM 口处理。
+本分册由 office_skill(kind=com) 提供，自动装配 pywin32。
+
+- **run_python 必须带 `com: true` 参数**（如 `{"code": "...", "com": true}`）。
+  该参数不在工具 schema 里，是本分册的专用执行通道：置 true 时脚本绕过
+  OS 沙箱在宿主直接执行——COM 在沙箱内无法运行，不带此参数 Dispatch 必
+  挂起或报错，不要硬试。**仅限 COM 驱动 Office/WPS 的脚本使用，其他脚本
+  一律不带**；全电脑只读档下该通道不可用。
+- ProgID：Word=`Word.Application`、Excel=`Excel.Application`、
+  PPT=`PowerPoint.Application`；WPS 文字/表格/演示=`KWPS.Application` /
+  `Ket.Application` / `KWPP.Application`（拿不准用 com-probe 技能探测）。
+  报「无效的类字符串」= 该软件未装或 ProgID 不对，换一个或如实告知用户。
+- 纪律：`Visible=False`、`DisplayAlerts=False`；try/finally 里必须
+  `Quit()`（漏了会残留 WINWORD/WPS 进程占住文件句柄）；改既有文件前先
+  snapshot_file 打快照。
+- 常规套路：老 .doc 先 `SaveAs` 另存 .docx（wdFormatXMLDocument=16）、
+  .xls 另存 .xlsx（xlWorkbookDefault=51），再交给 python-docx/openpyxl 处理；
+  转换必有细节损耗，重要版式先向用户说明。
 
 ## 结构校验
 

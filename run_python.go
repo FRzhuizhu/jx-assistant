@@ -75,6 +75,7 @@ func runPython(t *toolContext, args json.RawMessage) (string, error) {
 		TimeoutSec         int    `json:"timeout_sec"`
 		SandboxPermissions string `json:"sandbox_permissions"`
 		Justification      string `json:"justification"`
+		Com                bool   `json:"com"` // 隐藏参数：不进 schema，COM 专用（见 runPython 内通道注释）
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -121,6 +122,22 @@ func runPython(t *toolContext, args json.RawMessage) (string, error) {
 
 	// 内置便携运行时（ensureSkillRuntime 的缓存条件已按 modules 核对，
 	// 这里取基础运行时不会短路 office 等技能后续的依赖补装）
+	//
+	// 隐藏参数 com=true：Office/WPS COM 自动化专用（老 .doc/.xls/.ppt、WPS 格式
+	// ——受限令牌沙箱内 COM 客户端挂起或报 429，跑不了）。通道设计（产品决策）：
+	//   - 刻意不进 schema：工具定义对模型隐身，引擎入口无 schema 校验、参数
+	//     原样透传（json.Unmarshal 忽略未知字段），唯一告知点是 office 技能
+	//     com 分册（office_skill kind=com）——不相干会话不知道这条路的存在；
+	//   - 不做内容预检：假设模型听话，靠会话记录（脚本全文落库）审计兜底；
+	//   - 只读档仍拒绝（COM 自动化必然伴随打开/保存文件），报错指路切档；
+	//   - 生效时直接签发 full 策略凭证：runChild 对 permFull 走宿主直跑
+	//     （runUnconfinedLocal），其余命令通道不受影响、照旧进沙箱。
+	// 检查放在装配运行时之前：越权先拒，不为只读会话白付装配等待。
+	if p.Com {
+		if err := requireNotReadOnly(t, "run_python 的 COM 自动化通道（com）"); err != nil {
+			return "", err
+		}
+	}
 	py, err := t.app.ensureSkillRuntime(nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("内置 Python 运行时不可用（%v）。装配需联网（首次约几分钟）：稍后重试，或先调用 pdf / ocr / office_skill 之一触发装配；不要改用系统的 python/py", err)
@@ -129,17 +146,27 @@ func runPython(t *toolContext, args json.RawMessage) (string, error) {
 	// 与 run_command 同一把权限锁（exec：先按会话档执行，拒绝驱动升级）。
 	// 命令按平台构造：Windows 走 powershell -Command，`"exe" "script"` 在其
 	// 语法里是两个相邻字符串（非法），必须用调用操作符 & 引导；sh 形态无此问题。
+	// 授权分叉：com=true 走隐藏的宿主直跑通道（full 凭证，见上方通道注释），
+	// 其余命令照旧 authorize 进沙箱。
 	quote := func(s string) string { return `"` + s + `"` }
 	display := quote(py.Exe) + " " + quote(scriptPath)
 	if isWindowsRuntime {
 		display = "& " + display
 	}
-	grant, err := t.authorize(permAction{
-		Op: "exec", Tool: "run_python", Command: display, Cwd: t.workspace(),
-		EscalateTo: p.SandboxPermissions, Justification: p.Justification,
-	})
-	if err != nil {
-		return "", err
+	label := "run_python"
+	var grant *Grant
+	if p.Com {
+		label = "run_python(com)"
+		grant = t.app.issueGrant(t.sess.ID, "run_python", "exec",
+			"COM 自动化（宿主直跑）："+truncateRunes(scriptPath, 160), permFull)
+	} else {
+		grant, err = t.authorize(permAction{
+			Op: "exec", Tool: "run_python", Command: display, Cwd: t.workspace(),
+			EscalateTo: p.SandboxPermissions, Justification: p.Justification,
+		})
+		if err != nil {
+			return "", err
+		}
 	}
 	if err := t.app.consumeGrant(grant); err != nil {
 		return "", err
@@ -152,7 +179,7 @@ func runPython(t *toolContext, args json.RawMessage) (string, error) {
 	out, err := t.app.runChild(t.ctx, sandboxRun{
 		Dir: t.workspace(), Command: display,
 		Timeout: timeout, Policy: grant.Policy, Workspace: t.workspace(),
-		Remote: t.sess, Label: "run_python", Model: true,
+		Remote: t.sess, Label: label, Model: true,
 	})
 	if err != nil {
 		return "", sandboxErrHint(err)

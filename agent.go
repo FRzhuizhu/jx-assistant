@@ -264,7 +264,7 @@ dispatch_task 的可选参数与人工在界面新建工作任务**一一对应*
 
 - **文件用附件带**：办公类任务涉及具体文件（Office/PDF 等文档）时，优先用 attachments 把文件带给任务——附件会复制进任务工作区并登记为上传（原件自动多一份备份）；代码项目类任务才在任务书里直接给路径。
 - **用默认工作区**：办公任务一般不传 workspace（沿用默认工作区）；中间版本就放默认工作区里，最终成果靠任务自己的交付工具送回，不要把项目目录指派给它当工作区。
-- **权限要够跑 COM**：办公任务经常要驱动 Office 软件（Word/Excel/PPT 的 COM 口，读老 .doc 等格式也靠它），而 COM 自动化在命令沙箱内无法运行——派发时权限一般选**完全访问（full）**（自动捆绑「允许工作区外执行命令」能力；仍受上面「只能降不能升」约束），免得任务跑到一半被沙箱挡住；只做纯文本/表格生成（python 库直写、不碰 Office 程序）的轻量办公任务才可降档。
+- **权限按内容给，不必为 COM 升档**：办公任务默认不传 permission（修改工作区）即可；涉及老式 Office 格式（.doc/.xls/.ppt）或 WPS 文档时，任务会话里调 office_skill(kind=com) 取老格式分册，按分册的专用执行通道处理（COM 自动化不经命令沙箱），不要为此派完全访问；只做纯查证、不改文件的轻量任务才降只读。
 
 **代码项目（coding 模式）的派发要点**：
 
@@ -583,11 +583,12 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	b.WriteString("- 未经真实拒绝不要请求升级；升级被拒后该动作本轮终局：如实说明并停止，不要换法绕过；其他动作不受影响\n")
 	b.WriteString("- 任何模式都禁止访问助手自身的配置与数据目录（含 API Key）；不可逆的破坏性命令会被危险命令护栏拦截（护栏默认开启，用户可在设置中关闭）\n")
 	// COM 自动化与命令沙箱不兼容的事实公告：受限令牌下 COM 客户端
-	//（pywin32/comtypes 的 Dispatch）会挂起或报 429/权限拒绝。提前说清
-	// 出路，模型就不会在工作区内读写档里反复撞墙（仅本地桌面会话注入；
+	//（pywin32/comtypes 的 Dispatch）会挂起或报 429/权限拒绝。老式 Office
+	// 格式的处理有专用通道（office 技能 com 分册），公告只指路、不点破
+	// 隐藏参数本身，也不再把完全访问当出路（仅本地桌面会话注入；
 	// SSH 远程与安卓没有本机 Office COM 一说）。
 	if sess.Remote == nil && !isAndroidRuntime {
-		b.WriteString("- 本机软件 COM 自动化（如用 pywin32 驱动用户的 Office——Word/Excel/PPT 文档读写、老式 .doc 处理）需要完全访问权限档位才能正常运行：工作区内读写/只读档的命令沙箱会拦截 COM 调用（Dispatch 挂起或报 429/权限拒绝）；遇到这类失败先用 request_permission 申请完全访问再重试\n")
+		b.WriteString("- 老式 Office 格式（.doc/.xls/.ppt）与 WPS 专有格式（.wps/.et/.dps）的文档处理：先调 office_skill(kind=com) 取老格式分册指南，按分册的专用执行通道处理；命令沙箱内直接跑 COM（pywin32/comtypes 的 Dispatch）会挂起或报错，不要用 run_command/run_python 硬试，也不要为跑 COM 申请完全访问\n")
 	}
 	// 提问等待的「状态公告」：当前默认档位（questionTTL 变量）、停表行为与
 	// 声光提醒的触发点（随设置变——模型据此知道用户会被自动叫回来，不必
