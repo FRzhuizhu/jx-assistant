@@ -4172,7 +4172,7 @@ rpRegister('plan', {
 // 用户没点过时（pgFold=null）只在留白够的时候自动展开，否则一律折叠成胶囊；点过之后
 // 按用户的选择来（本次页面有效，刷新复位）。面板永远是浮层：不占对话区高度，出现与
 // 折叠切换都不触发对话区重排。
-const PG_W = 340;    // 卡片最大宽度（也是窄屏下舒适阅读宽度）
+const PG_W = 340;    // 卡片宽度上限（内容自适应：短清单更窄，见 #progress-panel 的 fit-content）
 const PG_MIN = 220;  // 自动展开的门槛：右侧留白至少放得下这么宽
 const PG_GAP = 10;   // 面板与对话区右缘的间距（胶囊与卡片共用，保证同一锚点）
 const PG_PAD = 24;   // 内容列自身的内边距：留白不够时可以借它，不算遮正文
@@ -4270,11 +4270,14 @@ function drawProgress() {
     for (const r of runs) {
       const live = r.state === 'running';
       const cmd = String(r.command || '');
+      // 停止按钮裹在时长格里、悬浮盖住「已跑 XXs」（见 .pg-run-stop 的 absolute
+      // 铺满时长区）：横向不占位——不悬停时只有蓝字，悬停该行按钮浮现盖在它上面
       html += '<li class="pg-run' + (live ? ' live' : '') + '">'
         + '<span class="pg-run-label">' + esc(r.label || '子进程') + '</span>'
         + '<span class="pg-run-cmd" title="' + esc(cmd) + '">' + esc(cmd.length > 70 ? cmd.slice(0, 70) + '…' : cmd) + '</span>'
-        + '<span class="pg-run-time">' + (live ? '已跑 ' + fmtElapsed(r.elapsed) : esc(r.exit || '已结束')) + '</span>'
+        + '<span class="pg-run-time">' + (live ? '已跑 ' + fmtElapsed(r.elapsed) : esc(r.exit || '已结束'))
         + (live ? '<button type="button" class="pg-run-stop" data-id="' + esc(r.id) + '" title="停止这个程序（会通知 AI：这是用户停止的，不是出错）">停止</button>' : '')
+        + '</span>'
         + '</li>';
     }
     html += '</ul>';

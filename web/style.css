@@ -2668,7 +2668,8 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 
 /* 进度面板（progress_write 的渲染）：对话区右上角的一枚浮窗。
    折叠＝「进度」胶囊；展开＝从同一个右上角往左下长出的卡片——右缘与顶边都不动，
-   所以点开是原地展开、不跳位（宽度由 app-chat.js 按右侧留白算好写进 --pg-w）。
+   所以点开是原地展开、不跳位。宽度按内容自适应、上限由 app-chat.js 按右侧留白
+   算好写进 --pg-w（340 封顶）：内容少面板就窄，不再恒定拉满上限。
    两种形态、任何宽度共用这一套定位，不再分窄屏/宽屏两套规则。
    它永远是浮层：不占对话区高度、出现与切换都不触发重排；层级压在消息之上、
    输入区（z-index 6）之下——报错条必须始终看得见。
@@ -2676,7 +2677,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
    跟设置里的「字体大小」联动，不写死 px。 */
 #progress-panel {
   position: absolute; top: calc(var(--tb-h) + 8px); right: 10px; z-index: 5;
-  width: var(--pg-w, 340px); max-width: calc(100% - 20px); /* 窄屏兜底，别顶出对话区 */
+  width: fit-content; max-width: min(var(--pg-w, 340px), calc(100% - 20px)); /* 窄屏别顶出对话区 */
   padding: 8px 12px; border-radius: 12px; font-size: var(--chat-fs);
   background: var(--bg); border: 1px solid var(--border);
   box-shadow: 0 4px 16px rgba(16, 20, 26, .14);
@@ -2727,10 +2728,13 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: .93em; color: var(--text-3);
 }
-.pg-run .pg-run-time { flex: none; color: var(--text-3); font-size: .93em; }
+.pg-run .pg-run-time { position: relative; flex: none; color: var(--text-3); font-size: .93em; }
+/* 停止按钮悬浮盖在时长格子正上方：absolute 铺满时长区（略外扩当点击区）、悬停
+   该行才现身——横向不占位（不出现时蓝字独占，出现时盖住它），行宽不为按钮留位 */
 .pg-run .pg-run-stop {
-  flex: none; align-self: center; margin-left: 2px; padding: 0 8px; border: 1px solid #e9578f; border-radius: 5px;
-  background: transparent; color: #e9578f; font-size: .86em; line-height: 1.6; cursor: pointer;
+  position: absolute; inset: -3px -4px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid #e9578f; border-radius: 5px;
+  background: var(--bg); color: #e9578f; font-size: .86em; cursor: pointer;
   opacity: 0; transition: opacity .12s ease;
 }
 .pg-run:hover .pg-run-stop { opacity: 1; }
