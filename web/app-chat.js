@@ -2790,10 +2790,16 @@ function handleGlobalEvent(ev) {
       break;
     case 'session_updated':
       // 权限档/能力开关的变更（审批卡「始终允许」升级、别处或另一窗口改权限）
-      // 只经这条广播告知：先就地同步正在显示该会话的输入区（主对话区 + 右栏
-      // 子对话，与是否流式无关——原来那道 state.streaming 门是胶囊滞后的根因），
-      // 再按需整包翻新内容
-      loadSessions().then(() => applySessionPermFromList(ev.sessionId));
+      // 优先用广播自带的新值（permission/tools）就地应用——「事件→再拉列表」的
+      // 二次往返要过 loadSessions 的防抖合并，流式执行中事件密集时窗口内的调用
+      // 等不到新列表，权限胶囊因此停在旧档（曾反复出现，别再退回去）。其余
+      // session_updated（改名/清空等）不带权限字段，仍走列表刷新取数。
+      if (ev.permission) {
+        applySessionPermToViews({ id: ev.sessionId, permission: ev.permission, tools: ev.tools || [] });
+        loadSessions(); // 侧栏等列表数据照常刷新，但不阻塞胶囊应用
+      } else {
+        loadSessions().then(() => applySessionPermFromList(ev.sessionId));
+      }
       refreshDrawer();
       if (viewing && !state.streaming) refreshCurrentSoon();
       break;

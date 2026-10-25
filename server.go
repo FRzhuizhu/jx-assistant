@@ -2027,11 +2027,21 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	// 次模型调用；下一次组装做等值比较，不会重复落。env「变化驱动」约束的是
 	// 发给模型的差分重发，不约束落库时机。权限变更注记随这份快照落库；
 	// emit 广播带 SessionID：空闲会话的前端也能实时翻新「运行环境更新」。
-	envTouched := false
+	envTouched, permTouched := false, false
 	for _, n := range notes {
 		if n.kind == ctxPerm || n.kind == ctxMode || n.kind == ctxWorkspace {
 			envTouched = true
 		}
+		if n.kind == ctxPerm {
+			permTouched = true
+		}
+	}
+	if permTouched {
+		// 权限档/能力开关变了：补广播一条自带新值的 session_updated。此前 PATCH
+		// 只有 env 行一条通道，前端要靠「事件→再拉列表」取数，而列表请求有防抖
+		// 合并，流式执行中事件密集时别处窗口拿到旧列表——权限胶囊停在旧档
+		// （多窗口权限互不同步的根因）。
+		a.broadcast(Event{Type: "session_updated", SessionID: m.ID, Permission: permModeOf(m), Tools: m.Tools})
 	}
 	if envTouched {
 		if note := permChangeNote(permSrcPanel, permWas, permWasTools, m); note != "" {

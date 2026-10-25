@@ -774,19 +774,24 @@ let popView = mainView; // 弹层归属视图（打开弹层时设置）
 function viewEl(view, id) { return $((view || mainView).key === 'main' ? id : 'sub-' + id); }
 
 // loadSessions 合并短时间内的多次触发：执行中会有成串的会话更新事件，
-// 不合并就会打出一串同样的列表请求（也拖慢页面）
-let loadSessionsTimer = null, loadSessionsPending = false;
+// 不合并就会打出一串同样的列表请求（也拖慢页面）。合并的是「请求」不是
+// 「等待」：防抖窗口内的调用共享本轮刷新的同一个 promise——早先这里对窗口内
+// 的调用立即假 resolve，await 拿到的是未刷新的旧列表，session_updated / env 行
+// 触发的权限胶囊同步因此反复拿旧值停在旧档（审批「始终允许」升级权限的胶囊
+// 滞后即源于此）。刷新完成后清空引用，下一次调用开启新一轮防抖周期。
+let loadSessionsTimer = null, loadSessionsFlush = null;
 function loadSessions() {
-  if (loadSessionsPending) return Promise.resolve();
-  loadSessionsPending = true;
-  return new Promise((resolve) => {
-    if (loadSessionsTimer) clearTimeout(loadSessionsTimer);
+  if (loadSessionsFlush) return loadSessionsFlush;
+  loadSessionsFlush = new Promise((resolve) => {
     loadSessionsTimer = setTimeout(() => {
-      loadSessionsPending = false;
       loadSessionsTimer = null;
-      loadSessionsNow().then(resolve, resolve);
+      loadSessionsNow().then(
+        () => { loadSessionsFlush = null; resolve(); },
+        () => { loadSessionsFlush = null; resolve(); }, // 失败不抛：调用方按现状继续
+      );
     }, 120);
   });
+  return loadSessionsFlush;
 }
 
 // upsertSessionBrief 把刚创建的会话 meta（POST /fork、POST /api/sessions 的响应，

@@ -52,6 +52,12 @@ type Event struct {
 	SessionID  string   `json:"sessionId,omitempty"`
 	Title      string   `json:"title,omitempty"`
 	ApprovalID string   `json:"approvalId,omitempty"`
+	// 权限档/能力开关的新值（session_updated 广播自带）：前端就地应用，不做
+	// 「事件→再拉列表」的二次往返——列表请求在前端有防抖合并，流式执行中事件
+	// 密集时窗口内的刷新拿旧列表，权限胶囊因此停在旧档（审批「始终允许」升级
+	// 权限后胶囊不更新曾反复踩中，别的 session_updated 不带这两个字段）。
+	Permission string   `json:"permission,omitempty"`
+	Tools      []string `json:"tools,omitempty"`
 	Summary    string   `json:"summary,omitempty"`
 	Reason     string   `json:"reason,omitempty"`
 	// Data 通用附带载荷（前端按 ev.type 自行解释）。目前用于 company_resync：

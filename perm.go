@@ -98,7 +98,7 @@ func (a *App) addCapability(s *SessionMeta, cap string) {
 	}
 	s.Tools = append(s.Tools, cap)
 	_ = a.Store.SaveMeta(s)
-	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
+	a.broadcast(Event{Type: "session_updated", SessionID: s.ID, Permission: permModeOf(s), Tools: s.Tools})
 }
 
 // requireCapability 是能力门控（browser_* / computer_* / device_* 工具族）的
@@ -262,14 +262,15 @@ func (a *App) switchToFullAccess(s *SessionMeta) {
 
 // switchSessionPerm 把会话切到指定权限档并广播（request_permission 审批
 // 「允许」、写升级「始终允许」到 workspace-write 用）：切到完全访问照点
-// 捆绑能力；切到其他档不动能力开关（用户显式勾选的不撤）。
+// 捆绑能力；切到其他档不动能力开关（用户显式勾选的不撤）。广播自带新值
+// （permission/tools），前端权限面板与胶囊就地应用，不等列表刷新。
 func (a *App) switchSessionPerm(s *SessionMeta, mode string) {
 	s.Permission = mode
 	if mode == permFull {
 		s.Tools = bundleFullAccessCaps(s.Tools)
 	}
 	_ = a.Store.SaveMeta(s)
-	a.broadcast(Event{Type: "session_updated", SessionID: s.ID})
+	a.broadcast(Event{Type: "session_updated", SessionID: s.ID, Permission: permModeOf(s), Tools: s.Tools})
 }
 
 // permModeOf 返回会话的权限模式（未设置时默认工作区内读写）。
