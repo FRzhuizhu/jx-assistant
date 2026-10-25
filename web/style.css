@@ -3263,7 +3263,7 @@ body.market-mode #composer-wrap { display: none; }
 .mk-icon-btn svg { width: 17px; height: 17px; }
 .mk-icon-btn:hover { background: var(--hover); color: var(--text); }
 
-.mk-tabs { display: flex; align-items: center; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--border); flex: none; }
+.mk-tabs { display: flex; align-items: center; gap: 4px; margin-top: 12px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; row-gap: 0; }
 .mk-tab { padding: 8px 14px 9px; border: none; background: none; font-size: 13.5px; color: var(--text-2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .mk-tab:hover { color: var(--text); }
 .mk-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }

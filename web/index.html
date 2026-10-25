@@ -69,9 +69,9 @@
          最底独占整行，桌面端照常多出一行。 -->
     <div class="sidebar-foot">
       <div class="foot-grid">
-      <button id="btn-market" class="foot-btn" title="市场：安装/更新 技能、组件与插件">
+      <button id="btn-market" class="foot-btn" title="企业技能包：安装/更新 技能、组件与插件">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
-        市场
+        企业技能包
       </button>
       <button id="btn-recycle" class="foot-btn" title="回收站">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
@@ -117,11 +117,11 @@
     </header>
 
     <!-- 市场视图（app-market.js）：body.market-mode 下占领主区（对话区与输入区隐藏），
-         技能/组件/插件 三 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
+         企业技能包/企业组件包/兼容插件 三 tab + MCP + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
     <div id="market-view" class="hidden">
       <div class="mk-head">
         <div class="mk-title">
-          <h2>市场</h2>
+          <h2>企业技能包</h2>
           <span id="mk-server" class="mk-server" title="市场服务器（设置 · 网络访问 可改）"></span>
         </div>
         <input id="mk-search" type="search" placeholder="搜索名称 / 描述 / 标签…" autocomplete="off" spellcheck="false">
@@ -130,9 +130,9 @@
         </button>
       </div>
       <div class="mk-tabs">
-        <button data-mk-tab="skill" class="mk-tab active">技能</button>
-        <button data-mk-tab="component" class="mk-tab">组件</button>
-        <button data-mk-tab="plugin" class="mk-tab">插件</button>
+        <button data-mk-tab="skill" class="mk-tab active">企业技能包</button>
+        <button data-mk-tab="component" class="mk-tab">企业组件包</button>
+        <button data-mk-tab="plugin" class="mk-tab">兼容插件</button>
         <button data-mk-tab="mcp" class="mk-tab">MCP</button>
         <span class="mk-tabs-rest">
           <span id="mk-count"></span>
