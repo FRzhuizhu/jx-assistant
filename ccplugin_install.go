@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,9 +151,10 @@ func ccCloneGit(url string) (string, func(), error) {
 	return root, func() { os.RemoveAll(tmp) }, nil
 }
 
-// ccDownloadZip 下载一个 zip URL 并解压。
+// ccDownloadZip 下载一个 zip URL 并解压。URL 来自市场清单（内网服务端），
+// 故走 companyTransport（内网 https 一般没有可验证的证书）。
 func ccDownloadZip(url string) (string, func(), error) {
-	resp, err := http.Get(url)
+	resp, err := newCompanyHTTPClient(5 * time.Minute).Get(url)
 	if err != nil {
 		return "", nil, fmt.Errorf("下载失败: %w", err)
 	}

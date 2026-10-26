@@ -113,7 +113,7 @@ func (a *App) runWebSearch(t *toolContext, args json.RawMessage) (string, error)
 	req.Header.Set("Content-Type", "application/json")
 	// sess 在 authorize（permModeOf）处已保证非空；服务端按此头对对话轮询搜索引擎
 	req.Header.Set(searchConversationHeader, t.sess.ID)
-	client := &http.Client{Timeout: 35 * time.Second}
+	client := newCompanyHTTPClient(35 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", a.searchErrHint(fmt.Errorf("连接服务端失败（%s）: %w", base, err))

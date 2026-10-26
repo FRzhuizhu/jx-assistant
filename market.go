@@ -107,8 +107,8 @@ type marketCacheEntry struct {
 }
 
 var (
-	marketHTTPClient     = &http.Client{Timeout: 15 * time.Second}
-	marketDownloadClient = &http.Client{Timeout: 5 * time.Minute}
+	marketHTTPClient     = newCompanyHTTPClient(15 * time.Second)
+	marketDownloadClient = newCompanyHTTPClient(5 * time.Minute)
 )
 
 func (a *App) marketRecsPath() string { return filepath.Join(a.Cfg.DataDir, "market_installed.json") }

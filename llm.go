@@ -216,6 +216,7 @@ var streamHTTP = &http.Client{
 	Transport: &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialTLSContext:        companyTransport.DialTLSContext, // 证书策略同 companyTransport（域名/内网 IP 免校验，公网 IP 严格）
 		MaxIdleConns:          16,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,

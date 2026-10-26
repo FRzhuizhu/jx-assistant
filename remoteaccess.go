@@ -254,7 +254,10 @@ func (h *hubCtx) run() bool {
 	// 只走 wss（2026-10-25 明文停用）：网关 TLS 侧有正式证书，连接失败不再
 	// 降级明文 ws——如实记错误，由用户排查网络/证书，不静默走不加密链路。
 	dial := func() (net.Conn, *bufio.Reader, ws.Handshake, error) {
-		return (&ws.Dialer{Timeout: 15 * time.Second}).Dial(
+		// 只走 wss（2026-10-25 明文停用）。证书策略同 tlspolicy.go：域名/内网 IP
+		// 不校验证书（内网网关基本没有公网证书，用 IP 连必然 x509 IP SAN 错误），
+		// 公网 IP 仍严格——广播应答被公网 IP 抢答时会被挡在这里。
+		return (&ws.Dialer{Timeout: 15 * time.Second, TLSConfig: companyTLSConfig(h.cfg.Host)}).Dial(
 			context.Background(), fmt.Sprintf("wss://%s:%d/hub", h.cfg.Host, h.cfg.Port))
 	}
 	conn, br, _, err := dial()

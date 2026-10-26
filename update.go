@@ -213,7 +213,7 @@ func (a *App) checkUpdateOnce(url string) {
 		return
 	}
 	defer updateCheckMu.Unlock()
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := newCompanyHTTPClient(20 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		setUpdateError(err.Error())

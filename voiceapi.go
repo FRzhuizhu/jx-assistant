@@ -92,7 +92,7 @@ var (
 )
 
 // voiceHTTPClient 访问音色清单的普通 HTTP 客户端。
-var voiceHTTPClient = &http.Client{Timeout: 60 * time.Second}
+var voiceHTTPClient = newCompanyHTTPClient(60 * time.Second)
 
 // edgeGecToken Sec-MS-GEC 鉴权令牌（对齐 edge-tts 7.2.8 的算法）：
 // (unix秒+11644473600) 向下取整 5 分钟 → 转 100ns ticks →

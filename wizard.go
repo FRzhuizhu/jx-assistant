@@ -96,28 +96,7 @@ type provisionPayload struct {
 	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
 }
 
-var wizardHTTP = &http.Client{Timeout: 15 * time.Second}
-
-// wizardConnErrText 把 healthz 探测失败翻译成人话。最常踩的是「手填 IP 的 https」：
-// 服务器证书只签了域名（没有 IP SAN），TLS 校验必然失败——这时报"连不上"会让人
-// 去查端口/防火墙（2026-10-26 实测就有人怀疑 2227 UDP 没放行），其实换个域名就通。
-func wizardConnErrText(server string, err error) string {
-	msg := err.Error()
-	certFail := strings.Contains(msg, "x509") || strings.Contains(msg, "certificate") ||
-		strings.Contains(msg, "tls:")
-	if !certFail {
-		return "连不上 " + server + "：" + msg
-	}
-	host := server
-	if u, e := url.Parse(server); e == nil && u.Host != "" {
-		host = u.Hostname()
-	}
-	if net.ParseIP(host) != nil {
-		return "证书不匹配：" + server + " 的证书只对服务器域名有效，用 IP 直连过不了证书校验（错误：x509 ... IP SANs）。" +
-			"请改填公司域名地址（如 https://example.com:PORT），或直接在上一栏填<b>公司名称</b>让向导自动发现服务器。原始错误：" + msg
-	}
-	return "证书校验失败：" + server + "（证书过期、或不是签给这个域名的）。原始错误：" + msg
-}
+var wizardHTTP = newCompanyHTTPClient(15 * time.Second)
 
 // fetchProvision POST /provision 按人领配置包（向导接入与 sync.go 的公司通道
 // 自动重建共用）。任何失败都返回 error，由调用方决定提示方式。
@@ -394,7 +373,7 @@ func (a *App) handleWizardConnect(w http.ResponseWriter, r *http.Request) {
 	// ① 验证是 jxai-server（healthz）
 	resp, err := wizardHTTP.Get(server + "/healthz")
 	if err != nil {
-		writeErr(w, 400, wizardConnErrText(server, err))
+		writeErr(w, 400, "连不上 "+server+"："+err.Error())
 		return
 	}
 	var hz struct {

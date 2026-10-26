@@ -390,9 +390,10 @@ func enableSitePackages(rtDir string) error {
 	return fmt.Errorf("找不到 ._pth 配置文件")
 }
 
-// downloadFile 流式下载文件到目标路径。
+// downloadFile 流式下载文件到目标路径。走 companyTransport：内网服务端（技能市场、
+// 运行时、模型包）的 https 通常没有公网证书，用默认 client 会 x509 失败。
 func downloadFile(url, dest string) error {
-	resp, err := http.Get(url)
+	resp, err := newCompanyHTTPClient(5 * time.Minute).Get(url)
 	if err != nil {
 		return err
 	}

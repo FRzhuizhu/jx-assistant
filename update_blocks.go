@@ -71,7 +71,7 @@ var (
 	updateApplyMu  sync.Mutex // 串行化分块应用（轮询与手动检查可能同拍触发）
 	updateApplying bool
 	// 大块下载（voice 模型 zip 几百兆）：30 分钟上限、1GB 封顶
-	updateBlockDownload = &http.Client{Timeout: 30 * time.Minute}
+	updateBlockDownload = newCompanyHTTPClient(30 * time.Minute)
 )
 
 func (a *App) updatesStatePath() string {
@@ -143,7 +143,7 @@ func fetchUpdateBlocks(rel releaseInfo, sourceURL string) *updateBlocks {
 	if url == "" {
 		return nil
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := newCompanyHTTPClient(20 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		log.Printf("[更新] 分块清单下载失败（回退整包路）: %v", err)

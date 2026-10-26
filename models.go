@@ -363,7 +363,7 @@ func pingModel(p *ProviderCfg, model string) error {
 	if p.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newCompanyHTTPClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接失败: %w", err)
@@ -391,7 +391,7 @@ func (a *App) FetchModels(p *ProviderCfg) ([]ModelCfg, error) {
 	if p.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := newCompanyHTTPClient(15 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("连接失败: %w", err)

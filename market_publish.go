@@ -61,7 +61,7 @@ import (
 const marketPublishMaxZip = 200 << 20
 
 // marketPublishClient 转发发布请求用（大包 + 服务端打 zip，给足时间）。
-var marketPublishClient = &http.Client{Timeout: 10 * time.Minute}
+var marketPublishClient = newCompanyHTTPClient(10 * time.Minute)
 
 // marketOrigin 取市场清单地址的 origin（发布端点与清单同源）。
 func marketOrigin(rawURL string) (string, error) {

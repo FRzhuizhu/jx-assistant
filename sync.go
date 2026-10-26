@@ -174,7 +174,7 @@ func fetchAnnounce(server, user string) *announcePayload {
 	if user != "" {
 		u += "?user=" + url.QueryEscape(user)
 	}
-	client := http.Client{Timeout: 10 * time.Second}
+	client := http.Client{Timeout: 10 * time.Second, Transport: companyTransport}
 	resp, err := client.Get(u)
 	if err != nil {
 		return nil
