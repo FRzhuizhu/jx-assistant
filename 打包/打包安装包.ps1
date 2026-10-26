@@ -75,6 +75,34 @@ if ($ExeSource -ne "") {
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }
 
+# 出包前硬校验：stage 里那个「exe」必须真是 AMD64 的 PE 可执行文件。
+# 教训（20261025-3/4/5 三个安装包全废）：出包时把 engine 的 zip 当成 exe 传给了
+# -ExeSource（`-ExeSource 打包\静默更新\X\engine-X.zip`），Copy-Item 照抄，stage 里
+# 那个 .exe 其实是 PK 开头的压缩包，装到用户机器上 CreateProcess 直接报 216
+# （该版本与你的 Windows 不兼容）。这种东西必须在出包前拦住，不能等用户装。
+$exeItem = Get-Item $exe
+$fs = [IO.File]::OpenRead($exe)
+try { $hdr = New-Object byte[] 4096; $hn = $fs.Read($hdr, 0, $hdr.Length) } finally { $fs.Close() }
+$isPE = $false; $machine = 0
+if ($hn -gt 0x40 -and $hdr[0] -eq 0x4D -and $hdr[1] -eq 0x5A) {
+  $peOff = [BitConverter]::ToInt32($hdr, 0x3C)
+  if ($peOff -ge 0 -and ($peOff + 6) -lt $hn -and $hdr[$peOff] -eq 0x50 -and $hdr[$peOff + 1] -eq 0x45) {
+    $isPE = $true
+    $machine = [BitConverter]::ToUInt16($hdr, $peOff + 4)
+  }
+}
+if (-not $isPE) {
+  $head = ($hdr[0..3] | ForEach-Object { '{0:X2}' -f $_ }) -join ' '
+  throw "stage\坚祥数字助理GO.exe 不是 PE 可执行文件（头部 $head；zip 是 50 4B 03 04），拒绝出包。检查 -ExeSource 是否误传了 engine 的 .zip"
+}
+if ($machine -ne 0x8664) {
+  throw ("stage exe 的 PE 机器类型是 0x{0:X4}，不是 AMD64(0x8664)，拒绝出包：{1}" -f $machine, $exe)
+}
+if ($exeItem.Length -lt 30MB) {
+  throw ("stage exe 只有 {0:N1} MB，远小于正常发行体积（约 50 MB），拒绝出包：{1}" -f ($exeItem.Length / 1MB), $exe)
+}
+Write-Host ("== stage exe 校验通过：PE AMD64 / {0:N1} MB" -f ($exeItem.Length / 1MB))
+
 Write-Host "== 暂存技能目录（含便携 Python 运行时，体积较大）"
 Copy-Item $SkillsSource (Join-Path $stage "技能") -Recurse -Force
 
