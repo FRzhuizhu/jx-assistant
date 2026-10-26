@@ -2047,14 +2047,65 @@ function isRemoteClientEnv() {
   return h !== 'localhost' && h !== '127.0.0.1' && h !== '::1' && h !== '[::1]';
 }
 
+// 手机壳（jx-link）的下载通路：WebView 存不了 blob（详见 deliveryDownloadFile），
+// 壳注入了 JXLink.beginDownload/appendDownload/finishDownload 桥，由壳落盘到它
+// 自己的「下载管理」（首页第三个按钮）。没有桥 = 普通浏览器，返回 null 走原路。
+function jxShellBridge() {
+  try {
+    if (window.JXLink && typeof window.JXLink.beginDownload === 'function') return window.JXLink;
+  } catch (e) {}
+  return null;
+}
+
+function jxBase64Of(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  const SLICE = 0x8000; // 逐段转，避免 apply 参数过多爆栈
+  for (let i = 0; i < bytes.length; i += SLICE) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + SLICE));
+  }
+  return btoa(s);
+}
+
+// 把一个网址的内容存进手机壳的「下载管理」。分块 512KB（base64 后约 680KB），
+// 跨 JS↔Java 桥一次不会卡住主线程；取字节用 fetch（同源/隧道都带得上凭据）。
+window.jxShellSaveURL = async function (url, name) {
+  const br = jxShellBridge();
+  if (!br) throw new Error('不是手机壳环境');
+  const r = await fetch(url, { credentials: 'same-origin' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const blob = await r.blob();
+  const id = br.beginDownload(name || '下载文件', blob.type || '');
+  if (!id) throw new Error('手机壳无法创建下载');
+  const CHUNK = 512 * 1024;
+  try {
+    for (let off = 0; off < blob.size; off += CHUNK) {
+      const buf = await blob.slice(off, off + CHUNK).arrayBuffer();
+      if (!br.appendDownload(id, jxBase64Of(buf))) throw new Error('写入手机失败');
+    }
+    if (!br.finishDownload(id)) throw new Error('保存失败');
+  } catch (e) {
+    try { br.abortDownload(id); } catch (_) {}
+    throw e;
+  }
+};
+
 // 远程端交付卡的「下载」：走 GET /api/sessions/{id}/delivery/download（后端只放行
 // 已登记的交付路径）。远程模式顶层文档不在家端 origin，<a> 直链打不开——交给
 // JX_REMOTE.downloadURL（经隧道取 blob 再触发保存）；其余环境（手机壳/手机浏览
 // 器，同源）a[href] 点击即可：手机壳的 DownloadListener 接住交系统 DownloadManager
 // 落公共下载目录，手机浏览器走自己的下载。
+//
+// 手机壳（2026-10-27）：上面两条在 WebView 里**都不成**——DownloadListener 拿到
+// blob: 地址取不到内容，a[download] 也不会触发下载，用户看到的就是"下载失败"。
+// 所以壳里统一改走 JXLink 桥，文件落壳的私有目录，首页「下载管理」里打开/分享。
 function deliveryDownloadFile(sid, d) {
   const url = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
   const name = String(d.path).replace(/\\/g, '/').split('/').pop() || '交付文件';
+  if (jxShellBridge()) {
+    window.jxShellSaveURL(url, name).catch((e) => alert('下载失败：' + ((e && e.message) || e)));
+    return;
+  }
   if (window.JX_REMOTE) {
     window.JX_REMOTE.downloadURL(url, name).catch((e) => alert('下载失败：' + ((e && e.message) || e)));
     return;

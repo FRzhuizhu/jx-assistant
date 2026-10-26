@@ -461,6 +461,45 @@ class DeviceActivity : Activity() {
                 false
             }
         }
+
+        /* ---------- 交付文件下载（2026-10-27）：WebView 接不住 blob，改由壳存 ---------- */
+
+        /**
+         * 开始一个下载，返回句柄；网页侧随后按块 appendBase64（每块几百 KB），
+         * 最后 finishDownload 落成文件并出现在首页「下载管理」。
+         *
+         * 为什么要绕这一道：电脑端交付卡的「下载」在网页里是 `fetch → blob →
+         * a[download]`（远程模式经隧道），浏览器能存，**WebView 存不了**——blob
+         * 地址交给下载器取不到内容，用户看到的就是"下载失败"。壳把字节自己接
+         * 下来落盘，顺带给了手机端一个能打开/分享/删除的下载列表。
+         */
+        @android.webkit.JavascriptInterface
+        fun beginDownload(name: String?, mime: String?): String? =
+            DownloadStore.begin(this@DeviceActivity, name, mime)
+
+        @android.webkit.JavascriptInterface
+        fun appendDownload(id: String?, base64: String?): Boolean =
+            DownloadStore.append(id, base64)
+
+        @android.webkit.JavascriptInterface
+        fun finishDownload(id: String?): Boolean {
+            val item = DownloadStore.finish(this@DeviceActivity, id) ?: return false
+            runOnUiThread {
+                android.widget.Toast.makeText(
+                    this@DeviceActivity,
+                    "已保存到「下载管理」：${item.name}",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+            return true
+        }
+
+        @android.webkit.JavascriptInterface
+        fun abortDownload(id: String?) = DownloadStore.abort(id)
+
+        /** 手机壳标识：网页侧据此决定「下载」走壳的保存通路还是浏览器的 blob 通路 */
+        @android.webkit.JavascriptInterface
+        fun shellName(): String = "jx-link"
     }
 
     private fun portOf(u: Uri): Int =

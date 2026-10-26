@@ -46,6 +46,9 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_settings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+        findViewById<Button>(R.id.btn_downloads).setOnClickListener {
+            startActivity(Intent(this, DownloadsActivity::class.java))
+        }
 
         // 记忆位置：上次退出时停留在某台电脑里 → 直接进那台。
         // 只在「全新启动」时做：进程被杀后系统恢复任务栈时 savedInstanceState
@@ -63,7 +66,15 @@ class MainActivity : Activity() {
         // 是随后才重建的），那时清记忆等于把刚恢复的位置抹掉——用户从外面重进 APP
         // 就再也进不到上次那台电脑（2026-10-22 实测）。清记忆的职责归触发点：
         // 用户主动回首页（设备页浮条/返回键/边缘手势 → DeviceActivity.finish()）。
+        updateDownloadsButton()
         refresh()
+    }
+
+    /** 首页「下载管理」按钮带上数量（下完文件回首页一眼能看到有几个） */
+    private fun updateDownloadsButton() {
+        val n = try { DownloadStore.list(this).size } catch (e: Exception) { 0 }
+        findViewById<Button>(R.id.btn_downloads).text =
+            if (n > 0) "下载管理（$n）" else "下载管理"
     }
 
     override fun onDestroy() {

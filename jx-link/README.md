@@ -99,6 +99,16 @@
     `localStorage.clear()`
 - **在线探测**：对网关 `POST /relay` 发一个几十字节的加密探测帧（GET /api/shell-hash），
   网关对不在线设备回 503——不上注册号（同号重复注册会互踢），只借中继通道探活。
+- **下载管理（2026-10-27）**：电脑端交付卡的「下载」在网页里是 `fetch → blob →
+  a[download]`（远程模式经隧道），浏览器能存，**WebView 存不了**——`DownloadListener`
+  拿到 `blob:` 地址取不到内容，用户看到的直接是「下载失败」。现在壳里改成走桥：
+  网页调 `JXLink.beginDownload/appendDownload/finishDownload`（512KB 一块 base64），
+  壳落到私有目录 `files/downloads/`，首页第三个按钮「下载管理（N）」里可打开 / 分享 /
+  删除 / 清空（打开走 FileProvider，不需要任何存储权限）。网页侧判定见
+  `app-chat.js` 的 `jxShellBridge()`/`jxShellSaveURL()` 与 `remote-boot.js` 的
+  `downloadURL`（桥可能在顶层文档，也可能在远程外壳的父窗口）。
+  **版本号口径（2026-10-27 改）**：与电脑端统一用 `YYYYMMDD-N`（同日第 N 版），
+  `versionCode` 用 `YYYYMMDDNN`（如 2026102701），不再用 0.1.x 那套。
 - **设置页**：清空应用缓存 + 反馈意见（multipart 封帧经中继发电脑端 `/api/feedback`，
   依次尝试、上次所在电脑优先）。
 

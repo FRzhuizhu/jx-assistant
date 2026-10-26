@@ -91,5 +91,22 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="false" />
+
+        <!-- 下载管理：手机壳自己落盘的交付文件（交付卡的下载在 WebView 里接不住
+             blob，改由壳保存，见 DownloadStore） -->
+        <activity
+            android:name=".DownloadsActivity"
+            android:exported="false" />
+
+        <!-- 下载文件的打开/分享走 FileProvider（私有目录不对外暴露 file://） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

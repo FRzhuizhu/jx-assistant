@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DownloadStore 落文件的目录（files/downloads/）→ 经 FileProvider 给系统
+     「打开方式 / 分享」用；私有目录不能直接 file:// 外露 -->
+<paths>
+    <files-path name="downloads" path="downloads/" />
+</paths>

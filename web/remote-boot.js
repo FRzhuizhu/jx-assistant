@@ -674,6 +674,57 @@
       });
     },
     downloadURL: function (path, filename) {
+      // 手机壳（jx-link）：WebView 存不了 blob 下载，交壳的「下载管理」落盘。
+      // 桥可能挂在顶层文档（window）或父窗口（远程外壳在 iframe 里）。
+      var shell = null;
+      try {
+        if (window.JXLink && typeof window.JXLink.beginDownload === 'function') shell = window.JXLink;
+      } catch (e) {}
+      if (!shell) {
+        try {
+          var p = window.parent;
+          for (var i = 0; i < 3 && p && p !== window; i++) {
+            if (p.JXLink && typeof p.JXLink.beginDownload === 'function') { shell = p.JXLink; break; }
+            p = p.parent;
+          }
+        } catch (e) {}
+      }
+      if (shell) {
+        return window.fetch(path).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.blob();
+        }).then(function (b) {
+          var id = shell.beginDownload(filename || path.split('/').pop() || 'download', b.type || '');
+          if (!id) throw new Error('手机壳无法创建下载');
+          var CHUNK = 512 * 1024;
+          var off = 0;
+          function b64(buf) {
+            var bytes = new Uint8Array(buf), s = '', SLICE = 0x8000;
+            for (var i = 0; i < bytes.length; i += SLICE) {
+              s += String.fromCharCode.apply(null, bytes.subarray(i, i + SLICE));
+            }
+            return btoa(s);
+          }
+          function step() {
+            if (off >= b.size) {
+              if (!shell.finishDownload(id)) throw new Error('保存失败');
+              return;
+            }
+            var slice = b.slice(off, off + CHUNK);
+            off += CHUNK;
+            return slice.arrayBuffer().then(function (buf) {
+              if (!shell.appendDownload(id, b64(buf))) throw new Error('写入手机失败');
+              return step();
+            });
+          }
+          try {
+            return step();
+          } catch (e) {
+            try { shell.abortDownload(id); } catch (_) {}
+            throw e;
+          }
+        });
+      }
       return window.fetch(path).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.blob();
