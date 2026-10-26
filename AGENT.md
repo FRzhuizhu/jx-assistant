@@ -1668,7 +1668,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `main.go` | 启动入口：配置、HTTP 服务、自动开浏览器、-webdir 开发模式 |
 | `config.go` | 运行配置（含 providers 与压缩设置）的加载/保存/兼容折算 |
 | `models.go` | 多 provider 模型清单、调用目标解析、模型列表拉取 |
-| `llm.go` | OpenAI 兼容流式客户端（SSE 解析、工具调用增量聚合）+ mock 演示模型 |
+| `config.go` 的 `companyQuota` | **公司通道额度快照**（服务端随 `/announce`、`/provision` 的 `quota` 字段下发，客户端只存不算）：`sync.go` 的 `applyAnnounce` 与 `wizard.go` 的 `applyProvisionPayload` 写进 `Cfg.CompanyQuota`（`quotaEqual` 判变化才落盘）；`/api/models` 带 `companyQuota`（模型菜单里**公司通道那个分组头**上显示「剩余 N 积分」，悬停看明细）、`/api/config` 的公司通道带 `quota`（设置页公司通道**卡片头**的额度 chip + 展开后的明细与「刷新额度」）；设置页「刷新额度」走 `POST /api/company-sync`——复用 `companySyncOnce` 重拉一轮公告，**不为额度另开查询接口**（new-api 的 AI 接口没有余额端点，额度只能由服务端代读并随公告下发） || `llm.go` | OpenAI 兼容流式客户端（SSE 解析、工具调用增量聚合）+ mock 演示模型 |
 | `contextengine.go` | 上下文引擎：请求材料的唯一组装者 + 上下文事件总线。系统提示词（可被 `data/prompts/<mode>.md` 引用文件覆盖，引用文件附内容 hash 标记来源；版本号不进提示词——随发版变化会白白打断前缀缓存）、环境快照、工具目录、历史视图、视觉内联经 `Assemble` 成包（确定性：同一状态逐字节一致——前缀缓存命中的根基，有测试看护），token 估算与前缀指纹随包产出；每轮开轮的 prompt 展示快照行经 `OpenRound` 落库；需把上下文发给模型的侧路调用（模型摘要）由 `CallSummarizer` 拼装并发送（留痕 audit scope=summarize，不进请求环形缓存）；权限/模型/思考档位/计划目标/工作区/远程挂载等配置变更经 `Notify` 落时间线（audit type=ctx，含前后值）；技能增减由环境快照 diff 在尾部留痕，同一事实不重复记账 |
 | `agent.go` | 主循环：每步经上下文引擎取包 → 流式请求 → 执行工具 → 回填（只做编排，不亲手拼装——发给模型的内容一律来自引擎 Assembly）；`envPrompt` 生成运行环境快照（不含时间——时间走 context.go 的 timeAfter 派生通道） |
 | `perm.go` | 权限引擎：三档模式、授权凭证（签发/核销）、审批队列、受保护路径、危险命令拦截、沙箱内浏览器预拦（browserLaunchHit：非 full 档启动浏览器的命令执行前拦下并指路 browser_*，确定性失败路径的快速失败，不做组件开关） |

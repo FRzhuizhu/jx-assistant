@@ -54,7 +54,7 @@ function resetEmpty() {
         '<img class="logo-img" src="/logo.png" alt="坚祥数字助理">' +
         '<h1>更懂制造业的数字助理</h1>' +
       '</div>' +
-      '<p class="home-sub">描述你想做的事，或直接在左上角点「跟数字经理对话」。</p>' +
+      '<p class="home-sub">描述你想做的事，或直接在左上角点「跟长期助理对话」。</p>' +
       '<div id="home-composer"></div>' +
     '</div>';
   $('sess-title').textContent = '数字助理';
@@ -6548,17 +6548,10 @@ function renderModelPop(view) {
   const arrow = '<span class="lv-hit"><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></span>';
   const defLv = levelsOfDefault();
   let html = '';
-  // 公司通道额度提示（服务端随公告下发；只读）。选的是私人通道时不显示——额度
-  // 只对「公司内部通道」有意义。放在最上面一行，员工点模型顺带就知道还剩多少。
-  const q = state.companyQuota;
-  const hasCompany = (state.models || []).some((m) => m.providerId === 'company-internal');
-  if (q && hasCompany) {
-    const fmt = (n) => (n || 0).toLocaleString('zh-CN');
-    let text = q.unlimited ? '公司通道：额度不限量' : '公司通道剩余 ' + fmt(q.remainPoints) + ' 积分（≈' + ((q.remainPoints || 0) / 1000).toFixed(2) + ' 元）';
-    if (q.status === 2) text += ' · 额度已用完';
-    const sub = q.nextAt ? '下次重置 ' + q.nextAt.replace('T', ' ').slice(5, 16) : '不自动重置';
-    html += `<div class="model-quota-hint" title="由公司服务端与中转站结算，设置 · 模型里可刷新"><span>${esc(text)}</span><em>${esc(sub)}</em></div>`;
-  }
+  // 公司通道的额度显示在它自己的分组头上（见下面的 quotaBadge）：员工点开模型
+  // 选择，公司通道那一段就写着「剩余 N 积分 / 额度已用完」，不额外占一行。
+  const companyQuota = state.companyQuota || null;
+  const fmtPoints = (n) => (n || 0).toLocaleString('zh-CN');
   html += `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}${modelPopExpand === '__default__' && defLv.length ? ' exp' : ''}" data-key="__default__"><span>默认（${esc(state.defaultModel || '未配置')}）</span>${defLv.length ? arrow : ''}</button>`;
   let lastProv = '';
   for (const m of state.models || []) {
@@ -6567,7 +6560,20 @@ function renderModelPop(view) {
       // （通道仍可用，只是走的公网地址——不再让用户误以为不可用）
       const viaBadge = !m.providerOff && m.providerVia === 'wan'
         ? '（<span style="color:var(--green,#1f9d55)">外网通道中</span>）' : '';
-      html += `<div class="pop-group">${esc(m.providerName)}${m.providerOff ? '（已停用）' : viaBadge}</div>`;
+      // 公司通道这一组：分组头右侧直接带额度（服务端随公告下发，只读）
+      let quotaBadge = '';
+      if (m.providerId === 'company-internal' && companyQuota) {
+        const q = companyQuota;
+        let txt = q.unlimited ? '额度不限量' : '剩余 ' + fmtPoints(q.remainPoints) + ' 积分';
+        if (q.status === 2) txt = '额度已用完';
+        let tip = q.unlimited ? '公司通道：额度不限量（只记账）'
+          : '公司通道剩余 ' + fmtPoints(q.remainPoints) + ' 积分（≈' + ((q.remainPoints || 0) / 1000).toFixed(2) + ' 元）· 已用 ' + fmtPoints(q.usedPoints) + ' 积分';
+        tip += ' · 规则：' + (q.periodText || '') + (q.points ? '，每次 ' + fmtPoints(q.points) + ' 积分' : '');
+        tip += q.nextAt ? ' · 下次重置 ' + q.nextAt.replace('T', ' ').slice(0, 16) : ' · 不自动重置';
+        tip += '（由公司服务端与中转站结算；设置·模型的公司通道卡片里可刷新）';
+        quotaBadge = `<span class="pop-quota" title="${esc(tip)}">${esc(txt)}</span>`;
+      }
+      html += `<div class="pop-group">${esc(m.providerName)}${m.providerOff ? '（已停用）' : viaBadge}${quotaBadge}</div>`;
       lastProv = m.providerId;
     }
     const k = m.providerId + '|' + m.modelId;

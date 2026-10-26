@@ -23,7 +23,27 @@ function setMarketView(on) {
   const btn = $('btn-market');
   if (btn) btn.classList.toggle('active', on);
   if (!on) mkuClose(); // 离开市场视图时收起上传技能弹层（上传中不关）
-  if (on) loadMarket(false);
+  if (on) {
+    // 进市场页就绕过 60s 缓存拉一次最新清单（管理页下架后要尽快消失），
+    // 再每 60 秒静默复查一次——市场页开着很久也不会一直显示旧条目
+    loadMarket(true);
+    startMarketAuto();
+  } else {
+    stopMarketAuto();
+  }
+}
+
+/* 市场页开着时的自动复查（60 秒，静默：不闪「正在刷新」、不清已渲染的列表） */
+let mkAutoTimer = 0;
+function startMarketAuto() {
+  stopMarketAuto();
+  mkAutoTimer = setInterval(() => {
+    if (!marketOpen() || document.hidden) return;
+    loadMarket(true, true);
+  }, 60 * 1000);
+}
+function stopMarketAuto() {
+  if (mkAutoTimer) { clearInterval(mkAutoTimer); mkAutoTimer = 0; }
 }
 
 function toggleMarket() {
@@ -42,16 +62,19 @@ function closeMarket() { setMarketView(false); }
 
 /* ---------- 数据加载与渲染 ---------- */
 
-async function loadMarket(force) {
+async function loadMarket(force, silent) {
   const list = $('mk-list');
   if (!list) return;
   if (mkLoading) return;
   mkLoading = true;
-  if (force && mkData) list.innerHTML = '<div class="mk-hint">正在刷新清单…</div>';
-  else if (!mkData) list.innerHTML = '<div class="mk-hint">正在加载…</div>';
+  if (!silent) {
+    if (force && mkData) list.innerHTML = '<div class="mk-hint">正在刷新清单…</div>';
+    else if (!mkData) list.innerHTML = '<div class="mk-hint">正在加载…</div>';
+  }
   try {
     mkData = await api('/api/market' + (force ? '?refresh=1' : ''));
   } catch (e) {
+    if (silent) { mkLoading = false; return; } // 静默复查失败：保留现有列表，下一轮再试
     mkData = null;
     mkLoading = false;
     renderMarketState(esc('市场读取失败：' + e.message));

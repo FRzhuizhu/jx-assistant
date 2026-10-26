@@ -37,7 +37,7 @@ import (
 const (
 	assistantCurrentKey = "assistant.current" // globaldata 键：当前版本的会话 id
 	assistantVersionKey = "assistant.version" // sessdata 键：这一版的版本号（第一版=1）
-	assistantMainTitle  = "数字助理主对话"         // 主对话的会话标题（界面显示名另由前端映射成「跟数字经理对话」）
+	assistantMainTitle  = "数字助理主对话"         // 主对话的会话标题（界面显示名另由前端映射成「跟长期助理对话」）
 )
 
 // AssistantVersion 是设置页版本清单的一行：第几版、多少条消息、最后更新时间。

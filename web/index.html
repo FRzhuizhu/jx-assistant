@@ -26,9 +26,9 @@
       </button>
       <button id="btn-new-assistant" class="side-btn" data-short="数字助理">
         <span class="doll-wrap"><svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><g class="bob"><g class="head"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g></g><g class="da-paper"><rect x="26.5" y="28.5" width="12" height="14" rx="1.6"></rect><line x1="29" y1="32.5" x2="36" y2="32.5"></line><line x1="29" y1="35.5" x2="36" y2="35.5"></line><line x1="29" y1="38.5" x2="33.5" y2="38.5"></line></g></g></svg><span id="da-badge" class="da-badge hidden">1</span></span>
-        <!-- 显示名「跟数字经理对话」：「经理」两字加粗（b 只承担字重，不加任何样式类，
+        <!-- 显示名「跟长期助理对话」：「助理」两字加粗（b 只承担字重，不加任何样式类，
              按钮的图标/尺寸/动画/布局一律不动） -->
-        <span class="sb-label">跟数字<b>经理</b>对话</span>
+        <span class="sb-label">跟长期<b>助理</b>对话</span>
       </button>
     </div>
 
@@ -194,7 +194,7 @@
              重绘只重建内容变了的卡，不会打断输入。渲染见 app-chat.js 的「待用户决定的浮窗」 -->
         <div id="ask-bar" class="ask-bar hidden"></div>
         <div id="draft-chips">
-          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；跟数字经理对话有专属模式，不在此选择）">
+          <div id="mode-row" class="hidden" title="新对话的工作模式（决定系统提示词与能力倾向；跟长期助理对话有专属模式，不在此选择）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>
             <b id="mode-row-name">标准办公</b>
             <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
@@ -796,7 +796,7 @@
             </div>
           </div>
           <div class="gen-section">
-            <h4>跟数字经理对话</h4>
+            <h4>跟长期助理对话</h4>
             <div class="da-ver-row">
               <button id="btn-set-da-ver" class="da-ver-btn" type="button" title="选择当前使用哪一版数字助理（每一版的历史各自独立）">
                 <span id="set-da-ver-label">数字助理</span>
@@ -1088,7 +1088,7 @@
 <div id="mode-pop" class="popover mode-pop hidden">
   <div class="pop-group">工作模式</div>
   <div id="mode-pop-list"></div>
-  <div class="mode-pop-note">模式决定系统提示词与能力倾向；跟数字经理对话有专属模式，从左上角进入。</div>
+  <div class="mode-pop-note">模式决定系统提示词与能力倾向；跟长期助理对话有专属模式，从左上角进入。</div>
 </div>
 
 <!-- SSH 远程工作区（两步式：第一步连接配置→保存；第二步浏览远程目录→使用） -->

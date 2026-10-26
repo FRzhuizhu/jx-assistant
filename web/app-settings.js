@@ -583,12 +583,25 @@ function buildProvCard(p, key) {
         ? '<span class="pv-via-tag wan" title="内网地址连不上，已自动改走外网地址；回公司内网恢复后自动切回">外网通道中</span>'
         : '<span class="pv-via-tag" title="配有外网备用地址：内网连不上时自动切换，恢复后切回">内外网</span>')
     : '';
+  // 公司通道：卡片头上直接显示额度（服务端随公告下发；展开后还有明细与「刷新额度」）
+  let quotaChip = '';
+  if (p.company && p.quota) {
+    const q = p.quota;
+    const fmt = (n) => (n || 0).toLocaleString('zh-CN');
+    let txt = q.unlimited ? '额度不限量' : '剩余 ' + fmt(q.remainPoints) + ' 积分';
+    if (q.status === 2) txt = '额度已用完';
+    let tip = q.unlimited ? '公司通道额度不限量（只记账）'
+      : '公司通道剩余 ' + fmt(q.remainPoints) + ' 积分（≈' + ((q.remainPoints || 0) / 1000).toFixed(2) + ' 元）· 已用 ' + fmt(q.usedPoints) + ' 积分';
+    tip += ' · 规则：' + (q.periodText || '') + (q.points ? '，每次 ' + fmt(q.points) + ' 积分' : '');
+    tip += q.nextAt ? ' · 下次重置 ' + q.nextAt.replace('T', ' ').slice(0, 16) : ' · 不自动重置';
+    quotaChip = '<span class="pv-quota" title="' + esc(tip) + '">' + esc(txt) + '</span>';
+  }
   const head = document.createElement('div');
   head.className = 'pv-head' + (p.enabled === false || p.autoDisabled ? ' off' : '');
   head.innerHTML =
     `<span class="pv-dot ${configured ? 'ok' : 'no'}" title="${configured ? '密钥已配置' : '未配置密钥'}"></span>` +
     `<b class="pv-name">${esc((tp && tp.name) || p.name || '未命名提供方')}</b>` +
-    offTag + viaTag +
+    offTag + viaTag + quotaChip +
     `<span class="pv-meta">${p.models.length} 个模型</span>` +
     (p.key ? '<span class="pv-dirty">密钥未保存</span>' : '');
   // 启停开关：停用的提供方不参与默认选择与会话解析（出了公司自动切到可用服务商
@@ -1519,7 +1532,7 @@ function assistantOpsState(msg) {
 }
 
 $('btn-assistant-new').onclick = async () => {
-  if (!(await confirmCenter('新建一版「跟数字经理对话」？\n' +
+  if (!(await confirmCenter('新建一版「跟长期助理对话」？\n' +
       '新的一版是一个全新的数字助理，从零开始聊，工作目录、权限、模型等设置沿用当前这一版。\n' +
       '当前这一版的历史、文件快照与交付记录都原样保留，随时可以在上面选回来。'))) return;
   const btn = $('btn-assistant-new');
@@ -1539,7 +1552,7 @@ $('btn-assistant-new').onclick = async () => {
 };
 
 $('btn-assistant-compact').onclick = async () => {
-  if (!(await confirmCenter('立即压缩「跟数字经理对话」的当前这一版？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
+  if (!(await confirmCenter('立即压缩「跟长期助理对话」的当前这一版？\n较早期的历史会被整理成一份摘要放进对话；原始消息永久保留、可随时查回。'))) return;
   const btn = $('btn-assistant-compact');
   const orig = btn.textContent;
   btn.disabled = true;
