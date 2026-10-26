@@ -598,7 +598,6 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .fold-btn:hover { color: var(--text); }
 .fold-btn:focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; }
 .folded > .fold-btn { display: block; position: absolute; left: 50%; bottom: 5px; transform: translateX(-50%); margin: 0; }
-.msg.user:hover .msg-actions { opacity: 1; }
 
 /* 编辑重发：气泡原位换成输入框（发送后截断该消息之后的记录重新执行） */
 .msg.user.editing { align-items: stretch; margin-bottom: 20px; }
@@ -825,18 +824,17 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
    与下一条消息的 18px 间隔由它自己的操作行给出（行在正文下方、自带底距）。 */
 .msg.assistant { margin-bottom: 6px; }
 .msg.assistant .md { line-height: 1.75; word-break: break-word; }
-/* 操作行（复制/压缩/分支/朗读 + 时间）一律悬停显隐——与用户气泡同一交互：
-   曾把助手侧改常驻（怕入口找不到），电脑端中间常驻一排按钮让按钮与下一条
-   用户消息的间距显得又短又乱；改回悬停后，行仍在布局里占位（opacity 不塌陷），
-   平时正好化作一段干净留白，悬停即现。
+/* 操作行（复制/压缩/分支/朗读 + 时间）**常驻显示**：早先是悬停才显（怕一排
+   按钮把消息间距撑乱），但用户实测反馈「找不到入口」，2026-10-26 起改成始终
+   可见——行本来就在布局里占位（opacity 不塌陷），常驻只是不再隐藏，间距口径
+   不变。
    位置两侧分开：用户气泡的操作行挂气泡上方（margin 0 0 2px：行下方贴自己
    气泡 2px，行上方留白归容器 18px 底距让位）；助手收尾输出的操作行挂正文
    下方（margin 2px 0 18px：上贴正文 2px、下 18px 与下一条消息隔开）。 */
 .msg-actions {
-  display: flex; gap: 4px; margin: 0 0 2px; opacity: 0; transition: opacity .15s;
+  display: flex; gap: 4px; margin: 0 0 2px; opacity: 1; transition: opacity .15s;
 }
 .msg.assistant .msg-actions { margin: 2px 0 18px; }
-.msg.assistant:hover .msg-actions { opacity: 1; }
 .act-copy {
   display: flex; align-items: center; gap: 5px;
   background: none; border: none; color: var(--text-3);
