@@ -508,7 +508,7 @@ func (a *App) applyComponentBlock(id string, b updateBlock, rel releaseInfo, sou
 
 /* ---------- HTTP：手动入口 ---------- */
 
-// handleUpdateCheck POST /api/update/check：立即触发一次更新检查（不等 6 小时
+// handleUpdateCheck POST /api/update/check：立即触发一次更新检查（不等每小时
 // 轮询）。检查在后台跑（含大块下载），响应只是「已开始」；结果经事件流与
 // /api/status 到达。
 func (a *App) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {

@@ -114,7 +114,8 @@ func parseDateVersion(s string) (date, serial int64, ok bool) {
 	return d, n, true
 }
 
-// StartUpdateChecker 启动后台轮询：启动 30s 后首查（不拖慢启动），之后每 6h。
+// StartUpdateChecker 启动后台轮询：启动 30s 后首查（不拖慢启动），之后每小时一次
+// （原来是 6h，用户要求「更新提示改每小时检查」：发版当天客户端一小时内就能看到横幅）。
 func StartUpdateChecker(a *App) {
 	url := a.Cfg.UpdateURL
 	if url == "" || url == "off" {
@@ -128,7 +129,7 @@ func StartUpdateChecker(a *App) {
 			return
 		}
 		a.checkUpdateOnce(url)
-		t := time.NewTicker(6 * time.Hour)
+		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
 			select {
@@ -207,7 +208,7 @@ func publicizeURL(raw, sourceURL string) string {
 }
 
 func (a *App) checkUpdateOnce(url string) {
-	// 手动检查与 6h 轮询可能同拍触发；已有一轮在跑就跳过（结果共享）
+	// 手动检查与每小时轮询可能同拍触发；已有一轮在跑就跳过（结果共享）
 	if !updateCheckMu.TryLock() {
 		return
 	}

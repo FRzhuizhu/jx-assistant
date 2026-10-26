@@ -389,7 +389,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/market", a.handleMarketView)
 	mux.HandleFunc("POST /api/market/install", a.handleMarketInstall)
 	mux.HandleFunc("POST /api/market/uninstall", a.handleMarketUninstall)
-	// 更新（update.go / update_blocks.go）：手动立即检查（不等 6h 轮询）与
+	// 更新（update.go / update_blocks.go）：手动立即检查（不等每小时轮询）与
 	// engine 交换后的立即重启（PowerShell 助手接力）；同样挂 /api/ 下远程中继天然覆盖
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
 	mux.HandleFunc("POST /api/update/restart", a.handleUpdateRestart)
