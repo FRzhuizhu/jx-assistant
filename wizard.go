@@ -92,6 +92,8 @@ type provisionPayload struct {
 	APIError  string `json:"apiError,omitempty"`
 	MarketURL string `json:"marketURL"`
 	UpdateURL string `json:"updateURL"`
+	// Quota 额度快照（服务端下发；老服务端没有该字段 = 不显示额度）
+	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
 }
 
 var wizardHTTP = &http.Client{Timeout: 15 * time.Second}
@@ -159,6 +161,10 @@ func (a *App) applyProvisionPayload(payload *provisionPayload) []ModelCfg {
 	}
 	if payload.UpdateURL != "" {
 		a.Cfg.UpdateURL = payload.UpdateURL
+	}
+	// 额度快照：服务端下发就存下来（空 = 服务端没配额度/没下发，保持原值不动）
+	if payload.Quota != nil {
+		a.Cfg.CompanyQuota = payload.Quota
 	}
 	return models
 }

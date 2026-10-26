@@ -122,6 +122,7 @@ function loadProvDraft(c) {
     company: !!p.company,           // 公司内部通道（删除提示/状态文案用）
     publicBaseURL: p.publicBaseURL || '', // 外网备用地址（服务端下发，只读展示）
     via: p.via || '',               // 公司通道当前线路：lan=内网 / wan=外网
+    quota: p.quota || null,         // 公司通道额度快照（服务端随公告下发）
     models: (p.models || []).map((m) => ({
       id: m.id || '', name: m.name || '',
       contextWindow: m.contextWindow || 0, maxOutput: m.maxOutput || 0,
@@ -718,6 +719,51 @@ function buildProvCard(p, key) {
     pubNote.className = 'pf-note';
     pubNote.textContent = '由公司服务端统一下发，无需手动切换：内网地址连不上时自动改走此地址，回公司内网恢复后自动切回。';
     form.appendChild(pubNote);
+  }
+
+  // 公司通道的额度（服务端随公告下发，只读；刷新 = 让后端重拉一份公告）
+  if (p.company && p.quota) {
+    const q = p.quota;
+    const lblQ = document.createElement('div');
+    lblQ.className = 'pf-label';
+    lblQ.textContent = '额度';
+    form.appendChild(lblQ);
+    const box = document.createElement('div');
+    box.className = 'pf-fixed';
+    const fmt = (n) => (n || 0).toLocaleString('zh-CN');
+    let line = '';
+    if (q.unlimited) {
+      line = '不限量（只记账）';
+    } else {
+      line = '剩余 ' + fmt(q.remainPoints) + ' 积分（≈' + ((q.remainPoints || 0) / 1000).toFixed(2) + ' 元）';
+      if (q.usedPoints) line += ' · 已用 ' + fmt(q.usedPoints) + ' 积分';
+    }
+    if (q.status === 2) line += ' · 令牌已被中转站停用（额度可能已用完）';
+    box.textContent = line;
+    form.appendChild(box);
+    const qNote = document.createElement('div');
+    qNote.className = 'pf-note';
+    let rule = '规则：' + (q.periodText || '') + (q.points ? '，每次 ' + fmt(q.points) + ' 积分' : '');
+    if (q.nextAt) rule += ' · 下次重置 ' + q.nextAt.replace('T', ' ').slice(0, 16);
+    else rule += ' · 不自动重置';
+    if (q.asOf) rule += ' · 更新于 ' + q.asOf.replace('T', ' ').slice(11, 16);
+    qNote.textContent = rule + '（由公司服务端与中转站结算，这里只读）';
+    form.appendChild(qNote);
+    const refresh = document.createElement('button');
+    refresh.className = 'pf-cancel';
+    refresh.textContent = '刷新额度';
+    refresh.onclick = async (e) => {
+      e.stopPropagation();
+      refresh.disabled = true; refresh.textContent = '刷新中…';
+      try {
+        await api('/api/company-sync', { method: 'POST' });
+        await reloadProviders();
+      } catch (err) {
+        alert('刷新失败：' + err.message);
+        refresh.disabled = false; refresh.textContent = '刷新额度';
+      }
+    };
+    form.appendChild(refresh);
   }
 
   // API 密钥：绝不回显，只标「已配置」，输入可替换

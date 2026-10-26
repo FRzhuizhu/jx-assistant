@@ -132,6 +132,7 @@ const state = {
   defaultWs: '',    // 默认工作区（文件夹），来自 /api/status
   models: [],       // 可选模型清单，来自 /api/models
   defaultProvider: '',
+  companyQuota: null, // 公司通道额度快照（/api/models 的 companyQuota，服务端下发才有）
   defaultModel: '',
   approvals: [],    // 待用户决定的越权审批（右下角卡片）
   questions: [],    // 待回答的助手提问 / 计划审批（右下角卡片）

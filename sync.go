@@ -62,6 +62,9 @@ type announcePayload struct {
 	UpdateURL string `json:"updateURL"`
 	// PublicServer 服务端公网地址（管理页配置，空=未启用）：存 WizardPublicServer。
 	PublicServer string `json:"publicServer,omitempty"`
+	// Quota 该员工的额度快照（按人下发：剩余/已用/重置规则/下次重置，见服务端
+	// quota.go）。只读缓存，客户端只存着显示，不参与调用。
+	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
 	API          *struct {
 		BaseURL       string            `json:"baseURL"`
 		PublicBaseURL string            `json:"publicBaseURL,omitempty"` // 外网模型通道（对所有人开放或该用户被授权才下发）
@@ -217,6 +220,11 @@ func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool)
 		a.Cfg.WizardPublicServer = strings.TrimRight(ann.PublicServer, "/")
 		changed = append(changed, "公网服务端→"+a.Cfg.WizardPublicServer)
 	}
+	// 额度快照：服务端下发了就覆盖（含剩余/已用/规则/下次重置）；没下发不动旧值
+	if ann.Quota != nil && !quotaEqual(a.Cfg.CompanyQuota, ann.Quota) {
+		a.Cfg.CompanyQuota = ann.Quota
+		changed = append(changed, "额度")
+	}
 	if p := wizardProvider(a); p != nil {
 		if ann.Company != "" {
 			p.Name = ann.Company + "·内部通道"
@@ -263,9 +271,33 @@ func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool)
 	a.broadcast(Event{Type: "providers"}) // 模型清单变了：前端刷新模型菜单
 }
 
-/* ---------- 公司通道的自动停用/恢复与自动重建 ---------- */
+// quotaEqual 两份额度快照是否一样（决定要不要落盘 + 广播刷新界面）。
+func quotaEqual(a, b *CompanyQuotaCfg) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Points == b.Points && a.RemainPoints == b.RemainPoints && a.UsedPoints == b.UsedPoints &&
+		a.Period == b.Period && a.PeriodText == b.PeriodText && a.NextAt == b.NextAt &&
+		a.Unlimited == b.Unlimited && a.Status == b.Status
+}
 
-// noteCompanySyncOK 一轮同步拿到公告：清零失联计数；公司通道曾被自动停用的恢复。
+// handleCompanySyncNow POST /api/company-sync：设置页「刷新额度」按钮用——
+// 直接复用公司同步器的一轮（companySyncOnce）：重拉一份公告，额度/模型/地址
+// 一起跟上。不新开额度查询口子（额度就挂在公告里，服务端只读内存缓存、毫秒级）。
+func (a *App) handleCompanySyncNow(w http.ResponseWriter, r *http.Request) {
+	if a.Cfg.CompanyLinkOff {
+		writeErr(w, 400, "公司接入已停用：到 设置 · 网络访问 打开「公司接入」开关后再试")
+		return
+	}
+	if strings.TrimSpace(a.Cfg.WizardServer) == "" {
+		writeErr(w, 400, "还没接入公司服务端（先跑一次接入向导）")
+		return
+	}
+	companySyncOnce(a, "")
+	writeJSON(w, 200, map[string]any{"ok": true, "quota": a.Cfg.CompanyQuota})
+}
+
+/* ---------- 公司通道的自动停用/恢复与自动重建 ---------- */// noteCompanySyncOK 一轮同步拿到公告：清零失联计数；公司通道曾被自动停用的恢复。
 func noteCompanySyncOK(a *App) {
 	a.syncFailMu.Lock()
 	a.syncFails = 0

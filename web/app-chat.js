@@ -6453,6 +6453,7 @@ async function loadModels() {
     state.models = d.models || [];
     state.defaultProvider = d.defaultProvider || '';
     state.defaultModel = d.defaultModel || '';
+    state.companyQuota = d.companyQuota || null; // 公司通道额度（服务端随公告下发）
     syncComposer();
   } catch (e) { state.models = []; }
 }
@@ -6546,7 +6547,19 @@ function renderModelPop(view) {
   // 行尾箭头（带命中区 .lv-hit）：触屏点它开合思考档位；桌面悬停即展开、点它也可展开
   const arrow = '<span class="lv-hit"><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></span>';
   const defLv = levelsOfDefault();
-  let html = `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}${modelPopExpand === '__default__' && defLv.length ? ' exp' : ''}" data-key="__default__"><span>默认（${esc(state.defaultModel || '未配置')}）</span>${defLv.length ? arrow : ''}</button>`;
+  let html = '';
+  // 公司通道额度提示（服务端随公告下发；只读）。选的是私人通道时不显示——额度
+  // 只对「公司内部通道」有意义。放在最上面一行，员工点模型顺带就知道还剩多少。
+  const q = state.companyQuota;
+  const hasCompany = (state.models || []).some((m) => m.providerId === 'company-internal');
+  if (q && hasCompany) {
+    const fmt = (n) => (n || 0).toLocaleString('zh-CN');
+    let text = q.unlimited ? '公司通道：额度不限量' : '公司通道剩余 ' + fmt(q.remainPoints) + ' 积分（≈' + ((q.remainPoints || 0) / 1000).toFixed(2) + ' 元）';
+    if (q.status === 2) text += ' · 额度已用完';
+    const sub = q.nextAt ? '下次重置 ' + q.nextAt.replace('T', ' ').slice(5, 16) : '不自动重置';
+    html += `<div class="model-quota-hint" title="由公司服务端与中转站结算，设置 · 模型里可刷新"><span>${esc(text)}</span><em>${esc(sub)}</em></div>`;
+  }
+  html += `<button class="pop-item model-item ${cur === '__default__' ? 'sel' : ''}${modelPopExpand === '__default__' && defLv.length ? ' exp' : ''}" data-key="__default__"><span>默认（${esc(state.defaultModel || '未配置')}）</span>${defLv.length ? arrow : ''}</button>`;
   let lastProv = '';
   for (const m of state.models || []) {
     if (m.providerId !== lastProv) {

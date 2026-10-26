@@ -399,6 +399,9 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	// 公司接入向导（wizard.go）：局域网发现 + 总服务器查询 + 一键应用配置
 	mux.HandleFunc("POST /api/wizard/discover", a.handleWizardDiscover)
 	mux.HandleFunc("POST /api/wizard/connect", a.handleWizardConnect)
+	// 公司通道额度刷新（sync.go 的 companySyncOnce 复用）：设置页「刷新」按钮调它，
+	// 重拉一次公告 → 额度/模型/地址一起跟上，不新开查询口子
+	mux.HandleFunc("POST /api/company-sync", a.handleCompanySyncNow)
 	// 语音组件（voice）宿主半边（voiceapi.go）：朗读走微软 Edge「大声朗读」
 	// 免密钥通道；组件关掉时一并 404；同样挂 /api/ 下让远程中继天然覆盖
 	mux.HandleFunc("GET /api/voice/voices", a.handleVoiceVoices)
@@ -927,6 +930,8 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 		"models":          items,
 		"defaultProvider": a.DefaultProviderID(),
 		"defaultModel":    t.Model,
+		// 公司通道额度快照（模型菜单顶部显示；服务端下发才有，私人通道场景为空）
+		"companyQuota": a.Cfg.CompanyQuota,
 	})
 }
 
@@ -1148,6 +1153,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		Company       bool       `json:"company,omitempty"`      // 公司内部通道（wizardProviderID）
 		PublicBaseURL string     `json:"publicBaseURL,omitempty"` // 外网备用地址（公司通道由服务端下发，只读展示）
 		Via           string     `json:"via,omitempty"`           // 公司通道当前线路：lan/wan（配了外网地址才有值）
+		// Quota 公司通道的额度快照（服务端随公告下发；老服务端/私人通道为空）
+		Quota *CompanyQuotaCfg `json:"quota,omitempty"`
 	}
 	providers := []providerView{}
 	for _, p := range a.Cfg.Providers {
@@ -1163,6 +1170,9 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			} else {
 				pv.Via = "lan"
 			}
+		}
+		if pv.Company {
+			pv.Quota = a.Cfg.CompanyQuota // 额度快照只在公司通道上展示
 		}
 		if tpl, ok := PresetByID(p.ID); ok {
 			pv.Preset = true

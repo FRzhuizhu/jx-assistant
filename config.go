@@ -116,6 +116,10 @@ type Config struct {
 	WizardServer       string `json:"wizardServer,omitempty"`
 	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用
 	WizardRev          string `json:"wizardRev,omitempty"`          // 最近应用的服务端公告哈希（仅记录）
+	// CompanyQuota 公司内部通道的额度快照（服务端 /announce 与 /provision 下发，
+	// 客户端只存不算；回显在设置页公司通道卡片与模型菜单）。nil = 服务端没下发
+	// （老服务端或未配模型通道）——此时不显示额度。
+	CompanyQuota *CompanyQuotaCfg `json:"companyQuota,omitempty"`
 	CompanyLinkOff     bool   `json:"companyLinkOff,omitempty"`     // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
 	// companyResync=已完成「一次性重新接入」的标记版本（0=从未做过）。发新版时
 	// 把 companyResyncTarget 提高，老客户端启动后自动重跑一次公司接入（按人
@@ -152,6 +156,27 @@ type Config struct {
 	// 进程与后端（会话/任务）驻留，双击托盘图标回到界面。nil 表示未写过该键＝
 	// 默认开启；显式 false 才关闭：关窗即真正退出程序。网页/手机形态无此语义。
 	CloseToTray *bool `json:"closeToTray,omitempty"`
+}
+
+// CompanyQuotaCfg 公司内部通道的额度快照（服务端 quota.go 的 quotaPayload 结构，
+// 随 /announce 与 /provision 下发）。客户端只存不算：
+//   Points       每次重置为多少积分（0 = 不限量，只记账）
+//   RemainPoints 剩余（积分；快照时的值，最多滞后几分钟）
+//   UsedPoints   已用（积分，new-api 按令牌记账）
+//   Period/PeriodText  重置周期与给人看的描述（"每月 1 号"/"每 7 天"/"不自动重置"）
+//   NextAt       下次重置时间（RFC3339，空 = 不自动重置）
+//   AsOf         快照时间（显示"更新于 xx"，避免用户以为是实时值）
+//   Status       1=启用 2=被中转站禁用（额度耗尽会被自动停用）
+type CompanyQuotaCfg struct {
+	Points       int64  `json:"points,omitempty"`
+	RemainPoints int64  `json:"remainPoints,omitempty"`
+	UsedPoints   int64  `json:"usedPoints,omitempty"`
+	Period       string `json:"period,omitempty"`
+	PeriodText   string `json:"periodText,omitempty"`
+	NextAt       string `json:"nextAt,omitempty"`
+	AsOf         string `json:"asOf,omitempty"`
+	Unlimited    bool   `json:"unlimited,omitempty"`
+	Status       int    `json:"status,omitempty"`
 }
 
 // AskAlertCfg 询问提醒配置段：Enabled=nil＝默认开启；AfterSec 触发秒数
