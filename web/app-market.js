@@ -1,6 +1,8 @@
 /* 市场前端（market.go 的浏览器半边）：左侧栏底部「市场」按钮进入的主区整页视图。
-   技能 / 组件 / 插件 三个 tab + 搜索 + 一键安装/更新/卸载：
-     · 全部操作走 /api/market（挂在 /api/ 下，远程手机端经中继隧道天然可用）；
+   技能 / 组件 / 插件 / MCP 四个清单 tab + 小程序平台内嵌 tab + 搜索 + 一键安装/更新/卸载：
+     · 清单与操作全走 /api/market（挂在 /api/ 下，远程手机端经中继隧道天然可用）；
+     · 小程序平台（网页托管平台）与市场同一台 jxai-server：地址从市场服务器推导
+       （<根>/sites），iframe 整页嵌入平台管理页，不经过本端 API；
      · 组件装/卸后调 CX.refresh() 热加载/热卸载，不刷新页面；
      · 插件 tab 底部保留「管理外部 Claude 市场」入口（跳设置页统一「插件」页）；
      · 未配置市场服务器时给出建议地址一键填入（与中继网关同 host 的 jxai-server）。
@@ -77,6 +79,7 @@ async function loadMarket(force, silent) {
     if (silent) { mkLoading = false; return; } // 静默复查失败：保留现有列表，下一轮再试
     mkData = null;
     mkLoading = false;
+    if (mkTab === 'miniapp') { renderMiniappTab(); return; } // 内嵌 tab 不受清单读取失败影响
     renderMarketState(esc('市场读取失败：' + e.message));
     return;
   }
@@ -86,6 +89,7 @@ async function loadMarket(force, silent) {
 
 // renderMarketState 收 HTML 片段（调用方负责转义服务端/异常文本）
 function renderMarketState(html) {
+  syncMiniappPane(false); // 任何清单态渲染前先收起小程序平台内嵌页（互斥显示）
   const list = $('mk-list');
   if (list) list.innerHTML = '<div class="mk-hint">' + html + '</div>';
   const count = $('mk-count');
@@ -95,6 +99,9 @@ function renderMarketState(html) {
 function renderMarket() {
   const ubtn = $('mk-upload-btn'); // 「＋ 上传技能」只在技能 tab 出现
   if (ubtn) ubtn.classList.toggle('hidden', mkTab !== 'skill');
+  // 小程序平台：不依赖清单拉取成败（只要市场地址已配置就能嵌；mkData 还没
+  // 加载到也不挡），先于 !mkData / configured / error 检查分流
+  if (mkTab === 'miniapp') { renderMiniappTab(); return; }
   if (!mkData) return renderMarketState('清单为空');
   const server = $('mk-server');
   if (server) {
@@ -103,6 +110,9 @@ function renderMarket() {
   }
   const ext = $('mk-ext-market');
   if (ext) ext.classList.toggle('hidden', mkTab !== 'plugin');
+  // 小程序平台：不依赖清单拉取成败（只要市场地址已配置就能嵌），先于
+  // configured / error 检查分流
+  if (mkTab === 'miniapp') { renderMiniappTab(); return; }
   if (!mkData.configured) { renderUnconfigured(); return; }
   if (mkData.error) {
     renderMarketState(esc(mkData.error) + '（<span class="mk-link" id="mk-retry">重试</span> 或到 设置 · 网络访问 检查市场地址）');
@@ -140,6 +150,81 @@ function renderUnconfigured() {
   if (go) go.onclick = () => { if (typeof openSettings === 'function') openSettings('network'); };
 }
 
+/* ---------- 小程序平台（网页托管平台）：市场视图的内嵌 tab ----------
+   与市场同一台 jxai-server，地址从市场服务器推导 <origin>/sites（与设置 · 网络
+   「打开托管平台」同一套正则）。iframe 整页嵌入平台管理页：已发布小程序列表 /
+   数据文件下载 / 删除 / 二维码都在页内完成，本端不重复实现。地址变了才重载
+   iframe，tab 来回切不打扰已打开的页面；市场服务器不可达（清单 error）不影响
+   本 tab——只要地址配置了就能嵌。 */
+
+// miniappSiteURL 从市场清单地址推导托管平台地址；未配置返回空串
+function miniappSiteURL() {
+  if (!mkData || !mkData.url) return '';
+  const m = String(mkData.url).match(/^(https?:\/\/[^\/]+)/i);
+  return m ? m[1] + '/sites' : '';
+}
+
+// syncMiniappPane 小程序平台内嵌页与清单列表互斥显示（搜索框只服务清单 tab）
+function syncMiniappPane(on) {
+  const pane = $('mk-miniapp');
+  if (pane) pane.classList.toggle('hidden', !on);
+  const list = $('mk-list');
+  if (list) list.classList.toggle('hidden', on);
+  const search = $('mk-search');
+  if (search) search.classList.toggle('hidden', on);
+}
+
+function renderMiniappTab() {
+  syncMiniappPane(true);
+  const count = $('mk-count');
+  if (count) count.textContent = '';
+  const frame = $('mk-miniapp-frame');
+  const url = miniappSiteURL();
+  const urlEl = $('mk-miniapp-url');
+  if (urlEl) urlEl.textContent = url ? '平台地址：' + url : '未配置市场服务器';
+  if (!url) {
+    // 没配市场地址推导不出平台：提示里给出建议值一键填入或去设置（对齐清单
+    // tab 的未配置引导；这里不整页替换，只收起 iframe）
+    const sug = (mkData && mkData.suggested) || '';
+    if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; frame.classList.add('hidden'); }
+    let hint = $('mk-miniapp-hint');
+    if (!hint) {
+      hint = document.createElement('div');
+      hint.id = 'mk-miniapp-hint';
+      hint.className = 'mk-hint';
+      const pane = $('mk-miniapp');
+      if (pane) pane.appendChild(hint);
+    }
+    hint.classList.remove('hidden');
+    hint.innerHTML = '小程序平台（网页托管平台）与市场在同一台服务器，先配置市场服务器地址再回来。' +
+      '<br>到 设置 · 网络访问 · 市场服务器 填入清单地址。' +
+      '<div class="mk-suggest-acts">' +
+      (sug ? '<button id="mk-miniapp-use" class="mk-act">填入建议地址</button>' : '') +
+      '<button id="mk-miniapp-go" class="mk-act ghost">去设置</button></div>';
+    const use = $('mk-miniapp-use');
+    if (use) use.onclick = async () => {
+      use.disabled = true; use.textContent = '保存中…';
+      try {
+        await api('/api/config', { method: 'POST', body: JSON.stringify({ marketURL: sug }) });
+        mkData = null;
+        await loadMarket(true);
+      } catch (e) { alert('保存失败：' + e.message); use.disabled = false; use.textContent = '填入建议地址'; }
+    };
+    const go = $('mk-miniapp-go');
+    if (go) go.onclick = () => { if (typeof openSettings === 'function') openSettings('network'); };
+    return;
+  }
+  const hint = $('mk-miniapp-hint');
+  if (hint) hint.classList.add('hidden');
+  if (frame) {
+    frame.classList.remove('hidden');
+    if (frame.dataset.src !== url) { // 地址没变不重载（保留平台页内的操作状态）
+      frame.dataset.src = url;
+      frame.src = url;
+    }
+  }
+}
+
 function entriesOfTab(tab) {
   if (!mkData) return [];
   if (tab === 'skill') return mkData.skills || [];
@@ -149,6 +234,7 @@ function entriesOfTab(tab) {
 }
 
 function renderTab() {
+  syncMiniappPane(false); // 任何清单 tab 渲染前先收起小程序平台内嵌页（互斥显示）
   const list = $('mk-list');
   if (!list) return;
   const q = ($('mk-search').value || '').trim().toLowerCase();
@@ -295,6 +381,22 @@ function bindMarket() {
   if (ext) ext.onclick = () => { if (typeof openSettings === 'function') openSettings('plugins'); };
   const uploadBtn = $('mk-upload-btn');
   if (uploadBtn) uploadBtn.onclick = mkuShow;
+  // 小程序平台内嵌页：刷新（about:blank 置换触发重载，跨域 iframe 不能用
+  // contentWindow.reload）与「在浏览器中打开」（jxOpenPage：手机壳走壳内
+  // 浏览页，桌面/网页新标签页）
+  const mkReload = $('mk-miniapp-reload');
+  if (mkReload) mkReload.onclick = () => {
+    const f = $('mk-miniapp-frame');
+    const u = f && (f.dataset.src || f.getAttribute('src'));
+    if (f && u) { f.src = 'about:blank'; setTimeout(() => { f.src = u; }, 0); }
+  };
+  const mkOpen = $('mk-miniapp-open');
+  if (mkOpen) mkOpen.onclick = () => {
+    const u = miniappSiteURL();
+    if (!u) { alert('未配置市场服务器，推导不出平台地址；先到 设置 · 网络访问 配置。'); return; }
+    if (typeof jxOpenPage === 'function') jxOpenPage(u);
+    else window.open(u, '_blank');
+  };
   mkuBind(); // 上传技能弹层（拖拽 / 选取 / Ctrl+V）
   // Esc 关闭市场视图（有任何弹窗开着时不抢键：确认框/设置自己处理 Esc）
   document.addEventListener('keydown', (ev) => {
