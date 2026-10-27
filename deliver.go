@@ -1,10 +1,16 @@
 package main
 
-// 会话后交付（deliver_file）：模型把工作区内的成品文件登记为「本轮结束
-// 后由系统搬运到用户上传目录」的作业。登记即时返回、不搬文件——执行发
-// 生在 finishRun（本轮输出完成、状态转空闲）之后，模型在对话中永远看
-// 不到执行结果，交付通道因此不构成绕过文件权限的路径；执行结果以
-// kind=report 注记落库，下一轮对话模型自然可见。
+// 交付工具（deliver_result）：一个工具两个动作——①每个文件登记成交付卡片
+// （用户拿到成果的正式入口，打开/下载/在文件夹中定位都以登记路径为准）；
+// ②文件项可选带 upload（用户上传登记的原件路径），带了就同时登记「本轮
+// 结束后由系统搬运过去」的作业。登记即时返回、不搬文件——执行发生在
+// finishRun（本轮输出完成、状态转空闲）之后，模型在对话中永远看不到执行
+// 结果，交付通道因此不构成绕过文件权限的路径；执行结果以 kind=report
+// 注记落库，下一轮对话模型自然可见。
+//
+// 卡片路径跟着交付结果走（产品定义的核心语义）：搬运成功 → 该会话指向源
+// 路径的交付登记改写为成品新位置（见 rewriteDeliveryPaths）；没登记搬运或
+// 搬运失败 → 卡片保持原路径（源文件没动，卡片照常可打开）。
 //
 // 交付目标来自 uploads 表登记的原件路径（OrigPath）所在目录：桌面端把文件拖进
 // 输入框、或用「＋→文件上传」选一次，都会登记原件真实路径，交付就是把成品送回
@@ -17,6 +23,10 @@ package main
 //   - 快照：目标处若存在将被替代的同名文件，先全量备份到
 //     <工作区>/.jxai/delivery-backups/<会话>/<时间戳>_<文件名> 再替换；
 //   - 原子：目标同目录临时文件写好后 rename 替换（copyFileAtomic）。
+//
+// 手机端（Android）：上传不登记原件路径，「送回上传处」语义不成立——交付出口
+// 统一为公有目录「下载」下的专属子目录（用户在文件管理器里直接可见），调用即
+// 登记搬运作业，upload 参数不可用。
 
 import (
 	"encoding/json"
@@ -32,121 +42,198 @@ import (
 //（targetSdk 28 走 legacy storage，WRITE_EXTERNAL_STORAGE 运行时权限即可直写）。
 const androidDeliveryDir = "/sdcard/Download/坚祥数字助理"
 
-func deliverFileTool() Tool {
-	// 手机端：上传不登记原件路径，「交回上传处」语义不成立——交付出口统一为
-	// 公有目录下载文件夹（用户在文件管理器/Wireless 传输里直接可见）。
+func deliverResultTool() Tool {
+	// 手机端：交付出口固定为公有目录下载文件夹（不需要上传记录；目录建不出
+	// 来多半是存储权限没给——把可操作的指引带给模型/用户，而不是裸错误）
 	if isAndroidRuntime {
 		return Tool{
-			Spec: toolSpec("deliver_file",
-				"把工作区里的成品文件交付到手机的「下载」目录（/sdcard/Download/坚祥数字助理/，用户在系统文件管理器里直接可见）。本轮对话结束后系统会移动该文件过去；目标处若有同名文件会先快照备份到工作区 .jxai/delivery-backups/ 再替换，执行结果以系统注记进入后续对话。"+
-					"用户要求「把文件发给我/放到下载目录」时用本工具；工作区内常规写出不需要交付。若返回存储权限错误，请向用户说明：需要在系统弹窗或设置里允许本应用访问文件，然后重试。"+
+			Spec: toolSpec("deliver_result",
+				"登记本轮的最终交付文件并交付到手机的「下载」目录（/sdcard/Download/坚祥数字助理/，用户在系统文件管理器里直接可见）：每个文件先登记成交付卡片，本轮对话结束后系统再把它移动到下载目录，搬运成功后卡片自动改指下载目录里的成品。目标处若有同名文件会先快照备份到工作区 .jxai/delivery-backups/ 再替换，执行结果以系统注记进入后续对话。"+
+					"用户要求「把文件发给我/放到下载目录」或产出成果文件时用本工具；工作区内常规写出不需要交付。若返回存储权限错误，请向用户说明：需要在系统弹窗或设置里允许本应用访问文件，然后重试。"+
 					"调用本工具不会结束对话（对话结束的判定仍是：只输出思考和正文、没有工具调用），所以应在调用本工具之后再输出给用户的正文总结。",
 				objSchema(map[string]any{
-					"source":   strProp("待交付文件的路径（须在工作区内，相对或绝对）"),
-					"filename": strProp("交付后的文件名（可选，缺省用源文件名）"),
-				}, "source")),
-			Run: runDeliverFile,
+					"files": arrayProp("交付文件清单", map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path":     strProp("文件路径（相对或绝对）"),
+							"note":     strProp("一句话说明这个文件是什么（可选）"),
+							"filename": strProp("交付到下载目录后的文件名（可选，缺省用源文件名）"),
+						},
+						"required": []string{"path"},
+					}),
+					"summary": strProp("本次交付的整体说明（可选）"),
+				}, "files")),
+			Run: runDeliverResult,
 		}
 	}
 	return Tool{
-		Spec: toolSpec("deliver_file",
-			"把工作区里的成品文件交付回它原件所在的位置（仅本地会话）。核心逻辑：本轮对话结束后，系统会把这个文件送回那条上传记录登记的原件路径处——桌面端把文件拖进输入框、或用「＋→文件上传」选过的文件都登记了原件路径；若目标处存在将被替代的同名文件，会先把被替代的文件快照备份到工作区 .jxai/delivery-backups/ 下再完成替换，执行结果会以系统注记进入后续对话。"+
-				"通常不必指认是哪一次上传：只给 source（工作区里的成品文件），系统会按上传记录自动找到它的原件位置；只有新生成的文件（不是从上传文件改出来的）要送回某处时，才需要显式给 upload（编号 u1 或该次上传的原件路径）。注意：用 write/edit 等文件工具在工作区内写出的常规改动【不需要】用本工具交付（系统本来就能跟踪那些改动）。"+
-				"调用本工具不会结束对话（对话结束的判定仍是：只输出思考和正文、没有工具调用），所以应在调用本工具之后再输出给用户的正文总结。",
+		Spec: toolSpec("deliver_result",
+			"登记本轮的最终交付文件：每个文件都会在用户界面展示交付卡片（可打开/下载），这是用户拿到成果的正式入口。产出成果文件（尤其是 docx/xlsx/pptx 等经程序生成的文档）后必须调用；只在回复里贴路径不算交付。每轮可多次调用，后登记的会并列展示。"+
+				"可选搬运：文件项里给 upload（上传注记里的编号如 u1，或该次上传的原件路径）＝要求把成品送回用户上传时的原件位置——本轮对话结束后系统移动该文件过去；目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换；搬运成功后交付卡片自动改指原件位置，没给 upload 或搬运失败则卡片保持指向工作区里的文件。upload 只接受本会话上传登记过的原件路径，不能随意填别的位置。"+
+				"注意：用 write/edit 等文件工具在工作区内写出的常规改动【不需要】用本工具交付（系统本来就能跟踪那些改动）。调用本工具不会结束对话（对话结束的判定仍是：只输出思考和正文、没有工具调用），所以应在调用本工具之后再输出给用户的正文总结。",
 			objSchema(map[string]any{
-				"source":   strProp("待交付文件的路径（须在工作区内，相对或绝对）"),
-				"upload":   strProp("交付目标（可选）：上传注记里的编号（如 u1）或该次上传的原件路径；不给时按 source 自动反查它的原件位置，只有新生成的文件才需要显式指定"),
-				"filename": strProp("交付后的文件名（可选，缺省用该次上传原件的文件名）"),
-			}, "source")),
-		Run: runDeliverFile,
+				"files": arrayProp("交付文件清单", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path":     strProp("文件路径（相对或绝对）"),
+						"note":     strProp("一句话说明这个文件是什么（可选）"),
+						"upload":   strProp("送回原件位置（可选）：上传注记里的编号（如 u1）或该次上传的原件路径；不给＝只登记交付卡片不搬运。通常不必显式给——成品若是从某个上传文件改出来的，系统按文件自动反查它的原件位置"),
+						"filename": strProp("送回原件时的文件名（可选，缺省用该次上传原件的文件名）"),
+					},
+					"required": []string{"path"},
+				}),
+				"summary": strProp("本次交付的整体说明（可选）"),
+			}, "files")),
+		Run: runDeliverResult,
 	}
 }
 
-func runDeliverFile(t *toolContext, args json.RawMessage) (string, error) {
+// deliverItem 是一次 deliver_result 调用里通过全部校验的一个文件项：
+// 第一阶段只校验不落库（任何一项校验失败整体报错，不产生半截登记），
+// 第二阶段再统一登记卡片与搬运作业。
+type deliverItem struct {
+	abs     string // 工作区内成品（解析后绝对路径）
+	display string // 卡片登记路径（displayPath：工作区内相对、区外绝对）
+	note    string
+	moveTo  string // 非空＝同时登记搬运作业，值为目标位置（展示用正斜杠）
+	job     *DeliveryJob
+}
+
+func runDeliverResult(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
-		Source   string `json:"source"`
-		Upload   string `json:"upload"`
-		Filename string `json:"filename"`
+		Files []struct {
+			Path     string `json:"path"`
+			Note     string `json:"note"`
+			Upload   string `json:"upload"`
+			Filename string `json:"filename"`
+		} `json:"files"`
+		Summary string `json:"summary"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(p.Source) == "" {
-		return "", fmt.Errorf("source 不能为空")
+	if len(p.Files) == 0 {
+		return "", fmt.Errorf("files 不能为空")
 	}
-	// upload 是可选参数：模型只给 source 时按工作区副本路径反查那条上传记录里
-	// 登记的原件路径（见 resolveUploadFor）；显式给了引用就照它解析。
+	// 计划模式：登记卡片是无害展示，照常允许；upload 是搬运承诺，对齐原
+	// deliver_file 的计划模式硬拦（登记即承诺搬运，计划模式下不该落任何实际行动）。
+	if t.sess != nil && t.sess.PlanMode {
+		for _, f := range p.Files {
+			if strings.TrimSpace(f.Upload) != "" {
+				return "", fmt.Errorf("计划模式下不能登记搬运（%s 带 upload）：请去掉 upload 只登记交付卡片，或等计划批准退出计划模式后再交付", f.Path)
+			}
+		}
+	}
+	// 远程会话：卡片登记照常（远程工作区文件，下载走远程读取）；搬运目标在
+	// 本地上传目录，远程会话的工作区不在本机，搬不了。
 	if t.isRemote() {
-		return "", fmt.Errorf("交付工具仅支持本地会话：远程会话的工作区不在本机，无法搬运到本地上传目录")
+		for _, f := range p.Files {
+			if strings.TrimSpace(f.Upload) != "" {
+				return "", fmt.Errorf("upload（送回原件位置）仅支持本地会话：远程会话的工作区不在本机，无法搬运到本地上传目录")
+			}
+		}
 	}
-	abs, err := t.resolve(p.Source)
-	if err != nil {
-		return "", err
-	}
-	if !t.inWorkspace(abs) {
-		return "", fmt.Errorf("待交付文件必须位于工作区内：%s（工作区外的文件不属于可交付的模型产物）", filepath.ToSlash(abs))
-	}
-	if _, err := t.authorize(permAction{Op: "read", Tool: "deliver_file", Path: abs}); err != nil {
-		return "", err
-	}
-	if isDir, _, serr := t.envStat(abs); serr != nil || isDir {
-		return "", fmt.Errorf("待交付文件不存在或不是文件：%s", filepath.ToSlash(abs))
-	}
-	// 手机端：交付出口固定为公有目录下载文件夹（不需要上传记录；目录建不出
-	// 来多半是存储权限没给——把可操作的指引带给模型/用户，而不是裸错误）
-	if isAndroidRuntime {
-		name, err := sanitizeDeliveryName(p.Filename)
+	// 第一阶段：逐项校验，全部通过才落库（不产生半截登记，模型重试无副作用）。
+	items := []deliverItem{}
+	missing := []string{}
+	for _, f := range p.Files {
+		abs, err := t.resolve(f.Path)
+		if err != nil {
+			return "", err
+		}
+		if _, err := t.authorize(permAction{Op: "read", Tool: "deliver_result", Path: abs}); err != nil {
+			return "", err
+		}
+		if isDir, _, serr := t.envStat(abs); serr != nil || isDir {
+			missing = append(missing, f.Path)
+			continue
+		}
+		it := deliverItem{abs: abs, note: strings.TrimSpace(f.Note)}
+		if isAndroidRuntime {
+			name, err := sanitizeDeliveryName(f.Filename)
+			if err != nil {
+				return "", err
+			}
+			if name == "" {
+				name = filepath.Base(abs)
+			}
+			if err := os.MkdirAll(androidDeliveryDir, 0755); err != nil {
+				return "", fmt.Errorf("交付目录不可用：%v。多半是未授予存储权限——请向用户说明：在系统弹窗或 设置→应用→数字助理→权限 里允许「文件和媒体」访问后重试一次", err)
+			}
+			it.job = &DeliveryJob{
+				SessionID: t.sess.ID, SourcePath: abs, TargetDir: androidDeliveryDir, TargetName: name,
+				Status: "pending", CreatedAt: now(),
+			}
+			it.moveTo = filepath.ToSlash(filepath.Join(androidDeliveryDir, name))
+			items = append(items, it)
+			continue
+		}
+		if strings.TrimSpace(f.Upload) == "" {
+			items = append(items, it)
+			continue
+		}
+		// 搬运的东西必须是本会话工作区内的模型产物（卡片登记没有这个限制——
+		// 总控登记子会话产出的文件时路径可能在别的工作区）。
+		if !t.inWorkspace(abs) {
+			return "", fmt.Errorf("待搬运文件必须位于工作区内：%s（工作区外的文件不属于可搬运的模型产物）", filepath.ToSlash(abs))
+		}
+		up, uerr := t.resolveUploadFor(f.Upload, abs)
+		if uerr != nil {
+			return "", uerr
+		}
+		targetDir := filepath.Dir(up.OrigPath)
+		name, err := sanitizeDeliveryName(f.Filename)
 		if err != nil {
 			return "", err
 		}
 		if name == "" {
-			name = filepath.Base(abs)
+			name = filepath.Base(up.OrigPath)
 		}
-		if err := os.MkdirAll(androidDeliveryDir, 0755); err != nil {
-			return "", fmt.Errorf("交付目录不可用：%v。多半是未授予存储权限——请向用户说明：在系统弹窗或 设置→应用→数字助理→权限 里允许「文件和媒体」访问后重试一次", err)
+		if di, err := os.Stat(targetDir); err != nil || !di.IsDir() {
+			return "", fmt.Errorf("交付目标目录当前不存在：%s（用户可能移动或删除了该目录，请向用户说明）", filepath.ToSlash(targetDir))
 		}
-		job := &DeliveryJob{
-			SessionID: t.sess.ID, SourcePath: abs, TargetDir: androidDeliveryDir, TargetName: name,
+		it.job = &DeliveryJob{
+			SessionID: t.sess.ID, SourcePath: abs, TargetDir: targetDir, TargetName: name,
 			Status: "pending", CreatedAt: now(),
 		}
-		if err := t.app.Store.AddDeliveryJob(job); err != nil {
+		it.moveTo = fmt.Sprintf("%s（%s）", filepath.ToSlash(filepath.Join(targetDir, name)), up.UID)
+		items = append(items, it)
+	}
+	if len(items) == 0 {
+		return "", fmt.Errorf("以下文件不存在，未登记任何交付：%s", strings.Join(missing, "、"))
+	}
+	// 第二阶段：登记卡片（+ 可选搬运作业）。
+	registered := []string{}
+	moves := []string{}
+	for _, it := range items {
+		d := &Delivery{
+			SessionID: t.sess.ID, Seq: t.seq, Path: t.displayPath(it.abs),
+			Note: it.note, CreatedAt: now(),
+		}
+		if p.Summary != "" {
+			d.Note = strings.TrimSpace(d.Note + "；" + p.Summary)
+		}
+		if err := t.app.Store.AddDelivery(d); err != nil {
 			return "", fmt.Errorf("交付登记落库失败: %w", err)
 		}
-		pending := t.app.Store.PendingDeliveryCount(t.sess.ID)
-		out := fmt.Sprintf("已收到交付请求，将在本轮结束后执行（本轮因调用了工具不会结束对话，请继续完成正文输出）。\n登记：%s → %s。目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换。",
-			filepath.ToSlash(abs), filepath.ToSlash(filepath.Join(androidDeliveryDir, name)))
-		if pending > 0 {
-			out += fmt.Sprintf("当前待交付共 %d 项。", pending)
+		registered = append(registered, d.Path)
+		if it.job != nil {
+			if err := t.app.Store.AddDeliveryJob(it.job); err != nil {
+				return "", fmt.Errorf("交付登记落库失败: %w", err)
+			}
+			moves = append(moves, fmt.Sprintf("%s → %s", d.Path, it.moveTo))
 		}
-		return out, nil
 	}
-	up, uerr := t.resolveUploadFor(p.Upload, abs)
-	if uerr != nil {
-		return "", uerr
+	out := fmt.Sprintf("已登记 %d 个交付文件，用户界面已展示并提供下载：%s", len(registered), strings.Join(registered, "、"))
+	if len(moves) > 0 {
+		out += fmt.Sprintf("。其中 %d 项已登记轮末搬运（本轮因调用了工具不会结束对话，请继续完成正文输出）：%s。目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换；搬运成功后对应交付卡片会自动改指新位置，失败则保持原路径",
+			len(moves), strings.Join(moves, "；"))
+		if pending := t.app.Store.PendingDeliveryCount(t.sess.ID); pending > 0 {
+			out += fmt.Sprintf("。当前待搬运共 %d 项", pending)
+		}
 	}
-	targetDir := filepath.Dir(up.OrigPath)
-	name, err := sanitizeDeliveryName(p.Filename)
-	if err != nil {
-		return "", err
-	}
-	if name == "" {
-		name = filepath.Base(up.OrigPath)
-	}
-	if di, err := os.Stat(targetDir); err != nil || !di.IsDir() {
-		return "", fmt.Errorf("交付目标目录当前不存在：%s（用户可能移动或删除了该目录，请向用户说明）", filepath.ToSlash(targetDir))
-	}
-	job := &DeliveryJob{
-		SessionID: t.sess.ID, SourcePath: abs, TargetDir: targetDir, TargetName: name,
-		Status: "pending", CreatedAt: now(),
-	}
-	if err := t.app.Store.AddDeliveryJob(job); err != nil {
-		return "", fmt.Errorf("交付登记落库失败: %w", err)
-	}
-	pending := t.app.Store.PendingDeliveryCount(t.sess.ID)
-	out := fmt.Sprintf("已收到交付请求，将在本轮结束后执行（本轮因调用了工具不会结束对话，请继续完成正文输出）。\n登记（%s，送回该文件原件所在位置 %s）：%s → %s。目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换。",
-		up.UID, filepath.ToSlash(up.OrigPath), filepath.ToSlash(abs), filepath.ToSlash(filepath.Join(targetDir, name)))
-	if pending > 0 {
-		out += fmt.Sprintf("当前待交付共 %d 项。", pending)
+	if len(missing) > 0 {
+		out += "。以下文件不存在已跳过：" + strings.Join(missing, "、")
 	}
 	return out, nil
 }
@@ -223,7 +310,7 @@ func (t *toolContext) resolveUploadFor(ref, sourceAbs string) (*Upload, error) {
 	}
 	return nil, fmt.Errorf("这份文件没有登记原件路径，交付不了：本会话的上传记录里没有它的原件位置（浏览器、手机、粘贴进来的文件只送内容、登记不了本机路径；新生成的文件也从没登记过）。"+
 		"请如实向用户说明，并给两条出路：①要送回桌面上的原位置——让用户把原文件从桌面拖进输入框、或用「＋→文件上传」选一次，再重新交付；"+
-		"②这次不交回原处也行——成品就在工作区 %s，用户可以自己取走（也可以用其它方式说明想要的位置）。本会话已登记原件路径的上传：%s。",
+		"②这次不交回原处也行——成品就在工作区 %s，用户可以自己取走（也可以用其它方式说明想要的位置）。本会话已登记原件路径的上传：%s.",
 		filepath.ToSlash(sourceAbs), uploadRefList(ups))
 }
 
@@ -323,7 +410,8 @@ func (a *App) runDeliveryJob(j *DeliveryJob) {
 	a.finishDeliveryJob(j, "done", "")
 }
 
-// finishDeliveryJob 回写作业终态并向会话注入模型可见的执行结果注记。
+// finishDeliveryJob 回写作业终态、改写交付卡片路径并向会话注入模型可见的
+// 执行结果注记。
 func (a *App) finishDeliveryJob(j *DeliveryJob, status, errMsg string) {
 	j.Status = status
 	j.Error = errMsg
@@ -338,6 +426,9 @@ func (a *App) finishDeliveryJob(j *DeliveryJob, status, errMsg string) {
 		} else {
 			note += "目标处原无同名文件，未发生替代。"
 		}
+		// 卡片路径跟着交付结果走：文件已在新位置，本会话指向源路径的交付
+		// 登记改写为成品新位置（打开/下载/定位都以登记路径为准）。
+		a.rewriteDeliveryPaths(j, filepath.Join(j.TargetDir, j.TargetName))
 	default:
 		note = fmt.Sprintf("【交付完成】交付《%s》失败：%s。", j.TargetName, errMsg)
 	}
@@ -349,6 +440,38 @@ func (a *App) finishDeliveryJob(j *DeliveryJob, status, errMsg string) {
 		_ = a.Store.SaveMeta(m)
 	}
 	a.broadcast(Event{Type: "session_updated", SessionID: j.SessionID})
+}
+
+// rewriteDeliveryPaths 把本会话交付卡片里指向 job 源路径的登记行改写为成品
+// 新位置：比对在解析后做（登记时可能是工作区相对路径），canonicalFor 归一
+// + 大小写不敏感（Windows 路径）。失败只记日志——改写不了顶多卡片指向旧
+// 位置（注记里有新位置可查），交付本身已完成，不该因它判失败。
+func (a *App) rewriteDeliveryPaths(j *DeliveryJob, target string) {
+	m, err := a.Store.Get(j.SessionID)
+	if err != nil {
+		return
+	}
+	tctx := &toolContext{app: a, sess: m}
+	dvs, err := a.Store.DeliveriesFor(j.SessionID)
+	if err != nil {
+		return
+	}
+	src := canonicalFor(j.SourcePath)
+	n := 0
+	for _, d := range dvs {
+		abs, err := tctx.resolve(d.Path)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(canonicalFor(abs), src) {
+			if err := a.Store.UpdateDeliveryPath(d.ID, filepath.ToSlash(target)); err == nil {
+				n++
+			}
+		}
+	}
+	if n > 0 {
+		log.Printf("[交付] 已把 %d 张交付卡片改指新位置：%s", n, filepath.ToSlash(target))
+	}
 }
 
 // uniqueBackupPath 生成不冲突的快照备份路径：

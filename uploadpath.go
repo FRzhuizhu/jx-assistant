@@ -261,8 +261,8 @@ func (a *App) registerUploadPath(sess *SessionMeta, p string) (*Upload, string, 
 			if uid := a.uploadDupRef(sess, dup); uid != "" {
 				ref = "（即 " + uid + " 那次上传的文件）"
 			}
-			note := fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：与工作区已有文件 %s 内容完全一致（大小与逐字节哈希比对通过）%s，当上传成功处理，没有重复复制。原件位于 %s；交付工具（deliver_file）会把成品送回 %s 这个位置，只给 source（工作区里的成品文件）即可。",
-				u.UID, name, size, filepath.ToSlash(dup), ref, filepath.ToSlash(abs), filepath.ToSlash(filepath.Dir(abs)))
+			note := fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：与工作区已有文件 %s 内容完全一致（大小与逐字节哈希比对通过）%s，当上传成功处理，没有重复复制。原件位于 %s；交付时给 deliver_result 的文件项填 upload=%s（或原件路径）即可把成品送回 %s 这个位置。",
+				u.UID, name, size, filepath.ToSlash(dup), ref, filepath.ToSlash(abs), u.UID, filepath.ToSlash(filepath.Dir(abs)))
 			return u, note, nil
 		}
 	} // 指纹算不出来（源文件读不了等）：按全新文件继续，复制那步会给出真实错误
@@ -281,7 +281,7 @@ func (a *App) registerUploadPath(sess *SessionMeta, p string) (*Upload, string, 
 	if dstName != name {
 		renamed = fmt.Sprintf("工作区里已有同名的其他内容，这份存成了 %s（原有文件未被动过）。", dstName)
 	}
-	note := fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：原件位于 %s（用户拖入/选择它的位置），已复制一份到工作区 %s（用户上传的文件统一存放在 .jxai/uploads，不占工作区根目录）。%s交付工具（deliver_file）会把成品送回 %s 这个位置；只给 source（工作区里的成品文件）即可，不必指认是哪一次上传。",
+	note := fmt.Sprintf("【文件上传】%s《%s》（%d 字节）：原件位于 %s（用户拖入/选择它的位置），已复制一份到工作区 %s（用户上传的文件统一存放在 .jxai/uploads，不占工作区根目录）。%s交付工具（deliver_result 的 upload 参数）会把成品送回 %s 这个位置；只给 path（工作区里的成品文件）即可，upload 不填系统也能按文件自动反查。",
 		u.UID, name, size, filepath.ToSlash(abs), filepath.ToSlash(dst), renamed, filepath.ToSlash(filepath.Dir(abs)))
 	return u, note, nil
 }

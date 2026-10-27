@@ -429,7 +429,7 @@ func (a *App) copyInheritedContext(parentID, childID string) (int, error) {
 		}
 	}
 	// 上传登记也随上下文继承（uid 原样保留）：继承来的注记里若引用了
-	// u 编号，子会话里的 deliver_file 仍能解析到原件路径。失败只记日志。
+	// u 编号，子会话里的 deliver_result（upload 参数）仍能解析到原件路径。失败只记日志。
 	if err := a.Store.CopyUploadsOnBranch(parentID, childID); err != nil {
 		log.Printf("[上传] 继承 %s → %s 复制上传登记失败（子对话交付目标将不可解析）: %v", parentID, childID, err)
 	}

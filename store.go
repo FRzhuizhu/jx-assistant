@@ -1629,6 +1629,15 @@ func (s *Store) DeliveriesFor(sessionID string) ([]*Delivery, error) {
 	return out, rows.Err()
 }
 
+// UpdateDeliveryPath 按登记行 id 改写交付路径：交付搬运成功后成品已在新
+// 位置，交付卡片（打开/下载/定位都以登记路径为准）要跟着指过去。
+func (s *Store) UpdateDeliveryPath(id int64, newPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE deliveries SET path=? WHERE id=?`, newPath, id)
+	return err
+}
+
 // CopySnapshots 把源会话的快照与交付登记按 seq 映射复制到新会话（分支对话用）。
 // 快照正文文件由调用方按返回的配对（源 id → 新 id）另行复制（两个会话可能
 // 挂不同工作区，落盘位置不同；同工作区时也在不同的 <会话id>/ 子目录下）。

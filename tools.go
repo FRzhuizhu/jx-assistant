@@ -106,8 +106,7 @@ func (t *toolContext) resolve(p string) (string, error) {
 // toolsFor 按会话模式返回可用工具。数字助理总控拥有编排类工具 + 只读
 // 四件套与 web_fetch（答小问题用——十步内的查看自己看，写文件、执行
 // 命令仍然没有，使用纪律见 agent.go 的 assistantPrompt；deliver_result
-// 是唯一例外——只读核对路径并登记展示，让派发产出的成果文件能以交付
-// 卡片出现在总控对话里）；任务会话拥有全部
+// 是唯一例外——核对路径登记交付卡片，必要时连搬运回上传原件位置也走它）；任务会话拥有全部
 // 实操工具 + 子对话派发；辅助对话只有只读工具（定位是答疑，不修改任何东西）。
 // 注意：计划/目标模式【不】在这里裁剪工具——目录跨模式保持不变以稳定
 // 请求形状（缓存友好），约束靠环境快照公告 + RunAgent 调用时的守卫硬拦
@@ -155,7 +154,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			readFileTool(), writeFileTool(), editFileTool(), listDirTool(),
 			globTool(), grepTool(), runCommandTool(), runPythonTool(), webFetchTool(), a.webSearchTool(), readImageTool(),
 			pdfTool(), ocrTool(), officeSkillTool(),
-			snapshotFileTool(), deliverResultTool(), deliverFileTool(), a.dispatchSubTool(), a.listExpertsTool(),
+			snapshotFileTool(), deliverResultTool(), a.dispatchSubTool(), a.listExpertsTool(),
 			// 找经理协调（requestmgr.go）：任务侧唯一能触到数字经理的通道——发一条
 			// 求助消息给经理会话，立即返回、不等答复。子对话拿到也调不通（调用时
 			// 硬拦），assistant / aux 分支不注册（它是被找的那个，不是发起方）。
@@ -772,75 +771,6 @@ func runSnapshotFile(t *toolContext, args json.RawMessage) (string, error) {
 		return fmt.Sprintf("已记录 %s 的快照（%d 字节，存于 .jxai/snapshots）。之后可以用不可追踪的方式修改它；用户编辑历史消息时可回退到此刻的内容。", cp.Path, len(before)), nil
 	}
 	return fmt.Sprintf("%s 当前不存在，已记录\"新增文件\"状态：之后创建它，用户编辑历史消息时会把它作为本轮新增撤回。", cp.Path), nil
-}
-
-func deliverResultTool() Tool {
-	return Tool{
-		Spec: toolSpec("deliver_result",
-			"登记本轮的最终交付文件：用户界面会展示交付卡片并提供下载，这是用户拿到成果的正式入口。产出成果文件（尤其是 docx/xlsx/pptx 等经程序生成的文档）后必须调用；只在回复里贴路径不算交付。",
-			objSchema(map[string]any{
-				"files": arrayProp("交付文件清单", map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": strProp("文件路径（相对或绝对）"),
-						"note": strProp("一句话说明这个文件是什么（可选）"),
-					},
-					"required": []string{"path"},
-				}),
-				"summary": strProp("本次交付的整体说明（可选）"),
-			}, "files")),
-		Run: runDeliverResult,
-	}
-}
-
-func runDeliverResult(t *toolContext, args json.RawMessage) (string, error) {
-	var p struct {
-		Files []struct {
-			Path string `json:"path"`
-			Note string `json:"note"`
-		} `json:"files"`
-		Summary string `json:"summary"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", err
-	}
-	if len(p.Files) == 0 {
-		return "", fmt.Errorf("files 不能为空")
-	}
-	registered := []string{}
-	missing := []string{}
-	for _, f := range p.Files {
-		abs, err := t.resolve(f.Path)
-		if err != nil {
-			return "", err
-		}
-		if _, err := t.authorize(permAction{Op: "read", Tool: "deliver_result", Path: abs}); err != nil {
-			return "", err
-		}
-		if isDir, _, serr := t.envStat(abs); serr != nil || isDir {
-			missing = append(missing, f.Path)
-			continue
-		}
-		d := &Delivery{
-			SessionID: t.sess.ID, Seq: t.seq, Path: t.displayPath(abs),
-			Note: strings.TrimSpace(f.Note), CreatedAt: now(),
-		}
-		if p.Summary != "" {
-			d.Note = strings.TrimSpace(d.Note + "；" + p.Summary)
-		}
-		if err := t.app.Store.AddDelivery(d); err != nil {
-			return "", fmt.Errorf("交付登记落库失败: %w", err)
-		}
-		registered = append(registered, d.Path)
-	}
-	if len(registered) == 0 {
-		return "", fmt.Errorf("以下文件不存在，未登记任何交付：%s", strings.Join(missing, "、"))
-	}
-	out := fmt.Sprintf("已登记 %d 个交付文件，用户界面已展示并提供下载：%s", len(registered), strings.Join(registered, "、"))
-	if len(missing) > 0 {
-		out += "。以下文件不存在已跳过：" + strings.Join(missing, "、")
-	}
-	return out, nil
 }
 
 func listDirTool() Tool {

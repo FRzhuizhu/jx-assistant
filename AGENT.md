@@ -670,7 +670,7 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
   「文件没带进去、消息却发出去了」；只挂附件不写字不给发（不替用户编消息）；
   换会话/新建对话/刷新即丢（暂存只在内存里）；注记不再独立落库（上传响应带回，
   失败中止时不丢——附件全量留区重试）。载荷沿用原有两条路：桌面壳的本地
-  会话走原生选择框采本机真实路径（该路径可作 `deliver_file` 交付目标），浏览器 /
+  会话走原生选择框采本机真实路径（该路径可作 `deliver_result` 的 upload 交付目标），浏览器 /
   手机 / 远程 / 粘贴走 multipart（单文件 32MB 上限、一次最多 20 个）。
   **拖拽另有原件路径桥**（`dropbridge_windows.go` + `app-chat.js` 的
   `requestNativeDropPaths` / `JX.onNativeDrop`）：WebView2（Chromium）不给页面

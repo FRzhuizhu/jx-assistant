@@ -7242,7 +7242,7 @@ let uploadTarget = mainView; // 文件选择框是单例：记住这次选择属
    横向卡片轨道 + 图片缩略图 + 逐项移除 + 拖拽投放）。
 
    两种载荷与既有上传路径一一对应：桌面壳（本地会话）采集本机真实路径，发送时走
-   JSON {path}（登记 uploads 表，该路径可作 deliver_file 交付目标）；其余（浏览器 /
+   JSON {path}（登记 uploads 表，该路径可作 deliver_result 的 upload 交付目标）；其余（浏览器 /
    手机 / 远程 / 粘贴 / 拖拽）暂存 File 对象，发送时走 multipart。 */
 
 // 与后端 multipart 上限一致（server.go handleUpload 的 LimitReader）：超了入列时就提示。
@@ -7659,7 +7659,7 @@ async function doUpload(view) {
     ' remote=' + !!(view.state.cur && view.state.cur.remote));
   if (view.state.streaming) attachHint(view, '本轮执行中：加进来的文件会随下一条消息一起上传');
   // 桌面壳（shell=desktop）的本地会话：走系统原生文件选择框采集本机真实路径
-  // （它同时是 deliver_file 的交付目标来源）；用户取消则静默结束。fetch 带超时：
+  // （它同时是 deliver_result 的 upload 交付目标来源）；用户取消则静默结束。fetch 带超时：
   // 渲染进程异常/连接问题时请求可能永远悬着，到点回退浏览器文件选择框，不再干等。
   // 手机/远程（JX_REMOTE）与局域网浏览器（非桌面壳）走 multipart 原路径。
   if (document.documentElement.classList.contains('desktop-shell') &&
