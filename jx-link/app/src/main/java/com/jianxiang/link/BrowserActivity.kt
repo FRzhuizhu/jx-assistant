@@ -4,18 +4,24 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
 import java.io.File
 import kotlin.math.abs
 
@@ -36,6 +42,7 @@ class BrowserActivity : Activity() {
     private lateinit var titleView: TextView
     private lateinit var btnPrev: TextView
     private lateinit var btnNext: TextView
+    private lateinit var addr: EditText
     private var contentFile: File? = null
 
     // 右缘左滑关闭的手势状态
@@ -63,6 +70,28 @@ class BrowserActivity : Activity() {
         btnPrev.setOnClickListener { if (web.canGoBack()) web.goBack() }
         btnNext.setOnClickListener { if (web.canGoForward()) web.goForward() }
 
+        // 地址栏：点一下聚焦即全选——长按菜单里的「复制」拿到的就是完整网址
+        // （text 永远是全量 URL，省略号只是非聚焦时的显示截断）；回车跳到输入的地址
+        addr = findViewById(R.id.addr_bar)
+        addr.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                addr.selectAll()
+            } else {
+                hideKeyboard()
+                syncAddrFrom(web.url)
+            }
+        }
+        addr.setOnEditorActionListener { _, actionId, event ->
+            val go = actionId == EditorInfo.IME_ACTION_GO ||
+                (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
+            if (go) {
+                goEntered()
+                true
+            } else {
+                false
+            }
+        }
+
         setupWebView()
         syncBar() // 进来先灰掉后退/前进（此时无历史）
 
@@ -73,10 +102,12 @@ class BrowserActivity : Activity() {
                 // 内容预览：隧道取来的字节已落成私有缓存文件，file:// 直接打开
                 contentFile = File(path)
                 titleView.text = intent.getStringExtra(EXTRA_NAME)?.ifEmpty { null } ?: "预览"
+                syncAddrFrom("file://$path")
                 web.loadUrl("file://$path")
             }
             !url.isNullOrEmpty() -> {
                 titleView.text = url
+                syncAddrFrom(url)
                 web.loadUrl(url)
             }
             else -> finish()
@@ -114,8 +145,15 @@ class BrowserActivity : Activity() {
                 return true
             }
 
+            override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(v, url, favicon)
+                syncAddrFrom(url) // 跳转/重定向：地址跟着真实地址走
+                syncBar()
+            }
+
             override fun onPageFinished(v: WebView, url: String?) {
                 super.onPageFinished(v, url)
+                syncAddrFrom(url)
                 syncBar()
             }
         }
@@ -134,6 +172,47 @@ class BrowserActivity : Activity() {
         btnPrev.alpha = if (back) 1f else 0.3f
         btnNext.isEnabled = fwd
         btnNext.alpha = if (fwd) 1f else 0.3f
+    }
+
+    /**
+     * 地址栏显示对齐到真实地址（onPageStarted 每跳一次都来）。用户正在输入时
+     * 不打扰；非聚焦时长网址显示成省略号，但 text 永远是全量 URL——长按菜单
+     * 的「复制」复制的就是它，不是被截断的显示文本。
+     */
+    private fun syncAddrFrom(u: String?) {
+        if (addr.hasFocus()) return
+        addr.setText(u ?: "")
+        addr.hint = if (u.isNullOrEmpty()) "输入网址" else null
+    }
+
+    /**
+     * 地址栏回车：裸域名补 https://（与电脑端右栏地址栏同口径）；file:// 也放行
+     * （本地预览页本来就在地址栏里）；weixin: 这类壳里打不开的 scheme 直说。
+     * loadUrl 会推一条本页历史——地址栏跳过去后按返回能退回来。
+     */
+    private fun goEntered() {
+        var u = addr.text.toString().trim()
+        addr.clearFocus() // 失焦回调会把显示对齐回当前页；随后按新地址覆盖
+        if (u.isNotEmpty() && !Regex("^[A-Za-z][A-Za-z0-9+.-]*:").containsMatchIn(u)) {
+            u = "https://$u"
+        }
+        val s = if (u.isEmpty()) null else try {
+            Uri.parse(u).scheme
+        } catch (e: Exception) {
+            null
+        }
+        if (s != "http" && s != "https" && s != "file") {
+            if (u.isNotEmpty()) Toast.makeText(this, "这个地址壳里打不开", Toast.LENGTH_SHORT).show()
+            syncAddrFrom(web.url)
+            return
+        }
+        web.loadUrl(u)
+        syncAddrFrom(u)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager ?: return
+        imm.hideSoftInputFromWindow(addr.windowToken, 0)
     }
 
     /* ---------- 返回与手势：这一层的关闭只在这里决定 ---------- */

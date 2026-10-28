@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 壳内浏览器页：顶部一条工具栏（关闭/后退/前进/刷新 + 标题），下面铺满 WebView。
-     返回键与右缘左滑由 BrowserActivity 自己处理（先退本页历史，退不动就 finish）。 -->
+<!-- 壳内浏览器页。两行顶栏：
+     第一行是动作按钮（关闭/后退/前进/刷新）+ 页面标题（纯展示、可压缩省略）；
+     第二行是整行宽度的地址栏（EditText）：点一下聚焦并全选、长按走系统选择菜单
+     （全选/复制拿到的是完整 URL，省略号只是显示效果）、回车跳转新地址。
+     地址栏独占一行是为了窄屏竖屏下按钮不被挤掉，长网址也有最多的可见宽度。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -16,7 +19,7 @@
         android:paddingStart="4dp"
         android:paddingTop="4dp"
         android:paddingEnd="8dp"
-        android:paddingBottom="4dp">
+        android:paddingBottom="2dp">
 
         <TextView
             android:id="@+id/btn_close"
@@ -68,8 +71,28 @@
             android:maxLines="1"
             android:text=""
             android:textColor="@color/text2"
-            android:textSize="13sp" />
+            android:textSize="12sp" />
     </LinearLayout>
+
+    <EditText
+        android:id="@+id/addr_bar"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/bg_url_bar"
+        android:ellipsize="end"
+        android:hint="输入网址"
+        android:imeOptions="actionGo"
+        android:inputType="textUri"
+        android:maxLines="1"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:singleLine="true"
+        android:textColor="@color/text1"
+        android:textColorHint="@color/text2"
+        android:textSize="13sp" />
 
     <WebView
         android:id="@+id/web"
