@@ -5,6 +5,33 @@
 
 const $ = (id) => document.getElementById(id);
 
+/* ---------- 品牌下发（服务端管理页「品牌」页签 → /announce → data/brand/ 本地缓存） ----------
+ * 客户端无配置入口，只消费：文字经 /api/brand 取（未下发=空值用内置默认），
+ * LOGO 走 /logo.png（Go 侧优先服务端下发的缓存图）。brand 事件（sync 应用公告
+ * 后广播）到达时 loadBrandUI() 重拉刷新；resetEmpty 渲染首页 hero 时用
+ * brandName()/brandHero() 动态取值。 */
+window.BRAND = { name: '', heroTitle: '' };
+window.brandName = () => (window.BRAND && window.BRAND.name) || '坚祥数字助理';
+window.brandHero = () => (window.BRAND && window.BRAND.heroTitle) || '更懂制造业的数字助理';
+function applyBrandTexts() {
+  document.title = window.brandName();
+  const sb = document.querySelector('.brand b'); if (sb) sb.textContent = window.brandName();
+  const wz = $('wz-title'); if (wz) wz.textContent = '欢迎使用' + window.brandName();
+  const ab = document.querySelector('#set-pane-about .about-block b'); if (ab) ab.textContent = window.brandName() + '（GO版）';
+  const hh = document.querySelector('.home .hero h1'); if (hh) hh.textContent = window.brandHero();
+  const ha = document.querySelector('.home .hero img'); if (ha) ha.alt = window.brandName();
+}
+async function loadBrandUI() {
+  try {
+    const r = await fetch('/api/brand', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    window.BRAND = { name: d.name || '', heroTitle: d.heroTitle || '' };
+    applyBrandTexts();
+  } catch { /* 本地接口失败保持默认 */ }
+}
+loadBrandUI();
+
 /* 桌面形态标记：桌面壳（runDesktop）导航的 URL 带 shell=desktop——右栏浏览器
  * 视图启用原生 WebView2 面板（矩形上报 + 工具栏），链接在右栏打开；网页模式
  * 一切照旧，链接新标签页打开。 */

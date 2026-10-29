@@ -74,6 +74,10 @@ type announcePayload struct {
 	// Quota 该员工的额度快照（按人下发：剩余/已用/重置规则/下次重置，见服务端
 	// quota.go）。只读缓存，客户端只存着显示，不参与调用。
 	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
+	// Brand 品牌下发（服务端管理页「品牌」页签，brand_sync.go）：LOGO 与界面
+	// 文字统一配置。nil=老服务端未下发（保持本地现值）。LOGO 按 logoHash 比对，
+	// 不变不下载（一张图只在该换时传一次）。
+	Brand *brandAnnounce `json:"brand,omitempty"`
 	API          *struct {
 		BaseURL       string            `json:"baseURL"`
 		PublicBaseURL string            `json:"publicBaseURL,omitempty"` // 外网模型通道（对所有人开放或该用户被授权才下发）
@@ -252,6 +256,11 @@ func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool)
 	if ann.Quota != nil && !quotaEqual(a.Cfg.CompanyQuota, ann.Quota) {
 		a.Cfg.CompanyQuota = ann.Quota
 		changed = append(changed, "额度")
+	}
+	// 品牌下发（服务端管理页「品牌」页签，brand_sync.go）：缓存于 data/brand/，
+	// LOGO 按 hash 比对只在该换时下载一次，渲染全程读本地；nil（老服务端）不动
+	if c := a.applyBrand(ann.Brand, server); c != "" {
+		changed = append(changed, c)
 	}
 	if p := wizardProvider(a); p != nil {
 		if ann.Company != "" {

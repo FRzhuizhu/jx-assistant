@@ -1690,7 +1690,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `sessioncreate.go` | 建会话/改权限的 service 单源：createSession（HTTP 人工建会话、dispatch_task、dispatch_sub 三入口共用：模式/权限默认、能力默认、分支克隆、历史继承（失败回滚）、skill-create 演示材料兜底）+ applyPermissionChange（权限档落装与能力联动，人工 PATCH 与 send_to_session 共用） |
 | `assistant_versions.go` | 数字经理主对话的「版本」：每一版就是一个 assistant 顶层会话（会话 id/标题/工作目录/权限/模型各自独立），版本号落 sessdata、当前版本指针落 globaldata（**唯一口径 currentAssistant()**——设置页压缩/清空、待办转交、request_manager、前端入口都认它，不再按「最近更新的那个」猜）；新建一版从零开始、老版本原样保留，切换只动指针 |
 | `historytools.go` | 跨会话历史查询工具（search / read_session_messages） |
-| `context.go` | 上下文组装管线（环境快照**追加式**：首条整份、后续按行差分为短更新，已发送前缀绝不改写）+ 规则压缩 + 模型摘要 + 溢出兜底 |
+| `context.go` | 上下文组装管线（环境快照**追加式**：首条整份、后续差分——纯新增发短补充、条目有减/换值发【移除】/【新增】中文标签变更清单（不用 +/- 记号：与条目行首 "- " 列表符撞车有歧义）、差分连续 5 条后完整重发一次校准（envRowRender 计数），已发送前缀绝不改写）+ 规则压缩 + 模型摘要 + 溢出兜底 |
 | `runtime.go` | 后台运行时：执行注册表、全局事件总线、派发执行体、中断恢复 |
 | `session.go` | 会话元信息与工具函数 |
 | `store.go` | SQLite 存储层与旧数据迁移 |
@@ -1702,7 +1702,8 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `update_blocks.go` | 分块静默更新：release 附件带 blocks.json（快照式清单=每块当前应是什么版本）就走静默路——engine 块趁旧进程活着原地换 exe（改名交换，重启生效，`POST /api/update/restart` 用 PowerShell 助手逃逸 Job 接力重启）、组件块杀 worker 后整目录替换热生效；落后多版一步对齐每块最新，没有 blocks.json 的旧源回退整包横幅；`config.updateMode`（auto/manual） |
 | `update_restart_windows.go` | 立即重启助手：经 WMI 托管一条纯 cmd 内联接力命令（不落地脚本文件——2026-10-15 实测部分机器拦 WMI 派生进程执行 .ps1 与 cmd→powershell 链；WMI 派生进程工作目录在 System32、不认裸名 powershell，一切路径必须绝对）到 Job 外，等约 5 秒拉起新 exe 并留痕 restart.log，ShowWindow=0 不闪窗；WMI 失败回退 CREATE_BREAKAWAY_FROM_JOB |
 | `wizard.go` | 公司接入向导后端：POST /api/wizard/discover（UDP 广播找同公司服务端——浏览器发不了 UDP 故在 Go 侧做，255.255.255.255+子网定向广播、公司名=口令、registryURL 查询兜底）+ POST /api/wizard/connect（验证 healthz → POST /provision → 内部提供方 company-internal 置顶即默认、marketURL/updateURL/wizardDone 一键落位；重跑替换不堆积）；config 增 wizardDone/registryURL |
-| `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问）。对服务端的请求一律带 `X-Jxai-User` 头（值=发布者姓名，没设不带）——服务端记条目归属 owner 与下载/安装明细；安装成功后上报 `POST /api/market/report-install` |
+| `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问，环境快照尾部有「企业技能市场」一行：地址+自签 HTTPS 需 curl -k 的提示）。对服务端的请求一律带 `X-Jxai-User` 头（值=发布者姓名，没设不带）——服务端记条目归属 owner 与下载/安装明细；安装成功后上报 `POST /api/market/report-install` |
+| `brand_sync.go` / `brand_sync_test.go` | 品牌下发客户端半边（服务端 jxaiserver brand.go → /announce.brand）：LOGO 与界面文字（侧栏/首页 hero/关于页/title）由服务端管理页统一配置，**客户端无配置入口**只消费；缓存于 `data/brand/`（brand.json + logo.png），渲染全程读本地（`/logo.png` 路由优先本地缓存图、`GET /api/brand` 出文字、前端 brand 事件刷新）；**LOGO 按 logoHash 比对只在该换时下载一次**（流量硬口径），nil（老服务端）不动本地，hash 空回退内置默认 |
 | `market_publish.go` / `market_publish_test.go` / `market_publish_meta_test.go` | 市场·技能发布（**先装后传**）：只能发布已装到 `技能/user/` 的技能——后端从安装目录现场打 zip、走 inspectSkillZip/rewriteSkillZip 校验链（恰好一处 SKILL.md、内容体检、结构规整）、元信息按回退链补全（id 候选含中文→英文词表 `skillIDFromChinese`，词表只在 Go 一份），流式转发服务端用户端点 `/api/market/publish`；`GET /api/market/publish-meta` 给弹层预填；下架走 `/api/market/unpublish`——**归属校验与「挪进服务端回收站」都在服务端**，客户端只发消息（本地姓名比对只是按钮显隐的 UX） |
 | `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行（AI 任务可选执行目标：数字经理/新工作任务，后者走 `createSession` 单源建会话）/ 模型工具 |
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |

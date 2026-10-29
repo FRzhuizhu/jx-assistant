@@ -469,6 +469,8 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/git/checkout", a.handleGitCheckout)
 	mux.HandleFunc("POST /api/git/sync", a.handleGitSync)
 	a.Plugins.MountRoutes(a, mux)
+	// 品牌下发（brand_sync.go）：前端启动拉一次文字配置，brand 事件到达时重拉
+	mux.HandleFunc("GET /api/brand", a.handleBrand)
 	mux.HandleFunc("GET /", a.handleStatic)
 }
 
@@ -503,6 +505,10 @@ func (a *App) handleStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write([]byte(html))
+		return
+	}
+	// 品牌下发（brand_sync.go）：服务端下发的 LOGO 缓存优先于 embed 默认图
+	if r.URL.Path == "/logo.png" && a.serveBrandLogo(w, r) {
 		return
 	}
 	// 静态子资源（app.js/style.css 等）一律 no-cache：embed FS 不带修改时间戳，

@@ -51,8 +51,8 @@ function resetEmpty() {
   $('msg-col').innerHTML =
     '<div class="home">' +
       '<div class="hero">' +
-        '<img class="logo-img" src="/logo.png" alt="坚祥数字助理">' +
-        '<h1>更懂制造业的数字助理</h1>' +
+        '<img class="logo-img" src="/logo.png" alt="' + esc(window.brandName()) + '">' +
+        '<h1>' + esc(window.brandHero()) + '</h1>' +
       '</div>' +
       '<p class="home-sub">描述你想做的事，或直接在左上角点「跟长期助理对话」。</p>' +
       '<div id="home-composer"></div>' +
@@ -2819,6 +2819,11 @@ function handleGlobalEvent(ev) {
       // 模型服务商状态变化（公告同步/自动停用恢复/toggle）：刷新模型菜单，
       // 公司通道自动停用时默认模型随即切到可用服务商
       loadModels();
+      break;
+    case 'brand':
+      // 品牌下发变化（服务端管理页「品牌」页签保存 → 公告同步应用）：重拉文字
+      // 配置并刷新（LOGO 走 /logo.png 自然换装）
+      loadBrandUI();
       break;
     case 'sub_start':
       subActs[ev.sessionId] = [];
