@@ -108,7 +108,8 @@ func activeSummaries(msgs []*StoredMessage) []*StoredMessage {
 // 环境快照行（kind=env）按落位进上下文，**追加式**（已发送的前缀绝不改写）：
 // 可见的首条快照整份呈现（摘要折叠后以边界后首条重新作为完整基线），
 // 其后相邻快照按差分形状分流——纯新增渲染为短的「环境更新」补充，条目有减
-// 或同 key 换值则完整重发新快照（见 envUpdateMessage）——变化永远以新消息
+// 或同 key 换值渲染为【移除】/【新增】变更清单，差分连续数达到阈值后完整
+// 重发一次校准（见 envUpdateMessage / envRowRender）——变化永远以新消息
 // 出现在尾部，系统提示词与历史前缀逐字节稳定，前缀缓存命中最大化。
 func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
@@ -127,7 +128,8 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 	for _, s := range summaries {
 		out = append(out, TextMessage("user", s.Text()))
 	}
-	prevEnv := "" // 上一条可见快照；空 = 下一条整份呈现（首轮，或摘要折叠后的首条）
+	prevEnv := ""    // 上一条可见快照；空 = 下一条整份呈现（首轮，或摘要折叠后的首条）
+	envUpdates := 0  // 自上一条整份/全量快照以来的连续差分数（自愈全量的计数）
 	foldSeen := false // 已见过折叠行：遇到首条未折叠可见行时在交界注入提示标签
 	for _, m := range raw {
 		if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == "inherit" || m.Kind == "request" || m.Kind == "audit" {
@@ -147,11 +149,10 @@ func (a *App) buildContext(sess *SessionMeta, sys string) []Message {
 		}
 		if m.Kind == "env" {
 			env := m.Text()
-			if prevEnv == "" {
-				out = append(out, TextMessage("user", env))
-			} else if s := envUpdateMessage(prevEnv, env); s != "" {
-				// 纯新增 → 短补充；有减/换值 → 完整重发（见 envUpdateMessage）
+			if s, n := envRowRender(prevEnv, env, envUpdates); s != "" {
+				// 首条整份 / 差分（纯新增或【移除】【新增】变更清单）/ 计数到顶完整重发
 				out = append(out, TextMessage("user", s))
+				envUpdates = n
 			}
 			prevEnv = env
 			continue
@@ -256,57 +257,92 @@ func repairToolPairing(msgs []Message) []Message {
 	return fixed
 }
 
+// envFullResendAfter 差分自愈阈值：自上一条整份/全量快照以来已连续发出这么多条
+// 差分更新后，下一次快照有变化时改发完整重发（fullResendEnv）重新校准——防止
+// 长会话里差分层层叠加（每条都要求模型自行合并进旧状态），合并误差越滚越大。
+const envFullResendAfter = 5
+
 // envUpdateMessage 把相邻两份环境快照渲染成发给模型的消息，按差分形状分流：
 //   - 纯新增条目 → 短「环境更新」只列新增行（叠加语义，旧快照仍然有效，
 //     前缀缓存友好）；
-//   - 条目有减（被移除），或同 key 换值（= 有增有减的变更）→ 完整重发新快照
-//     （标题行标明「完整重发」）——让模型自己按「不再适用」清单脑内合并旧快照
-//     容易读错状态，减法一律给全量，一眼即最新。
+//   - 条目有减（被移除，含同 key 换值的旧值行）→ 「变更清单」：中文标签
+//     【移除】/【新增】成对列出（换值条目 = 同 key 一移一增，两行都给整行
+//     原文，模型按原文精确匹配作废/并入即可，不做「旧→新」内联压缩）。
+//     不用 +/- 记号：快照条目行本身以 "- "（markdown 列表符）开头，diff 记号
+//     会与条目行首撞车——"- 权限模式：…"分不清是新增条目还是删除标记；
+//     中文标签每行多两三个字符，语义无歧义。差分连续数达到阈值时由组装层
+//     （envRowRender）改发完整重发，本函数不感知计数。
 //
 // 确定性纯函数（存储文本唯一决定输出），同文快照的标题行会被精确匹配自然滤掉。
-// 纯注记行（非 "- " 条目，如技能变更说明）过期后静默消失不触发全量重发，
+// 纯注记行（非 "- " 条目，如技能变更说明）过期后静默消失不进变更清单，
 // 新出现的注记行按新增进补充消息。
 func envUpdateMessage(prev, cur string) string {
 	prevCount := map[string]int{}
-	prevKeys := map[string]bool{} // 旧快照的条目 key 集：识别「同 key 换值」
 	for _, l := range strings.Split(prev, "\n") {
 		prevCount[l]++
-		if k := envLineKey(l); k != "" && strings.HasPrefix(strings.TrimSpace(l), "- ") {
-			prevKeys[k] = true
-		}
 	}
-	changed := []string{}
-	keyReplaced := false
+	curCount := map[string]int{}
+	for _, l := range strings.Split(cur, "\n") {
+		curCount[l]++
+	}
+	added := []string{} // 新快照里有、旧快照里没有的行（含换值后的新值行）
 	for _, l := range strings.Split(cur, "\n") {
 		if prevCount[l] > 0 {
 			prevCount[l]--
 			continue // 整行未变
 		}
-		if k := envLineKey(l); k != "" && prevKeys[k] {
-			keyReplaced = true // 同一条目换了取值：按变更处理
+		added = append(added, l)
+	}
+	removed := []string{} // 旧快照里有、新快照里没了的 "- " 条目行（含被换值的旧值）
+	for _, l := range strings.Split(prev, "\n") {
+		if curCount[l] > 0 {
+			curCount[l]--
+			continue // 整行未变（对侧消费计数）
 		}
-		changed = append(changed, l)
-	}
-	entryRemoved := false
-	for l, n := range prevCount {
-		if n > 0 && strings.HasPrefix(strings.TrimSpace(l), "- ") {
-			entryRemoved = true // 有 "- " 条目在新快照里没了（含被换值的旧值）
-			break
+		if strings.HasPrefix(strings.TrimSpace(l), "- ") {
+			removed = append(removed, l) // 注记行等非条目行静默消失
 		}
 	}
-	if entryRemoved || keyReplaced {
-		return fullResendEnv(cur)
+	if len(removed) > 0 {
+		// 变更清单：【移除】在早前快照中整行作废、【新增】为最新状态
+		var b strings.Builder
+		b.WriteString("# 环境更新（条目有增删/变更：移除行 = 早前快照中该条目整行作废，新增行 = 最新状态，均给整行原文；连续差分积累多了系统会自动完整重发一次校准）\n")
+		for _, l := range removed {
+			b.WriteString("【移除】" + l + "\n")
+		}
+		for _, l := range added {
+			b.WriteString("【新增】" + l + "\n")
+		}
+		return strings.TrimRight(b.String(), "\n")
 	}
-	if len(changed) == 0 {
+	if len(added) == 0 {
 		return "" // 完全同文（防御：落库层等值比较已保证不会走到这）
 	}
-	sort.Strings(changed) // 无序收集，排序保证确定性
+	sort.Strings(added) // 无序收集，排序保证确定性
 	var b strings.Builder
-	b.WriteString("# 环境更新（新增条目，叠加在更早的快照与更新之上；条目减少或变更时会完整重发快照）\n")
-	for _, l := range changed {
+	b.WriteString("# 环境更新（新增条目，叠加在更早的快照与更新之上；条目减少或变更时改发增删变更清单）\n")
+	for _, l := range added {
 		b.WriteString(l + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// envRowRender 组装层渲染一条 kind=env 行的统一口径（buildContext 与 ctxStats
+// 共用）：prevEnv 为空 = 整份基线（首轮，或摘要折叠后保留区的首条可见快照），
+// 差分计数清零；差分连续数达到 envFullResendAfter = 完整重发重新校准，计数
+// 清零；否则走 envUpdateMessage 差分，计数 +1。返回消息文本（空 = 不发，同文
+// 防御）与新的差分计数。
+func envRowRender(prevEnv, env string, updates int) (string, int) {
+	if prevEnv == "" {
+		return env, 0
+	}
+	if updates >= envFullResendAfter {
+		return fullResendEnv(env), 0
+	}
+	if s := envUpdateMessage(prevEnv, env); s != "" {
+		return s, updates + 1
+	}
+	return "", updates
 }
 
 // fullResendEnv 把新快照渲染成一次完整重发：正文用新快照原文，首行标题换成
@@ -513,7 +549,8 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 		for _, s := range summaries {
 			add("摘要", TextMessage("user", s.Text()))
 		}
-		prevEnv := "" // 与 buildContext 同一套环境快照渲染口径（首条整份、后续差分）
+		prevEnv := ""   // 与 buildContext 同一套环境快照渲染口径（首条整份、后续差分）
+		envUpdates := 0 // 与 buildContext 同一差分计数口径（自愈全量）
 		foldSeen := false // 与 buildContext 同一折叠边界口径：交界处注入提示标签
 		for _, m := range raw {
 			if m.Seq <= boundary || m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit" {
@@ -532,10 +569,9 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 			}
 			if m.Kind == "env" {
 				env := m.Text()
-				if prevEnv == "" {
-					add("环境快照", TextMessage("user", env))
-				} else {
-					add("环境快照", TextMessage("user", envUpdateMessage(prevEnv, env)))
+				if s, n := envRowRender(prevEnv, env, envUpdates); s != "" {
+					add("环境快照", TextMessage("user", s))
+					envUpdates = n
 				}
 				prevEnv = env
 				continue

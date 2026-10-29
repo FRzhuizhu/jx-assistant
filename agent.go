@@ -501,7 +501,8 @@ func promptHash(s string) string {
 // envPrompt 生成「运行环境快照」：一切易变信息的唯一归宿。内容有变化才落库
 // 新快照（见 maybeAppendEnvSnapshot 的 diff 逻辑）；组装时首条整份进历史、
 // 其后按差分形状分流（context.go 的 envUpdateMessage：纯新增发短补充，条目
-// 有减或同 key 换值完整重发），已发送的前缀绝不改写。
+// 有减/换值发【移除】/【新增】变更清单，差分连续数到顶后完整重发一次校准），
+// 已发送的前缀绝不改写。
 //
 // 快照里**不含时间**：时间不在环境条目里（它只随消息走、不随权限/能力变），
 // 每条用户侧消息后面跟的那条时间提示词由组装期派生（context.go 的 timeNoteOf）。
@@ -708,6 +709,13 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 		if block := a.MCPServers.PromptBlock(); block != "" {
 			b.WriteString(block + "\n")
 		}
+	}
+	// 企业技能市场（marketURL 来自服务端下发/设置页「网络」分区的同一个值）：
+	// 一句话告知地址与自签证书注意点即可——命令行带 -k 就能拉到 JSON 清单，
+	// 不展开接口与装卸细节。未配置不注入；行落在快照尾部，升级后存量会话以
+	// 纯新增差分送达，不触发全量重发。
+	if a.Cfg.MarketURL != "" {
+		b.WriteString("- 企业技能市场：" + a.Cfg.MarketURL + "（自签 HTTPS，命令行访问需带 -k）\n")
 	}
 	return b.String()
 }
