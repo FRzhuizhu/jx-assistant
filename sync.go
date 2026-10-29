@@ -65,6 +65,8 @@ type announcePayload struct {
 	// RegistryURL 总服务器地址（服务端「模型」页签配置，空=不下发）：收到即覆盖
 	// 本地设置里的「总服务器地址」——公司换总服务器不用逐台改客户端（2026-10-29）。
 	RegistryURL string `json:"registryURL,omitempty"`
+	// SitesURL 小程序平台地址（服务端下发，供 iframe 直接加载；空=按市场地址推导）
+	SitesURL string `json:"sitesURL,omitempty"`
 	// RelayHost / RelayPort 远程接入（公网中继）的网关：服务端下发。客户端只在"当前值
 	// 还是出厂默认 example.com"时才跟随，手改过的不动（2026-10-29）。
 	RelayHost string `json:"relayHost,omitempty"`
@@ -222,6 +224,10 @@ func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool)
 	if ann.Company != "" && ann.Company != a.Cfg.WizardCompany {
 		a.Cfg.WizardCompany = ann.Company
 		changed = append(changed, "公司名→"+ann.Company)
+	}
+	if ann.SitesURL != "" && ann.SitesURL != a.Cfg.SitesURL {
+		a.Cfg.SitesURL = ann.SitesURL
+		changed = append(changed, "小程序平台地址")
 	}
 	// 远程接入网关：出厂默认（example.com）才跟随服务端下发，手改过的保留
 	if ann.RelayHost != "" && a.Cfg.RemoteAccess.Host == defaultRemoteHost {

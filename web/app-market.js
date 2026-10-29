@@ -159,6 +159,9 @@ function renderUnconfigured() {
 
 // miniappSiteURL 从市场清单地址推导托管平台地址；未配置返回空串
 function miniappSiteURL() {
+  // 服务端下发的优先：它知道自己的明文口（http://host:PORT/sites）——iframe 里的加载
+  // 用的是浏览器自己的证书校验，我们的"忽略证书"帮不上，用 https+IP 会静默失败。
+  if (mkData && mkData.sitesURL) return mkData.sitesURL;
   if (!mkData || !mkData.url) return '';
   const m = String(mkData.url).match(/^(https?:\/\/[^\/]+)/i);
   return m ? m[1] + '/sites' : '';
@@ -216,6 +219,28 @@ function renderMiniappTab() {
   }
   const hint = $('mk-miniapp-hint');
   if (hint) hint.classList.add('hidden');
+  // 工具条：iframe 里的加载用的是浏览器自己的证书校验（本程序的"忽略证书"管不到），
+  // 自签证书 / 用 IP 访问域名证书时 iframe 会被静默拒绝、连"继续访问"都不给。这时点
+  // 「在浏览器打开」——系统浏览器会弹证书确认，点继续即可（2026-10-30 现场）。
+  let bar = $('mk-miniapp-bar');
+  if (frame && !bar) {
+    bar = document.createElement('div');
+    bar.id = 'mk-miniapp-bar';
+    bar.className = 'mk-hint';
+    bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px';
+    bar.innerHTML = '<span style="flex:1">若下方页面空白/提示无法访问，多半是证书告警：' +
+      '点右侧按钮在浏览器里打开，选择「继续前往」即可。</span>' +
+      '<button id="mk-miniapp-open" class="mk-act ghost">在浏览器打开</button>';
+    const pane = $('mk-miniapp');
+    if (pane) pane.insertBefore(bar, frame);
+    const btn = $('mk-miniapp-open');
+    if (btn) btn.onclick = async () => {
+      const u = miniappSiteURL();
+      if (!u) return;
+      try { await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: u }) }); }
+      catch (e) { if (typeof jxOpenPage === 'function') jxOpenPage(u); else window.open(u, '_blank'); }
+    };
+  }
   if (frame) {
     frame.classList.remove('hidden');
     if (frame.dataset.src !== url) { // 地址没变不重载（保留平台页内的操作状态）

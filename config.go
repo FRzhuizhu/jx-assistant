@@ -116,6 +116,11 @@ type Config struct {
 	// 通道）原样保留，重新打开即恢复同步与向导。
 	WizardDone         bool   `json:"wizardDone"`
 	RegistryURL        string `json:"registryURL"`
+	// SitesURL 小程序平台地址（服务端随公告下发）：客户端把它塞进 iframe 整页嵌入。
+	// 服务端会按"浏览器能不能加载"来给——开了明文口就是 http://host:PORT/sites，
+	// 否则是 https 主口。iframe 不经过本程序的 http 客户端，所以"忽略证书"帮不上，
+	// 必须由服务端给一个能直接加载的地址（2026-10-30 现场：https+IP 让 iframe 静默失败）。
+	SitesURL string `json:"sitesURL,omitempty"`
 	WizardCompany      string `json:"wizardCompany,omitempty"`
 	WizardServer       string `json:"wizardServer,omitempty"`
 	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用

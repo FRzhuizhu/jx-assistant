@@ -88,6 +88,10 @@ type marketView struct {
 	Me         *marketMe        `json:"me,omitempty"`        // 本机发布者身份（空=还没设置姓名，前端不显示发布者管理按钮）
 	Error      string           `json:"error,omitempty"`
 	UpdatedAt  string           `json:"updatedAt,omitempty"`
+	// SitesURL 小程序平台地址（服务端随公告下发）：优先用它塞 iframe。服务端开了明文口
+	// 就是 http://host:PORT/sites——iframe 不经过本程序的 http 客户端，"忽略证书"帮不上，
+	// 用 https+IP 会静默失败（2026-10-30 现场）。
+	SitesURL string `json:"sitesURL,omitempty"`
 	Skills     []marketEntryOut `json:"skills"`
 	Components []marketEntryOut `json:"components"`
 	Plugins    []marketEntryOut `json:"plugins"`
@@ -242,6 +246,10 @@ func (a *App) marketMe() *marketMe {
 
 func (a *App) buildMarketView() marketView {
 	v := marketView{Skills: []marketEntryOut{}, Components: []marketEntryOut{}, Plugins: []marketEntryOut{}, Mcps: []marketEntryOut{}, Me: a.marketMe()}
+	// 小程序平台地址：服务端下发的优先（能直接放进 iframe），否则前端按市场地址推导
+	if u := strings.TrimSpace(a.Cfg.SitesURL); u != "" {
+		v.SitesURL = u
+	}
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
 	if raw == "" {
 		if a.Cfg.RemoteAccess.Host != "" && a.Cfg.RemoteAccess.Port > 0 {

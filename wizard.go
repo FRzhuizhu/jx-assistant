@@ -94,6 +94,8 @@ type provisionPayload struct {
 	UpdateURL string `json:"updateURL"`
 	// RegistryURL 总服务器地址（服务端下发；空=不变）
 	RegistryURL string `json:"registryURL,omitempty"`
+	// SitesURL 小程序平台地址（服务端下发；空=不变）
+	SitesURL string `json:"sitesURL,omitempty"`
 	// RelayHost / RelayPort 远程接入网关（服务端下发；空=不变，且只跟随出厂默认）
 	RelayHost string `json:"relayHost,omitempty"`
 	RelayPort int    `json:"relayPort,omitempty"`
@@ -169,6 +171,9 @@ func (a *App) applyProvisionPayload(payload *provisionPayload) []ModelCfg {
 	}
 	if payload.RegistryURL != "" {
 		a.Cfg.RegistryURL = strings.TrimRight(payload.RegistryURL, "/")
+	}
+	if payload.SitesURL != "" {
+		a.Cfg.SitesURL = payload.SitesURL
 	}
 	if payload.RelayHost != "" && a.Cfg.RemoteAccess.Host == defaultRemoteHost {
 		a.Cfg.RemoteAccess.Host = payload.RelayHost
