@@ -62,6 +62,9 @@ type announcePayload struct {
 	UpdateURL string `json:"updateURL"`
 	// PublicServer 服务端公网地址（管理页配置，空=未启用）：存 WizardPublicServer。
 	PublicServer string `json:"publicServer,omitempty"`
+	// RegistryURL 总服务器地址（服务端「模型」页签配置，空=不下发）：收到即覆盖
+	// 本地设置里的「总服务器地址」——公司换总服务器不用逐台改客户端（2026-10-29）。
+	RegistryURL string `json:"registryURL,omitempty"`
 	// Quota 该员工的额度快照（按人下发：剩余/已用/重置规则/下次重置，见服务端
 	// quota.go）。只读缓存，客户端只存着显示，不参与调用。
 	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
@@ -215,6 +218,10 @@ func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool)
 	if ann.Company != "" && ann.Company != a.Cfg.WizardCompany {
 		a.Cfg.WizardCompany = ann.Company
 		changed = append(changed, "公司名→"+ann.Company)
+	}
+	if ann.RegistryURL != "" && ann.RegistryURL != a.Cfg.RegistryURL {
+		a.Cfg.RegistryURL = strings.TrimRight(ann.RegistryURL, "/")
+		changed = append(changed, "总服务器→"+a.Cfg.RegistryURL)
 	}
 	if ann.PublicServer != "" && ann.PublicServer != a.Cfg.WizardPublicServer {
 		a.Cfg.WizardPublicServer = strings.TrimRight(ann.PublicServer, "/")

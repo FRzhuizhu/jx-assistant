@@ -92,6 +92,8 @@ type provisionPayload struct {
 	APIError  string `json:"apiError,omitempty"`
 	MarketURL string `json:"marketURL"`
 	UpdateURL string `json:"updateURL"`
+	// RegistryURL 总服务器地址（服务端下发；空=不变）
+	RegistryURL string `json:"registryURL,omitempty"`
 	// Quota 额度快照（服务端下发；老服务端没有该字段 = 不显示额度）
 	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
 }
@@ -161,6 +163,9 @@ func (a *App) applyProvisionPayload(payload *provisionPayload) []ModelCfg {
 	}
 	if payload.UpdateURL != "" {
 		a.Cfg.UpdateURL = payload.UpdateURL
+	}
+	if payload.RegistryURL != "" {
+		a.Cfg.RegistryURL = strings.TrimRight(payload.RegistryURL, "/")
 	}
 	// 额度快照：服务端下发就存下来（空 = 服务端没配额度/没下发，保持原值不动）
 	if payload.Quota != nil {
