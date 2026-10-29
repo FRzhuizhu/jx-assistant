@@ -694,3 +694,50 @@ function updateMarketCols() {
 }
 window.addEventListener('resize', updateMarketCols);
 document.addEventListener('DOMContentLoaded', updateMarketCols);
+
+/* ---------- 侧栏「小程序平台」独立入口（2026-10-30） ----------
+   不再把 /sites 塞进 iframe：iframe 用的是浏览器自己的证书校验，自签证书或用 IP 访问
+   域名证书时会被静默拒绝（连"继续访问"按钮都没有），我们程序里的"忽略证书"管不到它。
+   独立入口的做法：取服务端下发的 sitesURL（服务端开了明文口就是 http://host:PORT/sites，
+   可直接打开），交给系统浏览器打开 —— 有证书告警时用户能点"继续前往"。 */
+async function openSitesPlatform() {
+  let url = (mkData && mkData.sitesURL) || '';
+  if (!url) {
+    try {
+      const d = await api('/api/market');
+      url = (d && d.sitesURL) || '';
+      if (!mkData) mkData = d;
+    } catch (e) {}
+  }
+  if (!url) {
+    // 没拿到服务端下发值：按市场地址兜底推导（与服务端同 origin）
+    url = miniappSiteURL();
+  }
+  if (!url) {
+    alert('还没配置市场服务器：请到 设置 · 网络访问 填「市场服务器」，小程序平台与它同一台服务端。');
+    if (typeof openSettings === 'function') openSettings('network');
+    return;
+  }
+  // 远程（手机/异地）访问时要在**当前这台设备**的浏览器里开，不能让电脑那边的服务端去
+  // 打开（window.__JX_REMOTE_MODE 由 remote-boot.js 在远程外壳里设置）。
+  const remote = !!(window.__JX_REMOTE_MODE || window.JX_REMOTE);
+  if (remote) {
+    if (typeof jxOpenPage === 'function') jxOpenPage(url);
+    else window.open(url, '_blank');
+    return;
+  }
+  try {
+    await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) });
+  } catch (e) {
+    if (typeof jxOpenPage === 'function') jxOpenPage(url);
+    else window.open(url, '_blank');
+  }
+}
+
+function bindSitesEntry() {
+  const btn = $('btn-sites');
+  if (!btn) return;
+  btn.onclick = () => { openSitesPlatform(); };
+}
+document.addEventListener('DOMContentLoaded', bindSitesEntry);
+if (document.readyState !== 'loading') bindSitesEntry();
