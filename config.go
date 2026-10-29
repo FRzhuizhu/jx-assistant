@@ -34,6 +34,10 @@ func genSecret(n int) string {
 
 // ensureRemoteIdentity 远程接入的身份补全：设备号/配对密钥为空时随机生成，
 // 并立即回写配置——不落盘的话每次启动都会换身份，手机存的入口就失效了。
+// defaultRemoteHost 出厂默认的中继网关域名：服务端下发 relayHost 时，只有当前值仍等于
+// 它才自动跟随（用户手改过就尊重用户的设置）。
+const defaultRemoteHost = "example.com"
+
 func ensureRemoteIdentity(cfg *Config, path string) {
 	generated := false
 	if cfg.RemoteAccess.MyID == "" {

@@ -94,6 +94,9 @@ type provisionPayload struct {
 	UpdateURL string `json:"updateURL"`
 	// RegistryURL 总服务器地址（服务端下发；空=不变）
 	RegistryURL string `json:"registryURL,omitempty"`
+	// RelayHost / RelayPort 远程接入网关（服务端下发；空=不变，且只跟随出厂默认）
+	RelayHost string `json:"relayHost,omitempty"`
+	RelayPort int    `json:"relayPort,omitempty"`
 	// Quota 额度快照（服务端下发；老服务端没有该字段 = 不显示额度）
 	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
 }
@@ -166,6 +169,12 @@ func (a *App) applyProvisionPayload(payload *provisionPayload) []ModelCfg {
 	}
 	if payload.RegistryURL != "" {
 		a.Cfg.RegistryURL = strings.TrimRight(payload.RegistryURL, "/")
+	}
+	if payload.RelayHost != "" && a.Cfg.RemoteAccess.Host == defaultRemoteHost {
+		a.Cfg.RemoteAccess.Host = payload.RelayHost
+		if payload.RelayPort > 0 {
+			a.Cfg.RemoteAccess.Port = payload.RelayPort
+		}
 	}
 	// 额度快照：服务端下发就存下来（空 = 服务端没配额度/没下发，保持原值不动）
 	if payload.Quota != nil {

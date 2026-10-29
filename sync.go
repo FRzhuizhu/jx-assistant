@@ -65,6 +65,10 @@ type announcePayload struct {
 	// RegistryURL 总服务器地址（服务端「模型」页签配置，空=不下发）：收到即覆盖
 	// 本地设置里的「总服务器地址」——公司换总服务器不用逐台改客户端（2026-10-29）。
 	RegistryURL string `json:"registryURL,omitempty"`
+	// RelayHost / RelayPort 远程接入（公网中继）的网关：服务端下发。客户端只在"当前值
+	// 还是出厂默认 example.com"时才跟随，手改过的不动（2026-10-29）。
+	RelayHost string `json:"relayHost,omitempty"`
+	RelayPort int    `json:"relayPort,omitempty"`
 	// Quota 该员工的额度快照（按人下发：剩余/已用/重置规则/下次重置，见服务端
 	// quota.go）。只读缓存，客户端只存着显示，不参与调用。
 	Quota *CompanyQuotaCfg `json:"quota,omitempty"`
@@ -218,6 +222,17 @@ func applyAnnounce(a *App, ann *announcePayload, server string, fromPublic bool)
 	if ann.Company != "" && ann.Company != a.Cfg.WizardCompany {
 		a.Cfg.WizardCompany = ann.Company
 		changed = append(changed, "公司名→"+ann.Company)
+	}
+	// 远程接入网关：出厂默认（example.com）才跟随服务端下发，手改过的保留
+	if ann.RelayHost != "" && a.Cfg.RemoteAccess.Host == defaultRemoteHost {
+		if a.Cfg.RemoteAccess.Host != ann.RelayHost {
+			a.Cfg.RemoteAccess.Host = ann.RelayHost
+			changed = append(changed, "中继网关→"+ann.RelayHost)
+		}
+		if ann.RelayPort > 0 && a.Cfg.RemoteAccess.Port != ann.RelayPort {
+			a.Cfg.RemoteAccess.Port = ann.RelayPort
+			changed = append(changed, "中继端口→"+strconv.Itoa(ann.RelayPort))
+		}
 	}
 	if ann.RegistryURL != "" && ann.RegistryURL != a.Cfg.RegistryURL {
 		a.Cfg.RegistryURL = strings.TrimRight(ann.RegistryURL, "/")
