@@ -106,6 +106,17 @@ Write-Host ("== stage exe 校验通过：PE AMD64 / {0:N1} MB" -f ($exeItem.Leng
 Write-Host "== 暂存技能目录（含便携 Python 运行时，体积较大）"
 Copy-Item $SkillsSource (Join-Path $stage "技能") -Recurse -Force
 
+# 技能\user\ 是「用户自己装的技能」（本机开发机上是我们的内部技能，含服务器地址、
+# 部署命令），绝不随安装包发给客户——静默更新块早就是这个口径（发布静默更新.ps1
+# 白名单，用户技能永不入包）。这里在 stage 里直接删掉，安装包.iss 那行 Excludes
+# 是第二道保险：两层都在，才不会因为将来误改其中一处把内部技能发出去。
+$stageUser = Join-Path $stage "技能\user"
+if (Test-Path $stageUser) {
+  $excluded = (Get-ChildItem $stageUser -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+  Remove-Item $stageUser -Recurse -Force
+  Write-Host ("== 已排除用户技能（不随安装包分发）：{0}" -f ($excluded -join '、'))
+}
+
 # 内置组件（默认组件必须随包）：组件/ 目录整体暂存，缺失或没有任何
 # 带 manifest.json 的组件都拒绝出包——安装包交付离线全功能，默认组件
 # （危险命令护栏/待办定时/Git 面板/语音）是其中一部分，不能少。
