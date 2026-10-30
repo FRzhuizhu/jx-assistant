@@ -487,8 +487,8 @@ class DeviceActivity : Activity() {
             runOnUiThread {
                 android.widget.Toast.makeText(
                     this@DeviceActivity,
-                    "已保存到「下载管理」：${item.name}",
-                    android.widget.Toast.LENGTH_LONG,
+                    "已保存：${item.name}",
+                    android.widget.Toast.LENGTH_SHORT,
                 ).show()
             }
             return true
@@ -496,6 +496,18 @@ class DeviceActivity : Activity() {
 
         @android.webkit.JavascriptInterface
         fun abortDownload(id: String?) = DownloadStore.abort(id)
+
+        /** 网页 → 壳「打开一个已下载项」：交付卡下载完成后由网页紧接着调用
+         *  （jxShellSaveURL 的 finishDownload 之后）——下载并打开是一条用户
+         *  动作，网页自己调不起系统查看器，只能由壳来。旧网页不调用它不受
+         *  影响；旧壳没有这个桥时网页检测不到就只保存不打开，两边都兼容。 */
+        @android.webkit.JavascriptInterface
+        fun openDownload(id: String?): Boolean {
+            if (id.isNullOrEmpty()) return false
+            val item = DownloadStore.list(this@DeviceActivity).find { it.id == id } ?: return false
+            runOnUiThread { DownloadsActivity.openItem(this@DeviceActivity, item) }
+            return true
+        }
 
         /** 手机壳标识：网页侧据此决定「下载」走壳的保存通路还是浏览器的 blob 通路 */
         @android.webkit.JavascriptInterface

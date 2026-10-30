@@ -103,17 +103,35 @@ class DownloadsActivity : Activity() {
         return row
     }
 
-    private fun open(it: DownloadStore.Item) {
-        try {
-            val uri: Uri = DownloadStore.uriFor(this, it)
-            val mime = if (it.mime.isBlank()) "*/*" else it.mime
-            val i = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mime)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    /** 列表里的手动打开与「下载完成后自动打开」（DeviceActivity 的 openDownload
+     *  桥）共用一个实现：FileProvider + ACTION_VIEW。 */
+    private fun open(it: DownloadStore.Item) = openItem(this, it)
+
+    companion object {
+        /** 打开一个已下载项。存储的 mime 为空或是 octet-stream（交付下载接口对
+         *  不可内联的类型就这么报）时按扩展名查系统 MimeTypeMap 兜底——否则
+         *  docx/xlsx 这类会被「无应用可打开」挡在门外。打不开（无对应应用）
+         *  吐 Toast，不抛出（自动打开链路没有界面接异常）。 */
+        fun openItem(act: Activity, item: DownloadStore.Item) {
+            try {
+                var mime = item.mime
+                if (mime.isBlank() || mime == "application/octet-stream") {
+                    val ext = item.name.substringAfterLast('.', "").lowercase()
+                    mime = if (ext.isNotEmpty())
+                        android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+                    else "*/*"
+                }
+                val uri: Uri = DownloadStore.uriFor(act, item)
+                val i = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, mime)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                act.startActivity(i)
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(
+                    act, "这台手机上打不开「${item.name}」：${e.message}", Toast.LENGTH_LONG,
+                ).show()
             }
-            startActivity(Intent.createChooser(i, "打开方式"))
-        } catch (e: Exception) {
-            Toast.makeText(this, "这台手机上打不开这个文件：${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 

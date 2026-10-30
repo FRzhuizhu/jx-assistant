@@ -109,6 +109,12 @@
   删除 / 清空（打开走 FileProvider，不需要任何存储权限）。网页侧判定见
   `app-chat.js` 的 `jxShellBridge()`/`jxShellSaveURL()` 与 `remote-boot.js` 的
   `downloadURL`（桥可能在顶层文档，也可能在远程外壳的父窗口）。
+  **下载并打开（2026-10-30）**：新增 `JXLink.openDownload(id)` 桥——交付卡「打开」
+  在壳里下载完成后由网页紧接着调用，壳按 id 找到刚落盘的项走 FileProvider +
+  ACTION_VIEW 调系统查看器打开（与「下载管理」列表里的手动打开同一实现
+  `DownloadsActivity.openItem`；存储 mime 为空或是 octet-stream 时按扩展名查
+  MimeTypeMap 兜底，否则 docx/xlsx 会被「无应用可打开」挡住）。旧壳没有这个
+  桥 → 网页检测不到就只保存不打开，两侧互相兼容。
   **版本号口径（2026-10-27 改）**：与电脑端统一用 `YYYYMMDD-N`（同日第 N 版），
   `versionCode` 用 `YYYYMMDDNN`（如 2026102701），不再用 0.1.x 那套。
 - **设置页**：清空应用缓存 + 反馈意见（multipart 封帧经中继发电脑端 `/api/feedback`，
