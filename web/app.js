@@ -19,6 +19,19 @@ loadStatus().then(loadSessions).then(restoreLastSession); // 会话列表到位�
 loadModels();
 loadChatModes(); // 工作模式清单：唯一数据源在后端（GET /api/modes），拉回来重建模式下拉
 connectEvents();
+// 广播无回放的另两类丢帧窗口也各补一次（与 connectEvents 的 onopen 同一根治，
+// 详见那边注释）：
+// · jx:tunnel——远程隧道真正可用的转折点（首通/P2P 直连建立/SSE 重连成功，
+//   remote-boot 派发）：手机从后台回来隧道重建后，错过窗口里的审批/提问广播
+//   由此补上；
+// · visibilitychange——页面回前台：SSE 可能假死未报错（readyState 仍 1，
+//   兜底轮询被跳过），后台期间错过的广播只能靠这里补。
+window.addEventListener('jx:tunnel', () => { loadApprovals(); loadQuestions(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  loadApprovals();
+  loadQuestions();
+});
 loadApprovals();
 loadQuestions();
 // 首次接入向导（app-wizard.js）：未完成过（!wizardDone）时自动弹——公司名局域网
