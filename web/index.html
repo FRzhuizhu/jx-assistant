@@ -151,6 +151,41 @@
       <div id="mk-list" class="mk-list"></div>
     </div>
 
+    <!-- 上传技能到市场弹层（app-market.js 的 mku* 系列；2026-10-30 凌晨 e2017df54e
+         清理小程序平台 iframe 入口时被整块误删——点「＋ 上传技能」在 null 上抛异常、
+         弹层永远不出现，从 e2017df54e^ 原样恢复） -->
+    <div id="mk-upload-modal" class="modal hidden">
+      <div class="modal-card mku-card">
+        <h3>上传技能到市场</h3>
+        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip、.md 文件或文件夹）。</p>
+        <div id="mku-skills" class="mku-skills"></div>
+        <div class="mku-meta">
+          <label>技能 ID <span class="mku-req">必填</span>
+            <input id="mku-id" placeholder="英文短名，如 wechat-chat-ops" autocomplete="off" spellcheck="false">
+          </label>
+          <label>显示名称 <span class="mku-opt">中文为主</span>
+            <input id="mku-name" placeholder="市场上与技能清单里显示的名字" autocomplete="off">
+          </label>
+          <label>版本
+            <input id="mku-version" placeholder="如 1.0.0" autocomplete="off" spellcheck="false">
+          </label>
+          <label>标签 <span class="mku-opt">逗号分隔</span>
+            <input id="mku-tags" placeholder="如 办公, 自动化" autocomplete="off">
+          </label>
+          <label class="mku-wide">描述
+            <input id="mku-desc" placeholder="一句话说明这个技能做什么（显示在市场的卡片上，上限 1024 字）" autocomplete="off">
+          </label>
+        </div>
+        <div id="mku-status" class="mku-status"></div>
+        <div class="modal-actions">
+          <button id="mku-clear">清空</button>
+          <span class="spacer"></span>
+          <button id="mku-cancel">取消</button>
+          <button id="mku-submit" class="accent" disabled>发布到市场</button>
+        </div>
+      </div>
+    </div>
+
     <div id="progress-panel" class="hidden"></div>
     <div id="messages"><div class="msg-col" id="msg-col"></div></div>
 
