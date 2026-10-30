@@ -1214,7 +1214,14 @@ SKILL.md 的文件夹，或 .zip 压缩包/单个 .md 说明文件——.md 自�
 快照里截断（快照每会话注入，防超长描述污染上下文；全文在 read_skill），发布
 侧按行业规范硬校验 name/displayName ≤64、description ≤1024（`market_publish.go`）。
 安装口与发布口共用 `checkSkillMDBody` 内容体检：空 SKILL.md / 只有 frontmatter
-的包两边都拦（装得上用不了的东西不进市场也不进本机）。用户技能按 **清单先行、
+的包两边都拦（装得上用不了的东西不进市场也不进本机）。**内部技能绝不随包
+分发**（2026-10-30 事故与修复：20261028-1 及更早安装包把开发机 技能\user\
+整目录误发给了客户，其中含密钥；三层修复——打包脚本 stage 删 user + iss
+Excludes（`d1723e4671`）、go:embed 只嵌内置白名单目录（skills.go，exe 内嵌
+母本不再含 user 树，`TestEmbeddedSkillsTreeIsWhitelistOnly` 防回归）、启动
+清理 `purgeLeakedUserSkills`（skills.go，按 `leakedInternalSkills` 名单删
+user/ 下误发副本，市场记账在的跳过，随新引擎静默推给存量机器）。要给用户
+用的内部技能一律走市场正式发布）。用户技能按 **清单先行、
 内容按需**送达模型：环境快照里只列 显示名（id）与一句话描述，要用哪个技能先
 调用 `read_skill`（常驻工具，**所有模式注册**）读它的完整 SKILL.md 说明——
 技能增减不改变工具定义；清单变化经环境快照补在对话**最底部**，并附一行

@@ -7,6 +7,7 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,57 @@ import (
 func newSkillTestApp(t *testing.T) *App {
 	t.Helper()
 	return newMarketTestApp(t, "") // 只用它的 DataDir/SkillsDir 骨架
+}
+
+// 内嵌技能母本必须只含白名单内置技能目录：user/ 子树是泄漏渠道（开发机的
+// 内部用户技能含密钥，一旦 embed 指令改回整目录就会随 exe 分发），在这里
+// 炸响防回归。白名单目录漏嵌（新内置技能忘了加 embed 行）同样炸。
+func TestEmbeddedSkillsTreeIsWhitelistOnly(t *testing.T) {
+	fs.WalkDir(skillsFS, "技能", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(p, "技能/user/") {
+			t.Fatalf("内嵌技能树混入了 user/ 子树（泄漏渠道，检查 go:embed 指令）: %s", p)
+		}
+		return nil
+	})
+	for _, id := range builtinSkillOrder {
+		if _, err := skillsFS.ReadDir("技能/" + id); err != nil {
+			t.Fatalf("内置技能 %s 未内嵌（新内置技能要同步加 embed 行）: %v", id, err)
+		}
+	}
+}
+
+// 泄漏清理：旧安装包误分发的内部技能启动即删；市场正式安装（有记账）与
+// 名单外的用户技能不动。
+func TestPurgeLeakedUserSkills(t *testing.T) {
+	a := newSkillTestApp(t)
+	userDir, _ := a.userSkillsDir()
+	mk := func(id string) {
+		os.MkdirAll(filepath.Join(userDir, id), 0755)
+		os.WriteFile(filepath.Join(userDir, id, "SKILL.md"), []byte("---\nname: x\ndescription: d\n---\n正文"), 0644)
+	}
+	mk("jxmes-master") // 名单内、无记账：删
+	mk("微信操作")     // 名单内（中文目录名）：删
+	mk("SKILL")        // 名单内（gitea 技能的目录名就叫 SKILL）：删
+	mk("my-own")       // 名单外（用户自建）：保留
+	if err := a.saveMarketRec("skill", "server-publish-update", marketInstallRec{Version: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	mk("server-publish-update") // 名单内、市场记账在：保留
+
+	a.purgeLeakedUserSkills(filepath.Dir(userDir))
+	for _, gone := range []string{"jxmes-master", "微信操作", "SKILL"} {
+		if dirExists(filepath.Join(userDir, gone)) {
+			t.Fatalf("泄漏技能 %s 应被清理", gone)
+		}
+	}
+	for _, keep := range []string{"my-own", "server-publish-update"} {
+		if !dirExists(filepath.Join(userDir, keep)) {
+			t.Fatalf("%s 不应被清理", keep)
+		}
+	}
 }
 
 func TestSkillMetaParsesDisplayName(t *testing.T) {

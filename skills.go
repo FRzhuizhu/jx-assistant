@@ -29,7 +29,12 @@ import (
 	"time"
 )
 
-//go:embed 技能
+// 内嵌技能母本只嵌白名单内置技能目录（与 builtinSkillOrder 一致，新内置技能
+// 两处同步加）：绝不能写 `//go:embed 技能` 整目录——那会把开发机的 技能/user/
+// （内部用户技能，含密钥）一起嵌进 exe，随静默更新/裸 exe 分发泄漏
+// （2026-10-30 事故排查：旧引擎 exe 内嵌了 11 个内部技能，jx-assistant.exe.old
+// 二进制里仍有它们的名字）。user 永不入包、永不入 exe。
+//go:embed 技能/pdf 技能/ocr 技能/office 技能/downloader 技能/apkinfo 技能/web-search-local
 var skillsFS embed.FS
 
 // SkillManifest 是技能目录里 manifest.json 的结构：声明运行依赖。
@@ -85,9 +90,46 @@ func (a *App) SkillsDir() (string, error) {
 		}
 	}
 	a.migrateBuiltinFromUser(abs)
+	a.purgeLeakedUserSkills(abs)
 	a.skillsDirOurs = abs
 	a.skillsReady = true
 	return abs, nil
+}
+
+// leakedInternalSkills 曾随旧安装包/旧引擎误分发的内部技能目录名（2026-10-30
+// 排查坐实：20261028-1 及更早的安装包把开发机 技能/user/ 整目录随包发给了
+// 客户，旧引擎 exe 的内嵌母本里也是同一批——名单扫描自 jx-assistant.exe.old
+// 二进制）。清理只按这份名单动手：名单外的用户技能（用户自建/市场装的其他
+// 技能）一个不动。名单里的技能要给用户用，一律走市场正式发布。
+var leakedInternalSkills = []string{
+	"3d-design", "SKILL", "com-probe", "erp-order-fet", "jingzhi-device-inspection",
+	"jxmes-master", "jxmes-ops", "miniapp-publish", "parametric-3d-printing",
+	"server-publish-update", "微信操作",
+}
+
+// purgeLeakedUserSkills 启动清理：删掉 user/ 下命中泄漏名单的目录（其中部分
+// 技能含密钥，不能留在客户机）；**有市场安装记账的跳过**——同 id 从市场正式
+// 装的（jxmes-master 等在市场有正式条目）是用户要的，不属于误发。随新引擎
+// 分发（静默更新与安装包同一份代码），所有升级用户启动即清。
+func (a *App) purgeLeakedUserSkills(dir string) {
+	userDir := filepath.Join(dir, "user")
+	recs := a.loadMarketRecs()
+	removed := []string{}
+	for _, id := range leakedInternalSkills {
+		target := filepath.Join(userDir, id)
+		if !dirExists(target) {
+			continue
+		}
+		if _, market := recs["skill:"+id]; market {
+			continue // 市场正式安装的：记账在，不删
+		}
+		if err := os.RemoveAll(target); err == nil {
+			removed = append(removed, id)
+		}
+	}
+	if len(removed) > 0 {
+		log.Printf("[技能] 已清理曾随旧安装包误分发的内部技能: %s（含密钥的内部技能不随包分发，需要请从市场安装；市场正式安装的不受影响）", strings.Join(removed, "、"))
+	}
 }
 
 // migrateBuiltinFromUser 存量机器自愈：内置技能早期以用户技能形态分发过
