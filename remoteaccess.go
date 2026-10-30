@@ -695,6 +695,13 @@ func bridgeCore(ctx context.Context, client *http.Client, port int, fr relayReqF
 		"status":      resp.StatusCode,
 		"contentType": resp.Header.Get("Content-Type"),
 	}
+	// 总大小透传：前端把它还原成 Response 的 Content-Length 头——下载进度条、
+	// 「已下载 x / 总量 y」都靠它（远程隧道里页面拿不到别的长度信息）。
+	// gzip 场景 len 是解压前（原始正文）的长度，接收端按 head.gz 流式解压后
+	// 消费方看到的字节数正好等于它，进度比例依然正确。
+	if resp.ContentLength >= 0 {
+		head["len"] = resp.ContentLength
+	}
 	if wantGz {
 		head["gz"] = 1
 	}

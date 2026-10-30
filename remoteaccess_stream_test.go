@@ -192,3 +192,59 @@ func TestBridgeCoreJSONStillGzipped(t *testing.T) {
 		t.Fatalf("解压后正文不符: %q", out)
 	}
 }
+
+// TestBridgeCoreHeadLen：已知大小的响应，head 帧要透传总大小（len 字段）——
+// 前端把它还原成 Response 的 Content-Length 头，远程下载的页面内进度条靠它
+// 才知道总量（2026-10-30 交付下载体验改造的一部分）。流式响应（chunked、无
+// Content-Length）则不下发 len。
+func TestBridgeCoreHeadLen(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chunked" {
+			// 先 Flush 强制 chunked：响应头里不会有 Content-Length
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			flusher := w.(http.Flusher)
+			_, _ = w.Write([]byte("part1"))
+			flusher.Flush()
+			_, _ = w.Write([]byte("part2"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", "1234")
+		_, _ = w.Write(make([]byte, 1234))
+	}))
+	defer ts.Close()
+
+	run := func(path string) map[string]any {
+		var frames []map[string]any
+		send := func(v map[string]any) bool {
+			frames = append(frames, v)
+			return true
+		}
+		bridgeCore(context.Background(), ts.Client(), bridgePortFromURL(t, ts.URL), relayReqFrame{
+			T: "req", ID: "l1", Method: "GET", Path: path,
+		}, send)
+		for _, f := range frames {
+			if f["t"] == "head" {
+				return f
+			}
+		}
+		t.Fatalf("%s：没有收到 head 帧", path)
+		return nil
+	}
+
+	if head := run("/file.bin"); head != nil {
+		// len 可能为 int64（本测试直连 send 的原始 map）或 float64（经 JSON 往返）
+		ln, _ := head["len"].(float64)
+		if li, ok := head["len"].(int64); ok {
+			ln = float64(li)
+		}
+		if int(ln) != 1234 {
+			t.Fatalf("已知大小响应的 head.len 应为 1234，got %v（类型 %T）", head["len"], head["len"])
+		}
+	}
+	if head := run("/chunked"); head != nil {
+		if _, has := head["len"]; has {
+			t.Fatalf("chunked 响应不应带 len 字段，got %v", head["len"])
+		}
+	}
+}

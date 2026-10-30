@@ -1367,30 +1367,41 @@ func (a *App) handleBrowserView(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// viewableMime 浏览器原生可渲染类型的精确 mime（含 charset 的文本类、图片、
+// 音视频、pdf、svg、html）。第二个返回值=false 表示不在表内（未知类型，调用方
+// 自行决定降级策略）——inline 打开与 text/plain 兜底都要区分「表内的文本」与
+// 「表外的不明类型」（后者按 inline 给 text/plain 会把 docx 当文本乱码显示）。
+func viewableMime(name string) (string, bool) {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	switch ext {
+	case "html", "htm":
+		return "text/html; charset=utf-8", true
+	case "svg":
+		return "image/svg+xml", true
+	case "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif":
+		return "image/" + ext, true
+	case "pdf":
+		return "application/pdf", true
+	case "mp4", "webm":
+		return "video/" + ext, true
+	case "mp3", "wav", "ogg", "m4a":
+		if ext == "m4a" {
+			return "audio/mp4", true
+		}
+		return "audio/" + ext, true
+	case "txt", "md", "json", "xml", "csv", "js", "css", "log", "yml", "yaml", "go", "py":
+		return "text/plain; charset=utf-8", true
+	default:
+		return "", false
+	}
+}
+
 // viewContentType 远程文件流式预览的 Content-Type：浏览器原生可渲染的
 // 类型给出精确 mime（含 charset 的文本类、图片、音视频、pdf、svg），不在
 // 表内的一律 text/plain——浏览器显示源码/乱码总比错误渲染强。
 func viewContentType(name string) string {
-	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
-	switch ext {
-	case "html", "htm":
-		return "text/html; charset=utf-8"
-	case "svg":
-		return "image/svg+xml"
-	case "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif":
-		return "image/" + ext
-	case "pdf":
-		return "application/pdf"
-	case "mp4", "webm":
-		return "video/" + ext
-	case "mp3", "wav", "ogg", "m4a":
-		if ext == "m4a" {
-			return "audio/mp4"
-		}
-		return "audio/" + ext
-	case "txt", "md", "json", "xml", "csv", "js", "css", "log", "yml", "yaml", "go", "py":
-		return "text/plain; charset=utf-8"
-	default:
-		return "text/plain; charset=utf-8"
+	if ct, ok := viewableMime(name); ok {
+		return ct
 	}
+	return "text/plain; charset=utf-8"
 }
