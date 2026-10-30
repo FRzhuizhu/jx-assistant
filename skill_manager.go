@@ -20,8 +20,20 @@ import (
 	"sync"
 )
 
-// 内置技能 id：只读展示、不可删除、不可关闭。
-var builtinSkillIDs = map[string]bool{"pdf": true, "ocr": true, "office": true, "downloader": true, "apkinfo": true}
+// 内置技能清单（顺序即设置页展示顺序）：随包分发、只读展示、常开、不可
+// 删除。分块更新（skills 块）的白名单（isBuiltinSkillName）、设置页自带
+// 技能清单（listSkills）、启动迁移（migrateBuiltinFromUser）共用这一份。
+// 打包脚本 打包\发布静默更新.ps1 的 $builtin 与此保持一致，改动需双侧同步。
+var builtinSkillOrder = []string{"pdf", "ocr", "office", "downloader", "apkinfo", "web-search-local"}
+
+// 内置技能 id 集合（由 builtinSkillOrder 派生，查重 O(1)）。
+var builtinSkillIDs = func() map[string]bool {
+	m := make(map[string]bool, len(builtinSkillOrder))
+	for _, id := range builtinSkillOrder {
+		m[id] = true
+	}
+	return m
+}()
 
 // isBuiltinSkillName 判断一个目录名是不是「随包分发的内置技能」。
 // 分块更新（skills 块）用它做白名单：只有名单内的目录允许整目录替换，
@@ -196,7 +208,7 @@ func (a *App) listSkills() (*SkillLists, error) {
 	}
 	st := a.loadSkillsState()
 	// 自带技能：读各自 manifest
-	for _, id := range []string{"pdf", "ocr", "office", "downloader", "apkinfo"} {
+	for _, id := range builtinSkillOrder {
 		m, _, err := a.readSkillManifest(id)
 		if err != nil {
 			continue
@@ -236,12 +248,21 @@ func (a *App) listSkills() (*SkillLists, error) {
 	return out, nil
 }
 
-// userSkillAvailable 某个用户技能当前是否可用（目录里有 SKILL.md 且未被
-// 停用）。web_search 的兜底提示用它决定要不要指引模型改走「本机网络搜索」
-// 技能——技能被删除或停用时提示随之消失，保证摘除干净、不留悬空指引。
-func (a *App) userSkillAvailable(id string) bool {
+// skillAvailable 某个技能当前是否可用：内置技能在位即常开；用户技能要求
+// 目录里有 SKILL.md 且未被停用。web_search 的兜底提示用它决定要不要指引
+// 模型改走「本机网络搜索」技能——技能被删除或停用时提示随之消失，保证
+// 摘除干净、不留悬空指引。
+func (a *App) skillAvailable(id string) bool {
 	list, err := a.listSkills()
 	if err != nil {
+		return false
+	}
+	if builtinSkillIDs[id] {
+		for _, s := range list.BuiltIn {
+			if s.ID == id {
+				return true
+			}
+		}
 		return false
 	}
 	for _, s := range list.User {
@@ -517,9 +538,9 @@ func (a *App) assertSkillVisibility() {
 // 完整 SKILL.md 说明用它加载。工具常驻目录，技能增减不改变工具定义。
 func readUserSkillTool() Tool {
 	return Tool{
-		Spec: toolSpec("read_skill", "读取一个用户技能的完整使用说明（SKILL.md 原文）。环境快照里的「用户技能清单」只列名字与一句话描述；动手用某个技能之前，先调用本工具看完整说明。",
+		Spec: toolSpec("read_skill", "读取一个技能的完整使用说明（SKILL.md 原文），内置技能（自带技能清单里）与用户技能都能读。环境快照里的技能清单只列名字与一句话描述；动手用某个技能之前，先调用本工具看完整说明。",
 			objSchema(map[string]any{
-				"id": strProp("技能 id，来自环境快照里的用户技能清单"),
+				"id": strProp("技能 id，来自环境快照里的自带技能或用户技能清单"),
 			}, "id")),
 		Run: runReadUserSkill,
 	}
@@ -533,9 +554,22 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	id := strings.TrimSpace(p.ID)
-	// 只允许读清单在列（存在且已启用）的技能：id 经名单校验，不拿用户输入拼路径
+	// 只允许读清单在列的技能：id 经名单校验，不拿用户输入拼路径。
+	// 内置技能（如本机网络搜索）在 技能/<id>/ 常开；用户技能要求存在且启用。
+	skillRoot, err := t.app.SkillsDir()
+	if err != nil {
+		return "", err
+	}
+	list, lerr := t.app.listSkills()
+	if lerr == nil {
+		for _, s := range list.BuiltIn {
+			if s.ID == id {
+				return readSkillBodyAt(filepath.Join(skillRoot, id), id)
+			}
+		}
+	}
 	inList := false
-	if list, err := t.app.listSkills(); err == nil {
+	if lerr == nil {
 		for _, s := range list.User {
 			if s.ID == id && s.Enabled {
 				inList = true
@@ -556,12 +590,13 @@ func runReadUserSkill(t *toolContext, args json.RawMessage) (string, error) {
 		}
 		return "", fmt.Errorf("技能 %s 不在当前清单里（不存在或已停用），请用清单里给出的 id", id)
 	}
-	userDir, err := t.app.userSkillsDir()
-	if err != nil {
-		return "", err
-	}
-	fm := skillMeta(filepath.Join(userDir, id))
-	body := stripFrontmatter(fm.Body)
+	return readSkillBodyAt(filepath.Join(skillRoot, "user", id), id)
+}
+
+// readSkillBodyAt 读技能目录里 SKILL.md 的正文（剥 frontmatter；空正文报错；
+// 超长截断），read_skill 的内置与用户两个分支共用。
+func readSkillBodyAt(dir, id string) (string, error) {
+	body := stripFrontmatter(skillMeta(dir).Body)
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("技能 %s 没有可用的说明正文", id)
 	}

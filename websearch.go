@@ -21,9 +21,9 @@
 // 服务端地址取 config.searchURL，空则跟随市场地址同源（marketOrigin）。
 //
 // 服务端走不通（未配置/不可达/网关报错）时的兜底：错误文案附加改道指引，
-// 让模型转用「本机网络搜索」技能（技能/user/web-search-local/，用本机网络
-// 直调搜索 API）。指引仅在技能可用时附加（searchErrHint→userSkillAvailable），
-// 技能被停用或摘除后指引自动消失——兜底能力整体可插拔，不进工具定义。
+// 让模型转用「本机网络搜索」技能（内置技能 技能/web-search-local/，用本机
+// 网络直调搜索 API）。指引仅在技能可用时附加（searchErrHint→skillAvailable），
+// 技能目录不在时指引自动消失——兜底能力整体可插拔，不进工具定义。
 package main
 
 import (
@@ -138,16 +138,17 @@ func (a *App) runWebSearch(t *toolContext, args json.RawMessage) (string, error)
 }
 
 // localSearchSkillID 「本机网络搜索」技能（web_search 连不上服务端时的本机
-// 兜底）的技能 id。技能本体在 技能/user/web-search-local/：清单行自带
-// 「仅当 web_search 失败时使用」的分流语义，这里的指引是第二道桥——模型
-// 调 web_search 落空时，错误文案直接告诉它改道。
+// 兜底）的技能 id。技能本体是内置技能，在 技能/web-search-local/（随包
+// 分发、常开）：清单行自带「仅当 web_search 失败时使用」的分流语义，这里
+// 的指引是第二道桥——模型调 web_search 落空时，错误文案直接告诉它改道。
 const localSearchSkillID = "web-search-local"
 
 // searchErrHint 服务端搜索走不通时的改道指引：仅当「本机网络搜索」技能
-// 可用（存在且启用）时附加，技能被摘除/停用时指引随之消失。参数自身的
-// 错误（query 为空等）不走这里——那是模型自己的问题，换搜索引擎无济于事。
+// 可用（内置在位，或用户技能形态存在且启用——兼容存量机器迁移前的旧副本）
+// 时附加，技能不在场时指引随之消失。参数自身的错误（query 为空等）不走
+// 这里——那是模型自己的问题，换搜索引擎无济于事。
 func (a *App) searchErrHint(err error) error {
-	if err == nil || !a.userSkillAvailable(localSearchSkillID) {
+	if err == nil || !a.skillAvailable(localSearchSkillID) {
 		return err
 	}
 	return fmt.Errorf("%w；可改用「本机网络搜索」技能兜底：先 read_skill（id=%s）读用法，再用本机网络搜索", err, localSearchSkillID)

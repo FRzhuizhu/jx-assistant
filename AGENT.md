@@ -1197,7 +1197,10 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 `office`（docx/xlsx/pptx 操作要点与结构校验），以及两个**不带 Python
 的工具型技能**：`downloader`（内置 aria2c 官方二进制，Windows/安卓
 下载落盘，缺 curl/wget 环境的兜底）、`apkinfo`（引擎子命令 `apkinfo`
-读取 APK 包名/版本/签名指纹，安装前验包，纯 Go 实现）。自带技能常开、不可
+读取 APK 包名/版本/签名指纹，安装前验包，纯 Go 实现）、`web-search-local`
+（本机网络搜索：web_search 连不上服务端时的本机直调搜索 API 兜底，
+2026-10 由用户技能提升为内置；存量机器 user/ 下的旧副本由 SkillsDir 的
+migrateBuiltinFromUser 启动迁移收走）。自带技能常开、不可
 删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（按钮选本机含
 SKILL.md 的文件夹，或 .zip 压缩包/单个 .md 说明文件——.md 自动包装成
 `<文件名>/SKILL.md` 再装，id 取文件名；**文件夹、.zip、.md 拖进技能页即装**
@@ -1680,7 +1683,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `remotelist.go` | 已登记远程工作区（工作目录面板的远程条目）：DPAPI 加密存储、凭据回填、清单/登记/忘记 API |
 | `tools.go` | 任务会话工具集（接入权限引擎与本地/远程执行环境抽象；含 web_fetch） |
 | `run_python.go` | run_python 工具：AI 交 Python 脚本全文，自动落盘 `.jxai/tmp/<会话id>/`（会话删除随 handleDeleteSession 回收、启动按天兜底清理）后用内置便携运行时执行；与 run_command 同一把权限锁/沙箱/编码注入（Shell 形态，不走绕过沙箱的 Argv 直跑）；提示词按「建议」引导 JSON/引号/多步场景优先用它（run_command 仍可用，无硬限制）；ensureSkillRuntime 缓存条件按 modules 核对（防裸运行时短路 office 依赖补装） |
-| `websearch.go` | 联网搜索工具 web_search 的客户端半边：调 jxai-server 的 /api/search 网关（服务端持上游 key，首版上游=智谱联网搜索 MCP）；服务端地址取 searchURL，空则市场同源；服务端走不通（未配置/不可达/网关报错）时错误文案附加改道指引，让模型转用「本机网络搜索」技能（技能/user/web-search-local/，纯标准库 search.py 直调搜索 API：智谱/博查配 key 优先、Firecrawl 免 key 兜底）——指引仅在技能可用时附加（searchErrHint→userSkillAvailable），技能停用/摘除后指引自动消失，兜底能力不进工具定义、整体可插拔。设置入口在 设置·网络访问·「联网搜索」分区的「搜索服务」框（改 searchURL，即时生效、无需重启）：旁边原样显示后端算出的当前生效 base——`GET /api/config` 的 `searchURL`/`searchEndpoint`/`searchEndpointErr`（分别是配置值、此刻真要打的地址、算不出来的原因），让用户一眼看到搜索现在打哪儿；保存走既有单字段 `POST /api/config`，非法地址在保存时就 400（`searchURL 不合法`，与运行期同口径），留空即回到市场同源 |
+| `websearch.go` | 联网搜索工具 web_search 的客户端半边：调 jxai-server 的 /api/search 网关（服务端持上游 key，首版上游=智谱联网搜索 MCP）；服务端地址取 searchURL，空则市场同源；服务端走不通（未配置/不可达/网关报错）时错误文案附加改道指引，让模型转用「本机网络搜索」技能（内置技能 技能/web-search-local/，纯标准库 search.py 直调搜索 API：智谱/博查配 key 优先、Firecrawl 免 key 兜底）——指引仅在技能可用时附加（searchErrHint→skillAvailable，内置在位或用户技能形态存在且启用），技能不在场后指引自动消失，兜底能力不进工具定义、整体可插拔。设置入口在 设置·网络访问·「联网搜索」分区的「搜索服务」框（改 searchURL，即时生效、无需重启）：旁边原样显示后端算出的当前生效 base——`GET /api/config` 的 `searchURL`/`searchEndpoint`/`searchEndpointErr`（分别是配置值、此刻真要打的地址、算不出来的原因），让用户一眼看到搜索现在打哪儿；保存走既有单字段 `POST /api/config`，非法地址在保存时就 400（`searchURL 不合法`，与运行期同口径），留空即回到市场同源 |
 | `browser_ops.go` | browserTarget 操作面：browser_* 工具与面板端点的形态无关接口 |
 | `browser_host.go` | chromedp 浏览器宿主：有头独立窗口 + 网页形态的后台无头内嵌目标 |
 | `browser_panel_windows.go` | 桌面右栏原生浏览器面板：第二个 WebView2 控件 + 控件级官方 CDP 通道 + 矩形同步 |

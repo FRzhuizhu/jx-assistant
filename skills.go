@@ -84,9 +84,41 @@ func (a *App) SkillsDir() (string, error) {
 			return "", fmt.Errorf("释放内嵌技能失败: %w", err)
 		}
 	}
+	a.migrateBuiltinFromUser(abs)
 	a.skillsDirOurs = abs
 	a.skillsReady = true
 	return abs, nil
+}
+
+// migrateBuiltinFromUser 存量机器自愈：内置技能早期以用户技能形态分发过
+// （技能/user/<id>/，如 web-search-local 2026-10 前装在各机的 user 下），
+// 提升内置后把旧副本挪到 技能/<id>/。目标已存在（静默更新先发了新版）时
+// 只把旧副本的 config.json（用户配的搜索引擎 key）补过去、不覆盖新版本体。
+// 挪不动（文件被占用等）就留着下次启动再试，绝不阻断启动。
+func (a *App) migrateBuiltinFromUser(dir string) {
+	for _, id := range builtinSkillOrder {
+		src := filepath.Join(dir, "user", id)
+		if !dirExists(src) {
+			continue
+		}
+		dst := filepath.Join(dir, id)
+		if !dirExists(dst) {
+			if os.Rename(src, dst) == nil {
+				continue
+			}
+			if copyDir(src, dst) == nil {
+				_ = os.RemoveAll(src)
+				continue
+			}
+			continue
+		}
+		if data, err := os.ReadFile(filepath.Join(src, "config.json")); err == nil {
+			if _, err := os.Stat(filepath.Join(dst, "config.json")); os.IsNotExist(err) {
+				_ = os.WriteFile(filepath.Join(dst, "config.json"), data, 0644)
+			}
+		}
+		_ = os.RemoveAll(src)
+	}
 }
 
 func dirExists(p string) bool {

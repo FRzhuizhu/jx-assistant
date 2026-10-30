@@ -10,8 +10,8 @@
 #   -ExeSource 使用已构建好的发行 exe（默认现场 go build）
 #   -Runtime   同时发共享运行时块（技能\_runtime 整目录包，压缩后约 100+ MB；
 #              版本串默认取 python.exe -V，如 py3.14.8）
-#   -Skills    同时发内置技能块（只压 pdf/ocr/office/downloader/apkinfo；
-#              用户技能 技能\user 永不入包）
+#   -Skills    同时发内置技能块（只压白名单内置技能目录 pdf/ocr/office/
+#              downloader/apkinfo/web-search-local；用户技能 技能\user 永不入包）
 #   -RuntimeVersion 手工指定运行时版本串（缺省自动取）
 #
 # 产出：打包\静默更新\<版本>\ 目录——
@@ -106,8 +106,8 @@ if ($Runtime) {
 # ---- 技能区块 2：内置技能（白名单目录；用户技能绝不入包）----
 $skillsArgs = @()
 if ($Skills) {
-  # 与客户端内置技能白名单一致（skill_manager.go: builtinSkillIDs）
-  $builtin = @("pdf", "ocr", "office", "downloader", "apkinfo")
+  # 与客户端内置技能白名单一致（skill_manager.go: builtinSkillOrder）
+  $builtin = @("pdf", "ocr", "office", "downloader", "apkinfo", "web-search-local")
   $stageSkills = Join-Path $outDir "_skills_stage"
   New-Item -ItemType Directory -Path $stageSkills -Force | Out-Null
   $packed = @()

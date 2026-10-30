@@ -684,7 +684,7 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 	}
 	// 自带技能一览（静态，中文为主、括注英文 id）；用户技能段也归入快照——
 	// 开关技能只影响尾部快照，系统提示词的稳定前缀不受影响（瞬态注入原则）。
-	b.WriteString("- 自带技能：PDF 文档（pdf，读 PDF 文档）、图片文字识别（ocr）、Office 文档（office_skill，Word/Excel/PPT 操作指南）、下载器（downloader，aria2c 下载落盘）、APK 信息（apkinfo，包名/版本/签名查看），需要时直接调用对应工具或子命令\n")
+	b.WriteString("- 自带技能：PDF 文档（pdf，读 PDF 文档）、图片文字识别（ocr）、Office 文档（office_skill，Word/Excel/PPT 操作指南）、下载器（downloader，aria2c 下载落盘）、APK 信息（apkinfo，包名/版本/签名查看），需要时直接调用对应工具或子命令；本机网络搜索（web-search-local，web_search 连不上服务端时的本机搜索兜底，先用 read_skill 读用法），仅在 web_search 失败时使用\n")
 	// 用户技能清单与插件技能清单：环境快照的固定条目，**所有模式一律注入**，
 	// 不挂任何模式谓词——与上面的操作系统/权限模式行同级。技能功能晚于
 	// office/coding 落地，曾因手写「task/skill-create 才注入」的门控把两个

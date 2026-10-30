@@ -1,4 +1,4 @@
-// websearch.go 单测：服务端地址解析的回退链（searchURL 优先 → 市场同源 →
+﻿// websearch.go 单测：服务端地址解析的回退链（searchURL 优先 → 市场同源 →
 // 未配置报错）与结果渲染（列表形态、空结果走 answer、引用提醒在场）。
 package main
 
@@ -84,68 +84,59 @@ func TestWebSearchConversationHeader(t *testing.T) {
 }
 
 // mkSkillTestApp 建一个带临时技能目录/数据目录的 App：enableLocal 决定是否
-// 放置 web-search-local 技能；disabled 再把它停用（写 skills.json）。
-func mkSkillTestApp(t *testing.T, enableLocal, disabled bool) *App {
+// 放置 web-search-local 技能（内置形态：技能根/<id>/）。
+func mkSkillTestApp(t *testing.T, enableLocal bool) *App {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if enableLocal {
-		skill := filepath.Join(dir, "user", localSearchSkillID)
+		skill := filepath.Join(dir, localSearchSkillID)
 		if err := os.MkdirAll(skill, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: web-search-local\ndisplayName: 本机网络搜索\ndescription: 兜底\n---\n\n# 本机网络搜索\n正文"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-	}
-	a := &App{Cfg: &Config{SkillsDir: dir, DataDir: t.TempDir()}}
-	if disabled {
-		st := skillsState{Disabled: map[string]bool{localSearchSkillID: true}}
-		if err := a.saveSkillsState(st); err != nil {
+		// manifest.json 是内置技能清单的识别依据（listSkills 的 BuiltIn 段），
+		// 与生产布局对齐（内置技能目录必有 manifest）。
+		if err := os.WriteFile(filepath.Join(skill, "manifest.json"), []byte(`{"id":"web-search-local","name":"本机网络搜索","version":"1.0.0","description":"兜底"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return a
+	return &App{Cfg: &Config{SkillsDir: dir, DataDir: t.TempDir()}}
 }
 
-// searchErrHint 三态：技能不存在/被停用→不指引；存在且启用→附加改道指引。
-// 服务端搜索失败的每种错误都要带上这道桥（searchLocalHint 的挂点在
-// runWebSearch 的全部错误出口），技能摘除后指引必须干净消失。
+// searchErrHint 两态：技能不在场→不指引；内置在位→附加改道指引。服务端
+// 搜索失败的每种错误都要带上这道桥（searchErrHint 的挂点在 runWebSearch
+// 的全部错误出口），技能目录不在时指引必须干净消失。
 func TestSearchErrHint(t *testing.T) {
 	// 未放置技能：无指引。
-	a := mkSkillTestApp(t, false, false)
-	if a.userSkillAvailable(localSearchSkillID) {
+	a := mkSkillTestApp(t, false)
+	if a.skillAvailable(localSearchSkillID) {
 		t.Fatal("未放置技能不应可用")
 	}
 	err := a.searchErrHint(fmt.Errorf("连接服务端失败: x"))
 	if err == nil || strings.Contains(err.Error(), "本机网络搜索") {
 		t.Fatalf("技能不存在时不应附加指引: %v", err)
 	}
-	// 放置且启用：userSkillAvailable 成立，指引附加。
-	a = mkSkillTestApp(t, true, false)
-	if !a.userSkillAvailable(localSearchSkillID) {
-		t.Fatal("技能存在且未停用应可用")
+	// 内置在位（技能根下）：skillAvailable 成立，指引附加。
+	a = mkSkillTestApp(t, true)
+	if !a.skillAvailable(localSearchSkillID) {
+		t.Fatal("内置技能在位应可用")
 	}
 	err = a.searchErrHint(fmt.Errorf("连接服务端失败: x"))
 	if err == nil || !strings.Contains(err.Error(), "本机网络搜索") || !strings.Contains(err.Error(), "read_skill") {
 		t.Fatalf("应附加本机搜索指引: %v", err)
 	}
-	// 停用：指引消失（摘除干净）。
-	a = mkSkillTestApp(t, true, true)
-	if a.userSkillAvailable(localSearchSkillID) {
-		t.Fatal("停用的技能不应可用")
-	}
-	err = a.searchErrHint(fmt.Errorf("连接服务端失败: x"))
-	if err == nil || strings.Contains(err.Error(), "本机网络搜索") {
-		t.Fatalf("停用后不应再指引: %v", err)
+	// read_skill 要能读到内置技能的正文（改道指引的下一步）。
+	body, rerr := runReadUserSkill(&toolContext{app: a}, json.RawMessage(`{"id":"web-search-local"}`))
+	if rerr != nil || !strings.Contains(body, "正文") {
+		t.Fatalf("read_skill 应能读内置技能: %v %q", rerr, body)
 	}
 }
 
 // 未配置服务端地址 + 技能可用：runWebSearch 的错误出口带上兜底指引。
 func TestWebSearchUnconfiguredHint(t *testing.T) {
-	a := mkSkillTestApp(t, true, false)
+	a := mkSkillTestApp(t, true)
 	_, err := a.runWebSearch(&toolContext{ctx: context.Background(), app: a, sess: &SessionMeta{ID: "s1"}},
 		json.RawMessage(`{"query":"测试"}`))
 	if err == nil || !strings.Contains(err.Error(), "网络访问") {
@@ -161,7 +152,7 @@ func TestWebSearchUnreachableHint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	base := srv.URL
 	srv.Close() // 立即关闭：地址必连不通
-	a := mkSkillTestApp(t, true, false)
+	a := mkSkillTestApp(t, true)
 	a.Cfg.SearchURL = base
 	_, err := a.runWebSearch(&toolContext{ctx: context.Background(), app: a, sess: &SessionMeta{ID: "s2"}},
 		json.RawMessage(`{"query":"测试"}`))
@@ -173,26 +164,68 @@ func TestWebSearchUnreachableHint(t *testing.T) {
 	}
 }
 
-// web-search-local 技能要进用户技能清单（环境快照的清单行是模型发现兜底
-// 能力的第一入口；清单行的描述里必须带「仅当 web_search 失败时使用」的
-// 分流语义，避免绕开服务端搜索）。
+// web-search-local 是内置技能：要进自带技能清单（listSkills 的 BuiltIn 段，
+// 常开），不再出现在用户技能段（存量机器的 user/ 旧副本由启动迁移收走）。
 func TestLocalSearchSkillListed(t *testing.T) {
-	a := mkSkillTestApp(t, true, false)
+	a := mkSkillTestApp(t, true)
 	list, err := a.listSkills()
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
-	for _, s := range list.User {
+	for _, s := range list.BuiltIn {
 		if s.ID == localSearchSkillID {
-			found = s.Enabled && s.DisplayName == "本机网络搜索"
+			found = s.Enabled && s.BuiltIn
 		}
 	}
 	if !found {
-		t.Fatalf("清单应含启用中的本机网络搜索技能: %+v", list.User)
+		t.Fatalf("自带技能清单应含本机网络搜索: %+v", list.BuiltIn)
 	}
-	block := a.userSkillsPromptBlock()
-	if !strings.Contains(block, "本机网络搜索") || !strings.Contains(block, localSearchSkillID) {
-		t.Fatalf("技能清单段应含显示名与 id:\n%s", block)
+	for _, s := range list.User {
+		if s.ID == localSearchSkillID {
+			t.Fatalf("内置技能不应出现在用户技能段: %+v", list.User)
+		}
+	}
+}
+
+// 存量机器迁移：user/ 下的 web-search-local 旧副本（含用户配的 config.json
+// 搜索 key）在 SkillsDir 首次解析时挪到 技能根/，key 一并带走；根下已有
+// 新版（静默更新先到）时只补 key、不覆盖技能本体。
+func TestMigrateBuiltinFromUser(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "user", localSearchSkillID)
+	os.MkdirAll(filepath.Join(old, "scripts"), 0o755)
+	os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("---\nname: web-search-local\n---\n旧版正文"), 0o644)
+	os.WriteFile(filepath.Join(old, "config.json"), []byte(`{"zhipu_key":"k"}`), 0o644)
+
+	a := &App{Cfg: &Config{SkillsDir: dir}}
+	if _, err := a.SkillsDir(); err != nil {
+		t.Fatal(err)
+	}
+	if dirExists(old) {
+		t.Fatal("user 下旧副本应被挪走")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, localSearchSkillID, "config.json")); err != nil || !strings.Contains(string(got), "zhipu_key") {
+		t.Fatalf("config.json 应随迁移带到根下: %v %s", err, got)
+	}
+	// 根下已有新版时：技能本体不被旧副本覆盖，缺失的 key 会补上。
+	os.MkdirAll(filepath.Join(dir, localSearchSkillID, "scripts"), 0o755)
+	os.WriteFile(filepath.Join(dir, localSearchSkillID, "SKILL.md"), []byte("---\nname: web-search-local\n---\n新版正文"), 0o644)
+	os.Remove(filepath.Join(dir, localSearchSkillID, "config.json"))
+	os.MkdirAll(old, 0o755)
+	os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("旧版"), 0o644)
+	os.WriteFile(filepath.Join(old, "config.json"), []byte(`{"bocha_key":"b"}`), 0o644)
+	a2 := &App{Cfg: &Config{SkillsDir: dir}}
+	if _, err := a2.SkillsDir(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, localSearchSkillID, "SKILL.md")); !strings.Contains(string(got), "新版正文") {
+		t.Fatalf("新版技能本体不应被旧副本覆盖: %s", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, localSearchSkillID, "config.json")); err != nil || !strings.Contains(string(got), "bocha_key") {
+		t.Fatalf("缺失的 key 应从旧副本补上: %v %s", err, got)
+	}
+	if dirExists(old) {
+		t.Fatal("user 下旧副本应清理")
 	}
 }
