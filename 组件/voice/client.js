@@ -505,6 +505,8 @@
   }
 
   let playingBtn = null; // 正在朗读的那条消息的按钮（单飞：同时只有一条在播）
+  let playingSeq = null; // 正在朗读的消息 seq：后台事件会触发主界面就地翻新（重建消息行、按钮 DOM 换新），重挂按钮时靠它恢复「停止」态
+  let lastOpenSid = null; // 上次 session:open 的会话 id：同 id 的事件驱动翻新（refreshCurrent 重开同一会话）不是用户切换，不该停朗读——远程/多会话并行时 report_ready、done 等事件密集，曾把长文朗读在首块后就安静砍掉
 
   let playURL = null;    // blob URL（播完/停止即 revoke）
   let playEl = null;     // <audio> 元素
@@ -531,6 +533,7 @@
   function stopSpeak() {
     stopAudio();
     if (playingBtn) { restBtn(playingBtn); playingBtn = null; }
+    playingSeq = null;
   }
 
   /** 朗读文本切块：句末标点切大块、软标点收尾小块；首块刻意更短（尽快出声）。
@@ -615,15 +618,26 @@
 
   /** 朗读一条消息：按钮态驱动 + 后端合成播放。 */
   async function speakTextBackend(text, btn) {
+    const mySeq = btn.dataset && btn.dataset.seq != null ? Number(btn.dataset.seq) : null;
     playingBtn = btn;
+    playingSeq = mySeq;
     btn.classList.add('playing');
     btn.innerHTML = ICON.stop + '停止';
     btn.title = '停止朗读';
+    // 收尾复位：链的态还挂着才动——被 stopSpeak（切会话/再点停止）或新的朗读
+    // 顶替后 playingBtn/playingSeq 已易主，这里不得碰；播放期间翻新把按钮迁到
+    // 新 DOM（playingBtn≠btn 但 playingSeq===mySeq）则复位那个新按钮
+    const settle = () => {
+      if (playingBtn !== btn && playingSeq !== mySeq) return;
+      if (playingBtn) restBtn(playingBtn);
+      playingBtn = null;
+      playingSeq = null;
+    };
     try {
       await ttsPlay(text);
-      if (playingBtn === btn) { restBtn(btn); playingBtn = null; }
+      settle();
     } catch (e) {
-      if (playingBtn === btn) { restBtn(btn); playingBtn = null; }
+      settle();
       voiceToast('朗读失败：' + (e && e.message ? e.message : e));
     }
   }
@@ -638,6 +652,7 @@
    *（同分块播放器、同音色语速），失败走组件 toast。 */
   async function speakPlain(text) {
     playingBtn = null;
+    playingSeq = null; // 无按钮入口（右键菜单）：不关联任何消息，翻新重挂的按钮不得误恢复「停止」态
     try {
       await ttsPlay(text);
     } catch (e) {
@@ -652,8 +667,18 @@
     if (!text) return;
     const btn = document.createElement('button');
     btn.className = 'act-copy act-tts';
-    btn.innerHTML = ICON.speak + '朗读';
-    btn.title = '朗读这条消息';
+    if (m.seq != null) btn.dataset.seq = m.seq;
+    if (m.seq != null && m.seq === playingSeq) {
+      // 就地翻新重建了消息行：这条消息正在朗读中，新按钮接上「停止」态
+      //（playingBtn 指向的旧按钮已随 DOM 换掉，不接上就没法停/态对不上）
+      playingBtn = btn;
+      btn.classList.add('playing');
+      btn.innerHTML = ICON.stop + '停止';
+      btn.title = '停止朗读';
+    } else {
+      btn.innerHTML = ICON.speak + '朗读';
+      btn.title = '朗读这条消息';
+    }
     btn.onclick = () => speakText(text, btn);
     row.appendChild(btn);
   }
@@ -1588,10 +1613,18 @@
         inp.addEventListener('input', () => { if (!inp.value) delete inp.dataset.jxVoice; });
       }
 
-      // 朗读：助手消息操作行的按钮 + 会话切换/回复结束时停止朗读（后端通道，免配置）
+      // 朗读：助手消息操作行的按钮 + 会话切换停止朗读（后端通道，免配置）。
+      // session:open 不再无条件停：后台事件（done/report_ready/session_updated…）
+      // 触发的 refreshCurrent 会以同一会话 id 重走 openSession，那不是用户切换；
+      // 只有会话 id 真变了才停。message:done（新回合结束，正文已更新）仍停。
       msgAction = onMessageAction;
       JX.registerMessageAction(msgAction);
-      const onOpen = () => stopSpeak();
+      const onOpen = (s) => {
+        const sid = s && s.id;
+        if (sid && sid === lastOpenSid) return; // 同会话就地翻新：朗读继续
+        lastOpenSid = sid || null;
+        stopSpeak();
+      };
       const onDone = () => stopSpeak();
       busHooks.push({ ev: 'session:open', fn: onOpen }, { ev: 'message:done', fn: onDone });
       for (const h of busHooks) JX.on(h.ev, h.fn);
