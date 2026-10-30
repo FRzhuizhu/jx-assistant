@@ -398,6 +398,18 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/market/publish-meta", a.handleMarketPublishMeta) // 已装技能的发布元信息推导（弹层预填）
 	mux.HandleFunc("POST /api/market/publish", a.handleMarketPublish)         // 发布已装技能到市场服务器：先装后传（market_publish.go）
 	mux.HandleFunc("POST /api/market/unpublish", a.handleMarketUnpublish)     // 下架自己发布的市场条目（归属校验在服务端）
+	// 小程序平台内嵌代理（sitesproxy.go）：路径与服务端平台页依赖一一对应，前端
+	// iframe 加载本地同源 /sites——证书校验由 companyTransport 接管，浏览器/WebView
+	// 自己的证书校验不再挡路（同企业技能市场的"前端不直连服务端"经验）。
+	// 必须带方法限定注册：仓库里已有 "GET /"（静态前端），不带方法的模式会与其
+	// 冲突（ServeMux 视为对 GET 请求的歧义匹配而 panic）；平台页用到 GET 与 POST。
+	for _, m := range []string{"GET", "POST"} {
+		mux.HandleFunc(m+" /sites", a.handleSitesProxy)
+		mux.HandleFunc(m+" /sites-assets/", a.handleSitesProxy)
+		mux.HandleFunc(m+" /s/", a.handleSitesProxy)
+		mux.HandleFunc(m+" /api/sites/", a.handleSitesProxy)
+		mux.HandleFunc(m+" /api/whoami", a.handleSitesProxy)
+	}
 	// 公司接入向导（wizard.go）：局域网发现 + 总服务器查询 + 一键应用配置
 	mux.HandleFunc("POST /api/wizard/discover", a.handleWizardDiscover)
 	mux.HandleFunc("POST /api/wizard/connect", a.handleWizardConnect)

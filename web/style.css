@@ -3352,12 +3352,20 @@ body.mk-4col .mk-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .mku-card { padding: 16px; }
 }
 
+/* 小程序平台内嵌页（mk-sites-view）：平台管理页整页铺进市场视图——工具条一行
+   （服务器名 + 刷新 + 在浏览器打开），iframe 占满剩余高度（同 .mk-list 的铺法） */
+.mk-sites-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; }
+.mk-sites-bar { flex: none; display: flex; align-items: center; gap: 8px; }
+.mk-sites-note { flex: 1; min-width: 0; font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-sites-frame { flex: 1; min-height: 0; width: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+
 /* 窄屏（手机远程/窄窗口）：单列卡片、搜索框全宽、页边距收紧 */
 @media (max-width: 499.98px) {
   #market-view { padding: 10px 12px 14px; }
   .mk-head { flex-wrap: wrap; }
   #mk-search { max-width: none; }
   .mk-list { grid-template-columns: 1fr; }
+  .mk-sites-frame { border-radius: 10px; }
 }
 
 /* ============================================================

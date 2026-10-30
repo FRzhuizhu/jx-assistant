@@ -596,7 +596,11 @@ func (h *hubCtx) handleRelay(rid, ivB64, ctB64 string) {
 	if fr.T != "req" {
 		return // 中继只接受 req 帧
 	}
-	if !strings.HasPrefix(fr.Path, "/api/") {
+	// 中继白名单：/api/ 是常规接口；/sites 前缀（含 /sites-assets/）与 /s/ 是
+	// 小程序平台内嵌代理的路径（sitesproxy.go）——远程端 iframe 的 src 与页面内
+	// 绝对路径 fetch 都要经中继落回本端代理，不放行则远程手机端平台页打不开
+	if !strings.HasPrefix(fr.Path, "/api/") && !strings.HasPrefix(fr.Path, "/sites") &&
+		!strings.HasPrefix(fr.Path, "/s/") {
 		iv, ct, _ := sealJSON(key, map[string]any{"t": "err", "id": fr.ID, "msg": "[403] path not allowed"})
 		_ = h.sendJSON(map[string]any{"t": "res", "rid": rid, "iv": iv, "ct": ct})
 		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})

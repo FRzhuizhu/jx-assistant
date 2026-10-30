@@ -1405,14 +1405,14 @@ bindRemoteInput('set-market-url', 'marketURL');
 // 搜索服务：同一套「改动即存」；留空 = 跟随市场同源。非法地址由后端 400 拦下
 // （searchURL 不合法），这里 alert 出原因并回滚为服务端值
 bindRemoteInput('set-search-url', 'searchURL');
-// 网页托管平台：从市场地址推导服务端根，打开 <根>/sites（与市场同一台 jxai-server）
-$('btn-open-sites').onclick = async () => {
+// 网页托管平台（小程序平台）：与应用内「小程序平台」入口同一去处——市场视图的
+// 内嵌 tab（本端代理 /sites），不再跳系统浏览器直面服务端自签证书
+$('btn-open-sites').onclick = () => {
+  if (typeof openSitesPlatform === 'function') { openSitesPlatform(); return; }
   const raw = ($('set-market-url').value || '').trim();
   const m = raw.match(/^(https?:\/\/[^\/]+)/i);
   if (!m) { alert('先在上方「市场服务器」里填服务端地址（如 https://example.com:PORT/market/manifest.json），托管平台与市场在同一台服务端。'); return; }
-  try {
-    await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url: m[1] + '/sites' }) });
-  } catch (e) { jxOpenPage(m[1] + '/sites'); }
+  jxOpenPage(m[1] + '/sites');
 };
 bindRemoteInput('set-publisher-name', 'publisherName');
 bindRemoteInput('set-registry-url', 'registryURL');

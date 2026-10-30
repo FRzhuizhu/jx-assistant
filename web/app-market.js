@@ -1,8 +1,10 @@
 /* 市场前端（market.go 的浏览器半边）：左侧栏底部「市场」按钮进入的主区整页视图。
    技能 / 组件 / 插件 / MCP 四个清单 tab + 小程序平台内嵌 tab + 搜索 + 一键安装/更新/卸载：
      · 清单与操作全走 /api/market（挂在 /api/ 下，远程手机端经中继隧道天然可用）；
-     · 小程序平台（网页托管平台）与市场同一台 jxai-server：地址从市场服务器推导
-       （<根>/sites），iframe 整页嵌入平台管理页，不经过本端 API；
+     · 小程序平台（网页托管平台）与市场同一台 jxai-server：iframe 整页嵌入平台管理页，
+       加载的是本端反向代理 /sites（sitesproxy.go 转发市场服务器，自签证书由 Go 端
+       证书策略接管——浏览器自己的证书校验不再挡路，同企业技能市场"前端不直连服务端"
+       的经验），远程中继白名单已放行；
      · 组件装/卸后调 CX.refresh() 热加载/热卸载，不刷新页面；
      · 插件 tab 底部保留「管理外部 Claude 市场」入口（跳设置页统一「插件」页）；
      · 未配置市场服务器时给出建议地址一键填入（与中继网关同 host 的 jxai-server）。
@@ -57,7 +59,7 @@ function openMarket() {
   narrowClosePanels(); // 窄屏：从侧栏浮层点进市场页即收起浮层（与进设置/选中会话同一套）
   setMarketView(true);
   const search = $('mk-search');
-  if (search) setTimeout(() => search.focus(), 60);
+  if (search && !search.classList.contains('hidden')) setTimeout(() => search.focus(), 60);
 }
 
 function closeMarket() { setMarketView(false); }
@@ -95,10 +97,18 @@ function renderMarketState(html) {
 }
 
 function renderMarket() {
+  const isSites = mkTab === 'sites';
+  const list = $('mk-list');
+  if (list) list.classList.toggle('hidden', isSites); // 小程序平台 tab：清单区让位给内嵌页
+  const sitesView = $('mk-sites-view');
+  if (sitesView) sitesView.classList.toggle('hidden', !isSites);
+  const search = $('mk-search');
+  if (search) search.classList.toggle('hidden', isSites); // 平台页自带管理界面，本端搜索框无用
   const ubtn = $('mk-upload-btn'); // 「＋ 上传技能」只在技能 tab 出现
   if (ubtn) ubtn.classList.toggle('hidden', mkTab !== 'skill');
-  // 小程序平台：不依赖清单拉取成败（只要市场地址已配置就能嵌；mkData 还没
-  // 加载到也不挡），先于 !mkData / configured / error 检查分流
+  // 小程序平台：嵌的是本端代理（只要市场地址已配置就能转；mkData 还没加载到也
+  // 不挡），先于 !mkData / configured / error 检查分流
+  if (isSites) { renderSitesFrame(); return; }
   if (!mkData) return renderMarketState('清单为空');
   const server = $('mk-server');
   if (server) {
@@ -147,11 +157,22 @@ function renderUnconfigured() {
 }
 
 /* ---------- 小程序平台（网页托管平台）：市场视图的内嵌 tab ----------
-   与市场同一台 jxai-server，地址从市场服务器推导 <origin>/sites（与设置 · 网络
-   「打开托管平台」同一套正则）。iframe 整页嵌入平台管理页：已发布小程序列表 /
-   数据文件下载 / 删除 / 二维码都在页内完成，本端不重复实现。地址变了才重载
-   iframe，tab 来回切不打扰已打开的页面；市场服务器不可达（清单 error）不影响
-   本 tab——只要地址配置了就能嵌。 */
+   iframe 整页嵌入平台管理页：已发布小程序列表 / 数据文件下载 / 删除 / 二维码
+   都在页内完成，本端不重复实现。src 用相对路径 /sites——本端透明反向代理
+   （sitesproxy.go）转发到市场服务器：自签证书由 Go 端证书策略（tlspolicy.go）
+   接管，浏览器/WebView 自己的证书校验不再挡路；相对路径同时让桌面 WebView2、
+   局域网网页版、远程中继三种 origin 都天然跟随。tab 来回切不打扰已打开的页面；
+   市场服务器不可达（清单 error）不影响本 tab——只要地址配置了代理就能转。 */
+
+// renderSitesFrame：进入小程序平台 tab 时确保 iframe 已加载；市场服务器名跟
+// mkData 走（拉到了就显示，没拉到不挡嵌入）。
+function renderSitesFrame() {
+  const frame = $('mk-sites-frame');
+  if (frame && (!frame.src || frame.src === 'about:blank')) frame.src = '/sites';
+  const note = $('mk-sites-note');
+  if (note) note.textContent = (mkData && mkData.configured && (mkData.name || mkData.url))
+    ? '平台服务器：' + (mkData.name || mkData.url) : '';
+}
 
 function entriesOfTab(tab) {
   if (!mkData) return [];
@@ -309,8 +330,30 @@ function bindMarket() {
   const uploadBtn = $('mk-upload-btn');
   if (uploadBtn) uploadBtn.onclick = mkuShow;
   // 小程序平台内嵌页：刷新（about:blank 置换触发重载，跨域 iframe 不能用
-  // contentWindow.reload）与「在浏览器中打开」（jxOpenPage：手机壳走壳内
-  // 浏览页，桌面/网页新标签页）
+  // contentWindow.reload）与「在浏览器中打开」——开的是本端代理地址
+  // （location.origin + '/sites'），无证书告警，不必再直面服务端自签证书
+  const sitesRefresh = $('mk-sites-refresh');
+  if (sitesRefresh) sitesRefresh.onclick = () => {
+    const frame = $('mk-sites-frame');
+    if (!frame) return;
+    frame.src = 'about:blank';
+    setTimeout(() => { frame.src = '/sites'; }, 0);
+  };
+  const sitesOpen = $('mk-sites-open');
+  if (sitesOpen) sitesOpen.onclick = async () => {
+    const url = location.origin + '/sites';
+    const remote = !!(window.__JX_REMOTE_MODE || window.JX_REMOTE);
+    if (remote) { // 远程（手机/异地）要在当前这台设备的浏览器里开
+      if (typeof jxOpenPage === 'function') jxOpenPage(url); else window.open(url, '_blank');
+      return;
+    }
+    try {
+      await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) });
+    } catch (e) {
+      if (typeof jxOpenPage === 'function') jxOpenPage(url);
+      else window.open(url, '_blank');
+    }
+  };
   mkuBind(); // 上传技能弹层（拖拽 / 选取 / Ctrl+V）
   // Esc 关闭市场视图（有任何弹窗开着时不抢键：确认框/设置自己处理 Esc）
   document.addEventListener('keydown', (ev) => {
@@ -584,45 +627,29 @@ function updateMarketCols() {
 window.addEventListener('resize', updateMarketCols);
 document.addEventListener('DOMContentLoaded', updateMarketCols);
 
-/* ---------- 侧栏「小程序平台」独立入口（2026-10-30） ----------
-   不再把 /sites 塞进 iframe：iframe 用的是浏览器自己的证书校验，自签证书或用 IP 访问
-   域名证书时会被静默拒绝（连"继续访问"按钮都没有），我们程序里的"忽略证书"管不到它。
-   独立入口的做法：取服务端下发的 sitesURL（服务端开了明文口就是 http://host:PORT/sites，
-   可直接打开），交给系统浏览器打开 —— 有证书告警时用户能点"继续前往"。 */
+/* ---------- 侧栏「小程序平台」独立入口（2026-10-30 用户要求：应用内打开） ----------
+   进市场视图并切到「小程序平台」tab——iframe 嵌本端代理 /sites（sitesproxy.go），
+   自签证书由 Go 端证书策略接管（同企业技能市场的做法），不再跳系统浏览器：
+   跳出去既脱离应用，用户还得直面服务端自签证书的告警页。 */
 async function openSitesPlatform() {
-  let url = (mkData && mkData.sitesURL) || '';
-  if (!url) {
+  // 代理目标从市场地址推导，没配置时引导去设置（代理本身也会回 503 提示）
+  if (!(mkData && mkData.configured)) {
     try {
       const d = await api('/api/market');
-      url = (d && d.sitesURL) || '';
       if (!mkData) mkData = d;
     } catch (e) {}
   }
-  if (!url) {
-    // 没拿到服务端下发值：按市场地址兜底推导（同一台 jxai-server → 同 origin + /sites）
-    const mu = (mkData && mkData.url) || '';
-    const m = String(mu).match(/^(https?:\/\/[^\/]+)/i);
-    if (m) url = m[1] + '/sites';
-  }
-  if (!url) {
+  if (!(mkData && mkData.configured)) {
     alert('还没配置市场服务器：请到 设置 · 网络访问 填「市场服务器」，小程序平台与它同一台服务端。');
     if (typeof openSettings === 'function') openSettings('network');
     return;
   }
-  // 远程（手机/异地）访问时要在**当前这台设备**的浏览器里开，不能让电脑那边的服务端去
-  // 打开（window.__JX_REMOTE_MODE 由 remote-boot.js 在远程外壳里设置）。
-  const remote = !!(window.__JX_REMOTE_MODE || window.JX_REMOTE);
-  if (remote) {
-    if (typeof jxOpenPage === 'function') jxOpenPage(url);
-    else window.open(url, '_blank');
-    return;
-  }
-  try {
-    await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) });
-  } catch (e) {
-    if (typeof jxOpenPage === 'function') jxOpenPage(url);
-    else window.open(url, '_blank');
-  }
+  document.querySelectorAll('.mk-tab').forEach((x) => {
+    x.classList.toggle('active', (x.dataset.mkTab || '') === 'sites');
+  });
+  mkTab = 'sites';
+  openMarket(); // 先定 tab 再开视图：搜索框按 tab 显隐，焦点不落在即将隐藏的元素上
+  renderMarket();
 }
 
 function bindSitesEntry() {
