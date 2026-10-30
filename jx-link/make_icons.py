@@ -7,9 +7,11 @@ import sys
 from PIL import Image
 
 here = os.path.dirname(os.path.abspath(__file__))
-# 优先用本仓库根的 web/logo.png（jx-link 内嵌主仓库时就是它）；
-# 若把本目录单独检出到主仓库之外，回落到主仓库「软著版数字助理」的同一张 logo。
+# 图源：品牌素材的「app logo 图标」（2026-10-30 起用不带公司名的纯图标版），
+# 与 web/logo.png 同尺寸同版式，只是去掉了名字。单独检出本目录（主仓库之外）
+# 时品牌素材不存在，回落主仓库的 web/logo.png。
 candidates = [
+    os.path.join(os.path.dirname(here), "品牌素材", "app logo 图标.png"),
     os.path.join(os.path.dirname(here), "web", "logo.png"),
     os.path.join(os.path.dirname(here), "软著版数字助理", "web", "logo.png"),
 ]

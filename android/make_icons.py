@@ -9,7 +9,13 @@ import sys
 from PIL import Image, ImageDraw
 
 here = os.path.dirname(os.path.abspath(__file__))
-src = os.path.join(here, "..", "web", "logo.png")
+# 图源：品牌素材的「app logo 图标」（2026-10-30 起用不带公司名的纯图标版），
+# 与 web/logo.png 同尺寸同版式；品牌素材缺失时回落 web/logo.png。
+candidates = [
+    os.path.join(here, "..", "品牌素材", "app logo 图标.png"),
+    os.path.join(here, "..", "web", "logo.png"),
+]
+src = next((q for q in candidates if os.path.exists(q)), candidates[0])
 res_dir = os.path.join(here, "app", "src", "main", "res")
 ratio = float(sys.argv[1]) if len(sys.argv) > 1 else 0.56
 
