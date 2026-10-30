@@ -69,3 +69,5 @@ jx.db-wal
 技能/.skills-version
 技能/_runtime/.version
 技能/_runtime/**/comtypes/gen/
+# 技能草稿（会话中改造/试验中的技能副本，绝不入库；2026-10-30 用户明确要求）
+技能草稿/
