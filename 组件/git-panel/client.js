@@ -247,10 +247,14 @@
     layoutBtn.title = '切换布局：上下堆叠 / 左右分栏（当前：' + (S.layout === 'vertical' ? '上下' : '左右') + '）';
     layoutBtn.onclick = toggleLayout;
     top.appendChild(layoutBtn);
-    // ⟳ 放内层 span：busy 转圈只转图标本身，不转按钮盒子（手机 tap 的 hover
-    // 底色块会跟着盒子转，之前整个方框一起转的 bug 即源于动画挂在按钮上）
+    // 图标用内联 SVG 而非 ⟳ 字符：字形在字符框内天然不对称，绕中心转必"歪着
+    // 头晃"；SVG 圆弧几何中心精确在 viewBox (12,12)，busy 旋转圆心绝对居中。
+    // 动画只挂 svg（transform-origin 50%），按钮盒子（含手机 tap 的 hover 底色）不动
+    const REFRESH_ICON_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
     const refresh = el('button', 'gitp-icon-btn');
-    refresh.appendChild(el('span', 'gitp-refresh-icon', '⟳'));
+    const refreshIcon = el('span', 'gitp-refresh-icon');
+    refreshIcon.innerHTML = REFRESH_ICON_SVG;
+    refresh.appendChild(refreshIcon);
     refresh.title = '刷新：重读仓库状态，并联网探一次远程（结果显示在状态条）';
     refresh.onclick = () => refreshAll(true); // 手动刷新：探远程的结果要反馈出来
     refreshBtn = refresh;

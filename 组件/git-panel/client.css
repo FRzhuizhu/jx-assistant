@@ -27,8 +27,9 @@
 .gitp-icon-btn:hover { background: var(--hover); color: var(--text); }
 .gitp-icon-btn:disabled { opacity: .5; cursor: default; }
 .gitp-icon-btn:disabled:hover { background: none; color: var(--text-2); }
-.gitp-refresh-icon { display: inline-block; } /* 转圈只转 ⟳ 图标：transform 对 inline 无效，且不能把动画挂在按钮上（盒子含 hover 底色会跟着转） */
-.gitp-icon-btn.busy .gitp-refresh-icon { animation: gitp-spin 1s linear infinite; }
+.gitp-refresh-icon { display: inline-flex; line-height: 0; } /* 内联 SVG 无基线空隙，按钮里精确垂直居中；转圈只转 svg：圆弧几何中心即 viewBox 中心，圆心绝对正 */
+.gitp-refresh-icon svg { display: block; }
+.gitp-icon-btn.busy .gitp-refresh-icon svg { animation: gitp-spin 1s linear infinite; transform-origin: 50% 50%; }
 @keyframes gitp-spin { to { transform: rotate(360deg); } }
 
 /* 「使用教程」下拉（同步按钮旁 ▾）：fixed 挂 body，位置由 JS 定位 */
