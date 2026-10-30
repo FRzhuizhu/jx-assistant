@@ -253,7 +253,7 @@ func main() {
 		// 启动行带上 Go 工具链版本：现场拿 data\desktop.log 排查「闪退/诡异
 		// 行为」时，能直接看出该安装包是哪个工具链构建的（回调栈缺陷等运行
 		// 时 bug 与 Go 版本强相关）。
-		log.Printf("坚祥数字助理GO 桌面版已启动: %s（%s）", url, runtime.Version())
+		log.Printf("AI数字助理 桌面版已启动: %s（%s）", url, runtime.Version())
 		if derr := runDesktop(app, url); derr != nil {
 			log.Fatalf("桌面模式启动失败: %v", derr)
 		}

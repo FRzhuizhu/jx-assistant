@@ -275,12 +275,15 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   `-ldflags "-H=windowsgui -X main.desktopDefault=1"` 注入：GUI 子系统
   双击无 CMD 黑窗，无控制台时日志改落 data\desktop.log）用系统自带的
   WebView2
-  运行时开原生桌面窗口：标题「坚祥数字助理GO」，窗口/任务栏图标取 exe
-  内嵌 LOGO 资源（`打包/make_icon.py` 由 web/logo.png 生成多尺寸 ico，
-  go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1；
+  运行时开原生桌面窗口：标题「AI数字助理」（exe 文件名切换期：软件属性名/
+  窗口标题已是新名，文件名一周内仍为「坚祥数字助理GO.exe」，见
+  《exe名切换-AI数字助理-一周后操作清单.md》），窗口/任务栏图标取 exe
+  内嵌 LOGO 资源（`打包/make_icon.py` 由 web/logo.png 生成多尺寸 ico
+  （打包/app.ico），go-winres 按 `go-winres.json` 嵌入为 RT_GROUP_ICON #1；
   `-browser` 参数可强制回浏览器形态）。
   开发期间想要桌面形态：`powershell -File 打包\开发桌面版.ps1` 在仓库根
-  产出 `坚祥数字助理GO.exe`（双击即窗口，数据照旧落仓库目录）。
+  产出 `坚祥数字助理GO.exe`（双击即窗口，数据照旧落仓库目录；切换期文件名
+  跟随当期发行名）。
 - 桌面模式行为：相对路径（config / data / 技能）锚到 exe 目录（开发目录
   有 go.mod 时不搬迁，避免扰动调试）；监听端口被占自动回退；命名互斥体
   单实例，二次启动唤起已有窗口；默认工作区不落在安装目录本身：改写为
@@ -310,7 +313,9 @@ android/other/无后缀文件），构建脚本零改动。拆包（建 android/
   ```sh
   winget install JRSoftware.InnoSetup      # 一次性装打包工具
   powershell -NoProfile -ExecutionPolicy Bypass -File 打包\打包安装包.ps1
-  # 产物：打包\输出\坚祥数字助理GO-安装包-<版本>.exe
+  # 产物：打包\输出\<exe基名>-安装包-<版本>.exe（当期基名默认 坚祥数字助理GO，
+  # 一周后切 AI数字助理：-ExeBaseName 参数或改脚本默认值，安装包.iss 经
+  # ISCC /D 自动跟随，且换名版自动清理旧名 exe/快捷方式）
   ```
 
   安装到当前用户 `%LOCALAPPDATA%\Programs`（免管理员），中文向导、

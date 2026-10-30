@@ -24,7 +24,7 @@ param(
     [int]$DelaySec        = 5,      # 脚本启动后先等多久再动手（给在途请求/回复留时间）
     [int]$KillWaitSec     = 3,      # 关掉旧实例后等多久再拉起新的
     [int]$ReadyTimeoutSec = 30,     # 等待新实例窗口就绪的上限
-    [string]$ExePath      = '',     # 默认使用脚本同目录的 坚祥数字助理GO.exe
+    [string]$ExePath      = '',     # 默认按脚本同目录探测：AI数字助理.exe → 坚祥数字助理GO.exe（文件名切换期双名）
     [switch]$KillStray,             # 同时关闭无窗口的调试实例（命令行带 -port / -noopen）
     [switch]$DryRun                 # 演练模式：只打印计划，不关也不起
 )
@@ -34,7 +34,12 @@ $ErrorActionPreference = 'Continue'
 # ---------- 路径与工具 ----------
 $root = $PSScriptRoot
 if (-not $root) { $root = Split-Path -Parent $MyInvocation.MyCommand.Path }
-if (-not $ExePath) { $ExePath = Join-Path $root '坚祥数字助理GO.exe' }
+if (-not $ExePath) {
+    # exe 文件名切换期（坚祥数字助理GO → AI数字助理）：新名优先，本机哪个在用哪个
+    $try = Join-Path $root 'AI数字助理.exe'
+    if (-not (Test-Path -LiteralPath $try)) { $try = Join-Path $root '坚祥数字助理GO.exe' }
+    $ExePath = $try
+}
 $logDir   = Join-Path $root '.jxai\tmp'
 $logFile  = Join-Path $logDir 'restart-assistant.log'
 $noBomUtf8 = New-Object System.Text.UTF8Encoding($false)

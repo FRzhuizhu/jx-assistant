@@ -12,7 +12,8 @@ $root = Split-Path -Parent $PSScriptRoot
 #    b) 单实例互斥体（所有桌面 exe 共用一名）会让新 exe「启动即退出、
 #       唤起旧窗口」——你以为是新构建，实际还是旧进程在跑。
 #    只关桌面形态，不动 jx-assistant.exe（网页形态开发实例）。
-$desktopProcs = @(Get-CimInstance Win32_Process -Filter "Name='坚祥数字助理GO.exe' or Name='坚祥数字助理GO-右键菜单版.exe'" -ErrorAction SilentlyContinue)
+#    exe 文件名切换期（→ AI数字助理）：新旧两个名字都可能在本机跑，都列上。
+$desktopProcs = @(Get-CimInstance Win32_Process -Filter "Name='坚祥数字助理GO.exe' or Name='AI数字助理.exe' or Name='坚祥数字助理GO-右键菜单版.exe'" -ErrorAction SilentlyContinue)
 if ($desktopProcs.Count -gt 0) {
   foreach ($p in $desktopProcs) {
     Write-Host ("关闭旧桌面实例 pid=" + $p.ProcessId)

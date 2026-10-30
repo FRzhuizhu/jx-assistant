@@ -1,10 +1,12 @@
-# 由 web/logo.png 生成多尺寸 Windows 图标（坚祥数字助理GO.ico）。
+# 由 web/logo.png 生成多尺寸 Windows 图标（app.ico）。
 # 用技能运行时自带的 Pillow 执行：
 #   技能/_runtime/python/python.exe 打包/make_icon.py
+# 文件名用中性的 app.ico：exe 文件名有「坚祥数字助理GO.exe → AI数字助理.exe」
+# 的切换期（见《exe名切换-AI数字助理-一周后操作清单.md》），图标源文件名不随之动。
 import os
 
 src = os.path.join(os.path.dirname(__file__), "..", "web", "logo.png")
-dst = os.path.join(os.path.dirname(__file__), "坚祥数字助理GO.ico")
+dst = os.path.join(os.path.dirname(__file__), "app.ico")
 
 from PIL import Image
 

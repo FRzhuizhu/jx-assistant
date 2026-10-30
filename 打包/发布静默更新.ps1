@@ -28,6 +28,10 @@ param(
   [string]$组件 = "",
   [string]$安装包 = "",
   [string]$ExeSource = "",
+  # exe 文件名切换期（→ AI数字助理，约一周后）：engine zip 内的文件名其实
+  # 无关紧要——客户端换装时按自身路径改名落位（update_blocks.go），这里只是
+  # 保持与当期发行版一致，源头在 打包安装包.ps1 的 -ExeBaseName。
+  [string]$ExeBaseName = "坚祥数字助理GO",
   # 技能区两块（客户端 update_runtime.go 消费）：
   #   -Runtime 发共享便携 Python 运行时（技能\_runtime 整目录包）
   #   -Skills  发内置技能包（只压白名单内置技能目录，用户技能永不入包）
@@ -48,7 +52,7 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 # ---- 主程序块：构建 exe（与打包安装包.ps1 同参数）→ 单 exe zip ----
 $work = Join-Path $outDir "_build"
 New-Item -ItemType Directory -Path $work | Out-Null
-$exe = Join-Path $work "坚祥数字助理GO.exe"
+$exe = Join-Path $work ($ExeBaseName + ".exe")
 if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {

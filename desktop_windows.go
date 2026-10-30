@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	desktopAppTitle  = "坚祥数字助理GO"
+	desktopAppTitle  = "AI数字助理"
 	desktopMutexName = `Local\JX-Digital-Assistant-GO-SingleInstance`
 	// WebView2 Evergreen 的 EdgeUpdate 客户端键与官方引导器下载地址
 	webView2ClientKey       = `{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`

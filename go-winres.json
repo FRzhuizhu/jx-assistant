@@ -1,7 +1,7 @@
 {
   "RT_GROUP_ICON": {
     "#1": {
-      "0000": "打包/坚祥数字助理GO.ico"
+      "0000": "打包/app.ico"
     }
   },
   "RT_VERSION": {
@@ -13,13 +13,13 @@
         },
         "info": {
           "0804": {
-            "ProductName": "坚祥数字助理GO",
-            "FileDescription": "坚祥数字助理GO 桌面版（本地智能助手）",
+            "ProductName": "AI数字助理",
+            "FileDescription": "AI数字助理 桌面版（本地智能助手）",
             "OriginalFileName": "坚祥数字助理GO.exe"
           },
           "0409": {
-            "ProductName": "JianXiang Digital Assistant GO",
-            "FileDescription": "JianXiang Digital Assistant GO (local AI assistant)",
+            "ProductName": "AI Digital Assistant",
+            "FileDescription": "AI Digital Assistant (local AI assistant)",
             "OriginalFileName": "坚祥数字助理GO.exe"
           }
         }
@@ -30,10 +30,10 @@
     "1": {
       "0409": {
         "identity": {
-          "name": "JX.DigitalAssistant.GO",
+          "name": "AI.DigitalAssistant",
           "version": "1.0.0.0"
         },
-        "description": "坚祥数字助理GO 桌面版",
+        "description": "AI数字助理 桌面版",
         "execution-level": "asInvoker",
         "common-controls": true,
         "dpi-awareness": "per monitor v2"

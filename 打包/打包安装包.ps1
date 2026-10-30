@@ -1,4 +1,4 @@
-﻿# 坚祥数字助理GO 安装包构建脚本
+﻿# 坚祥数字助理GO 安装包构建脚本（exe 文件名切换期：见下方 $ExeBaseName）
 #
 # 用法（在仓库根目录）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File 打包\打包安装包.ps1
@@ -7,14 +7,18 @@
 #   -ExeSource   使用已构建好的发行 exe（默认现场 go build；
 #                需要排除工作区未完成改动时，先在干净 worktree 里构建再传入）
 #   -SkillsSource 技能目录来源（默认仓库根的 技能\，含 _runtime 便携运行时）
+#   -ExeBaseName exe 文件名基名（默认 坚祥数字助理GO；切换期见
+#                《exe名切换-AI数字助理-一周后操作清单.md》：约一周后发新版
+#                改用 AI数字助理，届时改这里的默认值即可，安装包.iss 的
+#                AppName/ExeName 经 ISCC /D 覆盖，无需动 iss）
 #
 # 前置条件：本机装有 Inno Setup 6（winget install JRSoftware.InnoSetup）。
 
 param(
   [string]$Version = "",
-
   [string]$ExeSource = "",
-  [string]$SkillsSource = ""
+  [string]$SkillsSource = "",
+  [string]$ExeBaseName = "坚祥数字助理GO"
 )
 if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "-1" }
 
@@ -66,7 +70,7 @@ Write-Host "== 运行时依赖校验通过（$($modules.Count) 个模块全部�
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
-$exe = Join-Path $stage "坚祥数字助理GO.exe"
+$exe = Join-Path $stage ($ExeBaseName + ".exe")
 if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
@@ -93,7 +97,7 @@ if ($hn -gt 0x40 -and $hdr[0] -eq 0x4D -and $hdr[1] -eq 0x5A) {
 }
 if (-not $isPE) {
   $head = ($hdr[0..3] | ForEach-Object { '{0:X2}' -f $_ }) -join ' '
-  throw "stage\坚祥数字助理GO.exe 不是 PE 可执行文件（头部 $head；zip 是 50 4B 03 04），拒绝出包。检查 -ExeSource 是否误传了 engine 的 .zip"
+  throw ("stage\{0}.exe 不是 PE 可执行文件（头部 $head；zip 是 50 4B 03 04），拒绝出包。检查 -ExeSource 是否误传了 engine 的 .zip" -f $ExeBaseName)
 }
 if ($machine -ne 0x8664) {
   throw ("stage exe 的 PE 机器类型是 0x{0:X4}，不是 AMD64(0x8664)，拒绝出包：{1}" -f $machine, $exe)
@@ -183,8 +187,8 @@ Write-Host "== Inno Setup 编译安装包（LZMA2 压缩，耐心等待）"
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
 if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe，请先安装 Inno Setup 6" }
-& $iscc "/DMyAppVersion=$Version" (Join-Path $packDir "安装包.iss")
+& $iscc "/DMyAppVersion=$Version" "/DMyAppName=$ExeBaseName" "/DMyAppExeName=$ExeBaseName.exe" (Join-Path $packDir "安装包.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败" }
 
-$out = Join-Path $packDir "输出\坚祥数字助理GO-安装包-$Version.exe"
+$out = Join-Path $packDir "输出\$ExeBaseName-安装包-$Version.exe"
 Write-Host "完成：$out"

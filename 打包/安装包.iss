@@ -1,4 +1,9 @@
-﻿; 坚祥数字助理GO 安装包脚本（Inno Setup 6.4+，需配合简中语言包 ChineseSimplified.isl）
+﻿; 安装包脚本（Inno Setup 6.4+，需配合简中语言包 ChineseSimplified.isl）
+; exe 文件名切换期（坚祥数字助理GO → AI数字助理，约一周后）：
+;   MyAppName / MyAppExeName 由 打包安装包.ps1 经 ISCC /D 覆盖（源头是它的
+;   -ExeBaseName 参数，默认旧名）；单独手工编译时走下方 #ifndef 默认值。
+;   切到新名后自动追加旧名清理（[InstallDelete] 的 #if 段）：删旧 exe、
+;   旧开始菜单组、旧桌面快捷方式——一次升级完成迁移，AppId 不变即同一安装身份。
 ; 由 打包安装包.ps1 组装 stage/ 后调用 ISCC 编译；也可手工：
 ;   ISCC.exe /DMyAppVersion=1.0.0 安装包.iss
 
@@ -6,8 +11,12 @@
 #define MyAppVersion "1.0.0"
 #endif
 
+#ifndef MyAppName
 #define MyAppName "坚祥数字助理GO"
+#endif
+#ifndef MyAppExeName
 #define MyAppExeName "坚祥数字助理GO.exe"
+#endif
 // 文件版本号必须是纯数字四段（每段 0-65535）：日期版本 20261013-1（旧写法 20261012V1）转为 2026.10.13.1；
 // 传统语义版本（如 1.0.3）沿用原行为补 .0 → 1.0.3.0
 #if Pos("V", MyAppVersion) > 0
@@ -37,7 +46,7 @@ PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 OutputDir=输出
 OutputBaseFilename={#MyAppName}-安装包-{#MyAppVersion}
-SetupIconFile=坚祥数字助理GO.ico
+SetupIconFile=app.ico
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 VersionInfoVersion={#MyAppFileVersion}
@@ -68,6 +77,16 @@ Source: "stage\md-viewer\*"; DestDir: "{app}\md-viewer"; Flags: ignoreversion
 Source: "stage\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
+; exe 文件名切换的迁移清理：只在装「AI数字助理.exe」时启用（旧名版自装自不触发）。
+; 旧 exe 直接删（新版已带全功能）；旧开始菜单组与桌面快捷方式指向已删的 exe，
+; 不清就是死链。热更新（engine 原地交换）不改文件名，老用户先经热更新升到新版、
+; 再装一次新名安装包即完成文件名迁移。
+#if MyAppExeName != "坚祥数字助理GO.exe"
+Type: files; Name: "{app}\坚祥数字助理GO.exe"
+Type: files; Name: "{app}\坚祥数字助理GO-右键菜单版.exe"
+Type: filesandordirs; Name: "{autoprograms}\坚祥数字助理GO"
+Type: files; Name: "{autodesktop}\坚祥数字助理GO.lnk"
+#endif
 ; 安装期清理（升级时先删后装，防旧文件残留）：只清「随包分发、整体重装」的
 ; 目录；用户的东西严格不碰——data\、config.json、默认工作区\（含旧名「工作区」）、
 ; 技能\user\（用户技能）、插件\（用户装的 DSH 插件原件）、组件\<非随包 id>（市场
@@ -153,6 +172,9 @@ var
   rc: Integer;
 begin
   Exec(ExpandConstant('{cmd}'), '/C taskkill /IM {#MyAppExeName} /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  // exe 文件名切换期：旧名实例也占着待清理的旧 exe（见 [InstallDelete] 的
+  // 迁移段），装新名版时一并腾出；进程不存在时 taskkill 静默失败，无害
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /IM 坚祥数字助理GO.exe /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
   // 查看器可能以托盘宿主驻留，覆盖安装时同样要腾出 exe
   Exec(ExpandConstant('{cmd}'), '/C taskkill /IM MD查看器.exe /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
 end;

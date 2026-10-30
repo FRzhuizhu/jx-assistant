@@ -17,7 +17,7 @@ function applyBrandTexts() {
   document.title = window.brandName();
   const sb = document.querySelector('.brand b'); if (sb) sb.textContent = window.brandName();
   const wz = $('wz-title'); if (wz) wz.textContent = '欢迎使用' + window.brandName();
-  const ab = document.querySelector('#set-pane-about .about-block b'); if (ab) ab.textContent = window.brandName() + '（GO版）';
+  const ab = document.querySelector('#set-pane-about .about-block b'); if (ab) ab.textContent = window.brandName(); // 关于页只显示品牌名（「（GO版）」技术栈后缀 2026-10-30 起不再展示）
   const hh = document.querySelector('.home .hero h1'); if (hh) hh.textContent = window.brandHero();
   const ha = document.querySelector('.home .hero img'); if (ha) ha.alt = window.brandName();
 }
