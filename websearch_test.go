@@ -198,10 +198,11 @@ func TestMigrateBuiltinFromUser(t *testing.T) {
 	os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("---\nname: web-search-local\n---\n旧版正文"), 0o644)
 	os.WriteFile(filepath.Join(old, "config.json"), []byte(`{"zhipu_key":"k"}`), 0o644)
 
-	a := &App{Cfg: &Config{SkillsDir: dir}}
+	a := &App{Cfg: &Config{SkillsDir: dir, DataDir: t.TempDir()}}
 	if _, err := a.SkillsDir(); err != nil {
 		t.Fatal(err)
 	}
+	a.runMigrations() // 搬家由迁移机制执行（20261030.builtin-skill-from-user）
 	if dirExists(old) {
 		t.Fatal("user 下旧副本应被挪走")
 	}
@@ -215,10 +216,13 @@ func TestMigrateBuiltinFromUser(t *testing.T) {
 	os.MkdirAll(old, 0o755)
 	os.WriteFile(filepath.Join(old, "SKILL.md"), []byte("旧版"), 0o644)
 	os.WriteFile(filepath.Join(old, "config.json"), []byte(`{"bocha_key":"b"}`), 0o644)
-	a2 := &App{Cfg: &Config{SkillsDir: dir}}
+	a2 := &App{Cfg: &Config{SkillsDir: dir, DataDir: t.TempDir()}}
 	if _, err := a2.SkillsDir(); err != nil {
 		t.Fatal(err)
 	}
+	// 直接调函数：这段测的是「根下已有新版时只补 key 不覆盖」的行为本身
+	// （走 runMigrations 会因 a 已记账而跳过，故不复用那条路）
+	a2.migrateBuiltinFromUser(dir)
 	if got, _ := os.ReadFile(filepath.Join(dir, localSearchSkillID, "SKILL.md")); !strings.Contains(string(got), "新版正文") {
 		t.Fatalf("新版技能本体不应被旧副本覆盖: %s", got)
 	}

@@ -1199,8 +1199,8 @@ Android Keystore）时，只需替换 `dpapi.go` 的平台实现，文件格式�
 下载落盘，缺 curl/wget 环境的兜底）、`apkinfo`（引擎子命令 `apkinfo`
 读取 APK 包名/版本/签名指纹，安装前验包，纯 Go 实现）、`web-search-local`
 （本机网络搜索：web_search 连不上服务端时的本机直调搜索 API 兜底，
-2026-10 由用户技能提升为内置；存量机器 user/ 下的旧副本由 SkillsDir 的
-migrateBuiltinFromUser 启动迁移收走）。自带技能常开、不可
+2026-10 由用户技能提升为内置；存量机器 user/ 下的旧副本由迁移任务
+20261030.builtin-skill-from-user 收走）。自带技能常开、不可
 删除；`技能/user/` 下可放用户技能，设置页「技能」面板可添加（按钮选本机含
 SKILL.md 的文件夹，或 .zip 压缩包/单个 .md 说明文件——.md 自动包装成
 `<文件名>/SKILL.md` 再装，id 取文件名；**文件夹、.zip、.md 拖进技能页即装**
@@ -1220,7 +1220,8 @@ SKILL.md 的文件夹，或 .zip 压缩包/单个 .md 说明文件——.md 自�
 Excludes（`d1723e4671`）、go:embed 只嵌内置白名单目录（skills.go，exe 内嵌
 母本不再含 user 树，`TestEmbeddedSkillsTreeIsWhitelistOnly` 防回归）、启动
 清理 `purgeLeakedUserSkills`（skills.go，按 `leakedInternalSkills` 名单删
-user/ 下误发副本，市场记账在的跳过，随新引擎静默推给存量机器）。要给用户
+user/ 下误发副本，市场记账在的跳过；经迁移任务 20261030.purge-leaked-skills
+随新引擎静默推给存量机器，跑一次记账）。要给用户
 用的内部技能一律走市场正式发布）。用户技能按 **清单先行、
 内容按需**送达模型：环境快照里只列 显示名（id）与一句话描述，要用哪个技能先
 调用 `read_skill`（常驻工具，**所有模式注册**）读它的完整 SKILL.md 说明——
@@ -1714,6 +1715,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `wizard.go` | 公司接入向导后端：POST /api/wizard/discover（UDP 广播找同公司服务端——浏览器发不了 UDP 故在 Go 侧做，255.255.255.255+子网定向广播、公司名=口令、registryURL 查询兜底）+ POST /api/wizard/connect（验证 healthz → POST /provision → 内部提供方 company-internal 置顶即默认、marketURL/updateURL/wizardDone 一键落位；重跑替换不堆积）；config 增 wizardDone/registryURL |
 | `market.go` | 市场客户端半边：拉 jxai-server 清单（60s 缓存）、下载 zip+sha256 校验、三类型安装路由（技能→addUserSkill / 组件→组件目录+Rescan / 插件→ccInstallFromPath 落 `jx-market`）、装卸记账 `data/market_installed.json`、`GET /api/market` + `/install` + `/uninstall`；地址在 `config.marketURL`（设置·网络访问，环境快照尾部有「企业技能市场」一行：地址+自签 HTTPS 需 curl -k 的提示）。对服务端的请求一律带 `X-Jxai-User` 头（值=发布者姓名，没设不带）——服务端记条目归属 owner 与下载/安装明细；安装成功后上报 `POST /api/market/report-install` |
 | `brand_sync.go` / `brand_sync_test.go` | 品牌下发客户端半边（服务端 jxaiserver brand.go → /announce.brand）：LOGO 与界面文字（侧栏/首页 hero/关于页/title）由服务端管理页统一配置，**客户端无配置入口**只消费；缓存于 `data/brand/`（brand.json + logo.png），渲染全程读本地（`/logo.png` 路由优先本地缓存图、`GET /api/brand` 出文字、前端 brand 事件刷新）；**LOGO 按 logoHash 比对只在该换时下载一次**（流量硬口径），nil（老服务端）不动本地，hash 空回退内置默认 |
+| `migrations.go` / `migrations_test.go` | 迁移机制（Flyway 式）：版本化一次性任务 + 执行账本 `data/migrations.json`（id→执行时刻）。一次性动作（清理误发文件、目录搬家……）往 `appMigrations` 清单**尾部**追加条目，NewApp 启动时跑：执行过记账永不再跑，失败记日志不记账下次重试，不阻断启动。id 规范「日期.短名」；任务体尽力而为（小失败内部消化、返回 nil 即记账；SkillsDir 等基础设施错误才返回 error）。首个收编条目：泄漏技能清理与内置技能搬家（此前是「每次启动全量扫描、靠自身幂等」的散装自愈）。数据库 schema 迁移另有一套（store.go 的 migration，管 SQLite），两者各管各的域 |
 | `market_publish.go` / `market_publish_test.go` / `market_publish_meta_test.go` | 市场·技能发布（**先装后传**）：只能发布已装到 `技能/user/` 的技能——后端从安装目录现场打 zip、走 inspectSkillZip/rewriteSkillZip 校验链（恰好一处 SKILL.md、内容体检、结构规整）、元信息按回退链补全（id 候选含中文→英文词表 `skillIDFromChinese`，词表只在 Go 一份），流式转发服务端用户端点 `/api/market/publish`；`GET /api/market/publish-meta` 给弹层预填；下架走 `/api/market/unpublish`——**归属校验与「挪进服务端回收站」都在服务端**，客户端只发消息（本地姓名比对只是按钮显隐的 UX） |
 | `todo.go` / `todotools.go` | 待办与定时任务（组件 `todo-scheduler` 的宿主半边）：清单、调度、两类执行（AI 任务可选执行目标：数字经理/新工作任务，后者走 `createSession` 单源建会话）/ 模型工具 |
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |

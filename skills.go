@@ -89,8 +89,6 @@ func (a *App) SkillsDir() (string, error) {
 			return "", fmt.Errorf("释放内嵌技能失败: %w", err)
 		}
 	}
-	a.migrateBuiltinFromUser(abs)
-	a.purgeLeakedUserSkills(abs)
 	a.skillsDirOurs = abs
 	a.skillsReady = true
 	return abs, nil
@@ -107,10 +105,10 @@ var leakedInternalSkills = []string{
 	"server-publish-update", "微信操作",
 }
 
-// purgeLeakedUserSkills 启动清理：删掉 user/ 下命中泄漏名单的目录（其中部分
+// purgeLeakedUserSkills 清理：删掉 user/ 下命中泄漏名单的目录（其中部分
 // 技能含密钥，不能留在客户机）；**有市场安装记账的跳过**——同 id 从市场正式
-// 装的（jxmes-master 等在市场有正式条目）是用户要的，不属于误发。随新引擎
-// 分发（静默更新与安装包同一份代码），所有升级用户启动即清。
+// 装的（jxmes-master 等在市场有正式条目）是用户要的，不属于误发。由迁移
+// 机制调用（migrations.go，20261030.purge-leaked-skills，跑一次记账）。
 func (a *App) purgeLeakedUserSkills(dir string) {
 	userDir := filepath.Join(dir, "user")
 	recs := a.loadMarketRecs()
@@ -136,7 +134,8 @@ func (a *App) purgeLeakedUserSkills(dir string) {
 // （技能/user/<id>/，如 web-search-local 2026-10 前装在各机的 user 下），
 // 提升内置后把旧副本挪到 技能/<id>/。目标已存在（静默更新先发了新版）时
 // 只把旧副本的 config.json（用户配的搜索引擎 key）补过去、不覆盖新版本体。
-// 挪不动（文件被占用等）就留着下次启动再试，绝不阻断启动。
+// 挪不动（文件被占用等）就留着下次再试。由迁移机制调用（migrations.go，
+// 20261030.builtin-skill-from-user，跑一次记账）。
 func (a *App) migrateBuiltinFromUser(dir string) {
 	for _, id := range builtinSkillOrder {
 		src := filepath.Join(dir, "user", id)
