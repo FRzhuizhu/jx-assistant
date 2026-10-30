@@ -299,3 +299,56 @@ func TestMarketShaMismatch(t *testing.T) {
 		t.Fatalf("哈希不符应被拒: %d %v", code, resp)
 	}
 }
+
+// writeVersionedSkillSrc 带版本标记的技能源（正文含版本号，断言更新落位用）。
+func writeVersionedSkillSrc(t *testing.T, ver string) string {
+	t.Helper()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\nname: 市场技能\ndescription: 来自市场\n---\n正文 "+ver), 0644)
+	return dir
+}
+
+// TestMarketSkillAutoUpdate 企业技能包自动更新（checkUpdateOnce 顺带跑的那条路）：
+// 市场发新版 → 已装技能静默更新到新版并改记账；本地自建技能（无记账）不被触碰。
+func TestMarketSkillAutoUpdate(t *testing.T) {
+	fm := newFakeMarket(t)
+	fm.publish(t, "skill", "mk-skill", "1.0.0", writeVersionedSkillSrc(t, "1.0.0"), false)
+	a := newMarketTestApp(t, fm.srv.URL+"/market/manifest.json")
+	if code, resp := callHandler(t, a.handleMarketInstall, "POST", "/api/market/install", `{"type":"skill","id":"mk-skill"}`); code != 200 {
+		t.Fatalf("首装失败: %d %v", code, resp)
+	}
+	userDir, err := a.userSkillsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 本地自建技能（无市场记账）：自动更新不得动它
+	local := filepath.Join(userDir, "my-local")
+	os.MkdirAll(local, 0755)
+	os.WriteFile(filepath.Join(local, "SKILL.md"), []byte("---\nname: 本地技能\ndescription: 自建\n---\n本地正文"), 0644)
+
+	fm.publish(t, "skill", "mk-skill", "1.1.0", writeVersionedSkillSrc(t, "1.1.0"), false)
+	a.autoUpdateMarketSkills()
+
+	raw, _ := os.ReadFile(filepath.Join(userDir, "mk-skill", "SKILL.md"))
+	if !strings.Contains(string(raw), "1.1.0") {
+		t.Fatalf("技能应已自动更新到 1.1.0: %s", raw)
+	}
+	if recs := a.loadMarketRecs(); recs["skill:mk-skill"].Version != "1.1.0" {
+		t.Fatalf("记账版本应为 1.1.0: %#v", recs["skill:mk-skill"])
+	}
+	if _, err := os.Stat(filepath.Join(userDir, ".mk-skill.bak")); !os.IsNotExist(err) {
+		t.Fatal("更新备份残留应清理")
+	}
+	if lraw, lerr := os.ReadFile(filepath.Join(local, "SKILL.md")); lerr != nil || !strings.Contains(string(lraw), "本地正文") {
+		t.Fatalf("本地自建技能被误动: %v %s", lerr, lraw)
+	}
+	// 清单没有再发新版时重跑：内容与记账保持不变（幂等）
+	a.autoUpdateMarketSkills()
+	if recs := a.loadMarketRecs(); recs["skill:mk-skill"].Version != "1.1.0" {
+		t.Fatalf("无新版时记账不应变化: %#v", recs["skill:mk-skill"])
+	}
+	if raw2, _ := os.ReadFile(filepath.Join(userDir, "mk-skill", "SKILL.md")); !strings.Contains(string(raw2), "1.1.0") {
+		t.Fatalf("无新版时技能内容不应变化: %s", raw2)
+	}
+}

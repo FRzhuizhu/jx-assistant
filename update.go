@@ -213,6 +213,9 @@ func (a *App) checkUpdateOnce(url string) {
 		return
 	}
 	defer updateCheckMu.Unlock()
+	// 顺带检查企业技能包更新（market.go）：发布源检查与技能包更新互不依赖，
+	// 异步跑——发布源不可达时技能包更新照常进行，反之亦然
+	go a.autoUpdateMarketSkills()
 	client := newCompanyHTTPClient(20 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {

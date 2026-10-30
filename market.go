@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -390,6 +391,57 @@ func findRootWith(dir, file string) (string, error) {
 	return "", fmt.Errorf("压缩包里找不到 %s（需在根部或其唯一子目录里）", file)
 }
 
+// installMarketSkillZip 装一个市场技能 zip 到 技能/user/<id>/（手动安装与
+// autoUpdateMarketSkills 共用；zip 由调用方经 marketDownloadZip 过 sha256 校验）。
+// 已有旧版先挪到同目录隐藏备份，新版装失败把备份还原回去——更新失败不掉技能，
+// 无人值守的自动更新尤其不能让技能凭空消失。
+func (a *App) installMarketSkillZip(entry marketEntryIn, zipPath string) (*userSkillEntry, error) {
+	skillID := sanitizeSkillID(entry.ID)
+	userDir, err := a.userSkillsDir()
+	if err != nil {
+		return nil, err
+	}
+	dst := filepath.Join(userDir, skillID)
+	bak := ""
+	if dirExists(dst) { // 更新 = 旧版挪走暂存，装失败还原
+		bak = filepath.Join(userDir, "."+skillID+".bak")
+		_ = os.RemoveAll(bak)
+		if err := os.Rename(dst, bak); err != nil {
+			return nil, fmt.Errorf("挪开旧版本失败: %w", err)
+		}
+	}
+	restore := func() {
+		if bak != "" {
+			_ = os.RemoveAll(dst)
+			_ = os.Rename(bak, dst)
+		}
+	}
+	root, tmp, err := extractSkillZip(zipPath)
+	if err != nil {
+		restore()
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	// addUserSkill 按目录名定技能 id：先包一层以条目 id 命名的目录
+	wrap, err := os.MkdirTemp("", "jxmks-")
+	if err != nil {
+		restore()
+		return nil, err
+	}
+	defer os.RemoveAll(wrap)
+	if err := copyDir(root, filepath.Join(wrap, skillID)); err != nil {
+		restore()
+		return nil, err
+	}
+	ent, err := a.addUserSkill(filepath.Join(wrap, skillID))
+	if err != nil {
+		restore()
+		return nil, err
+	}
+	_ = os.RemoveAll(bak)
+	return ent, nil
+}
+
 // installMarketComponent 把组件目录装进 组件/<id>/ 并重扫；id 以组件自己的
 // manifest.id 为准（缺省用条目 id），返回记账。
 func (a *App) installMarketComponent(e marketEntryIn, root string) (marketInstallRec, error) {
@@ -498,43 +550,13 @@ func (a *App) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"ok": 1, "type": body.Type, "id": entry.ID, "name": entry.Name, "version": entry.Version}
 	switch body.Type {
 	case "skill":
-		skillID := sanitizeSkillID(entry.ID)
-		if userDir, err := a.userSkillsDir(); err == nil && dirExists(filepath.Join(userDir, skillID)) {
-			if err := a.deleteUserSkill(skillID); err != nil { // 更新 = 先删再装
-				writeErr(w, 500, "卸载旧版本失败: "+err.Error())
-				return
-			}
-		}
-		// addUserSkill 按目录名定技能 id：先包一层以条目 id 命名的目录
-		root, tmp, err := extractSkillZip(zipPath)
+		ent, err := a.installMarketSkillZip(entry, zipPath)
 		if err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		wrap, err := os.MkdirTemp("", "jxmks-")
-		if err != nil {
-			os.RemoveAll(tmp)
-			writeErr(w, 500, err.Error())
-			return
-		}
-		defer os.RemoveAll(wrap)
-		err = func() error { // tmp 的清理独立于 wrap（两个临时目录都要收）
-			defer os.RemoveAll(tmp)
-			if err := copyDir(root, filepath.Join(wrap, skillID)); err != nil {
-				return err
-			}
-			ent, err := a.addUserSkill(filepath.Join(wrap, skillID))
-			if err != nil {
-				return err
-			}
-			rec = marketInstallRec{Version: entry.Version, Key: ent.ID, InstalledAt: time.Now().Format(time.RFC3339)}
-			resp["skill"] = ent
-			return nil
-		}()
-		if err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
+		rec = marketInstallRec{Version: entry.Version, Key: ent.ID, InstalledAt: time.Now().Format(time.RFC3339)}
+		resp["skill"] = ent
 	case "component":
 		tmp, err := os.MkdirTemp("", "jxmkc-")
 		if err != nil {
@@ -679,4 +701,65 @@ func (a *App) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
 	}
 	a.removeMarketRec(body.Type, body.ID)
 	writeJSON(w, 200, resp)
+}
+
+/* ---------- 企业技能包自动更新 ---------- */
+
+// marketAutoMu 自动更新防重入：手动「立即检查更新」与每小时轮询同拍触发时
+// 共享一轮（TryLock 跳过），避免同一技能被并发下载安装。
+var marketAutoMu sync.Mutex
+
+// autoUpdateMarketSkills 企业技能包自动更新：checkUpdateOnce 每次检查客户端
+// 更新时顺带跑（每小时轮询、手动「立即检查」同一条路）。对比市场最新清单与
+// 安装记账（market_installed.json），已装且记账版本 ≠ 市场版本的技能自动下载
+// 新版覆盖安装——与手动点「更新」同一条链路（sha256 校验、装失败还原旧版、
+// 记账、上报服务端）。逐个更新、失败只记日志：单个技能失败不拖垮其他，下一
+// 轮检查自然重试；本地自建技能没有市场记账，天然不被触碰；市场不可达（如
+// 公司外用笔记本）也只是静默跳过，不影响客户端更新检查本身。
+func (a *App) autoUpdateMarketSkills() {
+	if !marketAutoMu.TryLock() {
+		return
+	}
+	defer marketAutoMu.Unlock()
+	raw := strings.TrimSpace(a.Cfg.MarketURL)
+	if raw == "" {
+		return
+	}
+	man, err := a.fetchMarketManifest(raw, true)
+	if err != nil {
+		log.Printf("[市场] 技能包更新检查失败（忽略，下轮再试）: %v", err)
+		return
+	}
+	recs := a.loadMarketRecs()
+	userDir, uerr := a.userSkillsDir()
+	for _, e := range man.Skills {
+		rec, hasRec := recs["skill:"+e.ID]
+		if !hasRec || rec.Version == "" || rec.Version == e.Version {
+			continue
+		}
+		if uerr != nil || !dirExists(filepath.Join(userDir, sanitizeSkillID(e.ID))) {
+			continue // 记账在、目录没了（手动删过）：不自动重装，等用户自己决定
+		}
+		zipURL, err := marketZipURL(raw, e.Zip)
+		if err != nil {
+			log.Printf("[市场] 技能 %s 新版 %s 地址不合法（忽略）: %v", e.ID, e.Version, err)
+			continue
+		}
+		zipPath, cleanup, err := a.marketDownloadZip(zipURL, e)
+		if err != nil {
+			log.Printf("[市场] 技能 %s 新版 %s 下载失败（忽略，下轮再试）: %v", e.ID, e.Version, err)
+			continue
+		}
+		ent, err := a.installMarketSkillZip(e, zipPath)
+		cleanup()
+		if err != nil {
+			log.Printf("[市场] 技能 %s 自动更新失败，已保留旧版 %s（下轮再试）: %v", e.ID, rec.Version, err)
+			continue
+		}
+		if err := a.saveMarketRec("skill", e.ID, marketInstallRec{Version: e.Version, Key: ent.ID, InstalledAt: time.Now().Format(time.RFC3339)}); err != nil {
+			log.Printf("[市场] 技能 %s 更新记账落盘失败（更新本身已成功）: %v", e.ID, err)
+		}
+		a.reportMarketInstall(raw, "skill", e)
+		log.Printf("[市场] 技能 %s 已自动更新 %s → %s", e.Name, rec.Version, e.Version)
+	}
 }
