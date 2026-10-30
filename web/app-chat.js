@@ -384,8 +384,35 @@ function setProcOpen(row, open) {
   if (body) { if (open) showEl(body); else hideEl(body); }
 }
 
+// 行级展开记忆的写入/删除：行键挂在 data-rk（见 renderItem），会话取所在视图的
+// 当前会话。只有用户点击会走到这里（beforematch 的程序性揭开不记——Ctrl+F 是
+// 临时查看，不该固化展开态）。
+function procOpenMark(row, open) {
+  const rk = row && row.dataset ? row.dataset.rk : '';
+  if (!rk) return;
+  const v = foldViewOf(row);
+  const sid = v && v.state && v.state.cur ? v.state.cur.id : '';
+  if (!sid) return;
+  if (open) procOpenMem.set(sid + ':' + rk, '1');
+  else procOpenMem.delete(sid + ':' + rk);
+}
+
+// 点击展开（过程行/折叠段/用户气泡折叠）即钉住阅读：视口停在展开处，新内容
+// 继续向下渲染但不再被跟随滚动拽走——否则「展开看一段思考，底下每出一个新行
+// 页面就被拽到底」根本没法读完。收起不自动恢复跟随：滚回底部或点「回到底部」
+// 由现有机制自然恢复。
+function pinViewForRead(el) {
+  const v = foldViewOf(el);
+  if (v) { v._pinned = true; v._pinTs = Date.now(); }
+}
+
 function bindProcToggle(row) {
-  row.querySelector('.proc-head').onclick = () => setProcOpen(row, !row.classList.contains('open'));
+  row.querySelector('.proc-head').onclick = () => {
+    const open = !row.classList.contains('open');
+    setProcOpen(row, open);
+    procOpenMark(row, open);
+    if (open) pinViewForRead(row);
+  };
   if (!row.classList.contains('open')) hideEl(row.querySelector('.proc-body'));
 }
 
@@ -689,14 +716,14 @@ function foldSection(items, key, opts = {}) {
   bar.insertAdjacentHTML('beforeend', chev('tf-chev'));
   const body = document.createElement('div');
   body.className = 'tf-body';
-  for (const it of items) body.appendChild(renderItem(it));
+  for (const it of items) body.appendChild(renderItem(it, { sid: opts.sid }));
   const open = opts.open === true;
   bar.classList.toggle('open', open);
   if (open) showEl(body); else hideEl(body);
   bar.onclick = () => {
     const nowOpen = body.hasAttribute('hidden');
     setSecOpen(sec, nowOpen);
-    if (nowOpen) turnOpen[key] = true; // 手动展开记忆：之后不再自动折回
+    if (nowOpen) { turnOpen[key] = true; pinViewForRead(sec); } // 手动展开记忆：之后不再自动折回
     else delete turnOpen[key];        // 收起后回到自动折叠
   };
   sec.appendChild(bar);
@@ -746,7 +773,7 @@ function inheritBlock(turns, items, sid) {
   bar.onclick = () => {
     const nowOpen = body.hasAttribute('hidden');
     setSecOpen(sec, nowOpen);
-    if (nowOpen) turnOpen[key] = true;
+    if (nowOpen) { turnOpen[key] = true; pinViewForRead(sec); }
     else delete turnOpen[key];
   };
   sec.appendChild(bar);
@@ -1102,7 +1129,7 @@ async function forkFromAnswer(m, btn) {
   if (btn) { btn.disabled = false; btn.classList.remove('ok'); }
 }
 
-function renderItem(it, opts) {
+function renderRowItem(it, opts) {
   if (it.k === 'prompttail') return promptTailRows(it.env, it.seq);
   if (it.k === 'envnote') return envNoteRow(it.text, it.prev, it.seq);
   if (it.k === 'time') return timeNoteRow(it.text, it.seq);
@@ -1139,6 +1166,24 @@ function renderItem(it, opts) {
   b.textContent = String(it.m.content ?? '');
   wrap.appendChild(b);
   return wrap;
+}
+
+// 过程行渲染出口 = 原分发（renderRowItem）+ 行级展开记忆的恢复：proc-row 系行
+// 挂 data-rk 行键（kind + seq；工具/子任务/计划卡用 tool_call_id——同一条
+// assistant 消息的多个调用共享 seq，靠它区分），展开记忆（procOpenMem）命中时
+// 直接以展开态出现。执行中尾部每个消息事件都整段重建最后一回合，行上挂的
+// 展开态随 DOM 换掉——不查表恢复的话，用户点开的思考行下一批消息到达就被折回。
+function renderItem(it, opts) {
+  const el = renderRowItem(it, opts);
+  if (!el || !el.classList || !el.classList.contains('proc-row')) return el;
+  const rk = it.seq != null
+    ? (it.k + ':' + ((it.tc && it.tc.id) ? it.tc.id : it.seq))
+    : '';
+  if (!rk) return el;
+  el.dataset.rk = rk;
+  const sid = (opts && opts.sid) || '';
+  if (sid && procOpenMem.get(sid + ':' + rk) === '1') setProcOpen(el, true);
+  return el;
 }
 
 // 【派发回报】消息中出现过的子会话 id（渲染期间有效）：子任务卡据此在刷新/
@@ -1250,6 +1295,15 @@ let foldRetry = 0;      // 「当时还没排好版」的重试次数（最多 5
 // 回到默认折叠；用户再手动收起即删记录（回到默认行为）。插话/发送占位是
 // 随重建重置的临时形态（无 seq），刻意不记。
 const foldOpenMem = new Map();
+
+// 过程行（proc-row：思考/工具/计划卡/材料行…）的展开记忆，与 foldOpenMem 同款：
+// 纯内存 Map，不落 localStorage——刷新页面、手机端退出重进自然全部回到默认
+// 收起；切换会话回来时由 renderMessages 的 jump 分支清掉（回来即「重新加载」
+// 的默认折叠态）。解决的问题是：执行中尾部每个消息事件都整段重建最后一回合，
+// 行上挂的展开态随 DOM 换掉——用户点开一段思考想细读，下一批工具行到达就被
+// 折回收起。键 = 会话id + ':' + 行键（行键见 renderItem 的 data-rk）。
+const procOpenMem = new Map();
+
 function foldKeyOf(el, view) {
   const seq = el.parentElement && el.parentElement.dataset.seq;
   const sid = view && view.state && view.state.cur ? view.state.cur.id : '';
@@ -1311,8 +1365,14 @@ function foldViews() { return [mainView, subView]; }
 // 所以结果稳定、不会自激）。逐视图各算一轮；任一视图有量不准的元素就统一重试。
 function applyFolds() {
   const enabled = foldEnabled();
+  // 折叠应用改变气泡高度（max-height 裁剪）：视口内/上方的变化会把钉住阅读的
+  // 视口顶动（上翻历史时补测折叠导致的「往上跳」即此）。渲染标记 + 视口锚定
+  // 成对——滚动补测路径（scroll 200ms 防抖后）天然在滚动停顿后触发，补偿安全。
+  const pinned = foldViews().filter((v) => v._pinned);
+  pinned.forEach((v) => { v._renderTs = Date.now(); anchorSave(v); });
   let unmeasurable = false;
   foldViews().forEach((view) => { if (applyFoldsIn(view, enabled)) unmeasurable = true; });
+  pinned.forEach((v) => anchorRestore(v));
   // 有元素当时还没排好版（含右栏收起时不参与布局）：稍后再算一次（最多 5 次）
   if (unmeasurable && foldRetry < 5) { foldRetry++; setTimeout(scheduleFolds, 200); }
   else if (!unmeasurable) foldRetry = 0;
@@ -1415,6 +1475,7 @@ function toggleFold(el, btn) {
   btn.textContent = folded ? '展开' : '收起';
   btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
   if (folded) followScroll(foldViewOf(el), false); // 收起到 6 行后按所在视图重新贴底
+  else pinViewForRead(el); // 展开阅读即钉住：与过程行/折叠段同一套展开交互
 }
 
 // 气泡属于哪个视图：右栏子对话列里的归 subView，其余归主对话列
@@ -2387,6 +2448,55 @@ function followScroll(view, jump) {
   el.scrollTop = el.scrollHeight;
 }
 
+/* 视口锚定（钉住阅读时视口零跳动）：上翻阅读期间尾部重建、折叠应用、滚动
+   补测都会改变内容高度，浏览器重排后视口里正显示的内容会被顶得上下窜——
+   表现就是「下面一有更新就跳、上面逐渐加载出来又往上跳」（远程/手机最明显：
+   事件成簇到达、单帧变化量大）。锚定与浏览器原生 scroll anchoring 同一原理：
+   变更前记住视口**中线**上的回合级元素与其视口坐标，变更后按位置差补回
+   scrollTop——屏幕中间正在看的内容纹丝不动，上下怎么长都不跳。
+   只在 view._pinned 时生效：贴底跟随（未钉住）由 followScroll 直接滚到底，
+   天然稳定，不经这里。 */
+function anchorSave(view) {
+  view._anchor = null;
+  if (!view._pinned) return; // 贴底跟随态不需要锚定
+  const col = view.col, sc = view.scroll;
+  if (!col || !sc) return;
+  const vr = sc.getBoundingClientRect();
+  // 中线命中的最深元素提升到消息列的直接子元素（回合级块）：elementFromPoint
+  // 一次定位，不逐元素量 rect。命不中消息列（列矮于视口/中线落在输入区）则不锚
+  let el = document.elementFromPoint(vr.left + vr.width / 2, vr.top + vr.height / 2);
+  if (!el || el === col || !col.contains(el)) return;
+  while (el && el.parentElement !== col) el = el.parentElement;
+  if (!el || el.parentElement !== col) return;
+  const live = view.liveId ? document.getElementById(view.liveId) : null;
+  if (live && (el === live || el.contains(live))) return; // 流式气泡高度常变，不做锚
+  view._anchor = {
+    el, top: el.getBoundingClientRect().top,
+    // 替身查找依据：折叠段带 data-key（回合键），消息行带 data-seq
+    key: (el.dataset && el.dataset.key) || '',
+    seq: (el.dataset && el.dataset.seq) || '',
+  };
+}
+
+// DOM 变更后按锚点补差。锚元素被尾部重建换掉时按 key/seq 找重建后的替身
+//（同一消息渲染出的新行，位置等价）；替身也没有则放弃本次补偿（保守，不猜）。
+// 用户正在触摸/滚轮操作（含手机惯性滚动的收尾期）时不写 scrollTop——程序
+// 设置会掐断惯性滚动，那 250ms 的突变留给浏览器原生 anchoring 兜底。
+function anchorRestore(view) {
+  const a = view._anchor;
+  view._anchor = null;
+  if (!a) return;
+  if (Date.now() - (view._actTs || 0) < 250) return;
+  let el = a.el;
+  if (!el.isConnected) {
+    if (a.key) el = view.col.querySelector('[data-key="' + a.key + '"]');
+    else if (a.seq) el = view.col.querySelector('[data-seq="' + a.seq + '"]');
+    if (!el) return;
+  }
+  const dy = el.getBoundingClientRect().top - a.top;
+  if (dy) view.scroll.scrollTop += dy;
+}
+
 // 「发送中」占位气泡：点发送到服务端 message 事件回显之间（本机后端极快，
 // 但经网关/手机网络远程访问时可达数秒）用户消息处于「输入框已清、对话区没影」
 // 的空窗，看起来像没发出去。先按插话同款虚线气泡立显，回显落地即被正常气泡
@@ -2461,6 +2571,18 @@ function renderMessages(msgs, view, opts) {
     if (m.role === 'tool' && m.tool_call_id) resultOf[m.tool_call_id] = m;
   }
   const sid = (st.cur && st.cur.id) || '';
+  // 切换会话的全新加载（jump）：本会话的展开记忆一并下线——回来是默认折叠的
+  // 「重新加载」状态（刷新页面/手机重进时内存表本就为空，同一约定）。停留本页
+  // 时的就地翻新（无 jump）不清：执行中展开的思考/工具行靠记忆跨尾部重建保持。
+  // _pinned 在这里提前重置：否则锚定会把上一个会话的视口锚带进新渲染。
+  if (jump) {
+    view._pinned = false;
+    const pfx = sid + ':';
+    Object.keys(turnOpen).forEach((k) => { if (k.lastIndexOf(pfx, 0) === 0) delete turnOpen[k]; });
+    Array.from(foldOpenMem.keys()).forEach((k) => { if (k.lastIndexOf(pfx, 0) === 0) foldOpenMem.delete(k); });
+    Array.from(procOpenMem.keys()).forEach((k) => { if (k.lastIndexOf(pfx, 0) === 0) procOpenMem.delete(k); });
+  }
+  anchorSave(view); // 任何重建（前缀全量重建/尾部重建）之前锚定视口（仅钉住阅读时生效）
   // 子对话开头的继承段（后端克隆父对话时写入的标记行 + N 条历史）：
   // 折叠成一条「来自主对话」折叠条，其余消息照常渲染。继承段先分组，
   // 正文段从它分组后的基线接着比——子对话自己的 prompt 快照与父对话相同
@@ -2567,6 +2689,7 @@ function renderMessages(msgs, view, opts) {
   }
   box.appendChild(tail);
   followScroll(view, jump);
+  anchorRestore(view); // 钉住阅读时按锚点补差（followScroll 在钉住态不写 scrollTop，不会互相覆盖）
   scheduleFolds(); // 气泡折叠：渲染完按实际高度重算（主对话与右栏子对话列都算）
 }
 
@@ -2591,18 +2714,21 @@ function renderTurnProcess(box, turn, key, opts = {}) {
   const plan = streaming
     ? { set: streamKeep(items), answerIdx: -1 }
     : finishedKeep(items, opts.isLast === true);
+  // sid 从回合键（会话id:seq）取出，透传给行渲染：行级展开记忆（procOpenMem）
+  // 按会话存取，主/子视图同屏时不串台
+  const sid = key ? key.split(':')[0] : '';
   // 步数去重集按**回合**共享：同一助手行的条目可能被锚点切到前后两段，
   // 各段各建一个 Set 会把一次调用数两遍（见 secCount）
   const seenSteps = new Set();
   let seg = [];
   const flush = () => {
     if (!seg.length) return;
-    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true, seen: seenSteps }));
+    box.appendChild(foldSection(seg, key, { open: turnOpen[key] === true, seen: seenSteps, sid: sid }));
     seg = [];
   };
   // 常显项就地渲染（必要时把折叠段切开），其余条目折进段里
   items.forEach((it, i) => {
-    if (plan.set.has(i)) { flush(); box.appendChild(renderItem(it, { final: i === plan.answerIdx })); }
+    if (plan.set.has(i)) { flush(); box.appendChild(renderItem(it, { final: i === plan.answerIdx, sid: sid })); }
     else seg.push(it);
   });
   flush();
@@ -2739,10 +2865,22 @@ function liveRender(view) {
 /* ---------- 全局事件流（/api/events）：后台派发进度与回报的统一入口 ---------- */
 
 let eventStream = null;
+let eventsEverOpened = false; // SSE 是否已成功连过（区分首连与重连）
 
 function connectEvents() {
   try {
     eventStream = new EventSource('/api/events');
+    eventStream.onopen = () => {
+      // 重连即补拉待审批/待回答清单：广播无回放（question_required 等一次性
+      // 广播），断线窗口里错过的就永远错过了——远程中继对单请求有 150s 上限，
+      // SSE 被掐后 3s 重连，重连窗口里的广播必丢；20s 兜底轮询只在
+      // readyState!==1 时拉，重连太快又会被跳过。计划在对话区显示出来、
+      // 审批卡却不出现（2026-10-30 远程实报）即此：正文走会话自己的流（有
+      // 接回机制），审批卡走全局广播（丢了就没了）。首次连接跳过——
+      // app.js 启动时已经拉过，别多打一次。
+      if (eventsEverOpened) { loadApprovals(); loadQuestions(); }
+      eventsEverOpened = true;
+    };
     eventStream.onmessage = (e) => {
       try { handleGlobalEvent(JSON.parse(e.data)); } catch (err) { /* 跳过坏帧 */ }
     };
@@ -7867,19 +8005,25 @@ function setupScrollTuck() {
     setupInputMarks(view); // 标记胶囊：背衬层渲染与光标原子策略（两个视图各挂一套）
     let lastY = view.scroll.scrollTop;
     // 跟随钉住的手势入口：滚轮上翻/触摸上滑立即钉住（无论离底多近——否则
-    // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底
+    // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底。
+    // 手势同时记 _actTs（视口锚定的活动守卫）：触摸/滚轮操作中及其惯性收尾期
+    // 不做锚定补偿——程序写 scrollTop 会掐断惯性滚动（见 anchorRestore）
     view.scroll.addEventListener('wheel', (e) => {
+      view._actTs = Date.now();
       if (e.deltaY < 0) { view._pinned = true; view._pinTs = Date.now(); }
     }, { passive: true });
     let touchY = null;
     view.scroll.addEventListener('touchstart', (e) => {
+      view._actTs = Date.now();
       touchY = e.touches[0] ? e.touches[0].clientY : null;
     }, { passive: true });
     view.scroll.addEventListener('touchmove', (e) => {
+      view._actTs = Date.now();
       if (touchY != null && e.touches[0] && e.touches[0].clientY - touchY > 4) {
         view._pinned = true; view._pinTs = Date.now(); // 手指下移 = 内容上翻
       }
     }, { passive: true });
+    view.scroll.addEventListener('touchend', () => { view._actTs = Date.now(); }, { passive: true });
     view.scroll.addEventListener('scroll', () => {
       const el = view.scroll;
       const y = el.scrollTop;
@@ -7888,11 +8032,14 @@ function setupScrollTuck() {
       // 跟随钉住/恢复：内容增长不触发 scroll（scrollTop 不变），离底变远只可能
       // 是用户在滚 → 钉住；滚回贴近底部 → 恢复跟随（刚钉住的短窗口内不判恢复，
       // 小距上翻的余量不能立刻抵消钉住）。程序性贴底跟随时 dist≈0，天然维持跟随态。
-      // 两类合成事件不算用户意图：渲染钳位（_renderTs 后 120ms 内，尾部重建把
-      // scrollTop 夹到临时底部）与回到底部按钮的平滑下降（_progUntil 前的中间位置）
+      // 两类合成事件不算用户意图：渲染钳位（_renderTs 后 350ms 内——尾部重建
+      // 把 scrollTop 夹到临时底部，随后折叠 rAF 与 200ms 补测的高度余波也在
+      // 这个窗口里；窗口太短会把钳位误读成「用户滚回底部」→ 解除钉住 → 下一次
+      // 跟随把阅读位置拽到底，正是「下面一有更新就往下跳」）与回到底部按钮的
+      // 平滑下降（_progUntil 前的中间位置）
       const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
       const ts = Date.now();
-      const synthetic = ts - (view._renderTs || 0) < 120 || ts < (view._progUntil || 0);
+      const synthetic = ts - (view._renderTs || 0) < 350 || ts < (view._progUntil || 0);
       if (!synthetic && dist > FOLLOW_PIN_DIST) { view._pinned = true; view._pinTs = ts; }
       else if (!synthetic && dist < FOLLOW_RESUME && ts - (view._pinTs || 0) > PIN_GUARD_MS) view._pinned = false;
       // 回到底部按钮：滚离底部出现，靠近底部消失（滞回）
