@@ -247,7 +247,10 @@
     layoutBtn.title = '切换布局：上下堆叠 / 左右分栏（当前：' + (S.layout === 'vertical' ? '上下' : '左右') + '）';
     layoutBtn.onclick = toggleLayout;
     top.appendChild(layoutBtn);
-    const refresh = el('button', 'gitp-icon-btn', '⟳');
+    // ⟳ 放内层 span：busy 转圈只转图标本身，不转按钮盒子（手机 tap 的 hover
+    // 底色块会跟着盒子转，之前整个方框一起转的 bug 即源于动画挂在按钮上）
+    const refresh = el('button', 'gitp-icon-btn');
+    refresh.appendChild(el('span', 'gitp-refresh-icon', '⟳'));
     refresh.title = '刷新：重读仓库状态，并联网探一次远程（结果显示在状态条）';
     refresh.onclick = () => refreshAll(true); // 手动刷新：探远程的结果要反馈出来
     refreshBtn = refresh;
