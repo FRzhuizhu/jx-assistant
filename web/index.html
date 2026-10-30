@@ -72,9 +72,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
         企业技能包
       </button>
-      <!-- 企业小程序平台：与「企业技能包」同级入口（2026-10-30 用户要求：应用内打开）。
-           点它进市场视图的「小程序平台」tab——iframe 加载本端代理 /sites（sitesproxy.go
-           转发市场服务器，自签证书由 Go 端证书策略接管，浏览器自己的证书校验不再挡路）。 -->
+      <!-- 企业小程序平台：与「企业技能包」平级的独立主区页面（2026-10-30 用户要求）。
+           点它进 #sites-view——iframe 加载本端代理 /sites（sitesproxy.go 转发市场
+           服务器，自签证书由 Go 端证书策略接管，浏览器自己的证书校验不再挡路）。 -->
       <button id="btn-sites" class="foot-btn" title="企业小程序平台：发布与管理小程序、数据文件、二维码">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>
         小程序平台
@@ -123,7 +123,7 @@
     </header>
 
     <!-- 市场视图（app-market.js）：body.market-mode 下占领主区（对话区与输入区隐藏），
-         企业技能包/企业组件包/兼容插件/MCP + 小程序平台 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
+         企业技能包/企业组件包/兼容插件/MCP 四 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
     <div id="market-view" class="hidden">
       <div class="mk-head">
         <div class="mk-title">
@@ -140,7 +140,6 @@
         <button data-mk-tab="component" class="mk-tab">企业组件包</button>
         <button data-mk-tab="plugin" class="mk-tab">兼容插件</button>
         <button data-mk-tab="mcp" class="mk-tab">MCP</button>
-        <button data-mk-tab="sites" class="mk-tab">小程序平台</button>
         <span class="mk-tabs-rest">
           <span id="mk-count"></span>
           <button id="mk-upload-btn" class="mk-act hidden" title="把一个已安装的用户技能发布到市场服务器（先装后传）">＋ 上传技能</button>
@@ -148,17 +147,27 @@
         </span>
       </div>
       <div id="mk-list" class="mk-list"></div>
-      <!-- 小程序平台内嵌页：iframe 加载本端代理 /sites（sitesproxy.go 转发到市场
-           服务器，证书校验由 Go 端证书策略接管）——应用内打开，不跳系统浏览器；
-           平台页（站点列表/发布/数据文件/二维码）整页在页内完成，本端不重复实现。 -->
-      <div id="mk-sites-view" class="mk-sites-view hidden">
-        <div class="mk-sites-bar">
-          <span id="mk-sites-note" class="mk-sites-note"></span>
-          <button id="mk-sites-refresh" class="mk-act" title="重新加载平台页">刷新</button>
-          <button id="mk-sites-open" class="mk-act ghost" title="在系统浏览器打开本端代理地址（无证书告警）">在浏览器中打开</button>
+    </div>
+
+    <!-- 小程序平台独立视图（app-market.js 的 sites* 系列）：与市场视图平级的主区
+         整页（2026-10-30 用户要求：独立入口、独立页面，不再做市场里的二级 tab）。
+         iframe 加载本端代理 /sites（sitesproxy.go 转发市场服务器，自签证书由 Go 端
+         证书策略接管）——应用内打开，平台管理页整页在页内完成，本端不重复实现。 -->
+    <div id="sites-view" class="hidden">
+      <div class="mk-head">
+        <div class="mk-title">
+          <h2>企业小程序平台</h2>
+          <span id="sites-server" class="mk-server" title="平台服务器（设置 · 网络访问 可改）"></span>
         </div>
-        <iframe id="mk-sites-frame" class="mk-sites-frame" title="小程序平台"></iframe>
+        <div class="sites-actions">
+          <button id="sites-refresh" class="mk-icon-btn" title="重新加载平台页">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+          </button>
+          <button id="sites-open" class="mk-act ghost" title="在系统浏览器打开本端代理地址（无证书告警）">在浏览器中打开</button>
+        </div>
       </div>
+      <iframe id="sites-frame" class="sites-frame" title="企业小程序平台"></iframe>
+    </div>
     </div>
 
     <!-- 上传技能到市场弹层（app-market.js 的 mku* 系列；2026-10-30 凌晨 e2017df54e
