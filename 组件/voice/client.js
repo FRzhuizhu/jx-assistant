@@ -509,7 +509,10 @@
   let lastOpenSid = null; // 上次 session:open 的会话 id：同 id 的事件驱动翻新（refreshCurrent 重开同一会话）不是用户切换，不该停朗读——远程/多会话并行时 report_ready、done 等事件密集，曾把长文朗读在首块后就安静砍掉
 
   let playURL = null;    // blob URL（播完/停止即 revoke）
-  let playEl = null;     // <audio> 元素
+  let playEl = null;     // 长寿命 <audio> 元素：自动播放策略按元素解锁——首块在点击
+                         // 手势内播放过一次后，后续块换 src 续播不再需要新手势。曾每块
+                         // new Audio：手机浏览器第二块起 play() 被拒（NotAllowedError），
+                         // 表现为"只读第一句就停"。stopAudio 只停播不丢弃元素。
   let ttsAbort = null;   // 分段朗读在途请求的中止器（停止时连同预取一起砍）
   let ttsStopChain = null; // 分段播放链的停摆钩子（ttsPlay 内部赋值）
 
@@ -525,7 +528,9 @@
     if (playEl) {
       playEl.onended = playEl.onerror = null;
       playEl.pause();
-      playEl = null;
+      // 不丢弃元素：保住自动播放解锁态（见上 playEl 声明处注释），只卸掉源释放解码
+      playEl.removeAttribute('src');
+      try { playEl.load(); } catch (e) { /* 个别环境对无源 load 抛错，忽略 */ }
     }
     if (playURL) { URL.revokeObjectURL(playURL); playURL = null; }
   }
@@ -596,9 +601,10 @@
         blobs[i].then((blob) => {
           if (stopped || signal.aborted) return;
           playURL = URL.createObjectURL(blob);
-          playEl = new Audio(playURL);
+          if (!playEl) playEl = new Audio(); // 长寿命元素：只建一次，后续块换 src 续播
+          playEl.src = playURL;
           playEl.onended = () => {
-            URL.revokeObjectURL(playURL); playURL = null; playEl = null;
+            URL.revokeObjectURL(playURL); playURL = null;
             idx += 1;
             prefetch();
             playChunk();
@@ -1613,10 +1619,12 @@
         inp.addEventListener('input', () => { if (!inp.value) delete inp.dataset.jxVoice; });
       }
 
-      // 朗读：助手消息操作行的按钮 + 会话切换停止朗读（后端通道，免配置）。
-      // session:open 不再无条件停：后台事件（done/report_ready/session_updated…）
-      // 触发的 refreshCurrent 会以同一会话 id 重走 openSession，那不是用户切换；
-      // 只有会话 id 真变了才停。message:done（新回合结束，正文已更新）仍停。
+      // 朗读：助手消息操作行的按钮 + 用户真切走会话时停止朗读（后端通道，免配置）。
+      // 只按会话 id 变化停：后台事件（done/report_ready/session_updated…）触发的
+      // refreshCurrent 会以同一会话 id 重走 openSession，那不是用户切换。
+      // message:done（新回合结束）不停朗读——实测实锤的误砍源：正在朗读的会话
+      // 跑完汇报轮/收尾流时事件一到就把音频连同预取全砍（首块刚出声即停），
+      // 而朗读的是那条消息的完整正文快照，历史消息不可变，没有停的理由。
       msgAction = onMessageAction;
       JX.registerMessageAction(msgAction);
       const onOpen = (s) => {
@@ -1625,8 +1633,7 @@
         lastOpenSid = sid || null;
         stopSpeak();
       };
-      const onDone = () => stopSpeak();
-      busHooks.push({ ev: 'session:open', fn: onOpen }, { ev: 'message:done', fn: onDone });
+      busHooks.push({ ev: 'session:open', fn: onOpen });
       for (const h of busHooks) JX.on(h.ev, h.fn);
 
       // 快捷键引擎 + 输入框占位灰字的语音提示
