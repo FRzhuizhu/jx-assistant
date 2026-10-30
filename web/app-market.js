@@ -143,32 +143,17 @@ function renderUnconfigured() {
 }
 
 /* ---------- 小程序平台（网页托管平台）：独立主区页面（与市场视图平级） ----------
-   iframe 整页嵌入平台管理页：已发布小程序列表 / 数据文件下载 / 删除 / 二维码
-   都在页内完成，本端不重复实现。src 用相对路径 /sites——本端透明反向代理
-   （sitesproxy.go）转发到市场服务器：自签证书由 Go 端证书策略（tlspolicy.go）
-   接管，浏览器/WebView 自己的证书校验不再挡路；相对路径同时让桌面 WebView2、
-   局域网网页版、远程中继三种 origin 都天然跟随。视图常驻不销毁，来回切
-   （市场 ↔ 平台 ↔ 对话）不打扰已打开的页面；市场服务器不可达（清单 error）
-   不影响本页——只要地址配置了代理就能转。 */
+   不套壳：顶栏以下整页就是平台管理页（已发布小程序列表 / 上传发布 / 数据文件 /
+   二维码都在页内完成，平台页自带刷新，本端不重复实现）。src 用相对路径 /sites
+   ——本端透明反向代理（sitesproxy.go）转发到市场服务器：自签证书由 Go 端证书
+   策略（tlspolicy.go）接管，浏览器/WebView 自己的证书校验不再挡路；相对路径
+   同时让桌面 WebView2、局域网网页版、远程中继三种 origin 都天然跟随。视图
+   常驻不销毁，来回切（市场 ↔ 平台 ↔ 对话）不打扰已打开的页面。 */
 
-// sitesServerEcho 回显平台服务器名（与市场视图的 mk-server 同一数据源）；返回
-// 是否已有已配置的 mkData。
-function sitesServerEcho() {
-  const server = $('sites-server');
-  const ok = !!(mkData && mkData.configured);
-  if (server && ok) {
-    server.textContent = mkData.name || mkData.url || '已配置';
-    server.classList.remove('off');
-  }
-  return ok;
-}
-
-// renderSitesFrame：进小程序平台页时确保 iframe 已加载、服务器名回显；mkData
-// 还没拉到就静默拉一次（只为显示服务器名，不阻塞嵌入）。
+// renderSitesFrame：进小程序平台页时确保 iframe 已加载。
 function renderSitesFrame() {
   const frame = $('sites-frame');
   if (frame && (!frame.src || frame.src === 'about:blank')) frame.src = '/sites';
-  if (!sitesServerEcho() && !mkData) loadMarket(true, true).then(sitesServerEcho).catch(() => {});
 }
 
 function entriesOfTab(tab) {
@@ -645,43 +630,10 @@ async function openSitesPlatform() {
   openSites();
 }
 
-// bindSitesView 平台页工具条：刷新（about:blank 置换触发重载，跨域 iframe 不能
-// 用 contentWindow.reload）与「在浏览器中打开」——开的是本端代理地址
-// （location.origin + '/sites'），无证书告警，不必再直面服务端自签证书。
-let sitesBound = false;
-function bindSitesView() {
-  if (sitesBound) return;
-  const refresh = $('sites-refresh');
-  if (!refresh) return;
-  sitesBound = true;
-  refresh.onclick = () => {
-    const frame = $('sites-frame');
-    if (!frame) return;
-    frame.src = 'about:blank';
-    setTimeout(() => { frame.src = '/sites'; }, 0);
-  };
-  const open = $('sites-open');
-  if (open) open.onclick = async () => {
-    const url = location.origin + '/sites';
-    const remote = !!(window.__JX_REMOTE_MODE || window.JX_REMOTE);
-    if (remote) { // 远程（手机/异地）要在当前这台设备的浏览器里开
-      if (typeof jxOpenPage === 'function') jxOpenPage(url); else window.open(url, '_blank');
-      return;
-    }
-    try {
-      await api('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) });
-    } catch (e) {
-      if (typeof jxOpenPage === 'function') jxOpenPage(url);
-      else window.open(url, '_blank');
-    }
-  };
-}
-
 function bindSitesEntry() {
   const btn = $('btn-sites');
   if (!btn) return;
   btn.onclick = () => { openSitesPlatform(); };
-  bindSitesView();
 }
 document.addEventListener('DOMContentLoaded', bindSitesEntry);
 if (document.readyState !== 'loading') bindSitesEntry();

@@ -150,22 +150,11 @@
     </div>
 
     <!-- 小程序平台独立视图（app-market.js 的 sites* 系列）：与市场视图平级的主区
-         整页（2026-10-30 用户要求：独立入口、独立页面，不再做市场里的二级 tab）。
-         iframe 加载本端代理 /sites（sitesproxy.go 转发市场服务器，自签证书由 Go 端
-         证书策略接管）——应用内打开，平台管理页整页在页内完成，本端不重复实现。 -->
+         整页。不套任何壳（无标题/工具条/边框，2026-10-30 用户口径：进来直接就是
+         平台网页，别出现"框中框"）——iframe 铺满顶栏以下主区，加载本端代理 /sites
+         （sitesproxy.go 转发市场服务器，自签证书由 Go 端证书策略接管）；
+         平台页自带刷新/上传/站点管理，本端不重复实现。 -->
     <div id="sites-view" class="hidden">
-      <div class="mk-head">
-        <div class="mk-title">
-          <h2>企业小程序平台</h2>
-          <span id="sites-server" class="mk-server" title="平台服务器（设置 · 网络访问 可改）"></span>
-        </div>
-        <div class="sites-actions">
-          <button id="sites-refresh" class="mk-icon-btn" title="重新加载平台页">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-          </button>
-          <button id="sites-open" class="mk-act ghost" title="在系统浏览器打开本端代理地址（无证书告警）">在浏览器中打开</button>
-        </div>
-      </div>
       <iframe id="sites-frame" class="sites-frame" title="企业小程序平台"></iframe>
     </div>
     </div>
