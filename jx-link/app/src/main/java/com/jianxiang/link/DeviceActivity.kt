@@ -474,25 +474,29 @@ class DeviceActivity : Activity() {
          * 下来落盘，顺带给了手机端一个能打开/分享/删除的下载列表。
          */
         @android.webkit.JavascriptInterface
-        fun beginDownload(name: String?, mime: String?): String? =
-            DownloadStore.begin(this@DeviceActivity, name, mime)
+        fun beginDownload(name: String?, mime: String?): String? {
+            val id = DownloadStore.begin(this@DeviceActivity, name, mime)
+            // 提示在开始下载时就出（2026-10-30 用户口径：不等下载完）——完成的
+            // 信号交给紧随其后的自动打开；下载本身可在「下载管理」里看到。
+            if (id != null) {
+                runOnUiThread {
+                    android.widget.Toast.makeText(
+                        this@DeviceActivity,
+                        "正在下载到「下载管理」：${name ?: "文件"}",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+            return id
+        }
 
         @android.webkit.JavascriptInterface
         fun appendDownload(id: String?, base64: String?): Boolean =
             DownloadStore.append(id, base64)
 
         @android.webkit.JavascriptInterface
-        fun finishDownload(id: String?): Boolean {
-            val item = DownloadStore.finish(this@DeviceActivity, id) ?: return false
-            runOnUiThread {
-                android.widget.Toast.makeText(
-                    this@DeviceActivity,
-                    "已保存：${item.name}",
-                    android.widget.Toast.LENGTH_SHORT,
-                ).show()
-            }
-            return true
-        }
+        fun finishDownload(id: String?): Boolean =
+            DownloadStore.finish(this@DeviceActivity, id) != null
 
         @android.webkit.JavascriptInterface
         fun abortDownload(id: String?) = DownloadStore.abort(id)

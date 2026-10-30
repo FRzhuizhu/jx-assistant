@@ -3332,25 +3332,9 @@ func (a *App) handleDeliveryDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := path.Base(filepath.ToSlash(want))
-	// Content-Length 显式报准：本地/局域网浏览器的原生下载进度条与远程隧道
-	// head 帧透传的总大小（remoteaccess.go bridgeCore）都取自这里。
+	// Content-Length 显式报准：本地/局域网浏览器的原生下载进度条、以及远程
+	// 隧道 head 帧透传的总大小（remoteaccess.go bridgeCore）都取自这里。
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	// inline 模式（交付卡「打开」的打开优先路径）：浏览器原生可渲染的类型给
-	// 真实 MIME + Content-Disposition: inline——浏览器直接展示（PDF/图片/文本/
-	// 音视频），不落盘；渲染不了的类型（docx/xlsx/zip/exe…）落到下面 attachment，
-	// 浏览器原生行为就是自动降级为下载。html 不给 inline（同源 XSS：交付内容
-	// 是模型生成的，不能给它一把调用本源 API 的钥匙）；svg 可内嵌脚本，沙箱掉。
-	if r.URL.Query().Get("inline") == "1" {
-		if ct, ok := viewableMime(name); ok && !strings.HasPrefix(ct, "text/html") {
-			w.Header().Set("Content-Type", ct)
-			w.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+url.PathEscape(name))
-			if strings.HasPrefix(ct, "image/svg") {
-				w.Header().Set("Content-Security-Policy", "sandbox")
-			}
-			_, _ = w.Write(data)
-			return
-		}
-	}
 	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	_, _ = w.Write(data)

@@ -218,11 +218,11 @@ function fileMenuItems(view, sid, path, node) {
 function deliveryMenuItems(view, sid, path, node) {
   const d = { path }; // deliveryOpenFile/Reveal 只读 path
   // 远程端与交付卡按钮同一口径（isRemoteClientEnv/deliveryDownloadFile 见
-  // app-chat.js）：「打开」打开优先（能在线看的直接看，看不了的自动下载到
-  // 本机）——与桌面版同名同义；「在文件夹中查看」是本机的事，不出现。
+  // app-chat.js）：「打开」换「下载」（手机壳下载完自动调系统应用打开），
+  // 「在文件夹中查看」是本机的事，不出现。
   const remote = isRemoteClientEnv();
   const items = [
-    remote ? { label: '打开', fn: () => deliveryDownloadFile(sid, d) }
+    remote ? { label: '下载', fn: () => deliveryDownloadFile(sid, d) }
       : { label: '打开', fn: () => deliveryOpenFile(view, sid, d) },
   ];
   if (!remote) items.push({ label: '在文件夹中查看', fn: () => deliveryRevealFile(view, sid, d) });

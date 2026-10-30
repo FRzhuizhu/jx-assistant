@@ -2137,76 +2137,29 @@ function jxBase64Of(buf) {
   return btoa(s);
 }
 
-// 下载进度条（壳内下载/远程流式下载共用）：底部居中的小浮条，内联样式自包含
-// （本地/远程/壳同一份表现，不依赖 style.css）。update(done, total)——total=0
-// 表示总量未知（隧道没透传 Content-Length 时）只显示已下载量；done/fail 收尾后
-// 自动淡出移除。
-window.jxDlProgress = function (name) {
-  let el = document.getElementById('jx-dl-progress');
-  if (el) el.remove();
-  el = document.createElement('div');
-  el.id = 'jx-dl-progress';
-  el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:99999;' +
-    'width:min(92vw,420px);background:rgba(31,35,41,.94);color:#fff;border-radius:10px;' +
-    'padding:10px 14px;font-size:13px;line-height:1.5;box-shadow:0 4px 18px rgba(0,0,0,.25);' +
-    'font-family:system-ui,-apple-system,sans-serif;';
-  const nm = document.createElement('div');
-  nm.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  nm.textContent = name || '';
-  const barWrap = document.createElement('div');
-  barWrap.style.cssText = 'margin-top:6px;height:5px;border-radius:3px;background:rgba(255,255,255,.2);overflow:hidden;';
-  const bar = document.createElement('div');
-  bar.style.cssText = 'height:100%;width:0%;background:#4c8bf5;border-radius:3px;transition:width .15s;';
-  barWrap.appendChild(bar);
-  const txt = document.createElement('div');
-  txt.style.cssText = 'margin-top:4px;opacity:.85;font-size:12px;';
-  txt.textContent = '准备下载…';
-  el.appendChild(nm);
-  el.appendChild(barWrap);
-  el.appendChild(txt);
-  document.body.appendChild(el);
-  const fmt = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
-  let timer = 0;
-  const close = (delay) => { clearTimeout(timer); timer = setTimeout(() => el.remove(), delay); };
-  return {
-    update(done, total) {
-      txt.textContent = total ? fmt(done) + ' / ' + fmt(total) : fmt(done);
-      if (total) { barWrap.style.display = ''; bar.style.width = Math.min(100, Math.round(done * 100 / total)) + '%'; }
-      else barWrap.style.display = 'none'; // 总量未知：进度条没意义，只报已下载量
-    },
-    done(msg) { txt.textContent = msg || '完成'; barWrap.style.display = ''; bar.style.width = '100%'; close(2400); },
-    fail(msg) { txt.textContent = msg || '失败'; barWrap.style.display = 'none'; close(3600); },
-  };
-};
-
 // 把一个网址的内容存进手机壳的「下载管理」并打开。流式：响应块攒到 ~512KB
-// （base64 后约 680KB）再过一次 JS↔Java 桥，单次调用不卡主线程；边下边报进度
-// （总大小取响应头——远程隧道由 remote-boot 还原的 Content-Length）。下载完成
-// 后若壳有 openDownload 桥（20261030-1 起）立即调系统查看器打开——「下载并
-// 打开」是一条用户动作；旧壳没有该桥则只保存（壳自己 Toast「已保存」）。
+// （base64 后约 680KB）再过一次 JS↔Java 桥，单次调用不卡主线程，也免了整文件
+// blob 化的二次占内存。下载完成后若壳有 openDownload 桥（20261030-1 起）立即
+// 调系统查看器打开——「下载并打开」是一条用户动作；旧壳没有该桥则只保存。
+// 开始下载的提示由调用方（deliveryDownloadFile）出，不等下载完成。
 window.jxShellSaveURL = async function (url, name) {
   const br = jxShellBridge();
   if (!br) throw new Error('不是手机壳环境');
-  const ui = jxDlProgress(name || '下载文件');
   let id = '';
   try {
     const r = await fetch(url, { credentials: 'same-origin' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const total = parseInt(r.headers.get('content-length') || '0', 10) || 0;
     id = br.beginDownload(name || '下载文件', r.headers.get('content-type') || '') || '';
     if (!id) throw new Error('手机壳无法创建下载');
     const CHUNK = 512 * 1024;
     const push = (u8) => { if (!br.appendDownload(id, jxBase64Of(u8))) throw new Error('写入手机失败'); };
     if (!r.body || typeof r.body.getReader !== 'function') {
-      // 老引擎没有流：整块取再按块过桥（与历史行为等价，多了进度）
+      // 老引擎没有流：整块取再按块过桥（与历史行为等价）
       const u8 = new Uint8Array(await (await r.blob()).arrayBuffer());
-      for (let off = 0; off < u8.length; off += CHUNK) {
-        push(u8.subarray(off, off + CHUNK));
-        ui.update(Math.min(off + CHUNK, u8.length), u8.length);
-      }
+      for (let off = 0; off < u8.length; off += CHUNK) push(u8.subarray(off, off + CHUNK));
     } else {
       // 流式：隧道块本身 16KB 级，攒够 CHUNK 合并一次过桥（少一个数量级的桥调用）
-      let parts = [], accLen = 0, got = 0;
+      let parts = [], accLen = 0;
       const flush = () => {
         if (!parts.length) return;
         const merged = new Uint8Array(accLen);
@@ -2219,81 +2172,41 @@ window.jxShellSaveURL = async function (url, name) {
       for (;;) {
         const x = await reader.read();
         if (x.done) break;
-        parts.push(x.value); accLen += x.value.length; got += x.value.length;
-        ui.update(got, total);
+        parts.push(x.value); accLen += x.value.length;
         if (accLen >= CHUNK) flush();
       }
       flush();
     }
     if (!br.finishDownload(id)) throw new Error('保存失败');
-    const canOpen = typeof br.openDownload === 'function';
-    if (canOpen) { try { br.openDownload(id); } catch (e) { /* 打开失败不影响已保存的文件 */ } }
-    ui.done(canOpen ? '已保存，正在打开…' : '已保存到「下载管理」');
+    if (typeof br.openDownload === 'function') {
+      try { br.openDownload(id); } catch (e) { /* 打开失败不影响已保存的文件 */ }
+    }
   } catch (e) {
     if (id) { try { br.abortDownload(id); } catch (_) {} }
-    ui.fail('下载失败：' + ((e && e.message) || e));
     throw e;
   }
 };
 
-// 远程端交付卡的「打开」（2026-10-30 前叫「下载」）：打开优先、自动降级，与
-// 桌面版同名同感——浏览器原生行为本就是这套（inline 展示 / 渲染不了的类型
-// 自动下载）。md 一律走右栏渲染页（/api/md 自包含 HTML，当网页看，手机上是
-// 整屏浮层）。三条通路按「引擎够不够得着家端」分流：
-//   · 手机壳（jx-link）：WebView 渲染得了的（图片/文本类/音视频，PDF 除外——
-//     WebView 没有 PDF 能力）取回内容交壳内浏览器页当场看（jxOpenContent）；
-//     其余走壳下载管理（jxShellSaveURL：流式+进度条），下完自动调系统应用
-//     打开（20261030-1 起的 openDownload 桥，旧壳没有则只保存）。
-//   · 远程浏览器（JX_REMOTE，页面挂在网关源上、引擎够不到家端）：可看类型
-//     经隧道取回后用带真实 MIME 的 blob 新标签打开（等效 inline）；其余流式
-//     下载+页面内进度条，收尾交浏览器原生下载气泡落盘。
-//   · 局域网直开（同源）：可看类型直接 window.open 接口的 inline 模式（原生
-//     渲染、边流边看）；其余 a[href] attachment 原生下载（浏览器进度条）。
-const DL_VIEW_EXT = new Set(['pdf', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif',
-  'mp4', 'webm', 'mp3', 'wav', 'ogg', 'm4a',
-  'txt', 'md', 'markdown', 'mdown', 'mkd', 'json', 'xml', 'csv', 'js', 'css', 'log', 'yml', 'yaml', 'go', 'py']);
-// 手机壳 WebView 能自己渲染的：上表去掉 pdf。html 有意不在表里（两张表都
-// 不在）：交付内容是模型生成的，不能给它带同源脚本权的渲染机会（服务端
-// inline 模式同样拒 html）——html 交付在各环境都走下载后由系统程序打开。
-const DL_SHELL_VIEW_EXT = new Set([...DL_VIEW_EXT].filter((e) => e !== 'pdf'));
-
+// 远程端交付卡的「下载」：纯下载，打开/查看类需求由「右侧打开」承担（图片/
+// 网页/md 它本来就管）。三条通路按「引擎够不够得着家端」分流：
+//   · 手机壳（jx-link）：WebView 存不了 blob，走壳下载管理（jxShellSaveURL：
+//     流式分块过桥），每次下载完成后自动调系统应用打开（openDownload 桥，
+//     旧壳没有则只保存）——下载并打开是一条用户动作。开始下载就提示。
+//   · 远程浏览器（JX_REMOTE，页面挂在网关源上、引擎够不到家端）：经隧道流式
+//     取字节，收尾 blob 交浏览器原生下载气泡落盘（不弹保存框）。
+//   · 局域网直开（同源）：a[href] attachment 原生下载（浏览器自带进度条）。
 function deliveryDownloadFile(sid, d) {
-  const base = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
-  const url = base; // attachment：纯下载
-  const iurl = base + '&inline=1'; // inline：浏览器原生展示（服务端按扩展名给真实 MIME）
+  const url = '/api/sessions/' + encodeURIComponent(sid) + '/delivery/download?path=' + encodeURIComponent(d.path);
   const name = String(d.path).replace(/\\/g, '/').split('/').pop() || '交付文件';
-  const ext = fileExtOf(d.path);
-  // md：右栏渲染页（Markdown 当网页看），所有远程环境同一条路——手机上是
-  // 整屏浮层，桌面网页是右栏 iframe（远程经隧道取 HTML 写 srcdoc）
-  if (MD_PANEL_EXT.has(ext)) { openMDInPanel(sid, d.path); return; }
-  // 手机壳：当场看 / 下载并系统打开
   if (jxShellBridge()) {
-    if (DL_SHELL_VIEW_EXT.has(ext)) { jxOpenContent(iurl, name); return; }
+    // 壳自己会在 beginDownload 时 Toast「正在下载到下载管理」，完成后自动打开
     window.jxShellSaveURL(url, name).catch((e) => alert('下载失败：' + ((e && e.message) || e)));
     return;
   }
-  // 远程浏览器：blob 新标签看 / 流式下载+进度
   if (window.JX_REMOTE) {
-    if (DL_VIEW_EXT.has(ext)) {
-      // 点击手势里先占住新标签（异步取回后再 window.open 会被弹窗拦截挡掉）
-      const w = window.open('', '_blank');
-      if (w) {
-        fetch(iurl).then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
-          .then((b) => {
-            const u = URL.createObjectURL(b); // blob 的 MIME 取自响应：inline 接口给的是真实类型
-            w.location = u;
-            setTimeout(() => URL.revokeObjectURL(u), 60000);
-          })
-          .catch((e) => { try { w.close(); } catch (_) {} alert('打开失败：' + ((e && e.message) || e)); });
-        return;
-      }
-      // 新标签被拦（弹窗限制）：落下面的下载
-    }
-    window.JX_REMOTE.downloadURL(url, name).catch(() => { /* 失败已在进度条里报过 */ });
+    window.JX_REMOTE.downloadURL(url, name).catch(() => { /* 失败已由提示暴露 */ });
     return;
   }
-  // 局域网直开（同源）：inline 原生打开 / attachment 原生下载
-  if (DL_VIEW_EXT.has(ext)) { window.open(iurl, '_blank'); return; }
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -2345,9 +2258,9 @@ const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((ent
 // 交付成果卡片：deliver_result 登记的最终交付文件。本机每行三个动作（「打开」
 // 「右侧打开」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）
 // 都等同「打开」该文件，悬停有高亮反馈。远程端（手机壳/手机浏览器/别的电脑/
-// 公网远程接入，见 isRemoteClientEnv）主按钮同名「打开」（2026-10-30 前叫
-// 「下载」）：打开优先——能在线看的当场看（图片/文本/md 渲染页/PDF），看不了
-// 的自动下载到访问的这台设备（手机壳下载完还会自动调系统应用打开）。
+// 公网远程接入，见 isRemoteClientEnv）主按钮换成「下载」：文件落到访问的这台
+// 设备上才谈得上用，「打开」只会把本机那头的系统程序调起来，访问端看不见
+// （手机壳下载完成后会自动调系统应用打开——jx-link 20261030-1 起）。
 function deliveryCard(dvs, sid, view) {
   view = view || mainView;
   const card = document.createElement('div');
@@ -2377,18 +2290,17 @@ function deliveryCard(dvs, sid, view) {
     row.appendChild(main);
     const acts = document.createElement('span');
     acts.className = 'dc-acts';
-    // 一套代码按访问位置分流（isRemoteClientEnv）：本机与远程端主按钮都叫
-    // 「打开」——本机是系统默认程序/右栏面板；远程端是打开优先、自动降级
-    // （deliveryDownloadFile：能在线看的当场看，看不了的自动下载到这台设备，
-    // 手机壳下载完自动调系统应用打开）。「在文件夹中打开」是本机的事，远程
-    // 收起；「右侧打开」保留——远程右栏 iframe 照样能预览图片/网页/md。
+    // 一套代码按访问位置分流（isRemoteClientEnv）：本机主按钮「打开」（系统
+    // 默认程序/右栏面板）；远程端换「下载」并把「在文件夹中打开」收起（资源
+    // 管理器是本机的事）——下载落盘后手机壳会自动调系统应用打开（jx-link
+    // 20261030-1 起），查看类需求由「右侧打开」承担（图片/网页/md 它本来就管）。
     const remote = isRemoteClientEnv();
     const route = deliveryOpenRoute(view, d.path);
     const ov = document.createElement('button');
     ov.type = 'button';
     ov.className = 'dc-btn';
-    ov.textContent = '打开';
-    ov.title = remote ? '能在线看的直接打开看，看不了的自动下载到这台设备（手机上下载完自动用系统应用打开）'
+    ov.textContent = remote ? '下载' : '打开';
+    ov.title = remote ? '下载到这台设备（手机上下载完自动用系统应用打开）'
       : route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
       : '用系统默认程序打开这个文件';
     // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
@@ -2415,8 +2327,8 @@ function deliveryCard(dvs, sid, view) {
     acts.appendChild(pv);
     if (!remote) acts.appendChild(rv);
     row.appendChild(acts);
-    // 整行可点击（含行内空白）：与主按钮等效（本机=打开，远程=打开优先/降级下载）
-    row.title = d.path + (remote ? '\n点击打开这个文件（看不了的类型自动下载）' : '\n点击打开这个文件');
+    // 整行可点击（含行内空白）：与主按钮等效（本机=打开，远程=下载）
+    row.title = d.path + (remote ? '\n点击下载这个文件（手机上下载完自动打开）' : '\n点击打开这个文件');
     row.onclick = () => {
       if (remote) deliveryDownloadFile(sid, d);
       else deliveryOpenFile(view, sid, d);

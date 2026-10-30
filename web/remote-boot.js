@@ -698,34 +698,25 @@
         return Promise.reject(new Error('手机壳下载组件未就绪，请刷新页面重试'));
       }
       // 浏览器（电脑/手机 Chrome 等）：远程形态下引擎够不到家端 API（页面挂在
-      // 网关源上），原生直链下载做不到——经隧道**流式**取字节（Content-Length
-      // 已由 head.len 还原，总量读得到，页面内进度条靠它），取完交给浏览器原生
-      // 下载气泡落盘：不弹保存框、落默认下载目录，最接近原生下载的可行路径。
-      var ui = (typeof window.jxDlProgress === 'function') ? window.jxDlProgress(filename || path) : null;
+      // 网关源上），原生直链下载做不到——经隧道**流式**取字节（免整文件二次占
+      // 内存），取完交给浏览器原生下载气泡落盘：不弹保存框、落默认下载目录。
+      // 进度不做页内条：下载这件事交给浏览器自己的呈现。
       return window.fetch(path).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        var total = parseInt(r.headers.get('content-length') || '0', 10) || 0;
         if (!r.body || typeof r.body.getReader !== 'function') {
-          // 老引擎没有流：整块拿（与历史行为一致，只是多了进度收尾）
-          return r.blob().then(function (b) {
-            if (ui) ui.update(b.size, b.size);
-            return [b];
-          });
+          return r.blob().then(function (b) { return [b]; }); // 老引擎无流：整块拿
         }
         var reader = r.body.getReader();
-        var parts = [], got = 0;
+        var parts = [];
         function pump() {
           return reader.read().then(function (x) {
             if (x.done) return parts;
             parts.push(x.value);
-            got += x.value.length;
-            if (ui) ui.update(got, total);
             return pump();
           });
         }
         return pump();
       }).then(function (parts) {
-        if (ui) ui.done('已下载完成，浏览器正在保存');
         var b = (parts.length === 1 && parts[0] instanceof Blob)
           ? parts[0] : new Blob(parts);
         var a = document.createElement('a');
@@ -734,9 +725,6 @@
         document.body.appendChild(a);
         a.click();
         setTimeout(function () { a.remove(); URL.revokeObjectURL(a.href); }, 1000);
-      }).catch(function (e) {
-        if (ui) ui.fail('下载失败：' + ((e && e.message) || e));
-        throw e;
       });
     },
     openURL: function (path) {
