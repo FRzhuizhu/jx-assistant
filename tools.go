@@ -1368,14 +1368,12 @@ func runReadImage(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var note string
-	if t.app.resolveTarget(t.sess).SupportsImages {
-		note = "图片已就绪：原图已在上方工具卡片展示给用户；模型在处理本条工具结果的下一轮回复中将直接看到图片内容"
-	} else {
-		note = "图片已就绪：用户可在界面上直接查看（当前模型不支持视觉输入，你只能看到这份元信息；可结合 read / grep 读取同目录文本，或请用户描述图片内容）"
+	res := imageEnvelope(att, path)
+	if !t.app.resolveTarget(t.sess).SupportsImages {
+		res += "\n当前模型不支持图片，可使用OCR工具"
 	}
-	return fmt.Sprintf("%s\n%s\n来源文件：%s\n格式：%s，尺寸 %dx%d，%d 字节\n如需查看图片里的文字，可配合 OCR 能力（若已安装）处理。",
-		imageEnvelope(att, path), note, path, att.MediaType, att.Width, att.Height, att.Bytes), nil
+	return fmt.Sprintf("%s\n来源文件：%s\n格式：%s，尺寸 %dx%d，%d 字节",
+		res, path, att.MediaType, att.Width, att.Height, att.Bytes), nil
 }
 
 // ---------- progress_write：会话进度清单 ----------
