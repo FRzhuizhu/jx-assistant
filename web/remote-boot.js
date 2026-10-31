@@ -355,7 +355,9 @@
         return resp.text().catch(function () { return ''; }).then(function (t) {
           var msg = t;
           try { msg = JSON.parse(t).error || t; } catch (e) {}
-          throw new Error('中继错误 HTTP ' + resp.status + (msg ? '：' + msg : ''));
+          var err = new Error('中继错误 HTTP ' + resp.status + (msg ? '：' + msg : ''));
+          err.status = resp.status; // 挂上中继的 HTTP 状态码（与 api() 抛错的 err.status 同形）：429 由应用层兜底重试
+          throw err;
         });
       }
       // NDJSON 逐帧解密 → 流式 Response

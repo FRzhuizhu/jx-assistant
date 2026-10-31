@@ -166,10 +166,28 @@ const state = {
 };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
+  // 429 兜底重试：远程中继有「每 IP 并发挂起数」上限（jxaiserver relay.go，默认 8 路），
+  // 切换对话时主对话整包＋右栏子对话并发拉取，慢链路下额度被挤爆会 429「中继并发过多」
+  // （中继隧道层把它抛成带 status 的异常，见 remote-boot.js）。429 在中继转发前就被拒、
+  // 业务侧未收到请求，重发安全（POST 也不会重复执行）；等 2 秒让占额度的慢请求释放后
+  // 再试，最多自动重试 2 次，仍失败把最初错误抛给调用方——由既有错误 UI（如
+  // 「对话加载失败＋重试」按钮）走手动。其余异常（网络断开等）不在兜底范围，照抛
+  const send = () => fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
+  let res;
+  try {
+    res = await send();
+  } catch (e) {
+    if (!e || e.status !== 429) throw e;
+    for (let retry = 0; retry < 2 && !res; retry++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try { res = await send(); }
+      catch (e2) { if (!e2 || e2.status !== 429) throw e2; }
+    }
+    if (!res) throw e;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     // 错误体里的结构字段挂到 Error 上：文件回退的 409 带 blocked/unsafe
