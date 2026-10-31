@@ -12,7 +12,7 @@
 #              版本串默认取 python.exe -V，如 py3.14.8）
 #   -Skills    同时发内置技能块（只压白名单内置技能目录 pdf/ocr/office/
 #              downloader/apkinfo/web-search-local；用户技能 技能\user 永不入包）
-#   -RuntimeVersion 手工指定运行时版本串（缺省自动取）
+#   -RuntimeVersion 手工指定运行时块版本串（缺省=本次发布版本号，日期式）
 #
 # 产出：打包\静默更新\<版本>\ 目录——
 #   engine-<版本>.zip       主程序块（zip 内单个 exe，客户端换名落位）
@@ -89,13 +89,14 @@ if ($Runtime) {
   if (-not (Test-Path $rtDir)) { throw "运行时目录不存在：$rtDir" }
   $pyExe = Join-Path $rtDir "python\python.exe"
   if (-not (Test-Path $pyExe)) { throw "运行时里没有 python.exe：$pyExe" }
-  # 版本串以解释器自报为准（pythonVersion 常量改了、运行时没换时这里会暴露）
-  if (-not $RuntimeVersion) {
-    $v = (& $pyExe -V 2>&1) -replace '^Python\s+', ''
-    $v = $v.Trim()
-    if ($v -notmatch '^\d+\.\d+') { throw "读不出运行时版本：$v" }
-    $RuntimeVersion = "py" + $v
-  }
+  # ★ 块版本 = 本次发布版本号（日期式，如 20261101-1）。2026-11-01 起不再用
+  # "py3.14.8" 这种 Python 版本当块版本——运行时包里除了 Python 还有我们装的库
+  # （paramiko/PIL/comtypes…），装了库哈希就变，Python 版本号却不动，就会"同号不同
+  # 哈希"（10-20→10-31 事故）。复合串 + 文件名带版本（runtime-<版本>.zip），重打
+  # 运行时必然伴随新发布版本号，天然防同号。客户端按"标记相等才跳过"判断，与格式
+  # 无关；Python 本体版本仍以 skills.go 的 pythonVersion 常量为准（与此无关）。
+  $pyVer = ((& $pyExe -V 2>&1) -replace '^Python\s+', '').Trim()
+  if (-not $RuntimeVersion) { $RuntimeVersion = "py" + $pyVer + "-" + $Version }
   Write-Host "== 打包运行时块 $RuntimeVersion（$rtDir）"
   # 版本标记写进包内：客户端据此判断"已经是最新，不必重下几百兆"
   Set-Content -Path (Join-Path $rtDir ".version") -Value $RuntimeVersion -Encoding ASCII
