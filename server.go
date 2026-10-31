@@ -1963,7 +1963,9 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		_ = a.Store.SetSessionData(m.ID, titlePinKey, "")
 	}
 	if body.Title != nil {
-		title := truncateRunes(*body.Title, 40)
+		// 60 字：标题结构是「核心段（8-12 字）：完整描述」，描述几十字方便
+		// 搜索与悬停阅读（侧栏列表本身按宽度省略号截断显示，长标题不影响列表）。
+		title := truncateRunes(*body.Title, 60)
 		if body.AutoTitle != nil && *body.AutoTitle {
 			if a.titlePinned(m.ID) {
 				writeErr(w, 409, "标题已被用户手动命名（钉住），自动改名停用；可右键该会话选「恢复自动命名」")

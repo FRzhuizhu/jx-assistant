@@ -547,7 +547,7 @@ function sessionItem(s) {
   item.innerHTML =
     wsChip +
     `<span class="dot${dot}"></span>` +
-    `<span class="s-title">${esc(mainTitle)}</span>` +
+    `<span class="s-title" title="${esc(rawTitle)}">${esc(mainTitle)}</span>` +
     (isFork ? `<span class="s-fork" title="从「${esc(mainTitle)}」分支出">分支</span>` : '') +
     timeCell +
     `<span class="row-acts">` +
