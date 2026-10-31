@@ -1075,6 +1075,7 @@ async function saveSettings() {
   // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
   // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
   if (!(await saveProviderDrafts())) return;
+  // 压缩阈值留空/非法输入按 0 提交（0=不启用该路）；超出 0-100 的值钳到边界
   const clampPct = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0));
   const body = {
     compact: {

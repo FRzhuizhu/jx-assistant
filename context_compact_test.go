@@ -672,6 +672,41 @@ func TestConfigCompactDualThresholdMigration(t *testing.T) {
 	}
 }
 
+// 设置页两个压缩阈值「改不动、保存不生效」（2026-11-01 实测）：GET /api/config
+// 的返回体缺 compactRulePct/compactLlmPct/compactCooldown，前端回显永远落默认
+// 60/80/1，之后任意一次保存又把默认值写回——用户改的值活不过一次开关设置页。
+// 锁定：POST 保存（响应即 GET 同一视图）后三个键必须原样回传，且落盘重载不失真。
+func TestConfigAPICompactKeysRoundTrip(t *testing.T) {
+	a := newCompactTestApp(t)
+	a.CfgPath = filepath.Join(t.TempDir(), "config.json")
+	// 设置页保存体：阈值 90 / 留空视作 0（不启用）由前端 clampPct 完成，这里直发 0
+	body := strings.NewReader(`{"compact":{"mode":"llm","rulePct":90,"llmPct":0,"cooldown":3}}`)
+	w := httptest.NewRecorder()
+	a.handleSetConfig(w, httptest.NewRequest("POST", "/api/config", body))
+	if w.Code != 200 {
+		t.Fatalf("保存应成功, got %d %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if got["compactRulePct"] != float64(90) || got["compactLlmPct"] != float64(0) || got["compactCooldown"] != float64(3) {
+		t.Fatalf("压缩三键应原样回传, got rule=%v llm=%v cooldown=%v",
+			got["compactRulePct"], got["compactLlmPct"], got["compactCooldown"])
+	}
+	if got["compactMode"] != "llm" {
+		t.Fatalf("compactMode 应为 llm, got %v", got["compactMode"])
+	}
+	// 回显口径要活过重启：落盘文件重载后三个值原样
+	cfg2, err := LoadConfig(a.CfgPath)
+	if err != nil {
+		t.Fatalf("重载配置失败: %v", err)
+	}
+	if cfg2.CompactRulePct != 90 || cfg2.CompactLlmPct != 0 || cfg2.CompactCooldown != 3 {
+		t.Fatalf("落盘值应保持 90/0/3, got %d/%d/%d", cfg2.CompactRulePct, cfg2.CompactLlmPct, cfg2.CompactCooldown)
+	}
+}
+
 // 字数预算保留算法：从最新一条往前累计模型可见字数，预算耗尽处（命中点）所在
 // 的轮整轮保留——命中轮不超预算时保留区起点对齐到轮首；巨轮自身超预算时回退
 // 行级窗口，保最近一条原文（保留窗口不能为空）。
