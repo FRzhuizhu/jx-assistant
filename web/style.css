@@ -763,7 +763,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 
 /* 交付成果卡片：deliver_result 登记的最终交付文件。
    每行动作按访问位置自适应（app-chat.js 的 isRemoteClientEnv）：本机「打开 /
-   右侧打开 / 在文件夹中打开」，整行可点击并打开文件；远程端（手机壳/别的电脑/
+   右侧查看 / 在文件夹中打开」，整行可点击并打开文件；远程端（手机壳/别的电脑/
    公网远程）主按钮是「下载」，「在文件夹中打开」不出现。悬停高亮。字号同样 em
    继承 --chat-fs。 */
 .delivery-card {
@@ -774,7 +774,7 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 .dc-head svg { width: 15px; height: 15px; color: var(--accent); flex: none; }
 .dc-title { font-weight: 600; font-size: .93em; }
 .dc-count { font-size: .93em; color: var(--text-3); }
-/* 行内动作按钮（本机：打开 / 右侧打开 / 在文件夹中打开；远程：下载 / 右侧打开）：
+/* 行内动作按钮（本机：打开 / 右侧查看 / 在文件夹中打开；远程：下载 / 右侧查看）：
    整行也可点，按钮各自独立。
    文件名区与按钮区**地位对等**：两块的宽（文件名区最小宽 = 按钮区实际宽）
    加起来还塞不进行内可用宽时，就折成上下两行——上面「文件名 + 灰色说明」，

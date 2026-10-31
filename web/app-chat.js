@@ -2045,15 +2045,15 @@ function fmtBytes(n) {
 //   * 其余（代码/图片/PDF/Word/Excel/压缩包/exe 等）→ 系统默认程序，双击文件
 //     是什么程序这里就是什么程序（远程会话没有本机路径，后端给直白报错）。
 //     **md 也在这条老路上**：系统关联的 MD 查看器（md-viewer/MD查看器.exe）以
-//     独立窗口打开——「打开」= 交系统程序，与「右侧打开」是两件事，别合并。
+//     独立窗口打开——「打开」= 交系统程序，与「右侧查看」是两件事，别合并。
 // 「在文件夹中查看」= 资源管理器里定位并选中该文件（远程不可用，给直白提示）。
 
-// Markdown：只有**显式**的「右侧打开」/「预览（右栏）」才进右栏渲染页（后端
+// Markdown：只有**显式**的「右侧查看」/「预览（右栏）」才进右栏渲染页（后端
 // mdview.go 复用 MD 查看器的渲染网页）。默认「打开」不认它——那是系统应用的事。
 const MD_PANEL_EXT = new Set(['md', 'markdown', 'mdown', 'mkd']);
 // 走右栏「浏览器」的后缀：真网页（原生面板/新标签里的完整浏览体验）。
 // 别把 md 加进来：加进来「打开」就又变成进右栏了（md 的右栏入口在
-// openInPanelBrowser 里显式写着，只服务「右侧打开」）。
+// openInPanelBrowser 里显式写着，只服务「右侧查看」）。
 const BROWSER_PANEL_EXT = new Set(['html', 'htm']);
 
 function fileExtOf(p) {
@@ -2077,7 +2077,7 @@ function mdPanelURL(sid, path) {
   return '/api/md/' + encodeURIComponent(sid) + '/' + segs.map(encodeURIComponent).join('/');
 }
 
-/* Markdown 在右栏渲染打开——只给**显式**的右栏入口（「右侧打开」/右键「预览
+/* Markdown 在右栏渲染打开——只给**显式**的右栏入口（「右侧查看」/右键「预览
    （右栏）」）用，默认「打开」不经这里。桌面/Electron 走原生面板（与 html
    预览同一条 navigate 通道，面板里跑的就是那张渲染页）；手机与网页形态走右栏
    iframe（bpwShowFrame，见 app-right.js）——抽屉里铺满可用宽，窄屏单列可读。 */
@@ -2189,7 +2189,7 @@ window.jxShellSaveURL = async function (url, name) {
   }
 };
 
-// 远程端交付卡的「下载」：纯下载，打开/查看类需求由「右侧打开」承担（图片/
+// 远程端交付卡的「下载」：纯下载，打开/查看类需求由「右侧查看」承担（图片/
 // 网页/md 它本来就管）。三条通路按「引擎够不够得着家端」分流：
 //   · 手机壳（jx-link）：WebView 存不了 blob，走壳下载管理（jxShellSaveURL：
 //     流式分块过桥），每次下载完成后自动调系统应用打开（openDownload 桥，
@@ -2258,7 +2258,7 @@ const dcStackRO = typeof ResizeObserver === 'function' ? new ResizeObserver((ent
 }) : null;
 
 // 交付成果卡片：deliver_result 登记的最终交付文件。本机每行三个动作（「打开」
-// 「右侧打开」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）
+// 「右侧查看」「在文件夹中打开」），整行都是点击热区——点行内任何位置（含空白）
 // 都等同「打开」该文件，悬停有高亮反馈。远程端（手机壳/手机浏览器/别的电脑/
 // 公网远程接入，见 isRemoteClientEnv）主按钮换成「下载」：文件落到访问的这台
 // 设备上才谈得上用，「打开」只会把本机那头的系统程序调起来，访问端看不见
@@ -2295,7 +2295,7 @@ function deliveryCard(dvs, sid, view) {
     // 一套代码按访问位置分流（isRemoteClientEnv）：本机主按钮「打开」（系统
     // 默认程序/右栏面板）；远程端换「下载」并把「在文件夹中打开」收起（资源
     // 管理器是本机的事）——下载落盘后手机壳会自动调系统应用打开（jx-link
-    // 20261030-1 起），查看类需求由「右侧打开」承担（图片/网页/md 它本来就管）。
+    // 20261030-1 起），查看类需求由「右侧查看」承担（图片/网页/md 它本来就管）。
     const remote = isRemoteClientEnv();
     const route = deliveryOpenRoute(view, d.path);
     const ov = document.createElement('button');
@@ -2305,13 +2305,13 @@ function deliveryCard(dvs, sid, view) {
     ov.title = remote ? '下载到这台设备（手机上下载完自动用系统应用打开）'
       : route === 'panel' ? '在右侧「浏览器」面板中打开这个网页文件'
       : '用系统默认程序打开这个文件';
-    // 在右侧打开：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
+    // 在右侧查看：显式入口（与右键菜单「预览（右栏）」同一逻辑）——图片、
     // 音视频、svg 这些浏览器能渲染的交付物，点它就在右栏看；md 也一样进右栏
     // 渲染页。默认「打开」只把 html 交右栏，其余（含 md）一律系统应用。
     const pv = document.createElement('button');
     pv.type = 'button';
     pv.className = 'dc-btn';
-    pv.textContent = '右侧打开';
+    pv.textContent = '右侧查看';
     pv.title = '在右侧「浏览器」面板中打开（网页/图片/音视频可直接渲染）';
     const rv = document.createElement('button');
     rv.type = 'button';
@@ -2398,7 +2398,7 @@ function jxOpenContent(url, path) {
  * 目标（用户开了「操作浏览器」能力后，模型的 browser_screenshot/browser_content
  * 看到的就是这页）并注入【网页查看】回报，模型由此知道用户在看什么。
  * 网页模式没有原生面板：手机壳里开在壳内浏览器页（见下面 jxOpenPage），
- * 纯浏览器里仍是新标签页。这是**显式**的右栏入口（「右侧打开」/「预览（右栏）」/
+ * 纯浏览器里仍是新标签页。这是**显式**的右栏入口（「右侧查看」/「预览（右栏）」/
  * 聊天链接）；传 md 时进右栏渲染页（openMDInPanel），默认「打开」不走这里——
  * md 的「打开」是系统程序（MD 查看器独立窗口）。 */
 async function openInPanelBrowser(body) {

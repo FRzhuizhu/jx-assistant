@@ -1322,7 +1322,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   什么由它自己决定（http/https/file:/// 照常，edge://version 这类内部页在
   chromedp 形态可真实打开、edge://settings 等 WebUI 禁调试只能看不能读写、
   WebView2 面板开不了 edge:// 是微软对控件的限制），未知 scheme 由浏览器层
-  自然报错。交付卡有「在右侧打开」显式按钮（任意文件进右栏），工具栏在
+  自然报错。交付卡有「右侧查看」显式按钮（任意文件进右栏），工具栏在
   file:// 页面提供「用系统应用打开 / 在文件夹中定位」配套；远程会话流式
   预览（/api/browser/view）按扩展名给真实 Content-Type。
   **站点权限预授权**：`browser_open` 的 `grants` 参数（每项
@@ -1350,7 +1350,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   会主动说，模型用 `panel_screenshot` 截右栏（见下）。本地 html 交付文件转
   `file://`（同目录相对资源可用），SSH 远程会话经 `/api/browser/view` 流式
   渲染（相对资源不加载）。**Markdown 的右栏渲染只在显式入口**：交付卡
-  「右侧打开」、右键「预览（右栏）」传 md 时进右栏渲染页（`/api/md/{sid}/{path...}`，
+  「右侧查看」、右键「预览（右栏）」传 md 时进右栏渲染页（`/api/md/{sid}/{path...}`，
   见上条）；默认「打开」仍是系统程序——md 交给系统关联的自带 MD 查看器
   （`md-viewer/MD查看器.exe`，独立窗口），不进右栏。两者是两个动作，别合并。
 - **文件查看 = 系统默认应用**：右栏「文件」查看页（`fileview.go`，当年原生
@@ -1361,7 +1361,7 @@ embeddable，约 11MB + 清华镜像装 wheel），此后离线可用；装配�
   `/delivery/open`；用户手势直通——工作区内外都不校验、无确认弹窗，这些
   路由不在 call_api 目录里 AI 调不到，SSH 远程工作区无本机路径给直白报错）。
 - **右栏 md 渲染页**（`mdview.go`，`GET /api/md/{sid}/{path...}`）：**显式右栏
-  入口**（「右侧打开」/右键「预览（右栏）」）里的 md 在右栏渲染打开，用的就是
+  入口**（「右侧查看」/右键「预览（右栏）」）里的 md 在右栏渲染打开，用的就是
   自带 MD 查看器那套网页（`md-viewer/viewer-template.html`
   经 `go:embed` 进 exe，占位符 `__TITLE__/__B64__/__META__/__KEEP_RUNNING__`
   灌数据；不另写渲染器）。地址用**路径形态**而非查询参数：md 里的相对图片/
