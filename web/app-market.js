@@ -633,7 +633,11 @@ async function openSitesPlatform() {
 function bindSitesEntry() {
   const btn = $('btn-sites');
   if (!btn) return;
-  btn.onclick = () => { openSitesPlatform(); };
+  // 与企业技能包同款 toggle：开着再点关闭，关着点开
+  btn.onclick = () => {
+    if (sitesViewOpen()) { closeSites(); return; }
+    openSitesPlatform();
+  };
 }
 document.addEventListener('DOMContentLoaded', bindSitesEntry);
 if (document.readyState !== 'loading') bindSitesEntry();

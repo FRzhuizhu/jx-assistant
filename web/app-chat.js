@@ -92,6 +92,7 @@ async function openAssistant() {
 function goHomeNewTask() {
   narrowClosePanels(); // 窄屏：从左栏浮层发起，选中目标即收起浮层
   if (marketOpen()) closeMarket(); // 新工作任务也是一张「对话页」：回首页即关掉市场页
+  if (sitesViewOpen()) closeSites(); // 小程序平台同款：回首页即关（app-market.js）
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   if (state.cur) rpSnapshot(state.cur.id); // 回首页前记住这个对话的右栏状态（resetEmpty 会收起右栏）
   flushMainDraft(); // cur 置空前把防抖窗口内的输入落进旧会话草稿（resetEmpty 会整体替换输入框）
@@ -113,6 +114,7 @@ function goHomeNewTask() {
 async function openSession(id) {
   narrowClosePanels(); // 窄屏：在左栏浮层里选中会话即收起浮层
   if (marketOpen()) closeMarket(); // 市场像一张对话页：打开任何对话即关掉它（app-market.js）
+  if (sitesViewOpen()) closeSites(); // 小程序平台同款：打开任何对话即关（app-market.js）
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
