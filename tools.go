@@ -1368,9 +1368,9 @@ func runReadImage(t *toolContext, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	note := "图片已就绪：用户可在界面上直接查看"
+	var note string
 	if t.app.resolveTarget(t.sess).SupportsImages {
-		note = "图片已就绪：你将在下一条消息中直接看到它的内容"
+		note = "图片已就绪：原图已在上方工具卡片展示给用户；模型在处理本条工具结果的下一轮回复中将直接看到图片内容"
 	} else {
 		note = "图片已就绪：用户可在界面上直接查看（当前模型不支持视觉输入，你只能看到这份元信息；可结合 read / grep 读取同目录文本，或请用户描述图片内容）"
 	}
