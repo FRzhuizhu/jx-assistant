@@ -4501,12 +4501,13 @@ function drawProgress() {
     for (const r of runs) {
       const live = r.state === 'running';
       const cmd = String(r.command || '');
-      // 停止按钮裹在时长格里、悬浮盖住「已跑 XXs」（见 .pg-run-stop 的 absolute
-      // 铺满时长区）：横向不占位——不悬停时只有蓝字，悬停该行按钮浮现盖在它上面
+      // 停止＝两个红字（无框无背景）：锚在时长格右缘、行尾固定位置，悬停该行才
+      // 现身，时长文字（.pg-run-elapsed）同时让位隐藏；按钮绝不向外扩，不会把
+      // 列表的横向滚动条顶出来（见 .pg-run-stop 的 right:0 定位）
       html += '<li class="pg-run' + (live ? ' live' : '') + '">'
         + '<span class="pg-run-label">' + esc(r.label || '子进程') + '</span>'
         + '<span class="pg-run-cmd" title="' + esc(cmd) + '">' + esc(cmd.length > 70 ? cmd.slice(0, 70) + '…' : cmd) + '</span>'
-        + '<span class="pg-run-time">' + (live ? '已跑 ' + fmtElapsed(r.elapsed) : esc(r.exit || '已结束'))
+        + '<span class="pg-run-time"><span class="pg-run-elapsed">' + (live ? '已跑 ' + fmtElapsed(r.elapsed) : esc(r.exit || '已结束')) + '</span>'
         + (live ? '<button type="button" class="pg-run-stop" data-id="' + esc(r.id) + '" title="停止这个程序（会通知 AI：这是用户停止的，不是出错）">停止</button>' : '')
         + '</span>'
         + '</li>';

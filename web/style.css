@@ -2726,7 +2726,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .pg-sep { height: 1px; margin: 8px 0 6px; background: var(--border); }
 .pg-runs-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text-2); font-size: .93em; }
 .pg-runs-head .pg-runs-n { margin-left: auto; color: var(--text-3); font-size: 1em; } /* 父级已是 -1 档，这里继承不叠加 */
-#progress-panel ul.pg-runs { max-height: min(26vh, 160px); }
+/* 「运行中的程序」通常就几行：不限高内滚——面板本身是浮层，内部小滚动条反而不美 */
 #progress-panel .pg-run { display: flex; align-items: baseline; gap: 6px; line-height: 1.5; color: var(--text-2); }
 .pg-run .pg-run-label {
   flex: none; padding: 0 5px; border-radius: 5px; font-size: .93em;
@@ -2737,18 +2737,25 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: .93em; color: var(--text-3);
 }
 .pg-run .pg-run-time { position: relative; flex: none; color: var(--text-3); font-size: .93em; }
-/* 停止按钮悬浮盖在时长格子正上方：absolute 铺满时长区（略外扩当点击区）、悬停
-   该行才现身——横向不占位（不出现时蓝字独占，出现时盖住它），行宽不为按钮留位 */
+/* 停止＝两个红字：无框无背景，锚在时长格右缘（right:0，只往左留点击余量）——
+   绝不向外扩，外扩会把列表的横向滚动条顶出来；宽高只有「停止」两字，不随时长
+   文字长短变。悬停该行才现身，时长文字（.pg-run-elapsed）同时让位隐藏：
+   visibility 保留占位，行宽不跳动 */
 .pg-run .pg-run-stop {
-  position: absolute; inset: -3px -4px; display: flex; align-items: center; justify-content: center;
-  border: 1px solid #e9578f; border-radius: 5px;
-  background: var(--bg); color: #e9578f; font-size: .86em; cursor: pointer;
-  opacity: 0; transition: opacity .12s ease;
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  padding: 0 0 0 8px; border: none; background: none;
+  color: #e5484d; font-size: .93em; font-weight: 600; letter-spacing: .5px; cursor: pointer;
+  opacity: 0; pointer-events: none; transition: opacity .12s ease, color .12s ease;
 }
-.pg-run:hover .pg-run-stop { opacity: 1; }
-.pg-run .pg-run-stop:hover { background: #e9578f; color: #fff; }
+.pg-run:hover .pg-run-stop { opacity: 1; pointer-events: auto; }
+.pg-run .pg-run-stop:hover { color: #c83840; }
 .pg-run:hover .pg-run-stop:disabled { opacity: .5; cursor: default; }
-@media (hover: none) { .pg-run .pg-run-stop { opacity: 1; } } /* 触屏没有悬停：常显（触屏版面本就少见） */
+/* 只有在跑的行才有停止按钮：仅这些行的时长文字悬停时让位（已结束的行不藏字） */
+.pg-run.live:hover .pg-run-elapsed { visibility: hidden; }
+@media (hover: none) { /* 触屏没有悬停：按钮常显、时长文字让位（触屏版面本就少见） */
+  .pg-run.live .pg-run-stop { opacity: 1; pointer-events: auto; }
+  .pg-run.live .pg-run-elapsed { visibility: hidden; }
+}
 .pg-run.live .pg-run-time { color: var(--accent); }
 .pg-run-dot {
   display: inline-block; width: 6px; height: 6px; margin-right: 4px;
