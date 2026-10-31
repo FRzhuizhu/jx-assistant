@@ -1,5 +1,0 @@
-/* 组件 session-title 的设置区样式（设置 → 内置组件 → AI 自动会话标题）。
- * 设置区只剩一句说明（stt-note）；动作入口「恢复自动命名」在会话右键菜单。 */
-
-.stt-note { font-size: 12px; color: var(--text-3); margin: 6px 0; line-height: 1.7; }
-.stt-note:first-child { margin-top: 2px; }

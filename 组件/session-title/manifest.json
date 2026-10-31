@@ -1,12 +1,8 @@
 {
   "id": "session-title",
   "name": "AI 自动会话标题",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "对话进行中由 AI 自动生成/修订会话标题：第 1 轮结束命名，之后每满 3 轮修订一次（插话不计轮次）；独立单轮调模型、不进对话上下文。手动改过标题的会话自动停改，右键该会话可恢复。后端 worker 随组件自包含，关闭组件即停。",
-  "client": {
-    "js": "client.js",
-    "css": "client.css"
-  },
   "workers": [
     {
       "name": "title",
