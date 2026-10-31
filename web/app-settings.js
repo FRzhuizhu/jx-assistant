@@ -1448,7 +1448,7 @@ async function refreshUpdateBox() {
   if (u.lastError) text += '　·　<span style="color:var(--danger)">' + esc(u.lastError) + '</span>';
   el.innerHTML = text;
   dl.disabled = !u.downloadUrl;
-  dl.title = u.downloadUrl ? '下载完整安装包（浏览器下载，双击安装覆盖升级）' : '发布源没有可下载的安装包';
+  dl.title = u.downloadUrl ? '后台下载完整安装包，完成后自动运行安装' : '发布源没有可下载的安装包';
 }
 $('btn-update-check').onclick = async () => {
   const btn = $('btn-update-check');

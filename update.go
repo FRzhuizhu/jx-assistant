@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -216,6 +218,9 @@ func (a *App) checkUpdateOnce(url string) {
 	// 顺带检查企业技能包更新（market.go）：发布源检查与技能包更新互不依赖，
 	// 异步跑——发布源不可达时技能包更新照常进行，反之亦然
 	go a.autoUpdateMarketSkills()
+	// 检查更新即清理：旧的整包安装包在这时删掉（启动 30s 首查 + 每小时轮询
+	// 天然就是清理时机，见 handleUpdateInstaller 的说明）。下载进行中跳过。
+	go cleanupInstallerCache(installerCacheDir(a))
 	client := newCompanyHTTPClient(20 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
@@ -319,4 +324,117 @@ func markNotifiedVersion(a *App, v string) {
 	raw, _ := json.Marshal(map[string]string{"notified": v, "at": time.Now().Format(time.RFC3339)})
 	_ = os.MkdirAll(a.Cfg.DataDir, 0755)
 	_ = os.WriteFile(notifiedVersionPath(a), raw, 0644)
+}
+
+/* ---------- 整包安装包：静默下载 + 运行 + 检查更新时清理 ---------- */
+
+// 整包路（横幅「确认更新」/设置页按钮）的工作方式：后端静默下载发布附件到
+// data/update-cache/，完成后直接运行安装包——用户不接触浏览器与下载目录，
+// 全程只有横幅行内提示（update_installer 事件），失败绝不弹窗换页。旧安装包
+// 不设保留期：checkUpdateOnce 每轮（启动 30s 首查 + 每小时）清理整个目录，
+// 正在运行中的安装器文件被系统占用删不掉，跳过即可。
+var installerBusy atomic.Bool
+
+// installerCacheDir 整包安装包的落盘目录。
+func installerCacheDir(a *App) string { return filepath.Join(a.Cfg.DataDir, "update-cache") }
+
+// cleanupInstallerCache 删除整包安装包缓存（下载进行中整体跳过；单个文件
+// 删除失败——如安装器正被运行——静默跳过，下一轮再删）。
+func cleanupInstallerCache(dir string) {
+	if installerBusy.Load() {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// handleUpdateInstaller POST /api/update/installer：静默下载当前版本的完整
+// 安装包并运行。响应只是「已开始」，进度与结果经 update_installer 事件到达
+// （data: {stage: downloading|launched|error, text}）。
+func (a *App) handleUpdateInstaller(w http.ResponseWriter, r *http.Request) {
+	updateMu.Lock()
+	dl := updateState.DownloadURL
+	updateMu.Unlock()
+	if dl == "" {
+		writeErr(w, http.StatusBadRequest, "发布源没有可下载的安装包")
+		return
+	}
+	if !installerBusy.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "busy": true})
+		return
+	}
+	go func() {
+		defer installerBusy.Store(false)
+		if err := a.downloadAndRunInstaller(dl); err != nil {
+			log.Printf("[更新] 安装包下载失败: %v", err)
+			a.broadcast(Event{Type: "update_installer", Data: map[string]any{"stage": "error", "text": err.Error()}})
+		}
+	}()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// downloadAndRunInstaller 下载发布附件到缓存目录（.part 落盘后改名，防半截
+// 文件被运行）并交给系统默认程序运行（安装包 exe 即安装器接管）。
+func (a *App) downloadAndRunInstaller(dl string) error {
+	dir := installerCacheDir(a)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	name := installerFileName(dl)
+	a.broadcast(Event{Type: "update_installer", Data: map[string]any{"stage": "downloading"}})
+	client := newCompanyHTTPClient(15 * time.Minute)
+	resp, err := client.Get(dl)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("发布源返回 HTTP %d", resp.StatusCode)
+	}
+	part := filepath.Join(dir, name+".part")
+	f, err := os.Create(part)
+	if err != nil {
+		return err
+	}
+	size, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		_ = os.Remove(part)
+		return copyErr
+	}
+	final := filepath.Join(dir, name)
+	if err := os.Rename(part, final); err != nil {
+		return err
+	}
+	log.Printf("[更新] 安装包已就绪（%s，%.1f MB），启动安装程序", final, float64(size)/1048576)
+	if err := openPathWithDefaultApp(final); err != nil {
+		return fmt.Errorf("安装包已下载但启动失败: %w", err)
+	}
+	a.broadcast(Event{Type: "update_installer", Data: map[string]any{"stage": "launched", "text": final}})
+	return nil
+}
+
+// installerFileName 从发布附件直链取文件名（URL 解码；Gitea 附件路径含中文
+// 文件名的百分号编码）。取不到退回固定名。
+func installerFileName(dl string) string {
+	if u, err := url.Parse(dl); err == nil {
+		if i := strings.LastIndexByte(u.Path, '/'); i >= 0 && len(u.Path) > i+1 {
+			n := u.Path[i+1:]
+			if dec, err := url.PathUnescape(n); err == nil {
+				return dec
+			}
+			return n
+		}
+	}
+	return "installer-package.exe"
 }

@@ -395,6 +395,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	// engine 交换后的立即重启（PowerShell 助手接力）；同样挂 /api/ 下远程中继天然覆盖
 	mux.HandleFunc("POST /api/update/check", a.handleUpdateCheck)
 	mux.HandleFunc("POST /api/update/restart", a.handleUpdateRestart)
+	mux.HandleFunc("POST /api/update/installer", a.handleUpdateInstaller)
 	mux.HandleFunc("GET /api/market/publish-meta", a.handleMarketPublishMeta) // 已装技能的发布元信息推导（弹层预填）
 	mux.HandleFunc("POST /api/market/publish", a.handleMarketPublish)         // 发布已装技能到市场服务器：先装后传（market_publish.go）
 	mux.HandleFunc("POST /api/market/unpublish", a.handleMarketUnpublish)     // 下架自己发布的市场条目（归属校验在服务端）

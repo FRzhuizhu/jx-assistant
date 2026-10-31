@@ -191,27 +191,15 @@ function esc(s) {
   ));
 }
 
-/* ---------- 安装包下载：绝不顶着当前页面导航 ----------
- * 下载直链（如发布附件 https://example.com:PORT/...exe）是跨源地址，<a download>
- * 的 download 属性对跨源无效——浏览器把它当顶层导航处理；桌面壳 WebView 里这
- * 会把整个主界面导航走（2026-10-31 客户故障：官网不可达时主窗口变成 Edge 错
- * 误页铺满）。桌面形态走后端 /api/open-url（系统默认浏览器下载，成败都在浏览
- * 器里，与本应用无关）；其余形态开新标签承载（_blank），当前页面永不换址。 */
+/* ---------- 安装包下载：后端静默下载 + 自动运行，界面零打扰 ----------
+ * 「确认更新 / 下载完整安装包」统一走 POST /api/update/installer：后端把发布
+ * 附件下载到 data/update-cache/，完成后自动运行安装包；旧安装包在每轮检查
+ * 更新时清理。全程只有横幅行内提示（update_installer 事件），不弹窗、不开
+ * 浏览器、不换页——旧实现（a[download].click() 顶层导航）在官网不可达时会把
+ * 整个主界面变成 Edge 错误页（2026-10-31 客户故障，桌面壳另有导航守卫兜底）。 */
 function jxDownload(u) {
-  const url = String(u || '').trim();
-  if (!url) return;
-  if (document.documentElement.classList.contains('desktop-shell')) {
-    api('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) })
-      .catch((e) => { alert('打开浏览器下载失败：' + e.message); });
-    return;
-  }
-  const a = document.createElement('a');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  api('/api/update/installer', { method: 'POST', body: JSON.stringify({ url: String(u || '').trim() }) })
+    .catch((e) => { toast('启动下载失败：' + e.message); });
 }
 
 /* ---------- 右键菜单的「朗读」取值（发音归语音组件，这里只管念什么） ----------

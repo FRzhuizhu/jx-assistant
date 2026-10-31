@@ -3147,6 +3147,29 @@ function handleGlobalEvent(ev) {
         if (st.update) showUpdateBanner(st.update);
       }).catch(() => {});
       break;
+    case 'update_installer': {
+      // 整包静默下载的进度/结果（stage: downloading|launched|error）：
+      // 更新横幅就地显示——不弹窗、不开新页，失败也只是横幅一行红字
+      const d = ev.data || {};
+      const bar = document.getElementById('update-banner');
+      if (!bar) break;
+      const text = bar.querySelector('.ub-text');
+      if (!text) break;
+      if (d.stage === 'launched') {
+        text.innerHTML = '安装包已下载完成，安装程序已启动——按安装向导完成升级即可';
+        const acts = bar.querySelector('.ub-actions');
+        if (acts) acts.innerHTML = '';
+      } else if (d.stage === 'downloading') {
+        text.innerHTML = '正在后台下载新版本安装包，下载完成后将自动运行安装…';
+      } else {
+        text.innerHTML = '安装包下载失败：<span style="color:var(--danger)">' + esc(d.text || '未知原因') + '</span>' +
+          '　<button class="ub-confirm" type="button" style="margin-left:8px">重试</button>';
+        const acts = bar.querySelector('.ub-actions');
+        if (acts) acts.innerHTML = '';
+      }
+      bar.classList.remove('hidden');
+      break;
+    }
     case 'company_resync': {
       // 新版一次性重新接入的结果（sync.go companyResyncOnce）：
       //   needWizard → 连不上公司服务端，弹带原有配置的向导让用户点一下；
@@ -5058,14 +5081,18 @@ $('update-banner').addEventListener('click', (e) => {
     return;
   }
   if (e.target.closest('.ub-confirm')) {
-    // 确认更新：下载安装包交给 jxDownload（系统浏览器/新标签，主界面不动）
+    // 确认更新：后端静默下载安装包并在完成后自动运行（jxDownload）；
+    // 下载期间横幅就地显示进度态，结果经 update_installer 事件更新文案
     const dl = bar.dataset.download;
     if (dl) {
       jxDownload(dl);
+      bar.querySelector('.ub-text').innerHTML =
+        '正在后台下载新版本安装包，下载完成后将自动运行安装…';
+      actions.innerHTML = '';
     } else if (bar.dataset.url) {
       jxOpenPage(bar.dataset.url); // 没挂附件就退回发布页
+      bar.classList.add('hidden');
     }
-    bar.classList.add('hidden');
   }
 });
 
