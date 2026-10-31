@@ -440,40 +440,6 @@ func (a *App) pushPending(sessionID, mode, content, kind, origin string) *Pendin
 	return pm
 }
 
-// noteMidrunPref 收下前端上报的设置项 jx.midrun 原值：queue=等待排队，
-// interject=插话（另容一个 steer 别名便于接口直测）。未知值不改动已记住的偏好。
-func (a *App) noteMidrunPref(v string) {
-	switch strings.TrimSpace(v) {
-	case "queue":
-		a.setMidrunMode("queue")
-	case "interject", "steer":
-		a.setMidrunMode("steer")
-	}
-}
-
-// setMidrunMode / midrunMode 是「执行中发消息」的偏好（设置项 jx.midrun：
-// 排队 queue / 插话 steer）。这个设置存在浏览器 localStorage 里，随每条消息
-// 上报；服务端记住最近一次的取值，供派发注入使用——数字助理往目标会话塞需求
-// 时，若目标会话正在执行，要按同一个偏好处理，否则两条通道行为不一致。
-func (a *App) setMidrunMode(mode string) {
-	if mode != "steer" && mode != "queue" {
-		return
-	}
-	a.pendMu.Lock()
-	a.midrunPref = mode
-	a.pendMu.Unlock()
-}
-
-// midrunMode 取当前偏好；没收到过上报时按「排队」——与新装默认一致。
-func (a *App) midrunMode() string {
-	a.pendMu.Lock()
-	defer a.pendMu.Unlock()
-	if a.midrunPref == "steer" {
-		return "steer"
-	}
-	return "queue"
-}
-
 // delivery 是一次投递的结果：Started=true 表示消息已落库并已占住执行权
 // （Run 是执行权句柄，由调用方接上自己的执行体）；Started=false 表示目标会话
 // 正在执行、消息已进待生效队列，Mode 是排队还是插话。
@@ -484,45 +450,33 @@ type delivery struct {
 }
 
 // deliverToSession 是「往会话里投递一条用户侧消息」的统一收口：前端发消息
-// （handleChat / handleInterject）与数字助理派发注入共用同一套语义——
-// 空闲就落库并占住执行权，执行中就走同一套排队/插话队列，不再另开一条
-// 特殊通道。执行中的模式由 deliverToSessionMode 的 forcedMode 决定：默认按
-// jx.midrun 偏好，send_to_session 强制插话。kind/origin 决定消息身份
-//（chat=用户气泡，aiuser=AI 发出的用户消息，report=系统通知），语义上的
-// 差异只体现在这里，投递行为完全一致。
+// （handleChat / handleInterject）与数字助理派发注入共用同一套语义——空闲就
+// 落库并占住执行权，执行中一律**插话**：AI 发话（派发回报、求助、待办转达、
+// 转达需求）要的是对方立刻看到，排队等下一轮既滞后也传不上话。用户自己在
+// 执行中发消息才按其「对话中途发送行为」设置选排队/插话（handleInterject）。
+// kind/origin 决定消息身份（chat=用户气泡，aiuser=AI 发出的用户消息，
+// report=系统通知），语义上的差异只体现在这里，投递行为完全一致。
 func (a *App) deliverToSession(m *SessionMeta, content, kind, origin string) *delivery {
-	return a.deliverToSessionMode(m, content, kind, origin, "")
-}
-
-// deliverToSessionMode 是投递的核心实现：forcedMode 为空＝执行中按 jx.midrun
-// 偏好排队/插话（原行为，回报/待办/求助等系统投递沿用）；"steer"＝执行中强制
-// 插话（send_to_session 的默认语义——数字助理中途发话一律插进对方正在执行的
-// 这一轮，不看前端偏好）；空闲时两者行为相同（落库并直接开跑）。
-func (a *App) deliverToSessionMode(m *SessionMeta, content, kind, origin, forcedMode string) *delivery {
 	lock := a.sessLock(m.ID)
 	lock.Lock()
 	defer lock.Unlock()
-	// 执行中：按偏好（或强制 steer）排队/插话（与 handleInterject 同一套队列与落库时机）
-	mode := forcedMode
-	if mode == "" {
-		mode = a.midrunMode()
-	}
+	// 执行中：一律插话（与 handleInterject 同一套队列与落库时机）
 	if a.IsRunning(m.ID) {
-		a.pushPending(m.ID, mode, content, kind, origin)
-		return &delivery{Mode: mode}
+		a.pushPending(m.ID, "steer", content, kind, origin)
+		return &delivery{Mode: "steer"}
 	}
 	run, ok := a.beginRun(m.ID)
-	if !ok { // 极小概率竞态：刚被别的入口占住，同样按排队/插话处理
-		a.pushPending(m.ID, mode, content, kind, origin)
-		return &delivery{Mode: mode}
+	if !ok { // 极小概率竞态：刚被别的入口占住，同样插话（注入它接下来的一步）
+		a.pushPending(m.ID, "steer", content, kind, origin)
+		return &delivery{Mode: "steer"}
 	}
 	a.landUserSide(m, content, kind, origin, nil)
 	return &delivery{Started: true, Run: run}
 }
 
 // deliverToSessionNoKick 是「投递但绝不拉起执行」的变体（人为叫停的回报专用）：
-// 目标会话忙则照常进它的排队/插话队列（那是它自己已在跑的一轮，结束后按统一
-// 规则自动发出——不是我们拉起的）；空闲则**只落库**，不占执行权、不起汇报轮。
+// 目标会话忙则照常插话进它正在执行的那一轮（那是它自己已在跑的一轮，下一次
+// 调用模型前注入——不是我们拉起的）；空闲则**只落库**，不占执行权、不起汇报轮。
 // 为什么叫停要走它：用户刚把任务停掉，数字助理不该被这条回报自动叫醒——那是
 // 它自作主张（重新派发/续跑）的来源；用户下次与它对话时自然看到回报（见
 // stop_session_test.go 的验收：回报必须落库、但主对话不得自动起轮）。投递路径
@@ -533,22 +487,18 @@ func (a *App) deliverToSessionNoKick(m *SessionMeta, content, kind, origin strin
 	lock.Lock()
 	defer lock.Unlock()
 	if a.IsRunning(m.ID) {
-		a.pushPending(m.ID, a.midrunMode(), content, kind, origin)
+		a.pushPending(m.ID, "steer", content, kind, origin)
 		return
 	}
 	a.landUserSide(m, content, kind, origin, nil)
 }
 
-// subQueueNote 组织「目标会话正在执行，派发需求已进队列」时回给模型的文案：
-// 插话（steer）下一步注入生效，排队（queue）本轮结束后作为独立一轮发送。
-func subQueueNote(sub *SessionMeta, mode, note string) string {
-	how := "已排队：目标会话正在执行，这条需求排进队列，等本轮结束后作为独立一轮自动执行"
-	if mode == "steer" {
-		how = "已插话：目标会话正在执行，这句话会在它下一次调用模型前注入生效——对方立刻就能看到"
-	}
-	return fmt.Sprintf("%s（会话 %s「%s」）。%s本工具立即返回，不要等待；"+
+// subQueueNote 组织「目标会话正在执行，派发需求已插话」时回给模型的文案：
+// 插话在对方下一次调用模型前注入生效——立刻就能被看到。
+func subQueueNote(sub *SessionMeta, note string) string {
+	return fmt.Sprintf("已插话：目标会话正在执行，这句话会在它下一次调用模型前注入生效——对方立刻就能看到（会话 %s「%s」）。%s本工具立即返回，不要等待；"+
 		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。",
-		how, sub.ID, sub.Title, note)
+		sub.ID, sub.Title, note)
 }
 
 // landUserSide 是「用户侧消息落库」的唯一收口：chat（真实用户发言）走
@@ -1135,14 +1085,15 @@ func (a *App) runSubAgent(parent *SessionMeta, sub *SessionMeta, run *sessionRun
 	}
 	reportText := head + "\n\n" + summary + "\n\n" + followUp
 	// 回报的投递路径仍然统一在 deliverToSession 一族（按「用户侧消息」投，父会话
-	// 空闲就落库并起汇报轮；正被占用就进它的排队队列）：正常结束与失败都走
-	// deliverToSession；唯一例外是人为叫停——改走 NoKick 变体（见下），差别只在
-	// 「空闲时是否拉起汇报轮」，落库/排队的行为完全一致，不存在直写旁路。
+	// 空闲就落库并起汇报轮；正被占用就插话注入它正在执行的那一轮——AI 发话
+	// 一律插话，不排队）：正常结束与失败都走 deliverToSession；唯一例外是人为
+	// 叫停——改走 NoKick 变体（见下），差别只在「空闲时是否拉起汇报轮」，
+	// 落库/插话的行为完全一致，不存在直写旁路。
 	// 广播回报就绪：前端收到 report_ready 重查会话（正常路径投递即起轮，必见
 	// running、能接上这轮流；叫停路径本轮不拉起，前端只会看到未读绿点）。
 
 	// 投递方式按收尾形态分：人为叫停（stopped）走 deliverToSessionNoKick——回报
-	// 落库/进队，但绝不自动拉起父会话那一轮（用户刚叫停，数字助理被自动叫醒正是
+	// 落库/插话，但绝不自动拉起父会话那一轮（用户刚叫停，数字助理被自动叫醒正是
 	// 它自作主张的来源）；正常完成/失败仍走 deliverToSession，父空闲即起汇报轮。
 	var d *delivery
 	if stopped {

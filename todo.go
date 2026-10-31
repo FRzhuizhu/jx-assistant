@@ -1147,9 +1147,9 @@ func (s *todoScheduler) handToAssistant(task *TaskItem, record *RunRecord) (stri
 	text := fmt.Sprintf("【待办任务派发｜%s】\n任务：%s\n\n%s", triggerLabel(record.Trigger), task.Title, task.Description)
 	// 待办转交与数字助理派发同一性质：AI 发出的用户消息（kind=aiuser）——
 	// 走与用户发消息同一套投递（deliverToSession）：主对话空闲就落库并起一轮，
-	// 正忙就进它的排队队列，等本轮结束**自动**发出（不再「只落消息、干等下一轮
-	// 用户开口」）。按用户消息同等对待：开新回合、后面跟时间提示词，前端右对齐
-	// 偏白气泡。
+	// 正忙就插话注入它正在执行的那一轮（下一次调用模型就能看到——AI 发话
+	// 一律插话，不排队）。按用户消息同等对待：开新回合、后面跟时间提示词，
+	// 前端右对齐偏白气泡。
 	d := s.app.deliverToSession(sess, text, kindAiUser, "todo")
 	if d.Started {
 		run := d.Run
@@ -1202,8 +1202,8 @@ func (s *todoScheduler) handToTaskSession(task *TaskItem, record *RunRecord) (st
 	}
 	text := fmt.Sprintf("【待办任务派发｜%s】\n任务：%s\n\n%s", triggerLabel(record.Trigger), task.Title, task.Description)
 	// 投递走统一收口 deliverToSession（与用户发消息/数字经理派发同路）：AI 发出的
-	// 用户消息（kind=aiuser），空闲即落库并占住执行权。新建会话必然空闲（Started
-	// 恒真），防御分支照抄不省略。
+	// 用户消息（kind=aiuser），空闲即落库并占住执行权，忙则插话（AI 发话一律
+	// 插话）。新建会话必然空闲（Started 恒真），防御分支照抄不省略。
 	d := s.app.deliverToSession(sub, text, kindAiUser, "todo")
 	if d.Started {
 		go s.app.runSubAgent(nil, sub, d.Run) // 执行体与 dispatch_task 同一个；派发方为空＝只执行不回报

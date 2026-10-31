@@ -130,15 +130,16 @@ func dispatchTaskTool() Tool {
 }
 
 // deliverSub 把派发需求投递进目标会话——走与用户发消息同一套投递（见 runtime.go
-// 的 deliverToSessionMode）：目标空闲=落库并起 runSubAgent；正在执行=mode 为空按
-// jx.midrun 偏好排队/插话，mode="steer" 强制插话（send_to_session 的默认语义；
-// dispatch_task / dispatch_sub 派发的是新会话、必然空闲，传空即可）。
-// 落库身份是 kind=aiuser（AI 发出的用户消息）：系统按用户消息同等对待（开新回合、
-// 组装时后面跟一条时间提示词），前端是右对齐偏白的「AI 用户」气泡。
-func (t *toolContext) deliverSub(sub *SessionMeta, text, note, mode string) string {
-	d := t.app.deliverToSessionMode(sub, text, kindAiUser, "task", mode)
+// 的 deliverToSession）：目标空闲=落库并起 runSubAgent；正在执行=一律插话
+//（注入它当前这一轮，下一次调用模型就能看到——AI 发话不等排队）。
+// dispatch_task / dispatch_sub 派发的是新会话、必然空闲；send_to_session 对已有
+// 会话中途发话，插话正是它的语义。落库身份是 kind=aiuser（AI 发出的用户消息）：
+// 系统按用户消息同等对待（开新回合、组装时后面跟一条时间提示词），前端是
+// 右对齐偏白的「AI 用户」气泡。
+func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
+	d := t.app.deliverToSession(sub, text, kindAiUser, "task")
 	if !d.Started {
-		return subQueueNote(sub, d.Mode, note)
+		return subQueueNote(sub, note)
 	}
 	// 当前主对话的 SSE 若还连着，先给它推一条派发确认
 	t.emit(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
@@ -491,7 +492,7 @@ func runDispatchSub(t *toolContext, args json.RawMessage) (string, error) {
 	if len(hints) > 0 {
 		note = "（" + strings.Join(hints, "；") + "）"
 	}
-	return t.deliverSub(sub, "【派发子对话】\n\n"+p.Task, note, ""), nil
+	return t.deliverSub(sub, "【派发子对话】\n\n"+p.Task, note), nil
 }
 func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
@@ -604,7 +605,7 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if len(attNotes) > 0 {
 		taskMsg = ATTACH_HEAD + "\n" + strings.Join(attNotes, "\n") + "\n\n" + taskMsg
 	}
-	return t.deliverSub(sub, taskMsg, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp), ""), nil
+	return t.deliverSub(sub, taskMsg, dispatchTaskNote(mode, perm, p.Permission, p.PlanMode, attached, remoteDisp)), nil
 }
 func sendToSessionTool() Tool {
 	return Tool{
@@ -669,10 +670,10 @@ func runSendToSession(t *toolContext, args json.RawMessage) (string, error) {
 		}
 		note = "（权限档：「" + permModeLabel(perm) + "」（" + perm + "，只能同等或降权））"
 	}
-	// 需求正文（【数字助理转达】+ task）由 deliverSub 走统一投递落库；mode="steer"：
-	// 中途发话一律插话——目标执行中就注入它当前这一轮（下一次调用模型前生效），
-	// 空闲则由 deliverToSessionMode 直接落库开跑（两种情况都立即生效，不排队占位）
-	return t.deliverSub(m, "【数字助理转达】\n\n"+p.Task, note, "steer"), nil
+	// 需求正文（【数字助理转达】+ task）由 deliverSub 走统一投递落库：投递一律
+	// 插话——目标执行中就注入它当前这一轮（下一次调用模型前生效），空闲则直接
+	// 落库开跑（两种情况都立即生效，不排队占位）
+	return t.deliverSub(m, "【数字助理转达】\n\n"+p.Task, note), nil
 }
 
 func stopSessionTool() Tool {

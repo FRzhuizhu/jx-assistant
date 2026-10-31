@@ -86,7 +86,6 @@ type App struct {
 	pendingSteer    map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
 	pendingQueue    map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
 	queuePaused     map[string]bool          // 会话队列是否暂停（暂停后本轮结束不自动续发；恢复时空闲即接着发）
-	midrunPref      string                   // 执行中发消息的偏好（queue/steer）：前端设置项 jx.midrun 随消息上报，派发注入按它处理（见 runtime.go）
 	errMu           sync.Mutex
 	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
 	stopWatchdog    time.Duration     // 停止看门狗：协作取消后等多久仍未收口就强制终结（runtime.go watchStop）
@@ -2612,14 +2611,12 @@ func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content   string `json:"content"`
 		Mode      string `json:"mode"`
-		Midrun    string `json:"midrun"`    // 前端设置项 jx.midrun（queue/interject）的原值，记下来供派发注入按同一偏好处理
 		VoiceUsed bool   `json:"voiceUsed"` // 本条消息含语音听写转写文字：置位会话粘性标记
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
-	a.noteMidrunPref(body.Midrun)
 	// 语音听写粘性标记：用过一次即置位且永不撤下（环境快照据此注入同音错字提示）
 	if body.VoiceUsed && !m.VoiceUsed {
 		m.VoiceUsed = true
@@ -3591,14 +3588,12 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Content   string `json:"content"`
-		Midrun    string `json:"midrun"`    // 前端设置项 jx.midrun 的原值（queue/interject）：记下来供派发注入按同一偏好处理
 		VoiceUsed bool   `json:"voiceUsed"` // 本条消息含语音听写转写文字（组件听写落框时打的标记）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
 		writeErr(w, 400, "content 不能为空")
 		return
 	}
-	a.noteMidrunPref(body.Midrun)
 	// 语音听写粘性标记：会话内用过一次即置位且永不撤下——环境快照（agent.go）
 	// 据此注入同音错字提示；内存对象同步置位，本轮组装快照时即已生效。
 	if body.VoiceUsed && !m.VoiceUsed {

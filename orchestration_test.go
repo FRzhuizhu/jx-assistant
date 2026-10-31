@@ -279,8 +279,8 @@ func TestSendToSessionPermission(t *testing.T) {
 }
 
 // C2：send_to_session 默认语义＝插话——目标会话正在执行时，话进**插话**队列
-// （下一次调用模型前注入），不是排队；且强制插话不看 jx.midrun 偏好（偏好显式
-// 压成 queue 也照样插话）。空闲目标直接开跑的路径已在 C 的 ③④ 覆盖。
+// （下一次调用模型前注入），不是排队（AI 投递一律插话，已没有按偏好排队的
+// 路径）。空闲目标直接开跑的路径已在 C 的 ③④ 覆盖。
 func TestSendToSessionSteersRunningSession(t *testing.T) {
 	a, main := newDispatchTestApp(t)
 	target := &SessionMeta{ID: "t-busy", Title: "正在干活的任务", Mode: "task",
@@ -293,7 +293,6 @@ func TestSendToSessionSteersRunningSession(t *testing.T) {
 	}
 	defer a.finishRun(target.ID)
 
-	a.setMidrunMode("queue") // 偏好显式压成排队：强制插话必须压过它
 	out, err := runSendToSession(dispatchCtx(a, main), mustArgs(t, map[string]any{
 		"session_id": "t-busy", "task": "先别动，等 B 完事",
 	}))

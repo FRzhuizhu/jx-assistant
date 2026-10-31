@@ -134,7 +134,7 @@ func TestRequestManagerDeliversToManager(t *testing.T) {
 	}
 }
 
-// 经理正忙：求助走它的排队队列（与用户消息/派发回报同一套队列），本轮结束后处理。
+// 经理正忙：求助插话注入它正在执行的那一轮（AI 发话一律插话，不排队）。
 func TestRequestManagerQueuesWhenManagerBusy(t *testing.T) {
 	a, task := newRequestMgrTestApp(t)
 	mgr := &SessionMeta{ID: "mgr", Title: "数字助理主对话", Mode: "assistant",
@@ -155,18 +155,21 @@ func TestRequestManagerQueuesWhenManagerBusy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("求助失败: %v", err)
 	}
-	if !strings.Contains(out, "已进它的队列") {
-		t.Fatalf("经理忙时应说明已排队：%s", out)
+	if !strings.Contains(out, "已插话") {
+		t.Fatalf("经理忙时应说明已插话：%s", out)
 	}
 	st := a.pendingOf(mgr.ID)
-	if st == nil || len(st.Queue) != 1 {
-		t.Fatalf("求助应进经理的排队队列, got %+v", st)
+	if st == nil || len(st.Steer) != 1 {
+		t.Fatalf("求助应插进经理的插话队列, got %+v", st)
 	}
-	if st.Queue[0].Origin != "help" || st.Queue[0].Kind != kindAiUser {
-		t.Fatalf("排队项身份应为 kind=%s origin=help, got %+v", kindAiUser, st.Queue[0])
+	if st.Steer[0].Origin != "help" || st.Steer[0].Kind != kindAiUser {
+		t.Fatalf("插话项身份应为 kind=%s origin=help, got %+v", kindAiUser, st.Steer[0])
 	}
-	if !strings.Contains(st.Queue[0].Content, "【任务求助】") {
-		t.Fatalf("排队正文应有【任务求助】前缀：%s", st.Queue[0].Content)
+	if !strings.Contains(st.Steer[0].Content, "【任务求助】") {
+		t.Fatalf("插话正文应有【任务求助】前缀：%s", st.Steer[0].Content)
+	}
+	if len(st.Queue) != 0 {
+		t.Fatalf("求助不该进排队队列（AI 发话一律插话），got %+v", st.Queue)
 	}
 	_ = run
 }

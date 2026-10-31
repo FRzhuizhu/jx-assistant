@@ -6,8 +6,9 @@ package main
 // 空出来再安排）。
 //
 // 为什么是「投一条消息」而不是新开一条等待通道：
-//   - 投递走既有唯一收口 deliverToSession（空闲落库并占执行权、忙则进它的排队/
-//     插话队列），与【派发回报】【待办任务派发】完全同路，不开会话间旁路；
+//   - 投递走既有唯一收口 deliverToSession（空闲落库并占执行权、忙则插话注入
+//     它正在执行的那一轮——AI 发话一律插话，不排队），与【派发回报】【待办任务
+//     派发】完全同路，不开会话间旁路；
 //   - 消息本身即记录（kind=aiuser、origin=help）：搜得到、导得出、重启也在，
 //     所以不需要求助池、不需要新接口，也不需要界面改动；
 //   - 没有阻塞等待，就不存在「任务停在那等经理、经理又在等任务」的互相等死，
@@ -69,8 +70,8 @@ func requestManagerTool() Tool {
 // runRequestManager 把求助整理成一条消息投给数字经理。
 //
 // 投递结果分两种，都是「立即返回」：经理空闲 → 消息落库并占住它这一轮，
-// 顺手唤醒它跑（与本产品所有唤醒路径同一套机制）；经理正忙 → 消息进它的
-// 排队/插话队列（按 jx.midrun 偏好），本轮结束后自然处理。
+// 顺手唤醒它跑（与本产品所有唤醒路径同一套机制）；经理正忙 → 消息插话注入
+// 它正在执行的这一轮，下一次调用模型就能看到。
 func runRequestManager(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
 		Topic       string `json:"topic"`
@@ -105,7 +106,7 @@ func runRequestManager(t *toolContext, args json.RawMessage) (string, error) {
 		strings.TrimSpace(p.Resource), strings.TrimSpace(p.Expectation))
 	d := t.app.deliverToSession(mgr, text, kindAiUser, "help")
 	if !d.Started {
-		return "已发给数字经理（它正忙，这条已进它的队列，等它本轮结束后处理）。你继续干自己的，不用等它。", nil
+		return "已发给数字经理（它正忙，这条已插话注入它当前这一轮，它下一次调用模型就能看到）。你继续干自己的，不用等它。", nil
 	}
 	kickSessionRound(t.app, mgr, d.Run)
 	return "已发给数字经理（会话 " + mgr.ID + "），它会按自己的判断处理——可能给你插一句话、可能派新任务，也可能先不动，等资源空出来再安排。你继续干自己的，不用等它。", nil

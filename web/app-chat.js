@@ -5409,7 +5409,7 @@ async function sendMidrun(content, viaInput, view, voiceUsed) {
   const mode = lsGet('jx.midrun', 'queue') === 'interject' ? 'steer' : 'queue';
   try {
     const d = await api('/api/sessions/' + view.state.cur.id + '/interject', {
-      method: 'POST', body: JSON.stringify({ content, mode, midrun: lsGet('jx.midrun', 'queue'), voiceUsed: !!voiceUsed }),
+      method: 'POST', body: JSON.stringify({ content, mode, voiceUsed: !!voiceUsed }),
     });
     if (!d.accepted) { pendingHint(view, '发送失败：该会话当前不接受消息'); return; }
     // 本地立即出效果（插话贴到对话末尾，排队进坞）；服务端的 pending 广播可能
@@ -5600,7 +5600,7 @@ async function send(forceContent, view) {
     const res = await fetch(`/api/sessions/${sid}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, midrun: lsGet('jx.midrun', 'queue'), voiceUsed: !!pre.voiceUsed }),
+      body: JSON.stringify({ content, voiceUsed: !!pre.voiceUsed }),
       signal: view.state.abort.signal,
     });
     if (!res.ok) {
