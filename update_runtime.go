@@ -156,11 +156,10 @@ func (a *App) applyRuntimeBlock(b *updateBlock, rel releaseInfo, sourceURL strin
 		setUpdateError("运行时包结构不对: " + err.Error())
 		return
 	}
-	if tag := localRuntimeTag(root); !tagMatchesVersion(tag, b.Version) {
-		log.Printf("[更新] 运行时包内 Python 版本（%s）与块版本 %s 不一致，拒绝应用", tag, b.Version)
-		setUpdateError("运行时包版本不符: 包内 " + tag + "，清单 " + b.Version)
-		return
-	}
+	// 这里曾经有一道「包内 Python 大版本 == 块版本前缀」的校验（tagMatchesVersion），
+	// 2026-11-01 按用户要求删除：块版本改复合格式（py3.14.8-20261101-1）演进时，这道
+	// 校验第一时间把合法包拒之门外——纯防自己人。包的完整性已有 sha256 校验兜底
+	// （downloadUpdateFile 对 b.SHA256），包结构由上面的 findRootWith 保证。
 
 	// 语音 worker 也跑在这个运行时上：先请它退场，换完它自己会重启
 	if a.Bridge != nil {

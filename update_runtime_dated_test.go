@@ -1,11 +1,12 @@
 package main
 
-// runtime 块版本改复合格式「py3.14.8-20261101-1」的行为锁（2026-11-01 起）：
-// 客户端对 runtime 块只用「标记相等才跳过」，不做大小比较；
-// 应用前的包内校验要求块版本前缀与包内 Python 大版本匹配（tagMatchesVersion）。
-//   1) 复合串过校验：tagMatchesVersion("3.14", "py3.14.8-20261101-1") = true
-//   2) 纯日期式过不了校验（留作反例，防止将来有人改回纯日期）
-//   3) 标记相等（复合串）→ 跳过；旧标记 py3.14.8 vs 新复合串 → 触发下载
+// runtime 块版本的行为锁（2026-11-01 起）：
+// 客户端对 runtime 块只用「标记相等才跳过」，不做大小比较。
+// 应用包时**不再校验**块版本与包内 Python 版本的匹配（那道校验在块版本格式演进时
+// 把合法包拒之门外，纯防自己人，已删；完整性由 sha256 兜底）——所以纯日期式版本串
+// 现在也能正常应用，为几周后「复合格式 → 纯日期式」的切换铺平了路。
+//   1) 复合串「py3.14.8-20261101-1」：标记相等 → 跳过；旧标记 vs 新复合串 → 触发下载
+//   2) 纯日期串「20261101-2」：应用不被拦截（走到了冒烟/回滚，而不是被版本校验拒绝）
 
 import (
 	"path/filepath"
@@ -13,15 +14,23 @@ import (
 	"testing"
 )
 
-func TestRuntimeBlockCompositeVersionPassesTagCheck(t *testing.T) {
-	if !tagMatchesVersion("3.14", "py3.14.8-20261101-1") {
-		t.Fatal("复合格式必须能过包内 Python 版本校验（前缀 3.14.）")
+// 纯日期式版本串：应用路径不被版本校验拦截（走到了冒烟；假 python.exe 冒烟失败回滚，
+// 恰好证明流程走通——之前那道校验会在这里直接拒绝并报「版本不符」）。
+func TestRuntimeBlockDatedVersionAppliesWithoutTagCheck(t *testing.T) {
+	a, skillsDir := newBlocksTestApp(t)
+	rt := filepath.Join(skillsDir, "_runtime")
+	writeFileTB(t, filepath.Join(rt, "python", "python314._pth"), "python314.zip\n")
+	writeFileTB(t, filepath.Join(rt, runtimeMarkerName), "py3.14.8-20261101-1\n")
+
+	rel, hits := serveZip(t, "runtime-20261101-2.zip",
+		makeZip(t, map[string]string{"python/python314._pth": "python314.zip\n", "python/python.exe": "not-a-real-exe"}))
+	a.applyRuntimeBlock(&updateBlock{Version: "20261101-2", File: "runtime-20261101-2.zip"}, rel, "")
+
+	if n := atomic.LoadInt32(hits); n == 0 {
+		t.Fatal("纯日期式版本必须能进入下载（标记不等）")
 	}
-	if tagMatchesVersion("3.14", "20261101-1") {
-		t.Fatal("纯日期式不含 Python 版本，包内校验必然拒绝——这正是采用复合串的原因")
-	}
-	if tagMatchesVersion("3.12", "py3.14.8-20261101-1") {
-		t.Fatal("Python 大版本不同时必须不匹配（触发重装）")
+	if !exists(filepath.Join(rt, "python", "python314._pth")) {
+		t.Fatal("冒烟失败必须回滚保留旧运行时")
 	}
 }
 
