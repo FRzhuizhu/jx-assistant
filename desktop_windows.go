@@ -374,6 +374,9 @@ func runDesktopLoop(app *App, url string) error {
 		app.shellEval = func(js string) { w.Dispatch(func() { w.Eval(js) }) }
 		app.shellWnd = uintptr(w.Window())
 		app.panelViewCh = make(chan panelViewReport, 1)
+		// 导航守卫先于首次 Navigate 挂上：非本机源的顶层导航/弹窗一律拦下转
+		// 系统浏览器（防外链把主界面顶成错误页，见 desktop_navguard_windows.go）
+		attachNavGuard(mainWebViewOf(w))
 		sep := "?"
 		if strings.Contains(url, "?") {
 			sep = "&"
@@ -403,6 +406,7 @@ func runDesktopLoop(app *App, url string) error {
 		if wv := mainWebViewOf(w); wv != nil {
 			detachProcessFailed(wv)
 			detachDropBridge(wv)
+			detachNavGuard(wv)
 		}
 		// Run 返回即窗口已亡：清掉句柄登记，托盘唤起/热重启投递不再指向死窗口
 		mainWndHwnd.Store(0)

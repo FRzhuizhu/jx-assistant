@@ -5058,15 +5058,10 @@ $('update-banner').addEventListener('click', (e) => {
     return;
   }
   if (e.target.closest('.ub-confirm')) {
-    // 确认更新：直接下载安装包（发布附件直链；浏览器接管下载进度）
+    // 确认更新：下载安装包交给 jxDownload（系统浏览器/新标签，主界面不动）
     const dl = bar.dataset.download;
     if (dl) {
-      const a = document.createElement('a');
-      a.href = dl;
-      a.download = '';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      jxDownload(dl);
     } else if (bar.dataset.url) {
       jxOpenPage(bar.dataset.url); // 没挂附件就退回发布页
     }

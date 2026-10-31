@@ -1474,12 +1474,7 @@ $('btn-update-dl').onclick = async () => {
   try { st = await api('/api/status'); } catch (e) { alert('获取下载地址失败：' + e.message); return; }
   const dl = (st.update || {}).downloadUrl;
   if (!dl) { alert('发布源没有可下载的安装包'); return; }
-  const a = document.createElement('a');
-  a.href = dl;
-  a.download = '';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  jxDownload(dl);
 };
 // 设置页打开/配置刷新时同步一次更新状态（全局函数，app-chat.js 的事件处理也会调）
 window.refreshUpdateBox = refreshUpdateBox;
