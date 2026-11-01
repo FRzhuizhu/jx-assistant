@@ -649,7 +649,8 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 // 规则压缩不随轮次自动跑（每轮改写历史前缀会持续打断 KV 缓存），只在两种
 // 时机执行：上下文估算达到阈值时（maybeAutoCompact）与手动压缩时
 //（handleCompact 的 upTo）。折叠语义分两级（见 compactRound）：一级保留用户
-// 输入与正文、调用名+参数，丢弃思考/工具结果/环境快照，可反复叠加（每次只折
+// 输入与正文、调用名+参数（write/edit 写入类参数全文保留不截断，见
+// compactKeepArgs），丢弃思考/工具结果/环境快照，可反复叠加（每次只折
 // 新轮）；二级只留用户输入与模型最终输出，仅在压缩范围内已没有新轮可折时才
 // 升级（见 foldRounds——一级压得动就绝不跳二级）。组装时在折叠边界注入
 // foldBoundaryNote 提示模型「以上已压缩、细节可查历史」；以轮为单位整体折叠，
@@ -888,11 +889,20 @@ func (a *App) foldUpTo(sess *SessionMeta, raw []*StoredMessage, endSeq int64) in
 	return folded
 }
 
+// compactKeepArgs 是「写入类工具」名单：这类调用的参数在一级折叠时**全文
+// 保留**、不做 500 字截断。用户语义：读文件/执行类的参数压掉无妨（结果是
+// 原文的翻版）；而 write/edit 写入的内容是后续修改与对照的基准，规则压缩
+// 一级不动它——二级升级与模型摘要仍照常压（梯度：一级压得动就压，写入
+// 内容是最后才丢的东西之一）。参数是 json.Marshal 的紧凑串，本就无真实
+// 换行，原样嵌入即可。
+var compactKeepArgs = map[string]bool{"write": true, "edit": true}
+
 // compactOne 把单行**首次**折叠为一级轻量表示并落库（幂等，不改原文）；
 // 返回是否真的标了这一行（视图外的归档行与空正文行不标，调用方据此计数）：
 //   - 用户侧输入（chat/aiuser/report）：Compact=原文（视图逐字节不变，标记只为推进边界）
 //   - 助手正文行：Compact=原文（思考过程丢弃——折叠视图不带 ReasoningContent）
-//   - 带工具调用的助手行：正文 + [调用 名 参数=clip]（工具结果不保留）
+//   - 带工具调用的助手行：正文 + [调用 名 参数=clip]（写入类工具参数不截断，
+//     见 compactKeepArgs；工具结果不保留）
 //   - 工具结果行与环境快照行：omit（组装时整行跳过）
 func (a *App) compactOne(sid string, m *StoredMessage) bool {
 	switch {
@@ -906,7 +916,13 @@ func (a *App) compactOne(sid string, m *StoredMessage) bool {
 		}
 		for _, tc := range m.ToolCalls {
 			b.WriteString(fmt.Sprintf("[调用 %s", tc.Function.Name))
-			if args := clipText(tc.Function.Arguments, argKeepLimit); args != "" {
+			args := ""
+			if compactKeepArgs[tc.Function.Name] {
+				args = tc.Function.Arguments // 写入类：参数全文保留，不截断
+			} else {
+				args = clipText(tc.Function.Arguments, argKeepLimit)
+			}
+			if args != "" {
 				b.WriteString(" 参数=" + args)
 			}
 			b.WriteString("]\n")

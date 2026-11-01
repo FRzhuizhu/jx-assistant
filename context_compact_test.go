@@ -99,8 +99,17 @@ func TestRuleCompactFoldSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	user, call, tool, final := seedRound(t, a, "s1", "一轮", true)
+	// 对照组：非写入类调用（run_command）参数照常截断到 500 字
+	rcArgs, _ := json.Marshal(map[string]any{"command": strings.Repeat("命", 600)})
 	if err := a.Store.AppendRow("s1", &StoredMessage{
-		Message: TextMessage("system", "- 环境快照内容行"), Kind: kindEnv, CreatedAt: "2026-01-02 10:00:04",
+		Message: Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c-cmd", Type: "function", Function: ToolCallFunc{Name: "run_command", Arguments: string(rcArgs)}}}},
+		Kind:    kindChat, CreatedAt: "2026-01-02 10:00:04",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rcall := final + 1
+	if err := a.Store.AppendRow("s1", &StoredMessage{
+		Message: TextMessage("system", "- 环境快照内容行"), Kind: kindEnv, CreatedAt: "2026-01-02 10:00:05",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +127,17 @@ func TestRuleCompactFoldSemantics(t *testing.T) {
 	if !strings.Contains(cmpt, "[调用 write 参数=") {
 		t.Fatalf("调用行折叠应含调用名+参数: %q", cmpt)
 	}
+	// 写入类工具参数全文保留（seedRound 的 write 参数 800 字，不截断）
+	if !strings.Contains(cmpt, strings.Repeat("字", 800)) {
+		t.Fatalf("write 参数应全文保留(800字), got %q", clipPreview(cmpt))
+	}
 	if strings.Contains(cmpt, "结果=") || strings.Contains(cmpt, "写入成功") {
 		t.Fatalf("调用行折叠不应保留结果: %q", cmpt)
+	}
+	// 对照：run_command 参数截断到 500（499 字 + 省略号）
+	cmptCmd := rowBySeq(t, a, "s1", rcall).Compact
+	if !strings.Contains(cmptCmd, strings.Repeat("命", 400)) || strings.Contains(cmptCmd, strings.Repeat("命", 500)) {
+		t.Fatalf("非写入类参数应截断到500字, got %q", clipPreview(cmptCmd))
 	}
 	if got := rowBySeq(t, a, "s1", tool).Compact; got != compactOmit {
 		t.Fatalf("工具结果行应 omit, got %q", got)
@@ -127,10 +145,19 @@ func TestRuleCompactFoldSemantics(t *testing.T) {
 	if got := rowBySeq(t, a, "s1", final).Compact; got != "一轮的结论" {
 		t.Fatalf("助手正文折叠视图应=原文, got %q", got)
 	}
-	envSeq := int64(5)
+	envSeq := rcall + 1
 	if got := rowBySeq(t, a, "s1", envSeq).Compact; got != compactOmit {
 		t.Fatalf("环境快照行应 omit, got %q", got)
 	}
+}
+
+// clipPreview 截断失败信息里的超长折叠文本，避免 t.Fatalf 打印几万字
+func clipPreview(s string) string {
+	r := []rune(s)
+	if len(r) > 200 {
+		return string(r[:200]) + fmt.Sprintf("…(共%d字)", len(r))
+	}
+	return s
 }
 
 // 组装视图：折叠区的工具结果与环境快照不进上下文，用户输入/正文/调用名在，
