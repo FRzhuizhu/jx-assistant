@@ -652,7 +652,7 @@ function bpwMirrorEnv() {
 }
 const BPW_MIRROR_MS = 500; // 轮询节流：每帧之后至少隔 500ms 才取下一帧（2fps）
 const BPW_MIRROR_TIP = '远程仅同步查看 · 操作请在电脑前';
-let bpwMirrorTimer = null, bpwMirrorVer = 0, bpwMirrorInflight = false;
+let bpwMirrorTimer = null, bpwMirrorVer = 0, bpwMirrorInflight = false, bpwMirrorFails = 0;
 
 // 工具栏换装 + 启动镜像（打开浏览器视图 / 恢复会话时走这里）
 function bpwMirrorApply() {
@@ -682,6 +682,9 @@ function bpwMirrorStart(force) {
 }
 // 每次轮询自检可见性：收起右栏 / 切走视图 / iframe 预览接管时自动停摆，
 // 不传一个字节的帧——「看不到就不传」由前端单方面保证，后端无需记账。
+// 失败退避：连续失败（断网/中继 429 限流打满）时隔 500ms→1s→2s→4s 再试，
+// 成功即回 500ms——帧轮询自身严格串行只占 1 路挂起，退避保证极端时刻
+// 不与其他拉取抢「每 IP 并发」额度，也不空转流量。
 function bpwMirrorPoll() {
   clearTimeout(bpwMirrorTimer);
   if (!bpwMirrorEnv() || !bpwActive() || bpwFrameActive() || bpwMirrorInflight) return;
@@ -690,6 +693,7 @@ function bpwMirrorPoll() {
   api('/api/browser/frame?session=' + encodeURIComponent(sid) + '&v=' + bpwMirrorVer)
     .then((f) => {
       bpwMirrorInflight = false;
+      bpwMirrorFails = 0;
       if (sid !== bpwSession()) return; // 轮询期间切了会话：旧响应丢弃
       if (f && f.running === false) {
         const hint = $('bpw-hint');
@@ -704,8 +708,14 @@ function bpwMirrorPoll() {
         if (f.vw) $('bpw-vp').textContent = f.vw + '×' + f.vh;
       }
     })
-    .catch(() => { bpwMirrorInflight = false; })
-    .then(() => { bpwMirrorTimer = setTimeout(bpwMirrorPoll, BPW_MIRROR_MS); });
+    .catch(() => {
+      bpwMirrorInflight = false;
+      bpwMirrorFails = Math.min(bpwMirrorFails + 1, 3);
+    })
+    .then(() => {
+      const wait = bpwMirrorFails ? Math.min(BPW_MIRROR_MS * (1 << bpwMirrorFails), 4000) : BPW_MIRROR_MS;
+      bpwMirrorTimer = setTimeout(bpwMirrorPoll, wait);
+    });
 }
 
 // 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开。
