@@ -1850,7 +1850,7 @@ function renderFileDiff(t) {
   if (t.binary || (cur.exists && cur.binary)) {
     $('fvw-stat').textContent = '二进制文件 · 不支持文本对比';
     note.textContent = '这个文件的内容是二进制（改动前 ' + (t.binary ? fmtBytes(t.size || 0) : '未知') +
-      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '）。文件工具只支持文本类文件，二进制请用系统默认程序打开。';
+      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '）。文件工具只支持文本类文件，请点顶栏「打开方式」用系统默认程序打开。';
     note.classList.add('bad');
     note.classList.remove('hidden');
     body.innerHTML = '';
@@ -1909,13 +1909,19 @@ function renderFileDiff(t) {
   say();
 }
 
-// 顶栏：折行切换（长行横向滚动 ↔ 折行）与重新读取
+// 顶栏：折行切换（长行横向滚动 ↔ 折行）、用系统默认应用打开当前文件
+// （open-path 用户手势直通端点，与浏览器页签「打开方式」同一链路）与重新读取
 $('fvw-wrap').onclick = () => {
   fvwWrap = !fvwWrap;
   $('fvw-wrap').classList.toggle('on', fvwWrap);
   $('fvw-wrap').title = fvwWrap ? '当前：长行折行显示（点击改为横向滚动）' : '当前：长行横向滚动（点击改为折行显示）';
   const tbl = $('fvw-body').querySelector('.fdiff-table');
   if (tbl) tbl.classList.toggle('wrap', fvwWrap);
+};
+$('fvw-sysopen').onclick = () => {
+  if (!fvwSid || !fvwPath) return; // 空态（没在看任何文件）：无事可做
+  api('/api/sessions/' + encodeURIComponent(fvwSid) + '/open-path', { method: 'POST', body: JSON.stringify({ path: fvwPath }) })
+    .catch((e) => alert('打开失败：' + e.message));
 };
 $('fvw-reload').onclick = () => loadFileDiff();
 
