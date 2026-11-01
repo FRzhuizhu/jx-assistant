@@ -3,13 +3,10 @@ config.json
 *.exe
 # jx-assistant.exe 是引擎编译产物，不再入库：发行走安装包，开发自行 go build
 !md-viewer/*.exe
-# 共享便携 Python 运行时入库（全部内置技能与语音组件共用，全新克隆零装配即用）：
-# 放在 *.exe 规则之后放行运行时内全部文件（含 python.exe、Scripts\*.exe）
-!技能/_runtime/**
-技能/_runtime/**/__pycache__/
-技能/_runtime/**/*.pyc
-# pip 卸载半途的残渣目录（~ 包名-版本.dist-info），入库只会带来警告
-技能/_runtime/**/~*/
+# 共享便携 Python 运行时不随仓库分发（体积大）：克隆后首次使用技能时自动联网装配
+技能/_runtime/
+# 语音识别 onnx 模型不入库（体积大）
+组件/voice/models/
 *.exe~
 .zcode/
 node_modules/
