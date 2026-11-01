@@ -1064,7 +1064,7 @@ function msgActions(m, opts) {
   cb.className = 'act-copy act-compact';
   const cbOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>压缩';
   cb.innerHTML = cbOrig;
-  cb.title = '折叠这一轮及更早的对话（这一轮本身也在内）：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果；原文可随时用历史查询工具搜回';
+  cb.title = '折叠这一轮及更早的对话（这一轮本身也在内）：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果。这一段都已折叠过时再点一次，才进一步只留用户输入与结论。原文可随时用历史查询工具搜回';
   cb.onclick = async () => {
     if (!state.cur || state.streaming) return;
     const sid = m.sessionId || state.cur.id;

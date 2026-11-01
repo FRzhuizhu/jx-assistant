@@ -649,8 +649,9 @@ func (a *App) contextStats(sess *SessionMeta) ctxStats {
 // 规则压缩不随轮次自动跑（每轮改写历史前缀会持续打断 KV 缓存），只在两种
 // 时机执行：上下文估算达到阈值时（maybeAutoCompact）与手动压缩时
 //（handleCompact 的 upTo）。折叠语义分两级（见 compactRound）：一级保留用户
-// 输入与正文、调用名+参数，丢弃思考/工具结果/环境快照；二级（已折过的轮再被
-// 更大的压缩范围覆盖）只留用户输入与模型最终输出。组装时在折叠边界注入
+// 输入与正文、调用名+参数，丢弃思考/工具结果/环境快照，可反复叠加（每次只折
+// 新轮）；二级只留用户输入与模型最终输出，仅在压缩范围内已没有新轮可折时才
+// 升级（见 foldRounds——一级压得动就绝不跳二级）。组装时在折叠边界注入
 // foldBoundaryNote 提示模型「以上已压缩、细节可查历史」；以轮为单位整体折叠，
 // 绝不拆散调用/结果配对。
 // visibleSize 是一行消息在「模型可见表面」上的字数（rune）：折叠过的行按
@@ -766,7 +767,8 @@ func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
 }
 
 // ruleCompactTo 手动压缩：折叠 upTo 所在轮（含）及更早、尚未折叠的全部轮，
-// upTo 之后的轮保持原文。返回折叠的轮数。
+// upTo 之后的轮保持原文。范围内已全折叠过时改为把已折叠轮升级为二级（新轮
+// 优先一级、一级压不动了才二级，见 foldRounds）。返回实际变化的轮数。
 func (a *App) ruleCompactTo(sess *SessionMeta, upTo int64) (int, error) {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
@@ -799,12 +801,15 @@ func (a *App) ruleCompactTo(sess *SessionMeta, upTo int64) (int, error) {
 	return 0, fmt.Errorf("第 %d 条之前的回合都已折叠过了", upTo)
 }
 
-// foldRounds 折叠 endSeq 及更早、尚未折叠的全部轮，返回**新**折叠轮数。
+// foldRounds 按轮折叠到 endSeq（含）。范围内还有未折叠的轮就只做一级折叠、
+// 到此为止；范围内已没有新轮可折时，才把已折叠的轮升级为二级（只留用户输入
+// 与模型最终输出）。用户语义：一级可以无限次叠加（每次只折新轮），二级是
+// 「实在没得压了」的最后一步——绝不能这次折了新轮，顺带把旧折叠区跳级到二级。
+// 返回本次实际变化的轮数（新折轮数或升级轮数；0 = 无变化，重复点击报错用）。
 // 已折叠边界 = 带任意 compact 标记的行（含 omit 的工具结果与环境快照）的最大
 // seq——compactRound 对每轮至少标一行（用户输入也标），边界因此总能推进。
-// 二级升级：本次有新折叠时，边界之前的旧折叠轮同步升级为二级压缩（只留用户
-// 输入与模型最终输出）——压缩标签以上的部分进一步丢弃中间过程；标签以下
-//（本次新折的）按一级规则。无新折叠时不做任何事（重复点击保持幂等报错）。
+// 升级二级要求整轮都在边界之内（r.endSeq ≤ 边界）：巨轮被行级折叠截过半时，
+// 只折了前半、后半还是原文，这种半折轮不能升级。
 func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round, endSeq int64) int {
 	ruleSeq := int64(0)
 	for _, m := range raw {
@@ -812,7 +817,8 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 			ruleSeq = m.Seq
 		}
 	}
-	folded, upgraded, from := 0, 0, int64(0)
+	// 先一级折范围内的新轮：折到了就返回，不动任何旧折叠行
+	folded, from := 0, int64(0)
 	for _, r := range rounds {
 		if r.startSeq <= ruleSeq || r.endSeq > endSeq {
 			continue
@@ -824,18 +830,31 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 		folded++
 	}
 	if folded > 0 {
-		for _, r := range rounds {
-			if r.startSeq <= ruleSeq && r.endSeq <= endSeq {
-				a.compactRoundAgain(sess.ID, r, raw)
-				upgraded++
-			}
-		}
 		// 审计留痕：规则压缩改写模型可见前缀，是缓存命中率突降的常见原因
-		a.auditWrite(sess, map[string]any{"type": "compact", "rounds": folded, "upgraded": upgraded, "from": from, "to": endSeq})
+		a.auditWrite(sess, map[string]any{"type": "compact", "rounds": folded, "from": from, "to": endSeq})
 		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
 		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		return folded
 	}
-	return folded
+	// 范围内全是已折叠轮：这次才升级二级（只留用户输入与最终输出）
+	upgraded := 0
+	for _, r := range rounds {
+		if r.startSeq > ruleSeq || r.endSeq > ruleSeq || r.endSeq > endSeq {
+			continue
+		}
+		if !a.compactRoundAgain(sess.ID, r, raw) {
+			continue // 已二级的轮幂等跳过，不计数
+		}
+		if upgraded == 0 {
+			from = r.startSeq
+		}
+		upgraded++
+	}
+	if upgraded > 0 {
+		a.auditWrite(sess, map[string]any{"type": "compact", "upgraded": upgraded, "from": from, "to": endSeq})
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+	}
+	return upgraded
 }
 
 // foldUpTo 行级折叠：把 endSeq 及更早、尚未折叠的行按一级规则折叠掉（自动预算
@@ -918,8 +937,9 @@ func (a *App) compactRound(sid string, r round, raw []*StoredMessage) {
 }
 
 // compactRoundAgain 是二级压缩：对已折叠过的轮再压，只留用户输入与模型最终
-// 输出（= 该轮最后一条纯正文助手行），其余整行 omit。
-func (a *App) compactRoundAgain(sid string, r round, raw []*StoredMessage) {
+// 输出（= 该轮最后一条纯正文助手行），其余整行 omit。只写有实际变化的行，
+// 返回该轮是否发生了变化——已二级的轮再跑一遍幂等无变化，调用方据此计数。
+func (a *App) compactRoundAgain(sid string, r round, raw []*StoredMessage) bool {
 	finalSeq := int64(0)
 	for _, m := range raw {
 		if m.Seq < r.startSeq || m.Seq > r.endSeq {
@@ -929,26 +949,35 @@ func (a *App) compactRoundAgain(sid string, r round, raw []*StoredMessage) {
 			finalSeq = m.Seq
 		}
 	}
+	changed := false
 	for _, m := range raw {
 		if m.Seq < r.startSeq || m.Seq > r.endSeq {
 			continue
 		}
+		var want string
 		switch {
 		case m.Kind == "summary" || m.Kind == "prompt" || m.Kind == inheritKind || m.Kind == "request" || m.Kind == "audit":
-			// 视图外的归档行不标
+			continue // 视图外的归档行不标
 		case m.Role == "user":
 			// 用户输入保留原文（一级时已标，幂等；只补漏）
 			if m.Compact == "" && strings.TrimSpace(m.Text()) != "" {
-				_ = a.Store.SetCompact(sid, m.Seq, m.Text())
+				want = m.Text()
+			} else {
+				continue
 			}
 		case m.Seq == finalSeq:
 			// 模型最终输出保留原文
-			_ = a.Store.SetCompact(sid, m.Seq, m.Text())
+			want = m.Text()
 		default:
 			// 中间过程全部丢弃：调用行、过程性正文、工具结果、环境快照
-			_ = a.Store.SetCompact(sid, m.Seq, compactOmit)
+			want = compactOmit
+		}
+		if m.Compact != want {
+			_ = a.Store.SetCompact(sid, m.Seq, want)
+			changed = true
 		}
 	}
+	return changed
 }
 
 // ---------- 模型摘要压缩 ----------

@@ -187,7 +187,7 @@ func TestRuleCompactScopeAndIdempotent(t *testing.T) {
 	_, _, _, final2 := seedRound(t, a, "s1", "二轮", false)
 	_, _, _, final3 := seedRound(t, a, "s1", "三轮", false)
 
-	// 按钮在第二轮结论上：折一、二轮，第三轮不动
+	// 按钮在第二轮结论上：折一、二轮（新轮，一级），第三轮不动
 	n, err := a.ruleCompactTo(sess, final2)
 	if err != nil || n != 2 {
 		t.Fatalf("upTo=二轮结论 应折 2 轮, got n=%d err=%v", n, err)
@@ -198,11 +198,12 @@ func TestRuleCompactScopeAndIdempotent(t *testing.T) {
 	if got := rowBySeq(t, a, "s1", final1).Compact; got == "" {
 		t.Fatal("第一轮应已折叠")
 	}
-	// 同一位置重复点：报已折叠
+	// 同一位置再点：三轮种子没有工具调用行，一级视图已是最简（用户输入+
+	// 最终输出），二级无可再压 → 报已折叠（带工具的轮才有二级可升）
 	if _, err := a.ruleCompactTo(sess, final2); err == nil || !strings.Contains(err.Error(), "已折叠") {
-		t.Fatalf("重复压缩应报已折叠, got err=%v", err)
+		t.Fatalf("最简后重复点应报已折叠, got err=%v", err)
 	}
-	// 再点第三轮：折第三轮
+	// 再点第三轮：折第三轮（新轮走一级，不带动已折叠的旧轮）
 	if n, err := a.ruleCompactTo(sess, final3); err != nil || n != 1 {
 		t.Fatalf("upTo=三轮 应折 1 轮, got n=%d err=%v", n, err)
 	}
@@ -831,9 +832,14 @@ func TestManualCompactHugeRoundReducesContext(t *testing.T) {
 	if got := rowBySeq(t, a, "s1", giantFinal).Compact; got != "" {
 		t.Fatalf("保留区内的巨轮结论行应原样保留, got %q", got)
 	}
-	// 巨大工具结果被 omit（折叠的核心收益）：再压一次应无轮可折，且报错是真的
+	// 巨大工具结果被 omit（折叠的核心收益）。再压一次：范围内已无新轮
+	//（巨轮前半已行级折叠、整轮不重折），旧轮按新语义升级二级；第三次点
+	// 才幂等无变化报已折叠
+	if n, err := a.ruleCompactTo(sess, giantFinal); err != nil || n != 1 {
+		t.Fatalf("无新轮时应升级旧轮二级, n=%d err=%v", n, err)
+	}
 	if _, err := a.ruleCompactTo(sess, giantFinal); err == nil || !strings.Contains(err.Error(), "已折叠") {
-		t.Fatalf("全折后再压应报已折叠, got err=%v", err)
+		t.Fatalf("二级后再压应报已折叠, got err=%v", err)
 	}
 }
 
@@ -929,9 +935,9 @@ func TestCompactHistoryIndependentOfMode(t *testing.T) {
 	}
 }
 
-// 二级压缩与边界提示标签：已折叠过的轮再次被更大的压缩范围覆盖时，升级为
-// 只留用户输入与模型最终输出；组装时在折叠边界注入提示（告知模型以上已压缩、
-// 细节可查历史原文），全折时提示缀尾。
+// 二级压缩与边界提示标签：新轮优先一级折叠；同一范围内已没有新轮可折时再点，
+// 才升级二级（只留用户输入与模型最终输出）；组装时在折叠边界注入提示（告知
+// 模型以上已压缩、细节可查历史原文），全折时提示缀尾。
 func TestSecondLevelFoldAndBoundaryNote(t *testing.T) {
 	a := newCompactTestApp(t)
 	sess := &SessionMeta{ID: "s1", Mode: "task"}
@@ -967,9 +973,17 @@ func TestSecondLevelFoldAndBoundaryNote(t *testing.T) {
 		t.Fatalf("提示应在三轮原文之前:\n%s", joined)
 	}
 
-	// 二级：压到三轮末 → 一、二轮升级为二级（只留用户输入与最终输出）
+	// 新轮优先一级：压到三轮末 → 只折第三轮（新轮），一、二轮保持一级不跳级
 	if n, err := a.ruleCompactTo(sess, final3); err != nil || n != 1 {
-		t.Fatalf("二级应再折 1 轮, n=%d err=%v", n, err)
+		t.Fatalf("有新轮应只折新轮(一级), n=%d err=%v", n, err)
+	}
+	if got := rowBySeq(t, a, "s1", call1).Compact; !strings.Contains(got, "[调用 write") {
+		t.Fatalf("折新轮不应顺带升二级, 调用行: %q", got)
+	}
+	// 同一位置再点（范围内已无新轮）：升级二级（只留用户输入与最终输出）。
+	// 一、二轮带工具调用有实质变化；三轮没有工具行，一级已是最简，升不了
+	if n, err := a.ruleCompactTo(sess, final3); err != nil || n != 2 {
+		t.Fatalf("无新轮时应升级二级 2 轮(三轮已最简), n=%d err=%v", n, err)
 	}
 	if got := rowBySeq(t, a, "s1", call1).Compact; got != compactOmit {
 		t.Fatalf("二级后调用行应 omit, got %q", got)
@@ -979,6 +993,10 @@ func TestSecondLevelFoldAndBoundaryNote(t *testing.T) {
 	}
 	if got := rowBySeq(t, a, "s1", final1).Compact; got != "一轮的结论" {
 		t.Fatalf("二级后最终输出应保留原文, got %q", got)
+	}
+	// 再点一次：已二级幂等无变化，报已折叠
+	if _, err := a.ruleCompactTo(sess, final3); err == nil || !strings.Contains(err.Error(), "已折叠") {
+		t.Fatalf("已二级后重复点应报已折叠, got err=%v", err)
 	}
 	// 全折（三轮也折了）：提示缀在尾部，仍恰好 1 条
 	msgs = a.buildContext(sess, "SYS")
