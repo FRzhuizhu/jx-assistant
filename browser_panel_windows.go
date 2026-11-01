@@ -1042,6 +1042,27 @@ func (p *browserPanel) Screenshot() ([]byte, error) {
 	return buf, nil
 }
 
+// CaptureFrame 远程帧镜像截取（WebP q60，handleBrowserFrame 的截取口）：
+// 与 Screenshot 同一 CDP 方法，只换压缩格式——WebP 比 PNG 小一个量级，
+// 是远程端 2fps 轮询下的带宽主力。
+func (p *browserPanel) CaptureFrame() ([]byte, error) {
+	raw, err := p.callCDP("Page.captureScreenshot", map[string]any{"format": "webp", "quality": 60})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("截帧结果解析失败: %w", err)
+	}
+	buf, err := base64.StdEncoding.DecodeString(out.Data)
+	if err != nil || len(buf) == 0 {
+		return nil, fmt.Errorf("截帧数据无效")
+	}
+	return buf, nil
+}
+
 // SetViewport 桌面面板语义：视口=面板实际尺寸。宽度经 browser_resize 事件请
 // 前端让位（--content-w 调整），高度跟随右栏；矩形回流后 State 反映实际值。
 func (p *browserPanel) SetViewport(w, h int) error {

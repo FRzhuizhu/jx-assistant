@@ -115,6 +115,11 @@ type App struct {
 	panels        map[string]browserTarget // 键=browserProfileKey（""=共享面板，兼容无会话上下文的入口）
 	panelVisible  string
 
+	// 远程帧镜像缓存（handleBrowserFrame）：右栏浏览器画面按会话缓存最后一帧
+	// （内容指纹去重 + 最小间隔节流），远程端轮询命中缓存就不再截图。
+	frameMu    sync.Mutex
+	frameCache map[string]*browserFrameEntry // 键=browserProfileKey
+
 	// 桌面壳（runDesktop）注入的右侧栏截图通道（panelshot_windows.go）：
 	// shellEval 往主界面注入 JS、panelViewCh 收回右栏矩形回传，shellWnd 是
 	// 主窗口 HWND（客户区原点换算屏幕坐标用）。非桌面形态全为零值。
@@ -444,6 +449,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/navigate", a.handleBrowserNavigate)
 	mux.HandleFunc("POST /api/browser/viewport", a.handleBrowserViewport)
 	mux.HandleFunc("GET /api/browser/state", a.handleBrowserState)
+	mux.HandleFunc("GET /api/browser/frame", a.handleBrowserFrame)
 	mux.HandleFunc("POST /api/browser/close", a.handleBrowserClose)
 	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
 	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)

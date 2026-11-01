@@ -637,6 +637,77 @@ function bpwReport(immediate, force) {
   if (immediate) run(0); else bpwRectTimer = setTimeout(() => run(0), 80);
 }
 
+// ── 远程形态的右栏浏览器：家端画面的只读镜像（帧流） ──────────────────────
+/* 远程接入（JX_REMOTE / 局域网 IP 访问，与 app-chat.js 的 isRemoteClientEnv
+   同口径——本文件先于它加载，就地实现一份）：右栏没有原生面板，也不再只是
+   提示文字，而是把家端浏览器面板的画面按 2fps 轮询过来只读显示。渲染权威
+   在家端，远程只是它的照片直播：帧是 WebP q60、页面静止时后端不重截
+   （changed=false 只回版本号）；收起右栏/切走视图即停轮询，零流量零开销。
+   仅同步、不操控：后退/前进/地址输入都是动家端浏览器，一律收起。 */
+function bpwMirrorEnv() {
+  if (bpwDesktop() || bpwElectron()) return false;
+  if (window.JX_REMOTE) return true;
+  const h = (location.hostname || '').toLowerCase();
+  return h !== 'localhost' && h !== '127.0.0.1' && h !== '::1' && h !== '[::1]';
+}
+const BPW_MIRROR_MS = 500; // 轮询节流：每帧之后至少隔 500ms 才取下一帧（2fps）
+const BPW_MIRROR_TIP = '远程仅同步查看 · 操作请在电脑前';
+let bpwMirrorTimer = null, bpwMirrorVer = 0, bpwMirrorInflight = false;
+
+// 工具栏换装 + 启动镜像（打开浏览器视图 / 恢复会话时走这里）
+function bpwMirrorApply() {
+  if (!bpwMirrorEnv()) return;
+  const back = $('bpw-back'), fwd = $('bpw-fwd'), url = $('bpw-url'), fit = $('bpw-fit');
+  if (back) back.hidden = true;
+  if (fwd) fwd.hidden = true;
+  if (url) url.readOnly = true;
+  if (fit) fit.hidden = false;
+  $('bpw-title').textContent = BPW_MIRROR_TIP;
+  const m = $('bpw-mirror');
+  if (m) m.classList.toggle('raw', localStorage.getItem('bpw-zoom') === 'raw');
+  bpwMirrorVer = 0; // 会话切换：版本空间随会话换，重新拉全量帧
+  bpwMirrorStart();
+}
+function bpwMirrorStart(force) {
+  if (!bpwMirrorEnv() || !bpwActive()) return;
+  if (bpwFrameActive() && !force) return; // iframe 预览页优先（交付卡「右侧查看」），不抢
+  if (force) { // 用户点刷新 = 回到镜像：预览 iframe 收起
+    const fr = $('bpw-frame');
+    if (fr) fr.classList.add('hidden');
+  }
+  const hint = $('bpw-hint'), mirror = $('bpw-mirror');
+  if (hint) hint.classList.add('hidden');
+  if (mirror) mirror.classList.remove('hidden');
+  bpwMirrorPoll();
+}
+// 每次轮询自检可见性：收起右栏 / 切走视图 / iframe 预览接管时自动停摆，
+// 不传一个字节的帧——「看不到就不传」由前端单方面保证，后端无需记账。
+function bpwMirrorPoll() {
+  clearTimeout(bpwMirrorTimer);
+  if (!bpwMirrorEnv() || !bpwActive() || bpwFrameActive() || bpwMirrorInflight) return;
+  bpwMirrorInflight = true;
+  const sid = bpwSession();
+  api('/api/browser/frame?session=' + encodeURIComponent(sid) + '&v=' + bpwMirrorVer)
+    .then((f) => {
+      bpwMirrorInflight = false;
+      if (sid !== bpwSession()) return; // 轮询期间切了会话：旧响应丢弃
+      if (f && f.running === false) {
+        const hint = $('bpw-hint');
+        if (hint) { hint.textContent = '电脑端浏览器未打开'; hint.classList.remove('hidden'); }
+        const m = $('bpw-mirror'); if (m) m.classList.add('hidden');
+        return;
+      }
+      if (f && f.changed && f.data) {
+        const img = $('bpw-mirror-img');
+        if (img) img.src = 'data:' + (f.mime || 'image/webp') + ';base64,' + f.data;
+        bpwMirrorVer = f.ver || 0;
+        if (f.vw) $('bpw-vp').textContent = f.vw + '×' + f.vh;
+      }
+    })
+    .catch(() => { bpwMirrorInflight = false; })
+    .then(() => { bpwMirrorTimer = setTimeout(bpwMirrorPoll, BPW_MIRROR_MS); });
+}
+
 // 工具栏（逻辑自旧 panel/browser.js 平移）：后退/前进/刷新/地址栏/外部打开。
 // 导航与状态读取都带会话身份（bpwSession）：操作的是本会话的面板。
 function bpwNav(body) {
@@ -651,18 +722,20 @@ function bpwNav(body) {
 function bpwOnNav(d) {
   if (bpwFrameActive()) return; // 网页/手机形态在看 iframe 页（md 渲染页）：状态栏归 bpwShowFrame 管
   if (d && d.url) $('bpw-url').value = d.url;
-  $('bpw-title').textContent = (d && d.title) || '未打开页面';
+  // 远程形态标题行固定为提示语（用户看画面即可，页面标题在家端的画面里）
+  $('bpw-title').textContent = bpwMirrorEnv() ? BPW_MIRROR_TIP : ((d && d.title) || '未打开页面');
   if (d && d.viewportW) $('bpw-vp').textContent = d.viewportW + '×' + d.viewportH;
-  else $('bpw-vp').textContent = '';
+  else if (!bpwMirrorEnv()) $('bpw-vp').textContent = '';
   bpwSyncFileButtons(d && d.url);
 }
 // 本地文件页的配套按钮（用系统应用打开 / 在文件夹中定位）：仅在当前页是
 // file:/// 且有会话上下文（open-path/reveal-path 按会话路由）时显示——图片、
 // 音视频这类在浏览器里看完常要转出去操作，配套入口就在工具栏上。
 function bpwSyncFileButtons(url) {
+  const so = $('bpw-sysopen'), rv = $('bpw-reveal');
+  if (bpwMirrorEnv()) { if (so) so.hidden = true; if (rv) rv.hidden = true; return; } // 远程形态：文件在家端，打开/定位远程看不见
   const isFile = !!(url && /^file:\/\//i.test(url));
   const sid = bpwSession();
-  const so = $('bpw-sysopen'), rv = $('bpw-reveal');
   if (so) so.hidden = !isFile || !sid;
   if (rv) rv.hidden = !isFile || !sid;
 }
@@ -697,7 +770,15 @@ function bpwShowFrame(url, title) {
   if (!fr) return;
   const hint = $('bpw-hint');
   if (hint) hint.classList.add('hidden'); // 提示文字让位（.hidden = display:none !important）
+  const m = $('bpw-mirror');
+  if (m) m.classList.add('hidden'); // 远程镜像让位给预览页（回镜像走刷新按钮，见 bpwMirrorStart(true)）
   fr.classList.remove('hidden');
+  // 远程形态收起过的导航按钮在预览页恢复：iframe 的后退/前进/刷新由本界面驱动
+  const back = $('bpw-back'), fwd = $('bpw-fwd'), urlbar = $('bpw-url'), fit = $('bpw-fit');
+  if (back) back.hidden = false;
+  if (fwd) fwd.hidden = false;
+  if (urlbar) urlbar.readOnly = false;
+  if (fit) fit.hidden = true;
   const bar = $('bpw-url');
   if (bar) bar.value = url;
   if (title) $('bpw-title').textContent = title;
@@ -735,7 +816,22 @@ function bpwSyncState(sid) {
 }
 $('bpw-back').onclick = () => bpwNav({ action: 'back' });
 $('bpw-fwd').onclick = () => bpwNav({ action: 'forward' });
-$('bpw-reload').onclick = () => bpwNav({ action: 'reload' });
+// 刷新按钮双语义：远程形态刷新的是「镜像画面」（立即取一帧，从预览页回到
+// 镜像）；本地形态才是刷新远程网页本身。
+$('bpw-reload').onclick = () => {
+  if (bpwMirrorEnv()) { bpwMirrorStart(true); return; }
+  bpwNav({ action: 'reload' });
+};
+// 缩放方式切换（仅远程形态显示）：等比缩放居中留边 ↔ 原始像素 1:1+滚动条
+$('bpw-fit').onclick = () => {
+  const m = $('bpw-mirror'), fit = $('bpw-fit');
+  if (!m || !fit) return;
+  const raw = !m.classList.contains('raw');
+  m.classList.toggle('raw', raw);
+  try { localStorage.setItem('bpw-zoom', raw ? 'raw' : 'fit'); } catch (e) {}
+  fit.title = raw ? '当前：原始像素（1:1，可滚动）——点击切回等比缩放'
+                  : '画面显示：等比缩放 / 原始像素（1:1，可滚动）切换';
+};
 $('bpw-sysopen').onclick = () => bpwSysOpen();
 $('bpw-reveal').onclick = () => bpwReveal();
 $('bpw-url').addEventListener('keydown', (e) => {
@@ -779,6 +875,7 @@ rpRegister('browser', {
   onOpen: () => {
     bpwSyncState();
     bpwReport(true); // 打开即上报矩形：宿主据此显示并定位原生控件
+    if (bpwMirrorEnv()) bpwMirrorApply(); // 远程形态：工具栏换装 + 启动帧镜像
   },
   // 右栏浏览器按会话隔离（后端每会话一个原生面板实例）：切换对话时在恢复
   // 阶段就把「该显示哪个会话的面板」上报给后端。restoreSession 早于
@@ -790,6 +887,10 @@ rpRegister('browser', {
   saveSession: () => null,
   restoreSession: (saved, sid) => {
     bpwSyncState(sid); // 工具栏先就位本会话面板的地址/标题
+    if (!bpwDesktop()) return; // 以下是桌面壳的矩形直报（唯一合法写者，见 handleBrowserPanelRect
+    // 的写者纪律）：网页/远程形态的页面恢复会话时也发 desktop:true 上报，会把
+    // 桌面端好好显示的面板顶掉——非桌面壳一个字节都不发；远程形态的镜像由
+    // 随后 rpOpen 的 onOpen（bpwMirrorApply）启动。
     const st = sid ? rpSessionOf(sid) : null;
     const want = !!(st && st.open && st.view === 'browser');
     const stage = $('bpw-stage');

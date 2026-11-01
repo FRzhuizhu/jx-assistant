@@ -438,6 +438,7 @@
           <button id="bpw-sysopen" title="用系统默认应用打开这个文件" hidden>打开方式</button>
           <button id="bpw-reveal" title="在文件资源管理器中定位这个文件" hidden>📁</button>
           <button id="bpw-external" title="在系统浏览器打开当前页">↗</button>
+<button id="bpw-fit" title="画面显示：等比缩放 / 原始像素（1:1，可滚动）切换" hidden>⛶</button>
         </div>
         <div class="bpw-stage" id="bpw-stage">
           <div class="bpw-hint" id="bpw-hint">浏览器面板仅在桌面版可用</div>
@@ -445,6 +446,10 @@
                渲染页这类必须就地看的页面铺在这里（app-right.js 的 bpwShowFrame）。
                桌面/Electron 形态由原生控件覆盖舞台，本元素保持隐藏。 -->
           <iframe id="bpw-frame" class="bpw-frame hidden" title="右栏预览"></iframe>
+          <!-- 远程形态（手机/外网电脑接入）的右栏浏览器：家端面板画面的只读
+               镜像（WebP 帧流，app-right.js 的 bpwMirror*）。默认等比缩放居中，
+               .raw 为原始像素 1:1+滚动条。桌面/本机网页形态不显示。 -->
+          <div class="bpw-mirror hidden" id="bpw-mirror"><img id="bpw-mirror-img" alt="远程浏览器画面"></div>
           <!-- Electron 桌面壳：右栏网页区是真正的 DOM 内嵌浏览器（独立持久
                partition，登录态与主界面隔离）。地址栏/工具栏逻辑不变——仍经
                Go 的 /api/browser/* 走，Go 再经壳的 panel-bridge 驱动本元素，
