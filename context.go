@@ -835,6 +835,8 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 		a.auditWrite(sess, map[string]any{"type": "compact", "rounds": folded, "from": from, "to": endSeq})
 		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
 		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		// 折叠可能埋掉最后一条环境快照行：埋了就完整重发一条
+		a.resendEnvAfterCompact(sess)
 		return folded
 	}
 	// 范围内全是已折叠轮：这次才升级二级（只留用户输入与最终输出）
@@ -854,6 +856,9 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 	if upgraded > 0 {
 		a.auditWrite(sess, map[string]any{"type": "compact", "upgraded": upgraded, "from": from, "to": endSeq})
 		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		// 二级升级不改变快照行的可见性（已 omit 的仍 omit），但若此前从未
+		// 重发过（跨进程重启等边缘态），这里兜底再查一次，幂等
+		a.resendEnvAfterCompact(sess)
 	}
 	return upgraded
 }
@@ -885,6 +890,8 @@ func (a *App) foldUpTo(sess *SessionMeta, raw []*StoredMessage, endSeq int64) in
 		a.auditWrite(sess, map[string]any{"type": "compact", "rows": folded, "from": from, "to": endSeq})
 		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
 		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		// 折叠可能埋掉最后一条环境快照行：埋了就完整重发一条
+		a.resendEnvAfterCompact(sess)
 	}
 	return folded
 }
@@ -996,6 +1003,23 @@ func (a *App) compactRoundAgain(sid string, r round, raw []*StoredMessage) bool 
 	return changed
 }
 
+// resendEnvAfterCompact 压缩后完整重发一条环境快照。环境快照对模型是差分
+// 机制（首条整份、后续只发变化行），而压缩恰恰会把差分所依附的完整基线埋
+// 掉：规则折叠 omit 压缩区内的快照行、模型摘要整段跳过覆盖边界之前的一切
+// 行——之后模型看到的可能只剩几条孤立的差分行（或缺掉整段环境信息），
+// 权限/能力/技能/模型清单/工作区都凑不齐。不做"基线是否真的被埋"的判断：
+// 差分行与完整行的可靠特征很难找（字数阈值等都是猜），而压缩本身是低频
+// 事件，无条件落一条当前完整快照最简单可靠。安全性与代价：
+//   - 组装层（envRowRender）对与上一条可见快照同文的行差分为空、不发消息
+//     ——环境没变时重发行只留在库里，上下文零冗余；
+//   - 基线被埋时，重发行成为保留区首条可见快照，prevEnv 空 → 整份渲染，
+//     环境信息即时完整回来；
+//   - 落库内容与 maybeAppendEnvSnapshot 的等值基准相同，下一步组装比较
+//     相等即不再落行，不会连环追加。
+func (a *App) resendEnvAfterCompact(sess *SessionMeta) {
+	a.appendRow(sess, StoredMessage{Message: TextMessage("system", a.envPrompt(sess)), Kind: kindEnv, CreatedAt: now()})
+}
+
 // ---------- 模型摘要压缩 ----------
 
 const summarizeInstruction = `请把下面这段对话历史压缩成一份结构化中文摘要，供同一对话的后续轮次作为上下文使用。
@@ -1100,6 +1124,8 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		Message: TextMessage("system", content), Kind: kindSummary, // 上下文材料，非用户发言；发送时现场构造 user 视图
 		Origin: origin, CoversUpTo: segEnd, CreatedAt: now(),
 	})
+	// 摘要边界埋掉最后一条环境快照行时完整重发一条（与规则折叠同一兜底）
+	a.resendEnvAfterCompact(sess)
 	return summary, nil
 }
 
@@ -1202,7 +1228,12 @@ func (a *App) ruleCompactTryEnter(sess *SessionMeta) bool {
 	a.compactMu.Lock()
 	mark := a.compactAttempts[sess.ID]
 	a.compactMu.Unlock()
-	if cur+1-mark.attemptRound < a.Cfg.CompactCooldown {
+	// attemptRound 零值 = 从未尝试（含重启后内存标记丢失）：直接放行，否则
+	// 零值被当成「第 -1 轮尝试过」——冷却 ≥2 时每个会话/重启后的首次轮中
+	// 检查都被误拦一轮（冷却 1 时 1-0<1 恰好掩盖），还会在 nil map 上写
+	// skipLogged 直接 panic。attemptRound>0 也保证下面写 skipLogged 时
+	// compactAttempts 必已初始化（只有登记分支会置非零，那里带 nil 初始化）。
+	if mark.attemptRound > 0 && cur+1-mark.attemptRound < a.Cfg.CompactCooldown {
 		if mark.skipLogged != cur+1 {
 			a.auditWrite(sess, map[string]any{"type": "compact_cooldown",
 				"round_index": cur, "last_attempt_round": mark.attemptRound - 1})

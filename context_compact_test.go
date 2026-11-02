@@ -625,12 +625,15 @@ func countKind(msgs []*StoredMessage, kind string) int {
 // 规则压缩按轮冷却：轮中一次尝试后同轮冷却（审计行每轮最多一条）、轮末检查
 // 固定放行、新轮恢复；冷却 0 = 不冷却。
 func TestRuleCompactCooldown(t *testing.T) {
-	a := newCompactTestApp(t) // DefaultConfig：冷却 1 轮
+	a := newCompactTestApp(t)
+	a.Cfg.CompactCooldown = 2 // 显式设值（默认值变动不影响本测试语义）
 	sess := &SessionMeta{ID: "s1", Mode: "task"}
 	if err := a.Store.Create(sess); err != nil {
 		t.Fatal(err)
 	}
 	seedRound(t, a, "s1", "一轮", false)
+	// 首次尝试：attemptRecord 零值=从未，必须放行（曾因零值被当「第 -1 轮
+	// 尝试过」误拦，冷却 ≥2 时还会在 nil map 上写审计标记 panic）
 	if !a.ruleCompactTryEnter(sess) {
 		t.Fatal("首次尝试应放行")
 	}
@@ -652,10 +655,14 @@ func TestRuleCompactCooldown(t *testing.T) {
 	}
 	// 轮末固定放行（并以此为下一轮的冷却基准）
 	a.ruleCompactRoundEndEnter(sess)
-	// 新一轮恢复
+	// 冷却 2：尝试轮之后的 1 个完整轮内仍拦，再下一轮恢复
 	seedRound(t, a, "s1", "二轮", false)
+	if a.ruleCompactTryEnter(sess) {
+		t.Fatal("冷却 2：紧邻的下一轮应仍冷却")
+	}
+	seedRound(t, a, "s1", "三轮", false)
 	if !a.ruleCompactTryEnter(sess) {
-		t.Fatal("新轮应放行")
+		t.Fatal("冷却 2：隔一轮后应放行")
 	}
 	// 冷却 0 = 不冷却：同轮连续放行
 	a.Cfg.CompactCooldown = 0
@@ -681,8 +688,8 @@ func TestConfigCompactDualThresholdMigration(t *testing.T) {
 		return cfg
 	}
 	cfg := run(`{"compactMode":"llm","compactThreshold":0.9}`)
-	if cfg.CompactRulePct != 60 || cfg.CompactLlmPct != 80 || cfg.CompactCooldown != 1 {
-		t.Fatalf("老配置应迁移为 60/80/1, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
+	if cfg.CompactRulePct != 60 || cfg.CompactLlmPct != 80 || cfg.CompactCooldown != 2 {
+		t.Fatalf("老配置应迁移为 60/80/2, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
 	}
 	if cfg.CompactMode != "llm" || cfg.CompactThreshold != 0.9 {
 		t.Fatalf("旧字段应原样保留, got mode=%q threshold=%v", cfg.CompactMode, cfg.CompactThreshold)
@@ -1038,5 +1045,81 @@ func TestSecondLevelFoldAndBoundaryNote(t *testing.T) {
 	}
 	if strings.Index(joined, "三轮的结论") >= strings.Index(joined, "以上为压缩后的历史") {
 		t.Fatalf("全折时提示应在最后:\n%s", joined)
+	}
+}
+
+// 压缩后完整重发环境快照（resendEnvAfterCompact）：环境快照对模型是差分
+// 机制（首条整份、后续只发变化行），折叠/摘要会把差分所依附的完整基线埋掉
+//——之后模型手里只剩孤立差分行，或缺掉整段环境信息。压缩路径无条件落一条
+// 当前完整快照：基线被埋时它成为保留区首条可见快照，组装整份渲染；环境没变
+// 时重发行与保留区可见快照同文，差分为空不重复占上下文。
+func TestCompactResendsFullEnvSnapshot(t *testing.T) {
+	a := newCompactTestApp(t)
+	a.Cfg.Providers = nil
+	a.Cfg.BaseURL = "mock" // 摘要走 mock 目标，不发真请求
+	sess := &SessionMeta{ID: "s1", Mode: "task"}
+	if err := a.Store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	// 旧基线快照落在第一轮之前（并入第一轮，折叠时会被 omit 埋掉）
+	if err := a.Store.AppendRow("s1", &StoredMessage{
+		Message: TextMessage("system", "# 运行环境快照（旧基线）\n- 操作系统：Windows\n"), Kind: kindEnv, CreatedAt: "2026-01-02 10:00:00",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, final1 := seedRound(t, a, "s1", "一轮", true)
+	_, _, _, final2 := seedRound(t, a, "s1", "二轮", false)
+	seedRound(t, a, "s1", "三轮", false)
+	joinCtx := func() string {
+		joined := ""
+		for _, m := range a.buildContext(sess, "SYS") {
+			if s, ok := m.Content.(string); ok {
+				joined += s + "\n"
+			}
+		}
+		return joined
+	}
+
+	// 规则折叠埋掉基线：库里应补落一条未折叠的完整快照行（内容=envPrompt
+	// 当前口径），组装输出里整份在场
+	if _, err := a.ruleCompactTo(sess, final1); err != nil {
+		t.Fatal(err)
+	}
+	full := a.envPrompt(sess)
+	var resent *StoredMessage
+	envCount := 0
+	raw, err := a.Store.RawMessagesAll("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range raw {
+		if m.Kind == kindEnv {
+			envCount++
+			resent = m
+		}
+	}
+	if envCount != 2 || resent == nil || resent.Compact != "" || resent.Text() != full {
+		t.Fatalf("压缩应补落 1 条未折叠的完整快照行(共 %d 条 env), 末条 %+v", envCount, resent)
+	}
+	if joined := joinCtx(); !strings.Contains(joined, full) {
+		t.Fatal("折叠后组装输出应包含完整环境快照（保留区首条可见快照整份渲染）")
+	}
+
+	// 环境没变再折一轮：重发行同文于保留区可见快照，差分为空——完整快照
+	// 在上下文里只出现一次，不随重发次数累积
+	if _, err := a.ruleCompactTo(sess, final2); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(joinCtx(), "# 运行环境快照"); n != 1 {
+		t.Fatalf("同文重发应差分为空，完整快照只出现 1 次, got %d", n)
+	}
+
+	// 摘要压缩同样重发：mock 目标返回占位摘要，摘要边界埋掉的环境信息由
+	// 重发行补回
+	if _, err := a.doSummarize(sess, "manual", 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if joined := joinCtx(); !strings.Contains(joined, full) {
+		t.Fatal("摘要压缩后组装输出也应包含完整环境快照")
 	}
 }

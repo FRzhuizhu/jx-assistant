@@ -161,7 +161,7 @@ async function openSettings(pane) {
   $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
   $('set-compact-rulepct').value = c.compactRulePct != null ? c.compactRulePct : 60;
   $('set-compact-llmpct').value = c.compactLlmPct != null ? c.compactLlmPct : 80;
-  $('set-compact-cooldown').value = c.compactCooldown != null ? c.compactCooldown : 1;
+  $('set-compact-cooldown').value = c.compactCooldown != null ? c.compactCooldown : 2;
   // 常规页：文件备份（服务端配置，改动即时保存）
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);

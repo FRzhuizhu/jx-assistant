@@ -78,7 +78,7 @@ type Config struct {
 	CompactThreshold float64 `json:"compactThreshold"` // 旧版单阈值（0.8/0.9）：新逻辑不读它，仅保留字段让旧版 exe 回滚时还能用
 	CompactRulePct   int     `json:"compactRulePct"`   // 规则自动压缩阈值（%）：估算 token 占窗口比例，0=不启用（默认 60）
 	CompactLlmPct    int     `json:"compactLlmPct"`    // 模型自动压缩阈值（%）：0=不启用（默认 80）——规则压不动后的摘要兜底
-	CompactCooldown  int     `json:"compactCooldown"`  // 规则压缩冷却（轮）：触发一次后 N 轮内轮中不再重试、每轮末固定再判断一次；0=不冷却（默认 1）
+	CompactCooldown  int     `json:"compactCooldown"`  // 规则压缩冷却（轮）：触发一次后 N 轮内轮中不再重试、每轮末固定再判断一次；0=不冷却（默认 2）
 	// 文件快照保留策略：按天超龄清理是主力（旧配置缺省回落默认值；-1 = 该项关闭）。
 	// 自动池管 write/edit 的小快照；手动池（snapshot_file，往往是
 	// Office 文档等大文件）默认不限量——清理靠 7 天过期；确有磁盘压力时再配
@@ -316,7 +316,7 @@ func DefaultConfig() *Config {
 		CompactThreshold:    0.8,
 		CompactRulePct:      60,
 		CompactLlmPct:       80,
-		CompactCooldown:     1,
+		CompactCooldown:     2,
 		SnapshotDays:        7,
 		SnapshotMaxMB:       32,
 		SnapshotManualMaxMB: -1,
