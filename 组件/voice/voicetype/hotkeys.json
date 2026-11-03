@@ -1,0 +1,21 @@
+﻿{
+ "main": [
+  "mouse-side"
+ ],
+ "sub": [
+  "alt"
+ ],
+ "mode": "hold",
+ "holdMs": 300,
+ "replayShortTap": true,
+ "rightOnlyModifiers": true,
+ "avoidHost": true,
+ "avoidHostNames": [
+  "坚祥数字助理GO.exe",
+  "AI数字助理.exe",
+  "开发桌面版.exe",
+  "jx-assistant.exe",
+  "jxassistant.exe",
+  "t-dot.exe"
+ ]
+}

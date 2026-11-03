@@ -139,10 +139,12 @@ func voiceTypeCandidates() []string {
 	dir := filepath.Dir(exe)
 	parent := filepath.Dir(dir)
 	return []string{
-		filepath.Join(dir, "voicetype", "voicetype_go.exe"),         // 安装版：<安装目录>\voicetype\
-		filepath.Join(dir, "VoiceTypeGo", "voicetype_go.exe"),       // 安装版：<安装目录>\VoiceTypeGo\
-		filepath.Join(parent, "VoiceTypeGo", "voicetype_go.exe"),    // 开发：仓库根的兄弟目录
-		filepath.Join(dir, "..", "VoiceTypeGo", "voicetype_go.exe"), // 兜底写法
+		// 标准位置：语音组件内部（<安装目录>/组件/voice/voicetype/），开发与安装都适用
+		filepath.Join(dir, "组件", "voice", "voicetype", "voicetype_go.exe"),
+		// 历史/兼容位置
+		filepath.Join(dir, "voicetype", "voicetype_go.exe"),      // <安装目录>\voicetype\
+		filepath.Join(dir, "VoiceTypeGo", "voicetype_go.exe"),    // <安装目录>\VoiceTypeGo\
+		filepath.Join(parent, "VoiceTypeGo", "voicetype_go.exe"), // 仓库根的兄弟目录（迁移前）
 	}
 }
 
@@ -199,7 +201,8 @@ func (a *App) spawnVoiceType() {
 		"VT_PARENT_PID="+strconv.Itoa(os.Getpid()))
 	// VT_MODEL_DIR：让它直接用「语音组件」里那套 X-ASR + silero 模型，不再自带副本
 	//（两份逐字节相同，各 168MB）。找不到就让它自己按内置顺序探测。
-	if md := filepath.Join(filepath.Dir(exe), "组件", "voice", "models"); dirExists(md) {
+	if md := filepath.Join(filepath.Dir(filepath.Dir(exe)), "models"); dirExists(md) {
+		// 标准位置：<组件>/voice/voicetype/voicetype_go.exe → 模型在 <组件>/voice/models
 		env = append(env, "VT_MODEL_DIR="+md)
 	} else if md2 := filepath.Join(appInstallDir(), "组件", "voice", "models"); dirExists(md2) {
 		env = append(env, "VT_MODEL_DIR="+md2)

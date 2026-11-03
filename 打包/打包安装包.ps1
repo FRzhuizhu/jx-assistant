@@ -75,6 +75,9 @@ if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
   Write-Host "== 编译主程序（注入桌面模式默认值）"
+  # 先把组件里的独立语音输入法编出来（独立 Go 模块，主程序 build 不带它）
+  & (Join-Path $PSScriptRoot "编译语音输入法.ps1")
+  if ($LASTEXITCODE -ne 0) { throw "语音输入法编译失败" }
   go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1 -X main.appVersion=$Version" -o $exe $root
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }

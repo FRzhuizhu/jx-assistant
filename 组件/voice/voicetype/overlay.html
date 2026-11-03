@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<!-- VoiceType 悬浮窗 —— 窗口恒定 200×88，可见区由 Go 侧 region 切换
+     （region 外窗口不存在，点击穿透，无黑边无 bounds 滞后）。
+     布局用绝对坐标，与 vt_windows.go 的 region 常量严格对齐（勿单独改）：
+       胶囊   x34~166 y52~88（132×36 圆角18，沉底居中）
+       气泡   x5~195  y8~48 （190×40 圆角14）
+       小胶囊 x59~141 y4~26 （82×22 圆角11）
+     波形 = 语音组件按钮算法 + 显示端 AGC（speechPeak 归一：离麦远也满幅跳动）。
+     底噪跟踪 = 慢升快降（修"底噪高于初始门限时 floor 永不更新"的锁死 bug）。 -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    /* 三个变量由 Go 侧 vt.theme() 注入：
+       --accent  = 主程序的「点缀色」（设置·外观里那个主题色）
+       --fg      = 主程序的主题文字色（浅色主题 #1f2328 / 深色 #e6e8eb）
+       没取到时用主程序默认点缀色 + 按亮度自动挑的对比色 */
+    --accent: #4D6BFE;
+    --accent-shadow: rgba(38,62,180,.35);
+    --fg: #ffffff;
+    --fg-dim: rgba(255,255,255,.72);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; cursor: pointer; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent;
+               font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+
+  /* 主胶囊：x34 y52 132×36（沉底居中） */
+  .pill { position: absolute; left: 34px; top: 52px; width: 132px; height: 36px;
+          background: var(--accent); border-radius: 18px; display: flex;
+          align-items: center; padding: 0 13px; }
+
+  .caps { display: flex; align-items: center; width: 100%; }
+
+  /* 波形：12 根柱（组件按钮算法 + 显示 AGC） */
+  .bars { display: flex; align-items: center; gap: 2px; height: 18px; flex: 1;
+          justify-content: center; }
+  .bars i { width: 2.5px; border-radius: 999px; background: var(--fg); height: 3px; }
+
+  .timer { margin-left: 6px; font-size: 11px; line-height: 1; color: var(--fg-dim);
+           flex: none; font-variant-numeric: tabular-nums; }
+
+  .status { display: none; align-items: center; justify-content: center; gap: 8px;
+            width: 100%; font-size: 11.5px; line-height: 1; color: var(--fg);
+            white-space: nowrap; }
+  .track { position: relative; width: 40px; height: 4px; border-radius: 999px;
+           background: var(--fg-track, rgba(255,255,255,.18)); overflow: hidden; }
+  .track i { position: absolute; left: 0; top: 0; height: 100%; width: 100%; background: var(--fg);
+             border-radius: 999px; transform-origin: left; transform: scaleX(0); }
+  .status.run .track i { animation: fill var(--dur, 3s) cubic-bezier(.4,0,.2,1) forwards; }
+  @keyframes fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+  body:not(.recording) .caps { display: none; }
+  body:not(.recording) .status { display: flex; }
+
+  /* 气泡：x5 y8 190×40（与 region 对齐） */
+  .bubble { position: absolute; left: 5px; top: 8px; width: 190px; height: 40px;
+            background: var(--accent); color: var(--fg); border-radius: 14px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; line-height: 1; white-space: nowrap; overflow: hidden;
+            text-overflow: ellipsis; opacity: 0; transition: opacity .25s;
+            box-shadow: 0 4px 14px var(--accent-shadow); }
+  body.streaming .bubble { opacity: 1; }
+</style>
+</head>
+<body class="recording">
+  <div class="bubble" id="bubble"></div>
+  <div class="pill">
+    <div class="caps">
+      <div class="bars" id="bars"></div>
+      <div class="timer" id="timer">0:00</div>
+    </div>
+    <div class="status" id="status">
+      <div class="track" id="track"><i></i></div><span id="stext"></span>
+    </div>
+  </div>
+<script>
+// ===== 波形参数表（调整入口，全部集中在这里；改完重启 voicetype 生效） =====
+const P = {
+  // ---- 增益门限（用户拍板规格）----
+  gateDb: -25,        // 激活门限（dBFS）：低于此值=底噪，完全不增益、波形贴底。
+                      //   -25dB≈rms 0.056；-30dB≈0.032（底噪可能越线，不建议）
+  gateAdaptK: 2.5,    // 门限自适应：环境底噪估计×此倍率若高于固定门限则抬高门限
+  gateOnMs: 50,       // 超门限持续此时长 → 激活（50ms=当帧即激活：开口就开始增益）
+  gateOffMs: 400,     // 低于门限持续此时长 → 退出说话状态（与 python VAD 一致）
+  winMs: 200,         // 增益滑窗：按最近此时长的峰值归一（0.2s=只看当前这个字）
+  headroom: 1.1,      // 归一余量（越小越容易满幅）
+  idleCap: 0.15,      // 未说话时波形高度上限（安静=贴底微动）
+  hintMs: 1800,       // 未说话持续此时长 → 气泡显示"未听到声音"（与流字同气泡）
+
+  // ---- 柱形（组件按钮同款）----
+  follow: 0.25,       // 显示平滑（每帧向目标走 25%）
+  barMin: 3,          // 柱底高 px
+  barMax: 15,         // 满幅附加高 px
+  phaseFloor: 0.3,    // 柱间起伏下限比例
+  phaseDepth: 0.7,    // 柱间起伏深度
+  phaseSpeed: 0.012,  // 起伏滚动速度
+  phaseStep: 1.7,     // 相邻柱相位差
+};
+
+// ===== 波形：门限激活 + 滑窗峰值归一（dBFS 域） =====
+const BARS = 12;
+const barsEl = document.getElementById('bars');
+for (let i = 0; i < BARS; i++) barsEl.appendChild(document.createElement('i'));
+const barNodes = [...barsEl.children];
+const gateAmp = Math.pow(10, P.gateDb / 20);   // dBFS → 线性幅值
+const WIN = Math.max(2, Math.round(P.winMs / 50));
+const win = new Float32Array(WIN);              // 最近 winMs 的 rms 滑窗
+let winHead = 0;
+let noiseFloor = 0.004;   // 底噪估计（慢升快降）
+let overMs = 0, underMs = 0;
+let active = false;       // 说话状态（门限+持续判定）
+let level = 0, barVol = 0;
+let silentMs = 0, hintOn = false;
+// hintUsed 本轮是否已经用掉"未听到声音"提示：一旦出现过**分段识别结果**，
+// 本轮就再也不提示"没听到"（用户要求：提示只在开头，出现过识别结果即永久作废）。
+let hintUsed = false;
+
+(function tick() {
+  barVol += (level - barVol) * P.follow;
+  for (let i = 0; i < BARS; i++) {
+    const w = Math.sin(Date.now() * P.phaseSpeed + i * P.phaseStep) * 0.5 + 0.5;
+    barNodes[i].style.height = (P.barMin + barVol * P.barMax * (P.phaseFloor + w * P.phaseDepth)).toFixed(1) + 'px';
+  }
+  requestAnimationFrame(tick);
+})();
+
+function setHint(on) {
+  if (on === hintOn) return;
+  // 本轮已经出现过分段识别结果 → 不再提示"未听到声音"（永久作废到下一轮开始）
+  if (on && hintUsed) return;
+  hintOn = on;
+  if (on) {
+    // 已经有流字（分段句子）在显示时，绝不弹"未听到声音"：
+    // 那个提示与流字共用同一气泡，会直接把已经识别出来的句子盖掉，
+    // 用户看到的就是"明明识别出来了却说没听到声音"（实测坑）。
+    const b = document.getElementById('bubble');
+    if (document.body.classList.contains('streaming') && b.textContent) return;
+    b.textContent = '未听到声音';
+    document.body.classList.add('streaming');
+    try { window.vtSilent(true); } catch (e) {}
+  } else {
+    document.body.classList.remove('streaming');
+    try { window.vtSilent(false); } catch (e) {}
+  }
+}
+function setHintOff() {
+  if (hintOn) { hintOn = false; document.body.classList.remove('streaming'); try { window.vtSilent(false); } catch (e) {} }
+}
+
+window.vt = {
+  // theme(accent, text) —— Go 侧推来的主题：胶囊/气泡底色 = 主程序点缀色，
+  // 文字 = 主程序主题文字色。阴影与半透明文字都由这两个值派生，
+  // 换主题后整套颜色跟着走，不再写死蓝色。
+  theme(accent, text) {
+    const root = document.documentElement.style;
+    if (accent) {
+      root.setProperty('--accent', accent);
+      const [r, g, b] = hexRGB(accent);
+      root.setProperty('--accent-shadow', `rgba(${Math.round(r * .35)},${Math.round(g * .35)},${Math.round(b * .7)},.38)`);
+    }
+    if (text) {
+      // 主程序给的「主题文字色」优先，但要过一道可读性闸：底色是点缀色，
+      // 浅色主题下文字色偏深（#1f2328），压在蓝色胶囊上会看不清。
+      // 对比度不足时按点缀色亮度自动换（深底白字、浅底近黑字）。
+      // 阈值取 WCAG AA 正文标准 4.5：3 太宽，小字号在蓝底上仍发闷（实测 #1f2328
+      // 压 #4d6bfe 只有 3.5，看起来就是"字发灰"）。
+      const a = accent || getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+      const fg = contrastRatio(a, text) >= 4.5 ? text : pickContrast(a);
+      root.setProperty('--fg', fg);
+      // 半透明文字/进度轨必须从**最终生效的前景色**派生，不能从主题文字色派生：
+      // 否则浅色主题下（#1f2328）这俩会变成深色半透明，计时数字压蓝底就是"发黑的
+      // 细字"、轨道变成一道黑缝（用户实测反馈"样式像丢了"）。
+      const [r, g, b] = hexRGB(fg);
+      root.setProperty('--fg-dim', `rgba(${r},${g},${b},.72)`);
+      root.setProperty('--fg-track', `rgba(${r},${g},${b},.22)`);
+    }
+  },
+  bars(arr) { // Go 每 50ms 一帧（12 柱 RMS）
+    if (!arr || arr.length === 0) return;
+    let rms = 0;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > rms) rms = arr[i];
+
+    // 底噪估计（慢升快降）→ 自适应门限：固定 -25dB 与 底噪×2.5 取高者
+    noiseFloor = Math.min(noiseFloor * 1.002, rms);
+    noiseFloor = Math.max(0.002, Math.min(0.06, noiseFloor));
+    const th = Math.max(gateAmp, noiseFloor * P.gateAdaptK);
+
+    // 说话激活：超门限 0.1s 进入；低于门限 0.4s 退出（字间隙不抖）
+    if (rms > th) { overMs += 50; underMs = 0; } else { underMs += 50; overMs = 0; }
+    if (!active && overMs >= P.gateOnMs) active = true;
+    else if (active && underMs >= P.gateOffMs) active = false;
+
+    // 滑窗峰值归一：最近 0.5s 内的最大 rms 做分母（峰值下限=门限：
+    // 低于门限的声音永不放大）。大声帧进窗即刻满幅（0.1s 启动），
+    // 滑出窗口自动回落——无慢衰减系数，无爬坡。
+    win[winHead] = rms; winHead = (winHead + 1) % WIN;
+    let peak = 0;
+    for (let i = 0; i < WIN; i++) if (win[i] > peak) peak = win[i];
+    peak = Math.max(peak, th);
+    level = Math.min(1, rms / (peak * P.headroom));
+    if (!active) level = Math.min(level, P.idleCap); // 未说话=贴底
+
+    // 无声提示：与增益共用同一判定（动画说"没听到"= 识别端也大概率没听到）
+    silentMs = active ? 0 : silentMs + 50;
+    setHint(silentMs >= P.hintMs);
+  },
+  state(name, text, durSec) {
+    document.body.className = name === 'recording' ? 'recording' : '';
+    if (name === 'recording') {
+      // 新一轮开始：清掉上一轮的提示/气泡状态与"提示已用掉"的标记
+      silentMs = 0; hintUsed = false; hintOn = false;
+      const b = document.getElementById('bubble');
+      if (b) b.textContent = '';
+      return;
+    }
+    level = 0; silentMs = 0; setHintOff();
+    document.getElementById('stext').textContent = text || '';
+    const st = document.getElementById('status');
+    st.className = 'status' + (name === 'processing' ? ' run' : '');
+    if (name === 'processing' && durSec) {
+      document.getElementById('track').style.setProperty('--dur', durSec + 's');
+    }
+  },
+  stream(text) {
+    const b = document.getElementById('bubble');
+    if (text) {
+      b.textContent = text;
+      document.body.classList.add('streaming');
+      silentMs = 0;      // 有流字说明声音被后端认出来了，别再说"没听到声音"
+      hintOn = false;
+      hintUsed = true;   // 本轮永久作废"未听到声音"（提示只在开头出现）
+    }
+    else document.body.classList.remove('streaming');
+  },
+  timer(sec) { document.getElementById('timer').textContent = sec; },
+};
+
+// hexRGB('#4d6bfe') → [77,107,254]；容错 3 位缩写与非法值
+function hexRGB(hex) {
+  let s = String(hex || '').replace('#', '');
+  if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+  const n = parseInt(s, 16);
+  if (!/^[0-9a-fA-F]{6}$/.test(s) || Number.isNaN(n)) return [77, 107, 254];
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// relLum WCAG 相对亮度（0..1）
+function relLum(hex) {
+  const f = (c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  const [r, g, b] = hexRGB(hex);
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+// contrastRatio 两色的 WCAG 对比度（1..21）
+function contrastRatio(a, b) {
+  const la = relLum(a), lb = relLum(b);
+  const hi = Math.max(la, lb), lo = Math.min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// pickContrast 按底色亮度挑字色（深底白字、浅底近黑字）
+function pickContrast(bg) {
+  return relLum(bg) >= 0.45 ? '#1f2328' : '#ffffff';
+}
+document.addEventListener('click', () => { try { window.vtStop(); } catch (e) {} });
+try { window.vtReady(); } catch (e) { setTimeout(() => { try { window.vtReady(); } catch (e2) {} }, 300); }
+</script>
+</body>
+</html>

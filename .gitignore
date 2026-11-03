@@ -74,3 +74,14 @@ jx.db-wal
 
 # 语音输入法联动文件（运行期状态：热键/主题色，由主程序按当前设置生成）
 voicetype.json
+
+# 语音组件里的独立输入法：源码入库，构建产物/运行期文件不入库
+组件/voice/voicetype/*.exe
+组件/voice/voicetype/*.exe~
+组件/voice/voicetype/vt.log
+组件/voice/voicetype/asr.log
+组件/voice/voicetype/trigger.txt
+组件/voice/voicetype/history.json
+组件/voice/voicetype/webview2-profile/
+组件/voice/voicetype/__pycache__/
+组件/voice/voicetype/models/
