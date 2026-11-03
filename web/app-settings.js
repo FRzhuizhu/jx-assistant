@@ -1846,6 +1846,14 @@ function applyAccent(color, hover, save) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accentColor: color }),
     }).catch(() => {});
+    // 一并把「点缀色 + 当前主题文字色」推给独立语音输入法的胶囊
+    // （输入法读 voicetype.json；--text 随浅色/深色主题自动变化，这里读计算值）
+    let textColor = '';
+    try { textColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim(); } catch (e) {}
+    fetch('/api/voicetype/link', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accentColor: color, textColor }),
+    }).catch(() => {});
   }
 }
 

@@ -276,6 +276,9 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "GET /api/search/content", a.handleSearchContent, apiMeta{Summary: "按内容搜会话", Params: "q=关键词", Perm: permReadOnly})
 	a.apiRoute(mux, "GET /api/config", a.handleGetConfig, apiMeta{Summary: "读全局配置（Key 已掩码）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/config", a.handleSetConfig, apiMeta{Summary: "改全局配置", Params: "要改的字段（providers 之外的一般项）", Perm: permFull, Danger: "修改全局配置，影响所有会话"})
+	// 语音输入法联动（voicetype_link.go）：把听写快捷键与主题色写进 voicetype.json，
+	// 独立语音输入法（VoiceTypeGo）读它——它读不到本页 localStorage，也不该读 config.json。
+	a.apiRoute(mux, "POST /api/voicetype/link", a.handleVoicetypeLink, apiMeta{Summary: "同步听写快捷键/主题色给独立语音输入法", Params: "main、sub（键名数组）、accentColor、textColor，均可选", Perm: permReadOnly})
 	a.apiRoute(mux, "GET /api/models", a.handleModels, apiMeta{Summary: "模型清单（全部渠道）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/llm/ask", a.handleLLMAsk, apiMeta{Summary: "独立单轮模型调用（一次请求一次输出，不进会话上下文）", Params: "system、user、session 可选（跟随该会话的模型）", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/modes", a.handleChatModes, apiMeta{Summary: "工作模式清单（新建会话可选的模式）", Perm: permReadOnly}) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
@@ -1591,6 +1594,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
 		writeErr(w, 500, "保存配置失败: "+err.Error())
 		return
+	}
+	// 点缀色有变：顺手同步给语音输入法的联动文件（输入法胶囊底色跟着主题走）
+	if body.AccentColor != nil {
+		if err := a.writeVoicetypeLink(nil, nil, a.Cfg.AccentColor, ""); err != nil {
+			log.Printf("[voicetype-link] 同步点缀色失败: %v", err)
+		}
 	}
 	// 远程接入字段有变（开关/设备号/密钥/网关）：立即热启停，无需重启进程
 	if a.Cfg.RemoteAccess != oldRA {

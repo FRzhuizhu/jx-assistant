@@ -160,6 +160,19 @@
         try { def.onChanged(); } catch (e) { console.warn('[HK] onChanged', defId, e); }
       }
       try { JX.emit('hotkeys:change', defId); } catch (e) { /* JX 缺席（极端加载序）忽略 */ }
+      // 语音听写快捷键变了 → 同步给独立语音输入法（VoiceTypeGo）：
+      // 输入法是独立进程，读不到本页 localStorage，所以由主程序落一份
+      // voicetype.json（只含热键与颜色，见 voicetype_link.go）。
+      if (defId === 'voice.dictation' && def) {
+        try {
+          const main = HK.effectiveKeys(def, 'main');
+          const sub = HK.effectiveKeys(def, 'sub');
+          fetch('/api/voicetype/link', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ main, sub }),
+          }).catch(() => {});
+        } catch (e) { /* 组件未就绪：忽略，下一次变更再同步 */ }
+      }
     },
 
     keyCapBox, choiceChips, renderTable, keyLabel, comboText,
