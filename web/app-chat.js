@@ -512,11 +512,59 @@ function toolsChangeRow(prevTools, tools, seq) {
   return row;
 }
 
-// 运行环境更新行：轮内权限提升/模式切换/能力开关/技能增减等真实变化导致环境
-// 变化时，在发生位置展示变化内容（diff）与新快照全文
-function envNoteRow(text, prev, seq) {
-  return procTextRow('运行环境更新', '随下次请求尾部发送 · ' + fmtCount(String(text).length) + ' 字',
-    prev == null ? String(text) : diffBody(prev, text), seq);
+// 运行环境更新行：展示这条快照在下次请求里实际发给模型的消息——正文即发送
+// 原文、字数即发送量（差分时是几十~几百字，整份/完整重发时才是全文 5k 级）。
+// 形态由 groupTurns 的 env 构造器按组装层口径复刻判定，见 ENV_FULL_RESEND_AFTER。
+const ENV_FULL_RESEND_AFTER = 5; // 与后端 context.go envFullResendAfter 同值：连续差分到顶后完整重发一次校准
+
+// envUpdateMessageJS / fullResendEnvJS：组装层 context.go envUpdateMessage /
+// fullResendEnv 的前端镜像（行多重集差 + 中文标签清单，逐字节同输出）。
+// envnote 展示的正是模型将收到的消息——改任一侧必须同步另一侧。
+function envUpdateMessageJS(prev, cur) {
+  prev = String(prev); cur = String(cur);
+  const prevLines = prev.split('\n'), curLines = cur.split('\n');
+  const prevCount = new Map(), curCount = new Map();
+  prevLines.forEach((l) => prevCount.set(l, (prevCount.get(l) || 0) + 1));
+  curLines.forEach((l) => curCount.set(l, (curCount.get(l) || 0) + 1));
+  const added = []; // 新快照里有、旧快照里没有的行（含换值后的新值行）
+  for (const l of curLines) {
+    const c = prevCount.get(l) || 0;
+    if (c > 0) { prevCount.set(l, c - 1); continue; }
+    added.push(l);
+  }
+  const removed = []; // 旧快照里有、新快照里没了的 "- " 条目行（注记行等静默消失）
+  for (const l of prevLines) {
+    const c = curCount.get(l) || 0;
+    if (c > 0) { curCount.set(l, c - 1); continue; }
+    if (l.trimStart().startsWith('- ')) removed.push(l);
+  }
+  let b = '';
+  if (removed.length) {
+    b = '# 环境更新（条目有增删/变更：移除行 = 早前快照中该条目整行作废，新增行 = 最新状态，均给整行原文；连续差分积累多了系统会自动完整重发一次校准）\n';
+    removed.forEach((l) => { b += '【移除】' + l + '\n'; });
+    added.forEach((l) => { b += '【新增】' + l + '\n'; });
+    return b.replace(/\n+$/, '');
+  }
+  if (!added.length) return '';
+  added.sort(); // 与后端 sort.Strings 同为确定性排序（快照行为 BMP 字符，序一致）
+  b = '# 环境更新（新增条目，叠加在更早的快照与更新之上；条目减少或变更时改发增删变更清单）\n';
+  added.forEach((l) => { b += l + '\n'; });
+  return b.replace(/\n+$/, '');
+}
+
+// 完整重发形态：正文用新快照原文，首行标题换成「完整重发」声明（镜像 fullResendEnv）
+function fullResendEnvJS(cur) {
+  let body = String(cur);
+  const i = body.indexOf('\n');
+  if (i >= 0 && body.startsWith('# ')) body = body.slice(i + 1);
+  return '# 运行环境快照（完整重发，取代更早的快照与更新）\n' + body.replace(/\n+$/, '');
+}
+
+function envNoteRow(it) {
+  const kindLabel = it.mode === 'full' ? '整份' : it.mode === 'resend' ? '完整重发（差分校准）' : '差分';
+  return procTextRow('运行环境更新',
+    '随下次请求尾部发送 · ' + fmtCount(String(it.text).length) + ' 字 · ' + kindLabel,
+    String(it.text), it.seq);
 }
 
 // 时间提示词行：与「运行环境」同款折叠行——模型收到的每条时间消息都在这里
@@ -875,15 +923,29 @@ const ROW_ITEM_BUILDERS = {
   // 压缩摘要：不按落库位置产条目——卡片由 groupTurns 的 sumAt 归位到覆盖
   // 边界（最后一条被压缩的消息之后）就地插入，位置才是压缩真实发生的地方
   summary() {},
-  // 运行环境快照：与最近一次已知环境相同则跳过；有真实变化（权限提升、
-  // 模式切换、能力开关、技能增减、用户新发了一条消息等）才在发生位置显示
-  // 「运行环境更新」折叠行
+  // 运行环境快照：按组装层（context.go envRowRender）同一口径复刻「模型实际
+  // 收到什么」——首条（或摘要折叠后首条）整份、其后差分（envUpdateMessageJS
+  // 行多重集差）、连续差分满 ENV_FULL_RESEND_AFTER 后完整重发校准、同文不发；
+  // 已被摘要覆盖（seq≤envBoundary）或规则压缩整行省略（omit）的快照模型已
+  // 看不到，不再显示。envnote 的正文与字数因此与下次请求的发送内容一致
+  // （所见即所发：差分时几十~几百字，整份/完整重发才显示全文字数）。
   env(m, st) {
+    if (m.seq <= st.envBoundary) return;   // 摘要已覆盖：模型看不到这条快照
+    if (m.compact === 'omit') return;      // 规则压缩整行省略：同上
     const txt = String(m.content ?? '');
-    if (txt === st.lastEnv) return;
+    let mode = null, body = '';
+    if (st.lastEnv == null) {
+      mode = 'full'; body = txt; st.envUpdates = 0;
+    } else if (st.envUpdates >= ENV_FULL_RESEND_AFTER) {
+      mode = 'resend'; body = fullResendEnvJS(txt); st.envUpdates = 0;
+    } else {
+      body = envUpdateMessageJS(st.lastEnv, txt);
+      if (body) { mode = 'diff'; st.envUpdates++; }
+    }
+    st.lastEnv = txt; // 基线无条件推进（同文/注记过期静默消失也不回退，与后端一致）
+    if (!mode) return;
     st.ensure();
-    st.cur.items.push({ k: 'envnote', seq: m.seq, text: txt, prev: st.lastEnv });
-    st.lastEnv = txt;
+    st.cur.items.push({ k: 'envnote', seq: m.seq, text: body, mode });
   },
   // 提示词拼装快照：变化驱动展示（规范 §4）——首轮完整交代拼装结构
   // （工具定义 + 系统提示词在用户消息上方、运行环境在请求末尾，即请求真实排布），
@@ -933,6 +995,10 @@ function groupTurns(msgs, resultOf, base) {
     sawPrompt: false, lastSys: '', lastToolsJson: '', lastTools: null, lastEnv: null,
     ...(base || {}),
   };
+  // 环境快照的组装口径状态（镜像 context.go buildContext）：envUpdates 差分
+  // 计数（继承段接力），envBoundary 摘要覆盖边界（边界内的快照模型已看不到）
+  st.envUpdates = st.envUpdates || 0;
+  st.envBoundary = 0;
   st.ensure = () => {
     if (!st.cur) { st.cur = { userMsg: null, items: [] }; st.turns.push(st.cur); }
   };
@@ -963,6 +1029,7 @@ function groupTurns(msgs, resultOf, base) {
   for (const m of msgs) {
     if (displayKindOf(m) !== 'summary' || !m.coversUpTo) continue;
     sumAt.set(m.coversUpTo, m);
+    if (m.coversUpTo > st.envBoundary) st.envBoundary = m.coversUpTo; // 组装层 boundary 同口径：取摘要覆盖边界最大值
   }
   for (const m of msgs) {
     const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
@@ -977,7 +1044,7 @@ function groupTurns(msgs, resultOf, base) {
       st.cur.items.push({ k: 'summary', seq: s.seq, text: String(s.content ?? ''), origin: s.origin, covers: s.coversUpTo });
     }
   }
-  st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv };
+  st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv, envUpdates: st.envUpdates };
   st.turns.base = st.base; // 挂在返回的 turns 上：renderMessages 接力给正文段的分组
   return st.turns;
 }
@@ -1133,7 +1200,7 @@ async function forkFromAnswer(m, btn) {
 
 function renderRowItem(it, opts) {
   if (it.k === 'prompttail') return promptTailRows(it.env, it.seq);
-  if (it.k === 'envnote') return envNoteRow(it.text, it.prev, it.seq);
+  if (it.k === 'envnote') return envNoteRow(it);
   if (it.k === 'time') return timeNoteRow(it.text, it.seq);
   if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
   if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
