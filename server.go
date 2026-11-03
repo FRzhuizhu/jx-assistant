@@ -1440,7 +1440,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if v := body.MarketURL; v != nil {
 		u := strings.TrimSpace(*v)
 		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			writeErr(w, 400, "市场地址需为 http(s) 的清单地址（jxai-server 的 /market/manifest.json）")
+			writeErr(w, 400, "企业技能包/小程序平台地址需为 http(s) 的服务器地址（如 https://example.com:2227，清单路径后缀自动拼）")
 			return
 		}
 		a.Cfg.MarketURL = u

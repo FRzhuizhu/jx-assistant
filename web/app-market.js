@@ -120,13 +120,13 @@ function renderUnconfigured() {
   if (!list) return;
   const sug = mkData.suggested || '';
   list.innerHTML =
-    '<div class="mk-hint">还没配置市场服务器。市场由 jxai-server 提供（部署一次，技能/组件/插件装这一处）。' +
+    '<div class="mk-hint">还没配置企业技能包/小程序平台地址。两者由同一台 jxai-server 提供（部署一次，技能/组件/插件装这一处）。' +
     (sug
       ? '<br>检测到远程接入网关，推荐直接用同一台服务器：' +
         '<div class="mk-suggest"><code>' + esc(sug) + '</code></div>' +
         '<div class="mk-suggest-acts"><button id="mk-use-suggested" class="mk-act">填入此地址</button>' +
         '<button id="mk-go-settings" class="mk-act ghost">手动设置</button></div>'
-      : '<br>到 设置 · 网络访问 · 市场服务器 填入清单地址。' +
+      : '<br>到 设置 · 网络访问 · 企业技能包/小程序平台地址 填服务器地址（如 https://example.com:2227）。' +
         '<div class="mk-suggest-acts"><button id="mk-go-settings" class="mk-act">去设置</button></div>') +
     '</div>';
   const use = $('mk-use-suggested');
@@ -633,7 +633,7 @@ async function openSitesPlatform() {
     } catch (e) {}
   }
   if (!(mkData && mkData.configured)) {
-    alert('还没配置市场服务器：请到 设置 · 网络访问 填「市场服务器」，小程序平台与它同一台服务端。');
+    alert('还没配置企业技能包/小程序平台地址：请到 设置 · 网络访问 填服务器地址（如 https://example.com:2227），技能市场与小程序平台同一台服务端。');
     if (typeof openSettings === 'function') openSettings('network');
     return;
   }

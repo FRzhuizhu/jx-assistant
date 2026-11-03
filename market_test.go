@@ -176,7 +176,8 @@ func TestMarketViewUnconfigured(t *testing.T) {
 	if out["configured"] != false {
 		t.Fatalf("应未配置: %v", out)
 	}
-	if !strings.Contains(out["suggested"].(string), ":PORT/market/manifest.json") {
+	// 建议值只给服务器地址（2026-11-03 口径）：清单后缀由程序自动拼
+	if out["suggested"].(string) != "https://example.com:2228" {
 		t.Fatalf("建议值不对: %v", out["suggested"])
 	}
 }
