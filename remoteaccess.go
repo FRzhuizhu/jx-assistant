@@ -598,9 +598,9 @@ func (h *hubCtx) handleRelay(rid, ivB64, ctB64 string) {
 	}
 	// 中继白名单：/api/ 是常规接口；/sites 前缀（含 /sites-assets/）与 /s/ 是
 	// 小程序平台内嵌代理的路径（sitesproxy.go）——远程端 iframe 的 src 与页面内
-	// 绝对路径 fetch 都要经中继落回本端代理，不放行则远程手机端平台页打不开
-	if !strings.HasPrefix(fr.Path, "/api/") && !strings.HasPrefix(fr.Path, "/sites") &&
-		!strings.HasPrefix(fr.Path, "/s/") {
+	// 绝对路径 fetch 都要经中继落回本端代理，不放行则远程手机端平台页打不开。
+	// 与 P2P 直连通道（p2pdirect.go）共用 relayPathAllowed，两条通道必须同口径
+	if !relayPathAllowed(fr.Path) {
 		iv, ct, _ := sealJSON(key, map[string]any{"t": "err", "id": fr.ID, "msg": "[403] path not allowed"})
 		_ = h.sendJSON(map[string]any{"t": "res", "rid": rid, "iv": iv, "ct": ct})
 		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
@@ -843,6 +843,27 @@ var (
 	p2pShellErr  error
 )
 
+// relayPathAllowed 中继与 P2P 直连共用的路径白名单：/api/ 是常规接口；
+// /sites 前缀（含 /sites-assets/）与 /s/ 是小程序平台内嵌代理的路径
+// （sitesproxy.go）。两条通道必须同口径——2026-11-04 事故：直连侧漏放
+// /sites，手机 P2P 直连打开平台页必 403。
+func relayPathAllowed(p string) bool {
+	return strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/sites") ||
+		strings.HasPrefix(p, "/s/")
+}
+
+// inlineJS 把 JS 内容安全内联进 <script> 标签：源码里的任何 </script 字面量
+// （藏在字符串/正则/注释里）都会让 HTML 解析器把标签提前闭合——脚本被拦腰
+// 斩断、整段解析失败，页面表面正常但该脚本的全部能力静默消失。2026-11-04
+// 手机端「服务离线」事故的根源之一：小程序平台代载代码里的一处闭合标签字面量
+// 报废了整个内联的 remote-boot（隧道/组件加载/外壳自愈全灭）。统一转义为
+// <\/script——在 JS 字符串与正则字面量里语义完全不变。
+var regexpScriptClose = regexp.MustCompile(`(?i)</script`)
+
+func inlineJS(js string) string {
+	return regexpScriptClose.ReplaceAllString(js, `<\/script`)
+}
+
 func (a *App) p2pShell() (string, error) {
 	p2pShellOnce.Do(func() {
 		idx, err := fs.ReadFile(a.static, "index.html")
@@ -860,14 +881,16 @@ func (a *App) p2pShell() (string, error) {
 			}
 			return "<style>\n" + string(css) + "\n</style>"
 		})
-		// 脚本内联：<script src="/x.js"></script>（保留原有属性次序不影响）
+		// 脚本内联：<script src="/x.js"></script>（保留原有属性次序不影响）。
+		// 内联前统一转义源码里的闭合标签字面量（见 inlineJS——2026-11-04 手机端
+		// 「服务离线」事故的根治点之一）
 		s = regexpScriptSrc.ReplaceAllStringFunc(s, func(m string) string {
 			sub := regexpScriptSrc.FindStringSubmatch(m)
 			js, err := fs.ReadFile(a.static, sub[1])
 			if err != nil {
 				return m
 			}
-			return "<script>\n" + string(js) + "\n</script>"
+			return "<script>\n" + inlineJS(string(js)) + "\n</script>"
 		})
 		// logo 转 dataURL（两处 img）
 		if logo, err := fs.ReadFile(a.static, "logo.png"); err == nil {
@@ -885,7 +908,7 @@ func (a *App) p2pShell() (string, error) {
 			p2pShellErr = fmt.Errorf("remote-boot.js 读取失败: %w", err)
 			return
 		}
-		s = strings.Replace(s, "<head>", "<head>\n<script>\n"+string(boot)+"\n</script>", 1)
+		s = strings.Replace(s, "<head>", "<head>\n<script>\n"+inlineJS(string(boot))+"\n</script>", 1)
 		// 内容哈希只对基底计算（版本脚本不含在内——代数可变，改由服务时注入；
 		// 且哈希必须先于自身注入计算，否则含自身无法稳定得出）
 		sum := sha256.Sum256([]byte(s))

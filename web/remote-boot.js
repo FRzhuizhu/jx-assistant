@@ -809,8 +809,13 @@
       var m = /<script src="(\/sites-assets\/[^"]+)"><\/script>/.exec(html);
       var pre = m ? window.fetch(m[1]).then(function (r) { return r.ok ? r.text() : ''; }) : Promise.resolve('');
       return pre.then(function (js) {
-        if (m && js) html = html.replace(m[0], '<script>\n' + js + '\n</script>');
-        html = html.replace('<head>', '<head>\n<script>' + SITES_HOOK + '</script>');
+        // 注意：本文件会被 p2p-shell 原样内联进外壳的 script 标签——这里与下面
+        // 拼接用的闭合标签字面量必须拆成 '</scr' + 'ipt>'，否则内联脚本会在
+        // 第一处闭合标签字面量被 HTML 解析器提前闭合，整段解析失败：fetch 劫持、
+        // 隧道、组件加载、外壳自愈全部不存在，页面表面正常但所有 /api/ 打到网关源
+        // 404（服务离线 + 小程序平台加载失败，2026-11-04 手机端事故，已实测复现）。
+        if (m && js) html = html.replace(m[0], '<scr' + 'ipt>\n' + js + '\n</scr' + 'ipt>');
+        html = html.replace('<head>', '<head>\n<scr' + 'ipt>' + SITES_HOOK + '</scr' + 'ipt>');
         frame.src = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       });
     }).catch(function (e) {
