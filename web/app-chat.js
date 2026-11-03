@@ -5308,7 +5308,7 @@ function renderQueueDock(view) {
     txt.textContent = qdPrev.length > 200 ? qdPrev.slice(0, 200) + '…' : qdPrev;
     txt.title = pm.content;
     li.appendChild(txt);
-    li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '', '立即插话'));
+    li.appendChild(qdAction('steer', view, pm, '插话发送：模型输出中立即打断生效；工具执行中等下一步调用模型', '', '立即插话'));
     // 编辑只给自己发的排队项（kind 空/chat）；数字助理派发注入的不参与
     if (!pm.kind || pm.kind === 'chat') {
       li.appendChild(qdAction('edit', view, pm, '退回输入框编辑', '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'));
@@ -5428,7 +5428,7 @@ async function pendingAction(view, id, action) {
       method: 'POST', body: JSON.stringify({ id, action }),
     });
     applyPending(view, d.pending);
-    pendingHint(view, action === 'steer' ? '已提前为插话：下一次调用模型前生效' : '已移出队列');
+    pendingHint(view, action === 'steer' ? '已提前为插话：模型输出中立即打断生效' : '已移出队列');
   } catch (e) {
     pendingHint(view, '操作失败：' + e.message);
   }
@@ -5496,7 +5496,7 @@ async function sendMidrun(content, viaInput, view, voiceUsed) {
     renderQueueDock(view);
     view._pinned = false; // 插话/排队展示在对话末尾：恢复跟随看得到回执
     renderMessages(view.state.msgs, view);
-    pendingHint(view, d.mode === 'steer' ? '已插话：下一次调用模型前注入生效' : '已排队：本轮结束后自动发送');
+    pendingHint(view, d.mode === 'steer' ? '已插话：模型输出中立即打断生效；工具执行中等下一步调用模型' : '已排队：本轮结束后自动发送');
   } catch (e) {
     pendingHint(view, '发送失败：' + e.message);
     return;

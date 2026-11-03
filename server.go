@@ -2617,8 +2617,10 @@ func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"path": first, "paths": paths})
 }
 
-// handleInterject 对话中途发消息：不打断当前执行。
-// mode=steer（插话）：排进插话队列，主循环在下一次调用模型前注入生效；
+// handleInterject 对话中途发消息。
+// mode=steer（插话）：排进插话队列；模型调用中（思考/正文输出）会立即打断
+// 当前模型流、下一步带着插话重新调模型（kickModelStream），工具执行中则等
+// 主循环下一次调用模型前注入生效；
 // mode=queue（排队）：排进排队队列，本轮结束后作为独立一轮自动发送。
 // 会话没在执行时一律按排队处理并顺手把执行拉起来，消息不会卡在队列里。
 func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {

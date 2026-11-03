@@ -1031,9 +1031,10 @@ DSH 官方的远程工作区只在 mac/Linux 宿主上可用；本产品用纯 G
 **派发关系**：数字助理（总控）只有一个派发工具——`dispatch_task` 派出**顶层工作
 任务**（进左侧栏，`dispatched_by` 记派发它的助理、作为回报链），**永远不带上下文**，
 像用户发消息一样只给一段自足描述；`send_to_session` 给已有会话发话，默认语义是
-**插话**——目标执行中就把话注入它正在执行的这一轮（投递统一走 `deliverSub` →
-`deliverToSession`，AI 发话一律插话、不看排队偏好；等价 call_api 调 interject
-mode=steer），目标空闲则直接作为
+**插话**——目标执行中就把话注入它正在执行的这一轮（模型调用中**立即打断**其
+思考/正文输出、下一步带着话重调；工具执行中等下一步调用模型前注入；投递统一走
+`deliverSub` → `deliverToSession`，AI 发话一律插话、不看排队偏好；等价 call_api 调
+interject mode=steer），目标空闲则直接作为
 新需求开跑；中途发话一律立即生效，想等对方干完再派下一个活就等【派发回报】来了
 再发（可选 `permission`，与派发同一套规则：只能同等或降权，且不得高于目标会话
 自己的档位——给已有会话提权会被拒绝，见 assistant.go 的 `runSendToSession`）。
@@ -1069,7 +1070,7 @@ mode=steer），目标空闲则直接作为
 
 | 模式 | 生效时机 | 前端呈现 |
 |---|---|---|
-| 插话 `steer` | 主循环下一次调用模型前注入，作为一条真实用户消息进入上下文 | 立刻贴在对话最底下（虚线气泡 +「插话中」角标），落库后换成正常气泡 |
+| 插话 `steer` | 模型调用中（思考/正文输出/重试等待）**立即打断**当前模型流：半截输出带「（被插话打断，输出提前结束）」标注落库，下一步带着插话重组上下文重新调模型；工具执行中不打断，等下一步调用模型前注入（原有行为） | 立刻贴在对话最底下（虚线气泡 +「插话中」角标），落库后换成正常气泡 |
 | 排队 `queue` | 本轮结束后作为**独立一轮**自动发送 | 进输入框上方的排队坞；可逐条删除，或点 ↑ 提前为插话 |
 
 两边的队列都在服务端（`PendingMsg`），刷新页面/换窗口不丢、多窗口一致；本轮结束时
@@ -1132,8 +1133,9 @@ report_ready / done / stopped），前端常驻订阅：父对话里的子任务
   组织成一条求助消息，走与用户消息完全相同的投递收口 `deliverToSession`
   （kind=aiuser、origin=help，前缀【任务求助｜会话标题（id）】）——经理空闲就
   落库并占住它这一轮（`kickSessionRound` 唤醒，与【派发回报】【待办任务派发】
-  同一套机制），正忙就**插话**注入它正在执行的那一轮（下一次调用模型就能看到，
-  AI 发话一律插话不排队）。**工具立即返回，任务不等答复**：
+  同一套机制），正忙就**插话**注入它正在执行的那一轮（模型调用中立即打断其
+  当前输出、下一步就能看到，工具执行中等下一步调用模型；AI 发话一律插话
+  不排队）。**工具立即返回，任务不等答复**：
   没有阻塞等待，就不存在「任务停在那等经理、经理又在等任务」的互相等死。
 - **经理侧没有新工具**：它用既有的 `send_to_session`（中途发话默认插话）、
   `dispatch_task`（派新任务）、`list_sessions` / `read_session_summary`（看谁在跑、
@@ -1763,7 +1765,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `GET /api/sessions/{id}/stream` | 接上正在执行的会话流（刷新页面/换窗口后继续看实时输出）；未在执行时立刻回一帧 `done` |
 | `POST /api/sessions/{id}/stop` | 显式停止本会话执行（流断开不再等于停止） |
 | `POST /api/sessions/{id}/retry` | 失败后重试：不重复落库用户消息，带着当前上下文再跑一轮（SSE 流式返回，同 /chat） |
-| `POST /api/sessions/{id}/interject` | 执行中发消息：`{content, mode}`，`steer`=插话（下一次调用模型前注入）、`queue`=排队（本轮结束后作为独立一轮发送）；未在执行时按排队处理并顺手拉起执行 |
+| `POST /api/sessions/{id}/interject` | 执行中发消息：`{content, mode}`，`steer`=插话（模型调用中立即打断当前流、下一步带着插话重调；工具执行中等下一步调用模型前注入）、`queue`=排队（本轮结束后作为独立一轮发送）；未在执行时按排队处理并顺手拉起执行 |
 | `POST /api/sessions/{id}/pending` | 排队坞操作：`{id, action:'remove'\|'steer'}`（移出队列 / 提前为插话）、`{id, action:'move', before:锚点id\|空=队尾}`（拖拽排序，只动排队队列顺序）、`{action:'pause'\|'resume'}`（队列级暂停/继续，不需要 id；恢复时空闲且有排队消息顺手拉起执行）；前端「编辑排队/插话消息」＝ `remove` 后把原文回填输入框草稿，复用 remove，无新 action |
 | `POST /api/sessions/{id}/compact` | 手动压缩为一条摘要 |
 | `GET /api/assistant/versions` | 数字经理主对话的版本清单（`{current, versions:[{sessionId,version,messages,updatedAt,running,current}]}`；当前版本指针存库，前端入口与设置页都按它走，见 assistant_versions.go） |

@@ -1912,7 +1912,7 @@ buildAccentRow();
 // onChange 的 lsSet('jx.midrun', v) 记住，选过「插话」的照旧保持插话。
 makeSelect('sel-midrun', 'midrun', [
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
-  { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
+  { v: 'interject', label: '插话：模型思考/输出中立即打断生效；工具执行中等下一步注入' },
 ], (v) => lsSet('jx.midrun', v));
 makeSelect('sel-compact-mode', 'compactMode', [
   { v: 'rule', label: '规则折叠（默认）' },

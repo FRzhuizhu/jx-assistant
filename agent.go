@@ -294,7 +294,7 @@ const managerCoordPrompt = `
 - 排先后是你的活：同一样东西同一时间只让一个会话动，给每个会话讲清顺序；判断依据就用 list_sessions / read_session_summary 看谁在跑、改了哪些文件。
 - 这条通道只传消息，不是审批：删除、发布、提权这类事仍然要用户点头。处理完顺手给用户一句话汇报。
 
-**中途发话一律插话。**用 send_to_session 给正在执行的会话发话时，内容会注入它**正在执行的这一轮**——对方下一次调用模型就能看到并纳入上下文（与 call_api 调 POST /api/sessions/{id}/interject mode=steer 完全等价，直接用 send_to_session 即可，不必绕 call_api）；对方空闲时则作为新需求直接开跑。所以只要中途发话，肯定是当场插进去的：纠偏（发现任务方向错了，立刻喊停转向）、回答刚发来的求助、补一句要求，都直接发。
+**中途发话一律插话。**用 send_to_session 给正在执行的会话发话时，内容会注入它**正在执行的这一轮**：对方正处于模型调用中（思考/正文输出）会被**立即打断**——半截输出带打断标注落库，下一步带着你的话重新调模型；对方正在执行工具则等它下一步调用模型前注入（与 call_api 调 POST /api/sessions/{id}/interject mode=steer 完全等价，直接用 send_to_session 即可，不必绕 call_api）；对方空闲时则作为新需求直接开跑。所以只要中途发话，肯定是当场插进去的：纠偏（发现任务方向错了，立刻喊停转向）、回答刚发来的求助、补一句要求，都直接发。
 - 想等那条 AI 干完当前活、再让它接下一个任务的，就不要现在发——等它的【派发回报】来了再派下一个活（正好先确认它这轮的回复内容）。不要用提前发一句占位排队的方式衔接任务。
 - 停掉会话用 stop_session（仅按用户指示）。`
 
@@ -1170,9 +1170,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	modelFallback := false   // 专家预设模型不可用 → 切全局默认重试过一次（防循环）
 	autoSwitched := false    // 公司通道连接失败 → 自动停用并切可用提供方（每轮执行体一次）
 
-	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
-	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
-	// 落库身份取待生效项自带的 kind/origin（用户插话=chat，派发注入=aiuser）。
+	// interjectsBefore 在下一次调用模型前落库插话，返回是否注入了消息。落库即可
+	// ——上下文每步从存储重建，自然带上。模型调用中来的插话已由 pushPending 里的
+	// kickModelStream 掐断了当前流，主循环 continue 到这里接着注入（打断见 RunAgent
+	// 的 steered 分支）。落库身份取待生效项自带的 kind/origin（用户插话=chat，
+	// 派发注入=aiuser）。
 	interjectsBefore := func(emit func(Event)) bool {
 		got := a.drainSteer(sess.ID)
 		for _, pm := range got {
@@ -1238,6 +1240,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: pack.Tools}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
+		// 本步模型调用的步级 ctx：插话到达时 kickModelStream 取消它——当前模型流
+		// 立即中断，主循环 continue 到下一步带着插话重组重调（见下方 steered
+		// 分支）。句柄在模型调用结束、进入工具执行段前注销：工具运行中来的插话
+		// 不触发取消，照旧等下一步调用模型前注入。用户停止走 run.ctx 取消，
+		// 会传导到 stepCtx，语义不变。
+		stepCtx, stepCancel := context.WithCancel(ctx)
+		modelKick := a.beginModelStream(sess.ID, stepCancel)
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall
@@ -1268,7 +1277,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				}
 				lastOut = t
 			}
-			err = StreamChat(ctx, target, req, StreamCallbacks{
+			err = StreamChat(stepCtx, target, req, StreamCallbacks{
 				// 模型流强断登记（停止看门狗硬终结用）：流建立时注册、结束时注销——
 				// 硬停止时直接断开底层连接，不依赖 ctx 取消生效
 				OnBody: func(abort func()) {
@@ -1332,7 +1341,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					continue
 				}
 			}
-			if attempt >= modelTries || ctx.Err() != nil || !isRetryableModelErr(err) {
+			if attempt >= modelTries || stepCtx.Err() != nil || !isRetryableModelErr(err) {
 				break
 			}
 			delay := modelRetryDelays[attempt-1]
@@ -1340,16 +1349,34 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			emit(Event{Type: "auto_retry", Output: fmt.Sprintf("网络异常（%s）；%d 秒后自动重试（第 %d/%d 次）…",
 				truncateRunes(strings.Join(strings.Fields(err.Error()), " "), 120), int(delay/time.Second), attempt+1, modelTries)})
 			select {
-			case <-ctx.Done(): // 等待期间被停止：不再重试，走下方的停止收尾
-				err = ctx.Err()
+			case <-stepCtx.Done(): // 等待期间被停止或被插话打断：不再重试，走下方的收尾
+				err = stepCtx.Err()
 			case <-time.After(delay):
 				continue
 			}
 			break
 		}
+		steered := stepCtx.Err() != nil && ctx.Err() == nil // 被插话打断的模型调用（非用户停止）
+		modelKick.end()
+		stepCancel()
 		if err != nil {
 			if attempt > 1 {
 				emit(Event{Type: "auto_retry"}) // 重试耗尽：收掉重试提示条，失败原因走报错区
+			}
+			// 插话打断：模型流被掐断，本轮**不收尾**——下一步循环头排水插话、
+			// 重组上下文重新调模型。已流出的半截思考/正文落库留痕（带打断标注，
+			// 模型下一轮能看到自己被打断在哪）；emit message 是必须的：执行不
+			// 结束、前端不会 reload，不推事件半截正文就只活在 live 气泡里。
+			// 半截 tool_calls 丢弃（流未收完 OnToolCall 不会回调），不留悬空调用。
+			if steered {
+				if strings.TrimSpace(text.String()) != "" {
+					sm := a.appendMessageThinking(sess, TextMessage("assistant", text.String()+"\n\n（被插话打断，输出提前结束）"), reasoning.String())
+					emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq, Kind: kindChat})
+				} else if strings.TrimSpace(reasoning.String()) != "" {
+					sm := a.appendMessageThinking(sess, TextMessage("assistant", ""), reasoning.String())
+					emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq, Kind: kindChat})
+				}
+				continue
 			}
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次
 			if isOverflowError(err) && !overflowRetried {

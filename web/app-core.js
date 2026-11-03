@@ -152,7 +152,7 @@ const state = {
   streamThinking: '', // 正在流式输出的思考过程
   streaming: false,
   abort: null,
-  pendingSteer: [], // 执行中已插话、等下一次调用模型生效的消息（服务端为准）
+  pendingSteer: [], // 执行中已插话的消息（服务端为准）：模型调用中被立即打断生效；工具执行中等下一步调用模型注入
   pendingQueue: [], // 执行中排队的消息：本轮结束后自动作为独立一轮发送
   queuePaused: false, // 排队是否暂停（服务端为准，随 pending 快照下发）
   queueHeld: false,   // 执行结束后队列仍有保留（停止/出错/暂停完一轮）：横幅给「继续」入口
