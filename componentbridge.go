@@ -75,22 +75,35 @@ type bridgeWorker struct {
 	app    *App // 反向调用（host 帧）执行主程序内部路由用
 
 	// 帧模式（def.Hooks 非空才启用，见文件头注释）：
-	framed  bool               // true=帧协议；false=哑管（存量行为）
-	wmu     sync.Mutex         // stdin 写串行化（req/event/hostres 交织）
-	pmu     sync.Mutex         // pending 表锁
+	framed  bool                   // true=帧协议；false=哑管（存量行为）
+	wmu     sync.Mutex             // stdin 写串行化（req/event/hostres 交织）
+	pmu     sync.Mutex             // pending 表锁
 	pending map[string]chan string // id -> 应答行（res/decision），缓冲 1
-	seq     uint64             // 帧自增 id
-	done    chan struct{}      // 读循环退出（worker 死亡广播：等待者立即报错）
+	seq     uint64                 // 帧自增 id
+	done    chan struct{}          // 读循环退出（worker 死亡广播：等待者立即报错）
 }
 
 type bridgeManager struct {
 	app *App
 	mu  sync.Mutex
 	ws  map[string]*bridgeWorker // key -> 懒启的进程
+	// onKill 组件关闭时的"组件外部代价"回调（由 App 挂接）。
+	// 用途：语音组件关掉时，除了 manifest 里的 workers，还要收掉同样属于该组件、
+	// 但不在 manifest 里的独立进程（语音输入法）。回调在锁外调用，避免死锁。
+	onKill func(compID string)
 }
 
 func newBridgeManager(app *App) *bridgeManager {
-	return &bridgeManager{app: app, ws: map[string]*bridgeWorker{}}
+	m := &bridgeManager{app: app, ws: map[string]*bridgeWorker{}}
+	// 组件关闭 → 收掉"属于该组件但不在 manifest workers 里"的独立进程。
+	// 目前只有语音组件这一项：关掉「语音（朗读与听写）」时，独立语音输入法
+	// （VoiceTypeGo，占着全局键盘钩子）必须一起结束，否则用户以为关掉了其实还在跑。
+	m.onKill = func(compID string) {
+		if compID == voiceComponentID {
+			stopVoiceTypeByComponent()
+		}
+	}
+	return m
 }
 
 // resolveCommand 解析 argv 模板：{python}=共享便携运行时、{dir}=组件绝对目录。
@@ -387,13 +400,24 @@ func (w *bridgeWorker) kill() {
 // KillComponent 关闭组件/卸载时杀它声明的全部 worker。
 func (m *bridgeManager) KillComponent(compID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for key, w := range m.ws {
-		if strings.HasPrefix(key, compID+"/") {
-			w.kill()
-			delete(m.ws, key)
-			log.Printf("[c/%s] 组件关闭，worker 已终止", key)
+	var toKill []*bridgeWorker
+	// key 的格式是 "组件id/worker名"（见 get()），按前缀匹配该组件的所有 worker
+	prefix := compID + "/"
+	for k, w := range m.ws {
+		if strings.HasPrefix(k, prefix) {
+			toKill = append(toKill, w)
+			delete(m.ws, k)
 		}
+	}
+	onKill := m.onKill
+	m.mu.Unlock()
+	for _, w := range toKill {
+		w.kill()
+	}
+	// 组件关闭的"组件外部代价"：由 App 挂接（例如语音组件关掉时要连独立语音输入法
+	// 一起收掉——它不在 manifest 的 workers 里，但同样属于这个组件的能力）。
+	if onKill != nil {
+		onKill(compID)
 	}
 }
 
@@ -591,12 +615,12 @@ func (m *bridgeManager) emitEvent(compID string, def ComponentWorkerDef, event s
 type ComponentHookOutcome struct {
 	Block             bool
 	Reason            string
-	Content           string   // 最后一次改写后的正文（空=没人改）
-	AdditionalContext string   // 各组件附加上下文以空行拼接
+	Content           string // 最后一次改写后的正文（空=没人改）
+	AdditionalContext string // 各组件附加上下文以空行拼接
 }
 
 // emitComponentHooks 把白名单事件按组件 id 序发给所有订阅它的启用组件。拦截型
-//（prompt.submit）串行等决定并汇总：任一 block 即止（后面的组件不再跑）；content
+// （prompt.submit）串行等决定并汇总：任一 block 即止（后面的组件不再跑）；content
 // 改写依次应用——后一个组件的事件 data 里看到的是前一个改过的正文；附加上下文以
 // 空行拼接。任何单组件失败（超时/进程死/解析错）fail-open：记日志按未拒绝处理，
 // 组件故障不能拦住主流程。通知型逐个尽力送达，失败只记日志。
