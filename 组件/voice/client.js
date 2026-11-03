@@ -515,6 +515,10 @@
                          // 表现为"只读第一句就停"。stopAudio 只停播不丢弃元素。
   let ttsAbort = null;   // 分段朗读在途请求的中止器（停止时连同预取一起砍）
   let ttsStopChain = null; // 分段播放链的停摆钩子（ttsPlay 内部赋值）
+  let ttsGen = 0;        // 播放链代数：连点「停止→再点朗读」时新旧链的按钮与 seq 完全
+                         // 相同（同一条消息），旧链迟到的 settle 靠它辨认——否则会把
+                         // 新链刚挂上的「停止」态摘掉（朗读在播、按钮却显示「朗读」，
+                         // 用户再点一次即把在播链当「再点停止」砍掉，观感就是朗读中断）
 
   function restBtn(btn) {
     btn.classList.remove('playing');
@@ -609,8 +613,13 @@
             prefetch();
             playChunk();
           };
-          playEl.onerror = () => { stopAudio(); reject(new Error('播放失败')); };
-          playEl.play().catch((e) => { stopAudio(); reject(e); });
+          // 收尾回调先验本链（与上一行 blobs[i].then 同款守卫）：旧链被停/被顶替后
+          // 其 play() 会因 stopAudio 的 pause() 以 AbortError 迟到 reject——此刻新链
+          // 往往已启动，无守卫的 stopAudio() 会误杀新链（abort 其预取、整条安静砍掉），
+          // 表现为「点朗读键没声音」，桌面端鼠标连点停止→再点朗读（几百毫秒内）最易踩中。
+          const gone = () => stopped || signal.aborted;
+          playEl.onerror = () => { if (gone()) return; stopAudio(); reject(new Error('播放失败')); };
+          playEl.play().catch((e) => { if (gone()) return; stopAudio(); reject(e); });
         }).catch((e) => {
           if (signal.aborted || stopped) return;
           stopAudio();
@@ -625,16 +634,17 @@
   /** 朗读一条消息：按钮态驱动 + 后端合成播放。 */
   async function speakTextBackend(text, btn) {
     const mySeq = btn.dataset && btn.dataset.seq != null ? Number(btn.dataset.seq) : null;
+    const gen = ++ttsGen; // 本链代数：settle 只认它（见 ttsGen 声明处注释）
     playingBtn = btn;
     playingSeq = mySeq;
     btn.classList.add('playing');
     btn.innerHTML = ICON.stop + '停止';
     btn.title = '停止朗读';
-    // 收尾复位：链的态还挂着才动——被 stopSpeak（切会话/再点停止）或新的朗读
-    // 顶替后 playingBtn/playingSeq 已易主，这里不得碰；播放期间翻新把按钮迁到
-    // 新 DOM（playingBtn≠btn 但 playingSeq===mySeq）则复位那个新按钮
+    // 收尾复位：本链仍是最新链才动——被 stopSpeak（切会话/再点停止）或新的朗读
+    // 顶替后不得碰；播放期间翻新把按钮迁到新 DOM（playingBtn≠btn 但
+    // playingSeq===mySeq）仍复位那个新按钮（翻新不改代数，正常覆盖）
     const settle = () => {
-      if (playingBtn !== btn && playingSeq !== mySeq) return;
+      if (gen !== ttsGen) return;
       if (playingBtn) restBtn(playingBtn);
       playingBtn = null;
       playingSeq = null;
