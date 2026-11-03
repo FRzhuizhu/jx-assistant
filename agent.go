@@ -851,7 +851,7 @@ func winEncodingNotes(hasPwsh7 bool) string {
 	}
 	return "- 中文编码：PowerShell 命令引擎已自动前置 $OutputEncoding=[Console]::OutputEncoding=UTF8，并注入 PYTHONUTF8=1、PYTHONIOENCODING=utf-8；需要 GBK 老程序（如 findstr 按代码页匹配中文）时在命令内自行改回：$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(936)，只影响该条命令\n" +
 		ps1 + "\n" +
-		"- 其他文件编码：文本文件一律 UTF-8 无 BOM 读写；.cmd/.bat 按系统代码页（GBK）解析，不要把中文面值写进批处理；路径、标识符、命令保持原文不翻译\n"
+		"- 其他文件编码：文本文件一律 UTF-8 无 BOM 读写；.cmd/.bat 须 ANSI/GBK 编码 + CRLF 行尾（防 cmd 乱码/拆行）；路径、标识符、命令保持原文不翻译\n"
 }
 
 // kernelRelease：uname -r，失败返回空。

@@ -442,7 +442,7 @@ func (t *toolContext) envWalk(root string, fn func(rel string, e envEntry) error
 
 func readFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("read", "读取文本文件内容并带行号返回。用本工具——而不是 cat 等命令行——查看文本文件；大文件用 offset/limit 分段继续读取。path 支持相对工作区的路径。",
+		Spec: toolSpec("read", "读取文本文件内容返回。用本工具——而不是 cat 等命令行——查看文本文件；大文件用 offset/limit 分段继续读取。path 支持相对工作区的路径。",
 			objSchema(map[string]any{
 				"path":   strProp("文件路径（相对或绝对）"),
 				"offset": intProp("起始行号，从 1 开始，可选"),
@@ -505,7 +505,7 @@ func runReadFile(t *toolContext, args json.RawMessage) (string, error) {
 
 func writeFileTool() Tool {
 	return Tool{
-		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 无 BOM 文本）。既有文件本会话 read 过才能覆盖（观察策略；.jxai/tmp 下跨会话残留的旧文件除外）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：修改工作区档只允许写工作区与系统临时目录内；只读档写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
+		Spec: toolSpec("write", "创建文件或整体替换文件内容（UTF-8 无 BOM 文本）。content 按你提供的原样落盘（不做行尾/编码转换），行尾用 LF 还是 CRLF 由你按目标文件类型自行决定。既有文件本会话 read 过才能覆盖（观察策略；.jxai/tmp 下跨会话残留的旧文件除外）；局部修改优先用 edit。按会话权限模式的文件沙箱执行：修改工作区档只允许写工作区与系统临时目录内；只读档写入被拒后，工作区内目标带 sandbox_permissions=workspace-write、工作区外目标带 sandbox_permissions=full 与 justification 重试一次即可申请放行（弹审批）。",
 			objSchema(map[string]any{
 				"path":                strProp("目标文件路径（相对或绝对）"),
 				"content":             strProp("要写入的完整内容"),
@@ -608,7 +608,7 @@ func runEditFile(t *toolContext, args json.RawMessage) (string, error) {
 	count := strings.Count(norm, oldNorm)
 	if count == 0 {
 		if strings.Contains(content, "\r\n") {
-			return "", fmt.Errorf("old_string 在文件中不存在（已按 CRLF/LF 行尾等价匹配，请对照 read 输出核对原文，注意不要带行号前缀）")
+			return "", fmt.Errorf("old_string 在文件中不存在（已按 CRLF/LF 行尾等价匹配，请对照 read 输出核对原文）")
 		}
 		return "", fmt.Errorf("old_string 在文件中不存在")
 	}
