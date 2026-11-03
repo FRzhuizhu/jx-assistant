@@ -1846,15 +1846,33 @@ function applyAccent(color, hover, save) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accentColor: color }),
     }).catch(() => {});
-    // 一并把「点缀色 + 当前主题文字色」推给独立语音输入法的胶囊
-    // （输入法读 voicetype.json；--text 随浅色/深色主题自动变化，这里读计算值）
-    let textColor = '';
-    try { textColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim(); } catch (e) {}
-    fetch('/api/voicetype/link', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accentColor: color, textColor }),
-    }).catch(() => {});
   }
+  // 无论保存还是启动时应用，都把「点缀色 + 当前主题文字色」推给独立语音输入法：
+  // 只放在 save 分支里的话，用户不改颜色就永远不生成 voicetype.json，输入法拿不到
+  // 主程序的点缀色（首启即生效才叫联动）。
+  pushVoiceTypeTheme(color);
+}
+
+// pushVoiceTypeTheme 推送点缀色 + 主题文字色。
+// 文字色优先读 CSS 变量 --text 的计算值；取不到时按主程序主题档位直接给值
+// （style.css 里 :root 是 #1f2328、深色是 #e6e8eb）——首次实测里 applyAccent
+// 有可能在样式表生效前就跑，computed 拿到空串，此时不能把空值推过去。
+function pushVoiceTypeTheme(color, retried) {
+  let textColor = '';
+  try { textColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim(); } catch (e) {}
+  if (!textColor) {
+    let dark = false;
+    try {
+      const t = lsGet('jx.theme', 'light');
+      dark = t === 'dark' ||
+        (t === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    } catch (e) { /* 读不到主题：按浅色 */ }
+    textColor = dark ? '#e6e8eb' : '#1f2328';
+  }
+  fetch('/api/voicetype/link', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accentColor: color, textColor }),
+  }).catch(() => {});
 }
 
 function buildAccentRow() {

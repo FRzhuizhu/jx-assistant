@@ -1597,7 +1597,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// 点缀色有变：顺手同步给语音输入法的联动文件（输入法胶囊底色跟着主题走）
 	if body.AccentColor != nil {
-		if err := a.writeVoicetypeLink(nil, nil, a.Cfg.AccentColor, ""); err != nil {
+		if err := a.writeVoicetypeLink(nil, nil, "", a.Cfg.AccentColor, ""); err != nil {
 			log.Printf("[voicetype-link] 同步点缀色失败: %v", err)
 		}
 	}

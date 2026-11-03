@@ -38,7 +38,11 @@ type voicetypeLink struct {
 	Hotkeys struct {
 		Main []string `json:"main"`
 		Sub  []string `json:"sub"`
+		// Mode 触发方式（tap=点按切换 / hold=按住说话）：主程序「设置·语音」里的选择，
+		// 输入法据此决定自己的触发方式，两侧不该各有一套手感。
+		Mode string `json:"mode,omitempty"`
 	} `json:"hotkeys"`
+	HoldMs      int    `json:"holdMs,omitempty"`
 	AccentColor string `json:"accentColor,omitempty"`
 	TextColor   string `json:"textColor,omitempty"`
 	UpdatedAt   string `json:"updatedAt,omitempty"`
@@ -67,11 +71,11 @@ func (a *App) readVoicetypeLink() voicetypeLink {
 	return l
 }
 
-// writeVoicetypeLink 合并写：hotkeys 非 nil 才覆盖；颜色非空才覆盖。
+// writeVoicetypeLink 合并写：hotkeys 非 nil 才覆盖；mode 非空才覆盖；颜色非空才覆盖。
 //
 // 原子写（临时文件 + rename）：输入法每秒轮询这个文件，读到半个 JSON 会被当成
 // 损坏并跳过，用户会看到"改了没反应"。
-func (a *App) writeVoicetypeLink(main, sub []string, accent, text string) error {
+func (a *App) writeVoicetypeLink(main, sub []string, mode, accent, text string) error {
 	cur := a.readVoicetypeLink()
 	if main != nil || sub != nil {
 		if main != nil {
@@ -80,6 +84,9 @@ func (a *App) writeVoicetypeLink(main, sub []string, accent, text string) error 
 		if sub != nil {
 			cur.Hotkeys.Sub = sub
 		}
+	}
+	if m := strings.ToLower(strings.TrimSpace(mode)); m == "tap" || m == "hold" {
+		cur.Hotkeys.Mode = m
 	}
 	if s := strings.TrimSpace(accent); s != "" {
 		cur.AccentColor = s
@@ -106,8 +113,8 @@ func (a *App) writeVoicetypeLink(main, sub []string, accent, text string) error 
 		_ = os.Remove(tmp)
 		return err
 	}
-	log.Printf("[voicetype-link] 已写 %s（热键 main=%v sub=%v 点缀色=%s 文字色=%s）",
-		path, cur.Hotkeys.Main, cur.Hotkeys.Sub, cur.AccentColor, cur.TextColor)
+	log.Printf("[voicetype-link] 已写 %s（热键 main=%v sub=%v mode=%s 点缀色=%s 文字色=%s）",
+		path, cur.Hotkeys.Main, cur.Hotkeys.Sub, cur.Hotkeys.Mode, cur.AccentColor, cur.TextColor)
 	return nil
 }
 
@@ -123,6 +130,7 @@ func (a *App) handleVoicetypeLink(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Main        []string `json:"main"`
 		Sub         []string `json:"sub"`
+		Mode        string   `json:"mode"`
 		AccentColor string   `json:"accentColor"`
 		TextColor   string   `json:"textColor"`
 	}
@@ -134,7 +142,7 @@ func (a *App) handleVoicetypeLink(w http.ResponseWriter, r *http.Request) {
 	// 免得一个拼错的键名把输入法的热键整体顶掉）
 	main := normalizeVoicetypeKeys(body.Main)
 	sub := normalizeVoicetypeKeys(body.Sub)
-	if err := a.writeVoicetypeLink(main, sub, body.AccentColor, body.TextColor); err != nil {
+	if err := a.writeVoicetypeLink(main, sub, body.Mode, body.AccentColor, body.TextColor); err != nil {
 		writeErr(w, 500, "写联动配置失败: "+err.Error())
 		return
 	}
