@@ -70,14 +70,15 @@ type Config struct {
 	AllowShell bool          `json:"allowShell"`
 	DataDir    string        `json:"dataDir"`
 	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
-	// 上下文压缩设置。自动压缩是两条独立阈值：规则阈值（默认 60%）先做零成本
-	// 折叠，压不动涨到模型阈值（默认 80%）由摘要兜底，任一填 0 即关闭该路；
+	// 上下文压缩设置。自动压缩是两条独立阈值，默认以模型摘要为主：模型阈值
+	// （默认 80%）到线就生成摘要，规则阈值（默认 90%）留作更晚的零成本折叠
+	// （先折后摘的通道仍在，两条线都填 0 才算关掉自动压缩）；
 	// CompactMode 只决定手动「压缩」按钮的默认行为，不参与自动选路。
-	CompactMode      string  `json:"compactMode"`      // 手动压缩按钮的默认行为：rule=规则折叠(默认) llm=模型摘要；旧值 off 读入时归一为 rule
+	CompactMode      string  `json:"compactMode"`      // 手动压缩按钮的默认行为：llm=模型摘要(默认) rule=规则折叠；旧值 off 读入时归一为当前默认
 	KeepChars        int     `json:"keepChars"`        // 自动压缩的保留预算（字）：从最新往前累计模型可见字数，预算耗尽处（命中点）所在的轮整轮保留——轮首可以是用户消息，也可以是数字助理转发消息；命中轮自身超预算（巨轮）时回退行级窗口，至少保最近一条原文
 	CompactThreshold float64 `json:"compactThreshold"` // 旧版单阈值（0.8/0.9）：新逻辑不读它，仅保留字段让旧版 exe 回滚时还能用
-	CompactRulePct   int     `json:"compactRulePct"`   // 规则自动压缩阈值（%）：估算 token 占窗口比例，0=不启用（默认 60）
-	CompactLlmPct    int     `json:"compactLlmPct"`    // 模型自动压缩阈值（%）：0=不启用（默认 80）——规则压不动后的摘要兜底
+	CompactRulePct   int     `json:"compactRulePct"`   // 规则自动压缩阈值（%）：估算 token 占窗口比例，0=不启用（默认 90）
+	CompactLlmPct    int     `json:"compactLlmPct"`    // 模型自动压缩阈值（%）：0=不启用（默认 80）——默认压缩方式，到线即摘要
 	CompactCooldown  int     `json:"compactCooldown"`  // 规则压缩冷却（轮）：触发一次后 N 轮内轮中不再重试、每轮末固定再判断一次；0=不冷却（默认 2）
 	// 文件快照保留策略：按天超龄清理是主力（旧配置缺省回落默认值；-1 = 该项关闭）。
 	// 自动池管 write/edit 的小快照；手动池（snapshot_file，往往是
@@ -311,10 +312,10 @@ func DefaultConfig() *Config {
 		MaxSteps:            maxStepsDefault,
 		AllowShell:          true,
 		DataDir:             "data",
-		CompactMode:         "rule",
+		CompactMode:         "llm",
 		KeepChars:           100000, // 10 万字 ≈ 7.5 万 token 的近期原文（各工具压缩后常见余量）
 		CompactThreshold:    0.8,
-		CompactRulePct:      60,
+		CompactRulePct:      90,
 		CompactLlmPct:       80,
 		CompactCooldown:     2,
 		SnapshotDays:        7,
@@ -403,7 +404,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	// 双阈值迁移：老配置没有这三个键时补默认（旧 off 模式 = 自动压缩全关），
 	// 迁移过就立即落盘，配置文件与运行时口径一致。CompactMode 旧值 off 归一为
-	// rule——自动压缩的开关已由两个阈值表达（全 0=关），off 只剩「手动按钮
+	// 当前默认——自动压缩的开关已由两个阈值表达（全 0=关），off 只剩「手动按钮
 	// 默认行为」一层含义，而手动按钮总要有个行为。
 	compactMigrated := false
 	var compactKeys map[string]json.RawMessage
@@ -440,8 +441,19 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.CompactCooldown = 0
 	}
 	if cfg.CompactMode == "off" {
-		cfg.CompactMode = "rule"
+		cfg.CompactMode = def.CompactMode
 		compactMigrated = true
+	}
+	// 一次性升级（2026-11）：压缩默认改成「模型摘要为主」——手动按钮默认 llm、
+	// 模型阈值 80%、规则阈值 90%（此前默认是规则折叠 / 60% / 80%）。三键正好
+	// 还是旧默认三元组，说明用户从没调过（调过就不会正好是这个组合），随新默认
+	// 走并立即落盘；手动改过任何一个的配置原样保留（同 isLegacyMaxSteps 的口径）。
+	compactBumped := false
+	if cfg.CompactMode == "rule" && cfg.CompactRulePct == 60 && cfg.CompactLlmPct == 80 {
+		cfg.CompactMode = def.CompactMode
+		cfg.CompactRulePct = def.CompactRulePct
+		cfg.CompactLlmPct = def.CompactLlmPct
+		compactBumped = true
 	}
 	// 远程接入：老配置没有这一键时补默认网关地址；设备号与配对密钥留空则
 	// 为本机随机生成并立即落盘——每台安装天然拿到互不冲突的设备号和独立
@@ -534,10 +546,10 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.Providers = []ProviderCfg{p}
 	}
-	// 步数上限从历次默认迁移过（旧默认 → 不限制）：立即落盘，让设置页读数、
-	// 配置文件与运行时三者一致（免得用户看到配置文件里还是 200，以为没生效；
-	// 其他补全都留给下一次保存）
-	if maxStepsBumped || remoteHostMigrated || compactMigrated || plainSelfMigrated {
+	// 步数上限从历次默认迁移过（旧默认 → 不限制）、压缩默认从旧三元组升级过：
+	// 立即落盘，让设置页读数、配置文件与运行时三者一致（免得用户看到配置文件
+	// 里还是 200 或 60，以为没生效；其他补全都留给下一次保存）
+	if maxStepsBumped || remoteHostMigrated || compactMigrated || compactBumped || plainSelfMigrated {
 		if err := cfg.Save(path); err != nil {
 			log.Printf("回写配置迁移失败: %v", err)
 		}

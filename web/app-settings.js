@@ -159,7 +159,7 @@ async function openSettings(pane) {
   renderProvCards();
   selRefs.compactMode.set(c.compactMode === 'llm' ? 'llm' : 'rule');
   $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
-  $('set-compact-rulepct').value = c.compactRulePct != null ? c.compactRulePct : 60;
+  $('set-compact-rulepct').value = c.compactRulePct != null ? c.compactRulePct : 90;
   $('set-compact-llmpct').value = c.compactLlmPct != null ? c.compactLlmPct : 80;
   $('set-compact-cooldown').value = c.compactCooldown != null ? c.compactCooldown : 2;
   // 常规页：文件备份（服务端配置，改动即时保存）
@@ -1933,8 +1933,8 @@ makeSelect('sel-midrun', 'midrun', [
   { v: 'interject', label: '插话：模型思考/输出中立即打断生效；工具执行中等下一步注入' },
 ], (v) => lsSet('jx.midrun', v));
 makeSelect('sel-compact-mode', 'compactMode', [
-  { v: 'rule', label: '规则折叠（默认）' },
-  { v: 'llm', label: '模型摘要' },
+  { v: 'llm', label: '模型摘要（默认）' },
+  { v: 'rule', label: '规则折叠' },
 ], null);
 
 /* ---------- 技能管理（/api/skills：自带只读展示，用户可加/开关/删） ---------- */

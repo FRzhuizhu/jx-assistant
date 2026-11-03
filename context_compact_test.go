@@ -525,6 +525,10 @@ func TestForkPreservesCompactAndThinking(t *testing.T) {
 // 优先生成摘要（mock 提供方，离线不发请求）；任一阈值为 0 即关闭该路。
 func TestMaybeAutoCompactDualThreshold(t *testing.T) {
 	a := newCompactTestApp(t)
+	// 默认阈值会随产品策略调整，这里显式固定 60/80，锁住「两线之间走规则折叠、
+	// 两线都超先折后摘」这套时序语义，不受默认值变动影响
+	a.Cfg.CompactRulePct = 60
+	a.Cfg.CompactLlmPct = 80
 	a.Cfg.Providers = []ProviderCfg{{
 		ID: "mock", Name: "离线演示", BaseURL: "mock",
 		Models: []ModelCfg{{ID: "mock-1", Name: "演示模型"}},
@@ -671,8 +675,8 @@ func TestRuleCompactCooldown(t *testing.T) {
 	}
 }
 
-// 双阈值迁移：老配置（单模式+单阈值）读入时补默认 规则60%/模型80%/冷却1轮，
-// 旧 off 保持自动压缩全关并把模式归一为 rule（手动按钮的默认行为总要有一个）；
+// 双阈值迁移：老配置（单模式+单阈值）读入时补默认 规则90%/模型80%/冷却2轮，
+// 旧 off 保持自动压缩全关并把模式归一为当前默认（手动按钮的默认行为总要有一个）；
 // 新键齐全的配置原样保留（含显式 0）。旧字段 compactMode/compactThreshold
 // 原样保留，供旧版 exe 回滚。
 func TestConfigCompactDualThresholdMigration(t *testing.T) {
@@ -688,8 +692,8 @@ func TestConfigCompactDualThresholdMigration(t *testing.T) {
 		return cfg
 	}
 	cfg := run(`{"compactMode":"llm","compactThreshold":0.9}`)
-	if cfg.CompactRulePct != 60 || cfg.CompactLlmPct != 80 || cfg.CompactCooldown != 2 {
-		t.Fatalf("老配置应迁移为 60/80/2, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
+	if cfg.CompactRulePct != 90 || cfg.CompactLlmPct != 80 || cfg.CompactCooldown != 2 {
+		t.Fatalf("老配置应迁移为 90/80/2, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
 	}
 	if cfg.CompactMode != "llm" || cfg.CompactThreshold != 0.9 {
 		t.Fatalf("旧字段应原样保留, got mode=%q threshold=%v", cfg.CompactMode, cfg.CompactThreshold)
@@ -698,12 +702,18 @@ func TestConfigCompactDualThresholdMigration(t *testing.T) {
 	if cfg.CompactRulePct != 0 || cfg.CompactLlmPct != 0 {
 		t.Fatalf("旧 off 应迁移为自动压缩全关, got %d/%d", cfg.CompactRulePct, cfg.CompactLlmPct)
 	}
-	if cfg.CompactMode != "rule" {
-		t.Fatalf("off 应归一为 rule, got %q", cfg.CompactMode)
+	if cfg.CompactMode != "llm" {
+		t.Fatalf("off 应归一为当前默认 llm, got %q", cfg.CompactMode)
 	}
 	cfg = run(`{"compactMode":"rule","compactRulePct":50,"compactLlmPct":0,"compactCooldown":2}`)
 	if cfg.CompactRulePct != 50 || cfg.CompactLlmPct != 0 || cfg.CompactCooldown != 2 {
 		t.Fatalf("显式新键应原样保留, got %d/%d/%d", cfg.CompactRulePct, cfg.CompactLlmPct, cfg.CompactCooldown)
+	}
+	// 2026-11 默认升级：三键正好还是旧默认三元组（rule/60/80）= 用户从没调过，
+	// 随新默认（llm/90/80）走；改过任何一个的（上一例）原样保留
+	cfg = run(`{"compactMode":"rule","compactRulePct":60,"compactLlmPct":80,"compactCooldown":2}`)
+	if cfg.CompactMode != "llm" || cfg.CompactRulePct != 90 || cfg.CompactLlmPct != 80 {
+		t.Fatalf("旧默认三元组应升级为新默认, got mode=%q %d/%d", cfg.CompactMode, cfg.CompactRulePct, cfg.CompactLlmPct)
 	}
 }
 
