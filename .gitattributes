@@ -1,0 +1,3 @@
+# 二进制与生成物不参与 diff/merge；批处理必须 CRLF 检出：cmd 按 CRLF 语义
+# 解析批处理，裸 LF 会把命令拆行错乱（powershell 拆出 'rshell' 当命令执行）。
+*.bat text eol=crlf
