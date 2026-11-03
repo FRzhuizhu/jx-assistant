@@ -144,16 +144,26 @@ function renderUnconfigured() {
 
 /* ---------- 小程序平台（网页托管平台）：独立主区页面（与市场视图平级） ----------
    不套壳：顶栏以下整页就是平台管理页（已发布小程序列表 / 上传发布 / 数据文件 /
-   二维码都在页内完成，平台页自带刷新，本端不重复实现）。src 用相对路径 /sites
-   ——本端透明反向代理（sitesproxy.go）转发到市场服务器：自签证书由 Go 端证书
-   策略（tlspolicy.go）接管，浏览器/WebView 自己的证书校验不再挡路；相对路径
-   同时让桌面 WebView2、局域网网页版、远程中继三种 origin 都天然跟随。视图
-   常驻不销毁，来回切（市场 ↔ 平台 ↔ 对话）不打扰已打开的页面。 */
+   二维码都在页内完成，平台页自带刷新，本端不重复实现）。本机与局域网形态 src
+   用相对路径 /sites——本端透明反向代理（sitesproxy.go）转发到市场服务器：自签
+   证书由 Go 端证书策略（tlspolicy.go）接管，浏览器/WebView 自己的证书校验不再
+   挡路。远程外壳形态（window.JX_REMOTE）下 '/sites' 导航不经过外壳的 fetch
+   劫持、会打到网关自己的平台页——改由外壳代载（密文拉回家侧拼装 blob + 文档
+   内 hook，见 remote-boot.js 的 loadSitesFrame）。视图常驻不销毁，来回切
+   （市场 ↔ 平台 ↔ 对话）不打扰已打开的页面。 */
 
 // renderSitesFrame：进小程序平台页时确保 iframe 已加载。
 function renderSitesFrame() {
   const frame = $('sites-frame');
-  if (frame && (!frame.src || frame.src === 'about:blank')) frame.src = '/sites';
+  if (!frame) return;
+  if (window.JX_REMOTE && typeof window.JX_REMOTE.loadSitesFrame === 'function') {
+    if (frame.dataset.jxRemoteLoaded !== '1') {
+      frame.dataset.jxRemoteLoaded = '1';
+      window.JX_REMOTE.loadSitesFrame(frame);
+    }
+    return;
+  }
+  if (!frame.src || frame.src === 'about:blank') frame.src = '/sites';
 }
 
 function entriesOfTab(tab) {
