@@ -2138,7 +2138,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 /* ---------- 权限引擎前端：审批卡片 + SSH 远程工作区 ---------- */
 
 /* 顶栏远程徽标（挂载 SSH 远程工作区的会话） */
-.badge.remote { cursor: pointer; border: none; font: inherit; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge.remote {
+  cursor: pointer; border: none; font: inherit; flex: none;
+  /* 固定短字「远程」（完整地址在 title 与 SSH 弹窗）：顶栏两行的手机布局
+     不被长地址挤断，桌面端也不再挤标题（2026-11-04 远程显示乱的修复） */
+}
 .badge.remote:hover { background: rgba(77, 107, 254, .16); }
 
 /* 待决定的浮窗（审批 / 提问 / 计划审批）的落点：输入卡上方、附件区之上的一块。

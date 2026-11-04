@@ -7361,10 +7361,13 @@ function syncComposer(view) {
   // 以下只属于主对话区（首页草稿 / 顶栏徽标 / 目录胶囊）
   if (view !== mainView) return;
   syncPlusChecks(view);
-  // 顶栏远程徽标（挂了远程工作区的会话）
+  // 顶栏远程徽标（挂了远程工作区的会话）。只显示固定短字「远程」：完整地址
+  // （user@host:dir）放 title 悬停与点击后的 SSH 弹窗里——2026-11-04 前徽标
+  // 内联整段地址，手机端两行顶栏被它挤断（标题被顶到第三行、同行胶囊被裁），
+  // 桌面端也挤标题。电脑/手机同一套：短徽标 + flex:none，永不参与换行压缩。
   const rb = $('remote-badge');
   if (state.cur && state.cur.remote) {
-    rb.textContent = '远程 ' + remoteDisplay(state.cur.remote);
+    rb.textContent = '远程';
     rb.title = 'SSH 远程工作区 ' + remoteDisplay(state.cur.remote) + '（点击配置/解除）';
     rb.classList.remove('hidden');
   } else {
