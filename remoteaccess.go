@@ -64,10 +64,30 @@ const (
 	relayUpdTimeout = 8 * time.Second  // 设置页改名/改密在 hub 连接上的确认超时
 )
 
+// registerFrame /hub 注册帧：id + legacy key（旧网关兼容）+ auth（PairKey 派生，
+// 2026-11-04 起新网关注册面去验密，仅协议兼容保留）+ user（本机发布者姓名——
+// 网关按 provision 用户白名单判定可否注册新设备号，并把设备号绑定到该用户；
+// 空=存量形态：已登记设备照常放行）。
+func registerFrame(cfg RemoteAccessCfg, user string) map[string]any {
+	return map[string]any{
+		"t": "register", "id": cfg.MyID, "key": cfg.RegKey,
+		"auth": hubAuthKey(cfg.PairKey), "user": user,
+	}
+}
+
+// hubUser 注册用的用户身份：本机发布者姓名（设置·网络访问，与市场发布同一套）。
+func (h *hubCtx) hubUser() string {
+	if h.app == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.app.Cfg.PublisherName)
+}
+
 // hubAuthKey /hub 注册的设备凭据：由 PairKey 派生（域独立于中继端到端密钥
 // relayKey=SHA256(PairKey)——网关只存它的哈希，推不出中继密钥）。2026-10-25
 // 起网关按「用户名+凭据」的登记簿准入：TOFU 首登记、凭据不符即拒（防冒充
-// 顶号），取代人人相同的全局口令。
+// 顶号），取代人人相同的全局口令。2026-11-04 起注册面改为「用户白名单+设备
+// 号绑定」，网关不再校验本字段（保留只为协议帧不动、旧网关仍可用）。
 func hubAuthKey(pairKey string) string {
 	k := sha256.Sum256([]byte("jxai-hub-auth:" + pairKey))
 	return hex.EncodeToString(k[:])
@@ -110,6 +130,10 @@ type hubCtx struct {
 
 	updMu   sync.Mutex
 	updWait chan string // 在途改名/改密的回帧通道（"ok" / "fail:reason"）；nil=无
+
+	authFailMu sync.Mutex
+	authFailN  int       // 观测窗内的验密失败计数（成功一次即清零）
+	authFailAt time.Time // 观测窗起点
 
 	lastPong atomic.Int64 // unix ms；任何入站数据/pong 都刷新
 }
@@ -237,7 +261,14 @@ func runRemoteAccess(ctx context.Context, app *App, port int, cfg RemoteAccessCf
 		default:
 			delay = min(delay*2, relayRetryMax)
 		}
-		log.Printf("[远程] 中继通道断开（本次存活 %s），%s 后重连", up.Round(time.Second), delay)
+		// 验密失败熔断的冷却优先（比常规退避更长——把「被灌密文断开」的重连
+		// 节奏压到分钟级，攻击者无从持续占用本端解密 CPU）
+		if cd := relayCooldownUntil.Load(); cd > 0 {
+			if d := time.Until(time.UnixMilli(cd)); d > delay {
+				delay = d
+			}
+		}
+		log.Printf("[远程] 中继通道断开（本次存活 %s），%s 后重连", up.Round(time.Second), delay.Round(time.Second))
 		select {
 		case <-ctx.Done():
 			return
@@ -295,8 +326,9 @@ func (h *hubCtx) run() bool {
 
 	// 注册并等 regok（15s 超时对齐 p2p.js 的 auth 窗口）。auth=PairKey 派生的
 	// 设备凭据（新网关按登记簿准入）；key 同时带 legacy 全局口令——旧网关只认
-	// key，一次注册双栖兼容，无需探测网关版本。
-	if err := h.sendJSON(map[string]any{"t": "register", "id": h.cfg.MyID, "key": h.cfg.RegKey, "auth": hubAuthKey(h.cfg.PairKey)}); err != nil {
+	// key，一次注册双栖兼容，无需探测网关版本。user=本机发布者姓名（2026-11-04
+	// 起网关按 provision 用户白名单准入新设备号并绑定设备号↔用户）。
+	if err := h.sendJSON(registerFrame(h.cfg, h.hubUser())); err != nil {
 		remoteLastError.Store(fmt.Sprintf("注册帧发送失败: %v", err))
 		return h.registered
 	}
@@ -425,15 +457,22 @@ func (h *hubCtx) run() bool {
 				h.deliverUpdateResult("fail:" + f.Reason)
 				continue
 			}
-			// 注册被拒（新网关登记簿校验）：如实记错误并断开。凭据不匹配多半是
-			// 设备名被他人登记（或本机 PairKey 被重置过）——联系管理员在管理页
-			// 「设备」页签处理，绝不静默换名绕过。
+			// 注册被拒（新网关登记簿校验）：如实记错误并断开。联系管理员在管理页
+			// 「设备」/「用户」页签处理，绝不静默换名绕过。
 			msg := "网关拒绝注册：" + f.Reason
 			switch f.Reason {
 			case "keyMismatch":
 				msg += "（该用户名已被其他设备登记：换一个设备号，或联系管理员在管理页移除旧登记）"
 			case "badName":
 				msg += "（设备号需为 2~32 位字母/数字/中划线/下划线）"
+			case "notAllowed":
+				msg += "（发布者姓名未在服务端用户名单中：联系管理员在管理页「用户」页签添加）"
+			case "userRequired":
+				msg += "（注册新设备号需先在设置·网络访问填写发布者姓名）"
+			case "userMismatch":
+				msg += "（该设备号已绑定其他用户：换一个设备号，或联系管理员在管理页「设备」页签处理）"
+			case "blacklisted":
+				msg += "（该设备号已被管理员拉黑：联系管理员在管理页「设备」页签解除）"
 			}
 			remoteLastError.Store(msg)
 			log.Printf("[远程] %s，断开", msg)
@@ -566,6 +605,44 @@ func openPack(key []byte, ivB64, ctB64 string) (*relayPack, error) {
 	return &p, nil
 }
 
+// noteAuthFail 记一条中继验密失败（解不开/时间戳超窗/密钥不符）。窗口内连败
+// 超阈即熔断：设置全局冷却（relayCooldownUntil，runRemoteAccess 据此拉长重连
+// 间隔）并返回 true。真用户密钥输错远达不到阈值；成功一次即被 noteAuthOK 清零。
+func (h *hubCtx) noteAuthFail() bool {
+	h.authFailMu.Lock()
+	defer h.authFailMu.Unlock()
+	now := time.Now()
+	if now.Sub(h.authFailAt) > relayAuthFailWindow {
+		h.authFailAt, h.authFailN = now, 0
+	}
+	h.authFailN++
+	if h.authFailN < relayAuthFailBurst {
+		return false
+	}
+	relayCooldownUntil.Store(now.Add(relayAuthFailCool).UnixMilli())
+	return true
+}
+
+// noteAuthOK 一条中继请求验密通过：清零失败计数。
+func (h *hubCtx) noteAuthOK() {
+	h.authFailMu.Lock()
+	h.authFailN = 0
+	h.authFailMu.Unlock()
+}
+
+// authFailTrip 验密失败后的熔断出口：未达阈值原样返回 false（调用方按原逻辑
+// 回 done/err 帧）；达阈值则记录、断开 hub 连接并进入冷却——网关侧该设备的
+// 挂起中继全部立即失败，灌密文的代价从本端解密 CPU 转嫁给连接层。
+func (h *hubCtx) authFailTrip() bool {
+	if !h.noteAuthFail() {
+		return false
+	}
+	log.Printf("[远程] %s 内验密失败达 %d 次，熔断：断开中继通道并冷却 %s",
+		relayAuthFailWindow, relayAuthFailBurst, relayAuthFailCool)
+	_ = h.conn.Close()
+	return true
+}
+
 // handleRelay 处理一条中继请求：解密 → 验 pk/ts → 桥接本机服务 → 流式回传。
 func (h *hubCtx) handleRelay(rid, ivB64, ctB64 string) {
 	key := relayKey(h.cfg.PairKey)
@@ -573,6 +650,9 @@ func (h *hubCtx) handleRelay(rid, ivB64, ctB64 string) {
 	if err != nil {
 		// 解不开（密钥不对/篡改）：回空 done，让浏览器侧报「密钥错误」而非挂到超时
 		log.Printf("[远程] %s 解密失败（密钥不匹配或包损坏）", rid)
+		if h.authFailTrip() {
+			return // 熔断：连接已断，不再回帧
+		}
 		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
 		return
 	}
@@ -581,17 +661,24 @@ func (h *hubCtx) handleRelay(rid, ivB64, ctB64 string) {
 	ts := int64(pack.Ts)
 	if pack.Ts == 0 || ts < now-600 || ts > now+600 {
 		log.Printf("[远程] %s 时间戳超窗，丢弃", rid)
+		if h.authFailTrip() {
+			return
+		}
 		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
 		return
 	}
 	// 每请求独立验 pairKey（中继无会话，不依赖长连接状态）
 	if subtle.ConstantTimeCompare([]byte(pack.Pk), []byte(h.cfg.PairKey)) != 1 {
 		log.Printf("[远程] %s 配对密钥错误", rid)
+		if h.authFailTrip() {
+			return
+		}
 		iv, ct, _ := sealJSON(key, map[string]any{"t": "authfail"})
 		_ = h.sendJSON(map[string]any{"t": "res", "rid": rid, "iv": iv, "ct": ct})
 		_ = h.sendJSON(map[string]any{"t": "done", "rid": rid})
 		return
 	}
+	h.noteAuthOK()
 	fr := pack.Frame
 	if fr.T != "req" {
 		return // 中继只接受 req 帧
