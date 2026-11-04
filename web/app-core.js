@@ -331,20 +331,23 @@ if (narrowMq) {
    手指滑动呼出/收起整屏浮层。宽屏（桌面布局）一律不检测：栏开在桌面上时，
    「在右栏里用鼠标横向拖拽选择文字」本身就是一次满足条件的横向拖拽，会被
    误判成收起手势把栏收掉（拖滚动条、别的横向拖拽同理）；宽屏开合走按钮/把手。
-   定义（开与收同一块屏幕缘热区，方向一律「从屏幕边缘往中间滑」）：
+   定义（拉出两栏一致；收起左右两栏机制分开——按栏内操作性质各定，2026-11-04 用户裁决）：
    * 栏收着：从该侧屏幕缘往中间滑 → 拉出该侧栏（左缘右滑拉左栏、
      右缘左滑拉右栏；两栏都收着才拉得开，绝不把两栏同时打开）。
-   * 栏开着：从对侧屏幕缘往中间滑 → 收起该栏（左栏开＝右缘左滑，
-     右栏开＝左缘右滑）。收起只认边缘热区＋返回键两条路——栏身上/
-     页面其他位置的滑动不构成手势（别把「整块栏都能滑收」当成意图，
-     那是早期实现理解反了）。
+   * 左栏开着：栏身上任意位置向屏幕外（左）滑 → 收起。窄屏浮层整屏宽，
+     等于屏幕任意处往左滑即收——左栏里基本只有点击类操作、没有横向滑动类
+     操作，不会误触，任意滑最顺手（10-31 曾把两栏一起收进边缘热区，左栏
+     因此变得不顺手，才有了左右分开这一次）。
+   * 右栏开着：只认对侧屏幕缘热区（左缘右滑）＋返回键两条路——右栏要
+     选文字、长按拖选，栏身上/页面其他位置的滑动不构成手势（把它们误判
+     成收起正是 10-31 改边缘热区要治的病，右栏保持不动）。
    触发仍是单次位移 ≥44px 且横向主导，动作走 jxPanelSet——返回键、按钮、手势
    共用同一套开合原语（状态机、记忆、文案只有一处）。
    触摸走非被动 Touch 事件（横向确立即 preventDefault，阻断浏览器收编成滚动
    ——真机拉不出来的根因）；窄窗口里的鼠标/笔走 Pointer 事件。轻微上下漂移容忍。
    手势起点的目标豁免：拖宽把手（#rp-resize 等）、输入框——它们有自己的交互。 */
 (function () {
-  const EDGE = 24;    // 屏幕左右缘热区（px），拉出/收起手势共用的起点热区
+  const EDGE = 24;    // 屏幕左右缘热区（px）：拉出手势与右栏收起手势的起点（左栏收起不限起点）
   const TRIGGER = 44; // 单向滑过此距离即触发一次
   const CLAIM = 10;   // 横向位移超过此值且未明显纵向 → 接管手势
   let g = null;
@@ -357,13 +360,17 @@ if (narrowMq) {
   // 手势这里只负责「往哪个方向＝要开还是要关」
   const fire = (side, close) => jxPanelSet(side, !close);
 
-  // 手势起点只认屏幕缘热区，方向一律往中间滑：左缘右滑＝拉左栏/收开着的右栏，
+  // 起点判定（左右两栏机制分开）：左栏开＝栏身上任意位置武装收起、向屏幕外
+  // （左）滑触发；其余只认屏幕缘热区——左缘右滑＝拉左栏/收开着的右栏，
   // 右缘左滑＝拉右栏/收开着的左栏；宽屏在 armAt 入口一票否决
   function armAt(target, x) {
     if (!isNarrow()) return null; // 宽屏（桌面布局）：不检测任何滑动，指针交互全归浏览器
     if (target && target.closest) {
       if (target.closest('#rp-resize, [class*="handle"], [class*="resize"], [class*="drag"]')) return null;
       if (target.closest('input, textarea, select, [contenteditable]')) return null;
+      // 左栏收起：栏身上任意位置起手（浮层整屏宽＝屏幕任意处），向屏幕外滑收；
+      // #rpanel 故意不配对——右栏收起只认边缘热区，栏身上滑动留给选字等交互
+      if (target.closest('#sidebar') && leftOpen()) return { side: 'left', close: true };
     }
     const vw = window.innerWidth;
     if (x <= EDGE) { // 左缘热区：向右滑
@@ -371,6 +378,7 @@ if (narrowMq) {
       if (!leftOpen() && !rightOpen()) return { side: 'left', close: false };
     }
     if (x >= vw - EDGE) { // 右缘热区：向左滑
+      // 左栏开时浮层盖住顶栏以下全域，这里只兜 #sidebar 外的窄缝（顶栏右角等）
       if (leftOpen()) return { side: 'left', close: true };
       if (!leftOpen() && !rightOpen()) return { side: 'right', close: false };
     }
@@ -378,8 +386,8 @@ if (narrowMq) {
   }
 
   // toward：位移在该栏「开向」上的分量（左栏向右为正、右栏向左为正）。
-  // 拉出：≥TRIGGER（从该侧缘往中间滑入）触发；收起：≤-TRIGGER（从对侧缘
-  // 往中间滑到位）触发；反方向滑回则放弃
+  // 拉出：≥TRIGGER（从该侧缘往中间滑入）触发；收起：≤-TRIGGER（右栏＝从
+  // 对侧缘往中间滑到位，左栏＝栏身上向屏幕外滑）触发；反方向滑回则放弃
   const towardOf = (g2, x) => (x - g2.x0) * (g2.side === 'left' ? 1 : -1);
   const hit = (g2, toward) => g2.close ? toward <= -TRIGGER : toward >= TRIGGER;
   const quit = (g2, toward) => g2.close ? toward >= TRIGGER : toward <= -TRIGGER;
