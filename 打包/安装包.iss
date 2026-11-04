@@ -75,6 +75,8 @@ Source: "stage\组件\*"; DestDir: "{app}\组件"; Flags: ignoreversion recurses
 ; .md 关联由下方 [Run] 装完时 /register 静默写入（HKCU，无需提权）
 Source: "stage\md-viewer\*"; DestDir: "{app}\md-viewer"; Flags: ignoreversion
 Source: "stage\使用说明.md"; DestDir: "{app}"; Flags: ignoreversion
+; 第三方组件声明：随包装到安装目录（开源合规，升级覆盖安装）
+Source: "stage\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 ; exe 文件名切换的迁移清理：只在装「AI数字助理.exe」时启用（旧名版自装自不触发）。

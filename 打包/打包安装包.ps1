@@ -160,6 +160,12 @@ Copy-Item (Join-Path $mdvDir "使用说明.txt") (Join-Path $stage "md-viewer") 
 
 Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
 
+# 第三方组件声明（开源合规）：随安装包分发，装到 {app}\THIRD-PARTY-NOTICES.md；
+# 与 aria2c 的 COPYING/LICENSE.OpenSSL（bin 目录自带）共同覆盖分发义务。
+$notices = Join-Path $root "THIRD-PARTY-NOTICES.md"
+if (-not (Test-Path $notices)) { throw "缺少第三方组件声明：$notices（仓库根目录必须有 THIRD-PARTY-NOTICES.md）" }
+Copy-Item $notices $stage -Force
+
 # ---- 安装期清理清单（清理清单.iss，被 安装包.iss 的 [InstallDelete] 段包含）----
 # 随包目录在升级安装时整目录重装（先删后装），包内已移除的文件不再残留——
 # 旧组件文件混进新版本是真会出错的（v1.0.2 的 asr\ 残留案例）。
