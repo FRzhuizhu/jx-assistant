@@ -1,0 +1,223 @@
+# Portions of this package are derived from MCPCat/mcpcat-typescript-sdk
+# Copyright (c) 2025 MCPcat
+# Licensed under the MIT License: https://github.com/MCPCat/mcpcat-typescript-sdk/blob/main/LICENSE
+
+"""Per-server tracking state, the bounded identity LRU, and identity resolution.
+
+Per-server state lives in a module-level ``weakref.WeakKeyDictionary`` keyed by
+the server object, so state is isolated per server and garbage-collected with it
+(the Python equivalent of the TS ``WeakMap``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import weakref
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Dict, FrozenSet, Optional, Set, Tuple
+
+from .logger import log
+from ._sink import McpEventSink
+from .types import MCPAnalyticsOptions, UserIdentity
+
+
+class IdentityCache:
+    """Bounded LRU of session identities, isolated per server so identities never
+    bleed across server instances."""
+
+    def __init__(self, max_size: int = 1000) -> None:
+        self._cache: "OrderedDict[str, UserIdentity]" = OrderedDict()
+        self._max_size = max_size
+
+    def get(self, session_id: str) -> Optional[UserIdentity]:
+        identity = self._cache.get(session_id)
+        if identity is None:
+            return None
+        self._cache.move_to_end(session_id)
+        return identity
+
+    def set(self, session_id: str, identity: UserIdentity) -> None:
+        if session_id in self._cache:
+            del self._cache[session_id]
+        elif len(self._cache) >= self._max_size:
+            self._cache.popitem(last=False)
+        self._cache[session_id] = identity
+
+    def has(self, session_id: str) -> bool:
+        return session_id in self._cache
+
+    def size(self) -> int:
+        return len(self._cache)
+
+
+@dataclass
+class MCPAnalyticsData:
+    """All per-server tracking state."""
+
+    options: MCPAnalyticsOptions
+    sink: Optional[McpEventSink] = None
+    session_id: str = ""
+    session_source: str = "generated"  # "generated" | "mcp" | "token"
+    last_mcp_session_id: Optional[str] = None
+    # Set once we've warned that an HTTP request resolved with no session id — the
+    # signature of a stateless server whose mint middleware never attached. Warned
+    # a single time per server so the log isn't flooded on every request.
+    warned_no_stateless_session: bool = False
+    # True once the SDK has told the host that its tools/list handler was
+    # replaced after instrument(), so ownership can no longer be determined and
+    # the virtual tools are advertised but never intercepted. Warned a single
+    # time per server so the log isn't flooded on every call.
+    warned_foreign_list_handler: bool = False
+    # ``(kind, name, variant)`` collision warnings already emitted, so a client
+    # that re-lists tools on every turn logs each misconfiguration once.
+    warned_virtual_tool_collisions: Set[Tuple[str, str, str]] = field(
+        default_factory=set
+    )
+    # Adapter-supplied probe returning the names the host's own (original,
+    # un-instrumented) tools/list handler advertises on its first page, or None
+    # when it can't be determined. Registered by the adapters with no tool
+    # registry to query — raw low-level servers. Takes the adapter's request
+    # context, which the 1.x handler shape ignores.
+    raw_tool_names_probe: Optional[Callable[[Any], Awaitable[Optional[Set[str]]]]] = (
+        None
+    )
+    last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    identified_sessions: IdentityCache = field(default_factory=IdentityCache)
+    tool_categories: Dict[str, str] = field(default_factory=dict)
+    tool_descriptions: Dict[str, str] = field(default_factory=dict)
+    # True only when PostHog added llm_model to this tool's advertised schema.
+    # Missing/False fails closed so an application-owned field is never read or stripped.
+    tool_model_parameter_injected: Dict[str, bool] = field(default_factory=dict)
+    # Ownership learned from tools/list on this instance has priority over the
+    # low-level resolver callback.
+    tool_analytics_parameter_ownership: Dict[str, FrozenSet[str]] = field(
+        default_factory=dict
+    )
+    # Original schemas used to resolve ownership. They also identify safe input
+    # names without recording argument values.
+    tool_input_schemas: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Which tools got `_mcp_instructions` declared on their advertised output
+    # schema at tools/list. Only those may be mirrored into on a call — writing
+    # an undeclared key fails the customer's whole result under
+    # `additionalProperties: false`. Absent means "never served a listing for
+    # this tool", which fails closed.
+    tool_output_instructions: Dict[str, bool] = field(default_factory=dict)
+    # Bounded FIFO of sessions we've emitted $mcp_initialize for, so a long-lived
+    # server can't accumulate one entry per session forever.
+    initialized_sessions: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
+    # True once mcp 2.x `Server.middleware` observes this server's real
+    # `initialize`, on every transport. On mcp 1.x an ASGI middleware bound to
+    # this server observes it over HTTP and marks each request it passes on;
+    # whatever neither covers falls back to the first request of the session.
+    handshake_observed_in_process: bool = False
+    server_name: Optional[str] = None
+    # Validated once during setup. Keep it separate from the caller-owned
+    # options object so later option changes cannot alter event attribution.
+    server_build: Optional[str] = None
+    server_version: Optional[str] = None
+    # A strong wrapper reference would retain the low-level WeakKeyDictionary key.
+    standalone_fastmcp: Optional["weakref.ReferenceType[Any]"] = None
+    session_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def mark_session_initialized(self, session_id: str) -> None:
+        self.initialized_sessions[session_id] = None
+        while len(self.initialized_sessions) > _MAX_INITIALIZED_SESSIONS:
+            self.initialized_sessions.popitem(last=False)
+
+
+_MAX_INITIALIZED_SESSIONS = 1000
+
+
+_server_tracking: "weakref.WeakKeyDictionary[Any, MCPAnalyticsData]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def tracking_key(server: Any) -> Any:
+    """The underlying low-level server for high-level wrappers (SDK 1.x FastMCP and
+    jlowin's fastmcp expose ``_mcp_server``; SDK 2.x MCPServer renamed it
+    ``_lowlevel_server``), else the server itself. Used as the tracking key so
+    instrumenting a wrapper and its underlying server resolve to one state instead
+    of two divergent ones (matching the TS SDK)."""
+    low_level = getattr(server, "_mcp_server", None) or getattr(
+        server, "_lowlevel_server", None
+    )
+    return low_level if low_level is not None else server
+
+
+def get_server_tracking_data(server: Any) -> Optional[MCPAnalyticsData]:
+    return _server_tracking.get(server)
+
+
+def set_server_tracking_data(server: Any, data: MCPAnalyticsData) -> None:
+    _server_tracking[server] = data
+
+
+def merge_identities(
+    previous: Optional[UserIdentity], nxt: UserIdentity
+) -> UserIdentity:
+    if previous is None:
+        return nxt
+    return UserIdentity(
+        distinct_id=nxt.distinct_id,
+        properties={**(previous.properties or {}), **(nxt.properties or {})},
+        groups=nxt.groups if nxt.groups is not None else previous.groups,
+    )
+
+
+async def _maybe_await(value: Any) -> Any:
+    if asyncio.iscoroutine(value) or asyncio.isfuture(value):
+        return await value
+    return value
+
+
+async def handle_identify(
+    data: MCPAnalyticsData,
+    session_id: str,
+    request: Dict[str, Any],
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Resolve the optional ``identify`` callback and merge the result into the
+    session's cached identity. Every event of the session then carries it as
+    ``distinct_id``/``$set``, so no standalone ``$identify`` is sent: without an
+    ``$anon_distinct_id`` it would merge no person in ingestion."""
+    if not data.options.identify:
+        return
+
+    try:
+        identify = data.options.identify
+        if isinstance(identify, UserIdentity):
+            identity_result: Optional[UserIdentity] = identify
+        else:
+            identity_result = await _maybe_await(identify(request, extra))
+
+        if not identity_result:
+            log(
+                f"Warning: Supplied identify function returned null for session {session_id}"
+            )
+            return
+
+        previous = data.identified_sessions.get(session_id)
+        data.identified_sessions.set(
+            session_id, merge_identities(previous, identity_result)
+        )
+    except Exception as error:  # noqa: BLE001
+        log(
+            f"Error: identify function threw while identifying session {session_id} - {error}"
+        )
+
+
+async def resolve_event_properties(
+    data: MCPAnalyticsData,
+    request: Dict[str, Any],
+    extra: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not data.options.event_properties:
+        return None
+    try:
+        return await _maybe_await(data.options.event_properties(request, extra)) or None
+    except Exception as e:  # noqa: BLE001
+        log(f"event_properties callback error: {e}")
+        return None
