@@ -51,22 +51,29 @@ setInterval(() => {
    「一从外面进 APP 就只进首页，之前的对话记忆没了」）。记的是「最后打开的那个主对话」：
    - 打开即写：主对话区每成功开一个会话都会发 JX session:open（侧栏点选、通知进去、
      子任务「打开会话」、分支/派生切换全走同一条路）；
-   - 明确点「新工作任务」回首页就清（app-chat.js 的 goHomeNewTask）——用户自己回了
-     首页，下次就该从首页开始；
-   - 启动时确认它还在列表里才恢复：老用户/从没开过 → 停在首页；列表里真没有这条
-     （已删/已归档）→ 停在首页并清掉记忆；打不开（电脑端刚不可达）→ 提示一句回首页。
-     两种情况都不留白屏、不留转圈。 */
+   - 明确点「新工作任务」回首页就清（app-chat.js 的 goHomeNewTask）——清了之后
+     重启也回默认页（主对话），首页只作为发起新任务的过渡停留；
+   - 启动时确认它还在列表里才恢复：没有记录（新安装/首次使用）或列表里真没有
+     这条（已删/已归档，记忆一并清掉）→ 落**默认页＝数字助理主对话（长期助理）**
+     （2026-11-05 用户口径「新安装的直接进来就是长期助理」），主对话也打不开才
+     留在首页；上次那条打不开（电脑端刚不可达）→ 提示一句回首页。两种情况都不
+     留白屏、不留转圈。 */
 function rememberLastSession(id) { lsSet('jx.lastSess', id || ''); }
 JX.on('session:open', (s) => { if (s && s.id) rememberLastSession(s.id); });
 
 async function restoreLastSession() {
   const id = lsGet('jx.lastSess', '');
-  if (!id) return; // 还没有任何「上次会话」记录（老用户/首次使用）：照常停在首页
+  // 没有「上次会话」记录（新安装/首次使用/上次明确回首页）：落默认页——数字
+  // 助理主对话（长期助理），不再停在「新建对话」首页。openAssistant 内部任何
+  // 一步失败（接口打不开等）都不抛白屏：catch 掉留在首页即可
+  if (!id) { try { await openAssistant(); } catch (e) { /* 留在首页 */ } return; }
   const brief = (state.sessions || []).find((s) => s.id === id);
   if (!brief || brief.archived) {
     // 列表空着多半是这一拉没成功（电脑端刚不可达）：留着记忆下次再试；
-    // 列表非空而里面没有这条，才是真的没了（被删/被归档）
+    // 列表非空而里面没有这条，才是真的没了（被删/被归档）——清掉记忆后同样
+    // 落默认页（主对话）
     if ((state.sessions || []).length) rememberLastSession('');
+    try { await openAssistant(); } catch (e) { /* 留在首页 */ }
     return;
   }
   try {
