@@ -573,6 +573,12 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   --fold-bg: var(--chip);                 /* 折叠渐隐终点 = 气泡自身底色 */
   border-radius: 14px 14px 14px 4px;      /* 尾巴朝左下 */
 }
+/* aiuser 正文按 Markdown 渲染（2026-11-05 拍板方向 A，JS 给气泡挂 .md 类）：
+   气泡带 .md 后命中上方 .md 系列排版规则（标题/列表/表格/代码与数字助理正文
+   同款）；pre-wrap 是纯文本气泡的行为，MD 块自管换行（p/br），必须关掉。
+   code 底色换成页面底色：灰气泡（--chip）里再放 --chip 底的 code 会看不出底 */
+.msg.user.ai .bubble.md { white-space: normal; }
+.msg.user.ai .bubble.md code { background: var(--bg); }
 .msg.user.ai .msg-actions { justify-content: flex-start; }
 
 /* 长消息折叠（作用于所有会话与视图的用户位气泡：用户气泡，

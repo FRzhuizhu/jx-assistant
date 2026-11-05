@@ -906,7 +906,7 @@ const ROW_ITEM_BUILDERS = {
   // AI 发出的用户消息（数字助理派发的指令/派发回报/子对话派发/待办转交）：
   // 与用户消息完全同权——开新回合，上一回合随之收口（最终输出带出复制/压缩
   // 等回合按钮）；后面同样跟一条时间提示词；气泡由 userBubble 渲染为左对齐
-  // 白底的「AI 用户」变体（.msg.user.ai），不可编辑重发
+  // 灰底的「AI 用户」变体（.msg.user.ai，正文按 Markdown 渲染），不可编辑重发
   aiuser(m, st) {
     st.cur = { userMsg: m, items: [] };
     st.turns.push(st.cur);
@@ -1073,15 +1073,18 @@ function actTime(iso, side) {
 
 // 用户消息气泡：气泡上方悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息
 // 开放（kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。AI 发出的
-// 用户消息（kind=aiuser，数字助理派发的指令/回报）同款气泡但底色偏白（.ai），
+// 用户消息（kind=aiuser，数字助理派发的指令/回报）同款气泡但灰底（.ai），
 // 操作行有时间与复制、没有编辑——它是 AI 说的，不能编辑重发。
+// aiuser 正文按 Markdown 渲染（2026-11-05 用户在三档预览页拍板方向 A）：派发
+// 回报里的「最终答复全文」是任务模型按正文习惯写的，纯文本显示时表格/井号/
+// 星号全裸露；渲染器与数字助理正文同款（md()）。复制按钮仍复制原文，不受影响。
 function userBubble(m, view) {
   const wrap = document.createElement('div');
   wrap.className = 'msg user' + (m.kind === 'aiuser' ? ' ai' : '');
   wrap.dataset.seq = m.seq; // 搜索命中定位用
   const b = document.createElement('div');
-  b.className = 'bubble';
-  appendQuotedBody(b, String(m.content ?? '')); // 带引用前缀的消息拆成灰色引用行 + 正文
+  b.className = 'bubble' + (m.kind === 'aiuser' ? ' md' : '');
+  appendQuotedBody(b, String(m.content ?? ''), m.kind === 'aiuser'); // 带引用前缀的消息拆成灰色引用行 + 正文（aiuser 正文走 MD 渲染）
   wrap.appendChild(b);
   if ((m.kind === 'chat' || m.kind === 'aiuser') && view) {
     const acts = document.createElement('div');
@@ -2767,12 +2770,12 @@ function renderMessages(msgs, view, opts) {
     wrap.className = 'msg user' + (pm.kind === 'aiuser' ? ' ai' : '') + ' pending-steer';
     wrap.dataset.pendingSteer = pm.id;
     const b = document.createElement('div');
-    b.className = 'bubble';
+    b.className = 'bubble' + (pm.kind === 'aiuser' ? ' md' : '');
     const badge = document.createElement('span');
     badge.className = 'q-badge q-badge-steer';
     badge.textContent = '插话中';
     b.appendChild(badge);
-    appendQuotedBody(b, pm.content); // 附件块/引用块与正式气泡同款拆行渲染（含折叠，长注记不再是一大坨原文）
+    appendQuotedBody(b, pm.content, pm.kind === 'aiuser'); // 附件块/引用块与正式气泡同款拆行渲染（含折叠，长注记不再是一大坨原文）；aiuser 正文同样 MD 渲染，落库前后形态一致
     wrap.appendChild(b);
     // 悬停操作行：与正式用户气泡同一套样式，只有「编辑」（退回输入框改完重发）。
     // 只给自己发的插话（kind 空/chat）；派发注入的其他形态不参与。
@@ -6353,10 +6356,10 @@ function splitQuoted(raw) {
 // 气泡正文渲染：附件块逐行渲染灰色附件行（与引用行同款：CSS 截断 + title 全文），
 // 引用块拆成灰色引用行（截断 + title 全文），正文里“引用N”与对得上号的文件标记
 // 渲染成灰色胶囊
-function appendQuotedBody(b, raw) {
+function appendQuotedBody(b, raw, mdBody) {
   const qm = splitQuoted(raw);
-  // 没有任何块也走标记切段：文件标记因对不上号按普通文字放行（兜底语义一致）
-  if (!qm) { appendQuoteBodyText(b, raw, [], []); return; }
+  // 没有任何块：正文整段落位（普通消息走标记切段兜底，mdBody 时整段 MD 渲染）
+  if (!qm) { appendBodyText(b, raw, [], [], mdBody); return; }
   qm.attNotes.forEach((n) => {
     const line = document.createElement('span');
     line.className = 'msg-quote';
@@ -6371,7 +6374,23 @@ function appendQuotedBody(b, raw) {
     line.title = q;
     b.appendChild(line);
   });
-  appendQuoteBodyText(b, qm.rest, qm.quotes, qm.attNotes);
+  appendBodyText(b, qm.rest, qm.quotes, qm.attNotes, mdBody);
+}
+
+// 正文渲染分流：mdBody=true（aiuser：任务书/派发回报/待办转交）时整段按
+// Markdown 渲染——这些消息天然带 MD 结构（模型正文习惯：列表/表格/路径），
+// 渲染器与数字助理正文同款（md()，见 app-core.js）；否则走「引用N/文件标记→
+// 灰胶囊」的用户消息切段（那是用户输入语法，aiuser 正文不依赖，两分支不交叉）
+function appendBodyText(b, text, quotes, attNotes, mdBody) {
+  if (mdBody) {
+    const src = String(text == null ? '' : text);
+    if (!src) return;
+    const box = document.createElement('div');
+    box.innerHTML = md(src);
+    b.appendChild(box);
+    return;
+  }
+  appendQuoteBodyText(b, text, quotes, attNotes);
 }
 
 // 正文按标记切段：引用标记与文件名形态的引号串（以 .扩展名 结尾，如“报告fina….docx”）
