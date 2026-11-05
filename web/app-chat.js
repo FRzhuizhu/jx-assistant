@@ -6678,6 +6678,7 @@ function setupInputMarks(view) {
       sp.textContent = seg.text;
       bd.appendChild(sp);
     }
+    syncBdScroll(); // 重建会把滚动归零：按输入框当前 scrollTop 对齐（内容流位置）
   }
   let raf = 0;
   function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
@@ -6694,8 +6695,12 @@ function setupInputMarks(view) {
   } catch (e) { /* 老内核：靠 input 事件兜底 */ }
 
   ta.addEventListener('input', schedule);
-  // 内容超高时输入框自己滚：背衬层跟着上移保持对齐（同语音灰字层）
-  ta.addEventListener('scroll', () => { bd.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)'; });
+  // 内容超高时输入框自己滚：背衬层用 scrollTop 镜像跟着滚——裁剪窗（盒子本身
+  // 的 overflow:hidden，钉在输入框位置）不动、只滚内容，胶囊与文字同步进出
+  // 可视区。绝不能平移盒子本身（曾用 translateY：裁剪窗跟着上移逃出输入卡，
+  // 超长输入时灰胶囊悬空浮在输入区上方——裁剪窗脱离了该管它的上下文）。
+  ta.addEventListener('scroll', syncBdScroll);
+  function syncBdScroll() { bd.scrollTop = ta.scrollTop; }
   window.addEventListener('resize', () => { syncMetrics(); render(); });
   syncMetrics();
   render();
