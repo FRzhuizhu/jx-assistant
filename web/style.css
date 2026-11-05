@@ -559,8 +559,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 
 /* AI 发出的用户消息（aiuser：数字助理派发的任务指令/派发回报/子对话派发/待办
    转交）：**左对齐**（AI 说的「用户消息」，在左边像「别人发来的」），**灰底**
-   （--chip 中性灰 + 一圈细边框——微信是灰底页配白气泡，我们页面是白底，
-   倒过来就是白页配灰气泡），尾巴朝左下；内边距/字号沿用用户气泡那套。
+   （--chip 中性灰——微信是灰底页配白气泡，我们页面是白底，倒过来就是白页配
+   灰气泡），尾巴朝左下；内边距/字号沿用用户气泡那套。
+   不加边框：与用户气泡（本就无边框）保持一致，纯色块靠深浅立身（微信式；
+   2026-11-05 用户在 15 方案预览页里拍板「浅灰去边框」，此前那圈
+   border: 1px solid var(--border) 已删）。
    操作行悬停显隐（与用户气泡同一交互）、靠左：时间 + 复制，没有编辑。
    长文折叠与用户气泡同一套（applyFolds 的 .msg.user > .bubble 天然包含它，
    且不分会话/视图——主对话、工作任务会话、右栏子对话一致）。 */
@@ -569,7 +572,6 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   background: var(--chip);
   --fold-bg: var(--chip);                 /* 折叠渐隐终点 = 气泡自身底色 */
   border-radius: 14px 14px 14px 4px;      /* 尾巴朝左下 */
-  border: 1px solid var(--border);
 }
 .msg.user.ai .msg-actions { justify-content: flex-start; }
 

@@ -5537,7 +5537,13 @@ function userChatLanded(msgs, content) {
 // 中途放弃发送的出口要收回（armed 只记自己置的位：进函数时已在流式态的，段
 // 属于正在跑的那轮，不动）。
 async function prepareSend(forceContent, view) {
-  if (view._sendBusy) return null;
+  if (view._sendBusy) {
+    // 第一次发送还停在附件落盘阶段（flush 期间 _sendBusy/_attachFlush 都占着）：
+    // 静默吞掉这次点击，用户以为点了没反应——给一句指路（✕ 移除上传中的附件
+    // 即解锁）。普通防重入（钩子/建会话中的连按回车）依旧静默忽略。
+    if (view._attachFlush) attachHint(view, '附件还在上传中，稍候再发送；点附件上的 ✕ 可移除它', 4000);
+    return null;
+  }
   view._sendBusy = true;
   const armed = !view.state.streaming;
   if (armed) runHintOn(view);
@@ -5559,7 +5565,7 @@ async function prepareSend(forceContent, view) {
     if (armed) runHintOff(view);
     return;
   }
-  if (view._attachFlush) { if (armed) runHintOff(view); return; } // 附件正在落盘：忽略重复点发送
+  if (view._attachFlush) { if (armed) runHintOff(view); return; } // 附件正在落盘：忽略重复点发送（提示在入口 _sendBusy 处统一给）
   if (view.state.streaming) {
     // 执行中插话/排队：先传附件（返回注记），组装后的内容进插话/排队队列——
     // 模型在消息真正生效那一刻才看到附件块与正文，文件信息不再先于消息到达
@@ -7750,6 +7756,11 @@ function removeAttachment(view, id) {
   const i = list.findIndex((a) => a.id === id);
   if (i < 0) return;
   const a = list[i];
+  // 上传中的附件：中止其挂起中的上传（flushAttachments 还 await 着它的 fetch）。
+  // 不中止的话请求要等到自身失败/超时才结束——期间 _attachFlush 一直占着（点
+  // 发送全被吞），结束后还会对这个已删附件再弹一次上传失败：正是「删了附件仍
+  // 报同一个文件未上传」的残留链
+  if (a._abort) { try { a._abort.abort(); } catch (e) { /* 已结束的上传再 abort 无害 */ } }
   if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   // 它在输入框里的胶囊标记一并摘掉：认领要在移出列表之前算，而且只摘它自己那一处
   // （同名两份的标记文字相同，按文本 split 全删会把另一份的一起带走）
@@ -7884,26 +7895,37 @@ async function flushAttachments(view) {
   if (box) box.classList.add('busy');
   let failed = 0, firstErr = '';
   const notes = [];
+  // 迭代用快照：上传是多轮 await，期间用户可能 ✕ 掉任何一项。直接 for..of 原数组
+  // 会在删掉"当前正在传的那项"时让迭代器跳位漏传后面的附件（消息发出、附件却
+  // 没带上）；快照 + includes 校验让被删项自然跳过，其余项一个不少。
+  const queue = [...list];
   try {
-    for (const a of list) {
+    for (const a of queue) {
+      if (!list.includes(a)) continue; // 已被 ✕ 删掉：不再上传
       a.status = 'uploading';
+      a._abort = new AbortController(); // 删除附件时按它中止挂起中的上传
       renderAttachments(view);
       try {
         const url = '/api/sessions/' + sid + '/upload';
         let r;
         if (a.path) {
-          r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: a.path }) });
+          r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: a.path }), signal: a._abort.signal });
         } else {
           const fd = new FormData();
           fd.append('file', a.file, a.name);
-          r = await fetch(url, { method: 'POST', body: fd });
+          r = await fetch(url, { method: 'POST', body: fd, signal: a._abort.signal });
         }
         if (!r.ok) throw new Error(await uploadErrText(r));
         const d = await r.json().catch(() => ({}));
-        a.status = 'staged';
         a.note = (d && d.note) || '';
-        if (a.note) notes.push(a.note);
+        // 注记是「用户附件：」块的唯一来源：响应正常却没带回注记时若按成功放行，
+        // 消息照发、文件块缺失——比报错拦下更糟的静默失败，按失败处理
+        if (!a.note) throw new Error('上传响应缺少注记');
+        if (!list.includes(a)) continue; // 传完了但它已被 ✕ 删掉：丢弃注记，不并入本轮
+        a.status = 'staged';
+        notes.push(a.note);
       } catch (e) {
+        if (!list.includes(a)) continue; // 已被删掉（含 ✕ 触发的 abort）：不计失败、不提示
         a.status = 'error';
         a.error = String((e && e.message) || e);
         if (!firstErr) firstErr = a.error;
