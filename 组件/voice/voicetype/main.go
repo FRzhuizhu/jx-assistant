@@ -463,33 +463,31 @@ func vtStreamShow(sessGen int32, text string) {
 	})
 }
 
-// vtFinishTarget 决定拿哪份现场做判定：
-// 结束时前台是别的程序 → 用结束时的（用户可能中途切了窗口），缺 UIA 就补一次；
-// 结束时前台变成了我们自己（悬浮窗抢到前台）→ 退回录音开始时的现场；
-// 结束时同一窗口但焦点被菜单抢走（Alt 漏给前台时就是这样）→ 退回录音开始时的
-// 现场，并标记 MenuRecovered：注入前先按 Esc 把菜单关掉、焦点还给输入框。
-// 两次都拿不到有效前台（极罕见）时按不可输入处理：宁可落剪贴板。
-func vtFinishTarget(start, end vtTarget) vtTarget {
-	sameAsStart := end.Hwnd != 0 && end.Hwnd == start.Hwnd
-	if end.Hwnd != 0 && end.Pid != uint32(os.Getpid()) {
-		if !sameAsStart || !start.Uia.OK {
-			end.Uia = vtUiaFocused()
-			// 同一窗口、录音开始时是输入框、结束时却落在菜单上：典型"按键被前台
-			// 吃成了菜单"。以录音开始时的现场为准，注入前先 Esc 收起菜单。
-			if sameAsStart && start.Hwnd != 0 && vtGateIsMenu(vtEditabilityGate(end)) {
-				ret := start
-				ret.MenuRecovered = true
-				vtLog("焦点被菜单抢走（录音开始=输入框，结束=菜单）：以录音开始现场判定，注入前先 Esc 收菜单")
-				return ret
-			}
-			return end
+// vtFinishTarget 决定拿哪份现场做判定（识别完成、注入前一刻调用）：
+//   start = 录音开始（焦点被菜单抢走时的回退现场）；end = 录音结束（悬浮窗
+//   显示前采集的外部现场，识别期间悬浮窗抢到前台时靠它兜底）；now = 注入前
+//   一刻（识别刚完成）。以 now 为准——识别要几百毫秒到数秒，录音开始时在
+//   输入框、此刻可能已经不在（点了正文/切了焦点），只有"准备要输入的此刻"
+//   的现场才代表 Ctrl+V 真正落点；now 前台是我们自己（悬浮窗抢到前台）或
+//   没有前台 → 用 end，end 也没有 → 用 start。
+// 唯一回退例外：同一窗口、录音开始时在输入框、此刻焦点被菜单抢走（Alt 漏给
+// 前台的典型症状）→ 退回 start 并标记 MenuRecovered：注入前先按 Esc 把菜单
+// 收掉、焦点还给输入框（菜单是假象，用户实际还在输入框）。
+func vtFinishTarget(start, end, now vtTarget) vtTarget {
+	cur := now
+	if cur.Hwnd == 0 || cur.Pid == uint32(os.Getpid()) {
+		cur = end
+		if cur.Hwnd == 0 || cur.Pid == uint32(os.Getpid()) {
+			cur = start
 		}
-		return start // 同一窗口且起始已探过 UIA：沿用起始结论
 	}
-	if start.Hwnd != 0 {
-		return start
+	if cur.Hwnd == start.Hwnd && start.Hwnd != 0 && vtGateIsMenu(vtEditabilityGate(cur)) {
+		ret := start
+		ret.MenuRecovered = true
+		vtLog("焦点被菜单抢走（录音开始=输入框，此刻=菜单）：以录音开始现场判定，注入前先 Esc 收菜单")
+		return ret
 	}
-	return end
+	return cur
 }
 
 // vtGateIsMenu 焦点是不是菜单/菜单栏/菜单项（"按键被前台吃成菜单"的特征）。
@@ -509,12 +507,10 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 		}
 	}()
 	pcm := sess.stop()
-	// 结束时的现场必须在显示悬浮窗之前取：悬浮窗一旦出现，前台有可能变成
-	// 我们自己（历史 bug 就是拿"悬浮窗自己"当目标判成可输入）。
+	// 录音结束的外部现场在显示悬浮窗之前取：悬浮窗一旦出现，前台有可能变成
+	// 我们自己，识别期间真被抢了前台就靠这份现场兜底（历史 bug 是拿"悬浮窗
+	// 自己"当目标判成可输入）。
 	end := vtCaptureTarget(false, "录音结束")
-	tgt := vtFinishTarget(sess.target, end)
-	gate := vtEditabilityGate(tgt)
-	editable := gate.editable()
 
 	if vtGenOK(gen) {
 		vtOverlayShow()
@@ -536,8 +532,6 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 		}
 	}
 	text = strings.TrimSpace(text)
-	vtLog("目标判定: gate=%s 可输入=%v | %s",
-		gate, editable, tgt.describe())
 	vtLog("会话完成: 代数=%d 音频=%.1fs 文本=%q",
 		gen, float64(len(pcm))/2/float64(vtSampleRate), text)
 	if text == "" {
@@ -548,6 +542,14 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 		}
 		return
 	}
+	// 判定时机：识别完了、准备要输入的此刻才判定。识别要几百毫秒到数秒，
+	// 录音开始/结束时焦点都可能已变（历史 bug：开始时在输入框就沿用开始
+	// 的结论注入，结束时焦点早移到正文，Ctrl+V 落空还显示"已输入"）。
+	now := vtCaptureTarget(true, "注入前")
+	tgt := vtFinishTarget(sess.target, end, now)
+	gate := vtEditabilityGate(tgt)
+	vtLog("目标判定: gate=%s 可输入=%v | %s",
+		gate, gate.editable(), tgt.describe())
 	vtDeliver(gen, text, tgt, gate)
 	time.Sleep(700 * time.Millisecond)
 	vtOverlayHideIf(gen)
@@ -993,12 +995,15 @@ func vtTriggerLoop() {
 				text = "语音输入法自测文本"
 			}
 			t := vtCaptureTarget(true, "自测")
-			g := vtEditabilityGate(t)
+			// 与正式流程同一个判定合成：start/end/now 三份现场同一时刻，
+			// 走 vtFinishTarget 而不是直接 vtEditabilityGate，口径才不会漂移。
+			tgt := vtFinishTarget(t, t, t)
+			g := vtEditabilityGate(tgt)
 			gen := vtSessionGen.Add(1)
-			vtLog("自测判定: gate=%s 可输入=%v | %s", g, g.editable(), t.describe())
+			vtLog("自测判定: gate=%s 可输入=%v | %s", g, g.editable(), tgt.describe())
 			vtOverlayShow()
 			go func() {
-				vtDeliver(gen, text, t, g)
+				vtDeliver(gen, text, tgt, g)
 				time.Sleep(700 * time.Millisecond)
 				vtOverlayHideIf(gen)
 			}()
