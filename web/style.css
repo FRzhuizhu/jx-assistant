@@ -316,6 +316,9 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   background: none; border: none; border-radius: 12px;
   color: var(--text); font-size: 14px; cursor: pointer; text-align: left;
 }
+/* 按钮文字（市场入口过渡期长名「企业技能包 / 工作流」）：桌面整名放得下；
+   窄屏三栏格照旧截断（省略号），不换行撑破 42px 按钮高 */
+.foot-btn-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .foot-btn svg { color: var(--text-2); }
 .foot-btn:hover { background: var(--hover); }
 .foot-btn.active { background: var(--active); }

@@ -20,14 +20,14 @@
          手机端（窄屏媒体查询）藏全名、亮短名，更窄连短字也隐掉只剩图标。
          以后往这组里加新入口，照这个结构写（span + data-short），否则手机端只能显示图标 -->
     <div class="actions">
-      <button id="btn-new-task" class="side-btn" data-short="新任务">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        <span class="sb-label">派任务给新助理</span>
-      </button>
       <button id="btn-new-assistant" class="side-btn" data-short="数字助理">
         <span class="doll-wrap"><svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><g class="bob"><g class="head"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g></g><g class="da-paper"><rect x="26.5" y="28.5" width="12" height="14" rx="1.6"></rect><line x1="29" y1="32.5" x2="36" y2="32.5"></line><line x1="29" y1="35.5" x2="36" y2="35.5"></line><line x1="29" y1="38.5" x2="33.5" y2="38.5"></line></g></g></svg><span id="da-badge" class="da-badge hidden">1</span></span>
         <!-- 显示名「跟长期助理对话」（2026-10-30 起「助理」不再加粗，整行常规字重） -->
         <span class="sb-label">跟长期助理对话</span>
+      </button>
+      <button id="btn-new-task" class="side-btn" data-short="新任务">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sb-label">派任务给新助理</span>
       </button>
     </div>
 
@@ -68,11 +68,11 @@
          最底独占整行，桌面端照常多出一行。 -->
     <div class="sidebar-foot">
       <div class="foot-grid">
-      <button id="btn-market" class="foot-btn" title="企业工作流：安装/更新 技能、组件与插件">
+      <button id="btn-market" class="foot-btn" title="企业技能包 / 工作流：安装/更新 技能、组件与插件">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
-        企业工作流
+        <span class="foot-btn-label">企业技能包 / 工作流</span>
       </button>
-      <!-- 企业小程序平台：与「企业工作流」平级的独立主区页面（2026-10-30 用户要求）。
+      <!-- 企业小程序平台：与「企业技能包 / 工作流」平级的独立主区页面（2026-10-30 用户要求）。
            点它进 #sites-view——iframe 加载本端代理 /sites（sitesproxy.go 转发市场
            服务器，自签证书由 Go 端证书策略接管，浏览器自己的证书校验不再挡路）。 -->
       <button id="btn-sites" class="foot-btn" title="企业小程序平台：发布与管理小程序、数据文件、二维码">
@@ -127,8 +127,8 @@
     <div id="market-view" class="hidden">
       <div class="mk-head">
         <div class="mk-title">
-          <h2>企业工作流</h2>
-          <span id="mk-server" class="mk-server" title="企业工作流/小程序平台地址（设置 · 网络访问 可改）"></span>
+          <h2>企业技能包 / 工作流</h2>
+          <span id="mk-server" class="mk-server" title="企业技能包 / 工作流 / 小程序平台地址（设置 · 网络访问 可改）"></span>
         </div>
         <input id="mk-search" type="search" placeholder="搜索名称 / 描述 / 标签…" autocomplete="off" spellcheck="false">
         <button id="mk-refresh" class="mk-icon-btn" title="刷新清单">
@@ -728,9 +728,9 @@
             </div>
           </div>
           <div class="gen-section">
-            <h4>企业工作流 / 小程序平台</h4>
+            <h4>企业技能包 / 工作流 / 小程序平台</h4>
             <div class="set-field">
-              <div class="sf-label">企业工作流 / 小程序平台地址</div>
+              <div class="sf-label">企业技能包 / 工作流 / 小程序平台地址</div>
               <input id="set-market-url" class="pf-input" placeholder="https://example.com:PORT" autocomplete="off" spellcheck="false">
               <p class="sf-desc">企业技能市场与小程序平台同一台服务端：填服务器地址即可（https://域名或IP:端口），清单与 /sites 等路径后缀由程序自动拼；改动即时生效，留空则市场页显示未配置。</p>
             </div>

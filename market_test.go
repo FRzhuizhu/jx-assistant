@@ -310,7 +310,7 @@ func writeVersionedSkillSrc(t *testing.T, ver string) string {
 	return dir
 }
 
-// TestMarketSkillAutoUpdate 企业工作流自动更新（checkUpdateOnce 顺带跑的那条路）：
+// TestMarketSkillAutoUpdate 企业技能包 / 工作流自动更新（checkUpdateOnce 顺带跑的那条路）：
 // 市场发新版 → 已装技能静默更新到新版并改记账；本地自建技能（无记账）不被触碰。
 func TestMarketSkillAutoUpdate(t *testing.T) {
 	fm := newFakeMarket(t)
