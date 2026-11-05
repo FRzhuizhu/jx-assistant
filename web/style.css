@@ -3254,6 +3254,14 @@ html.electron-shell .bpw-hint { display: none; }
 /* ---------- Claude 插件兼容层（app-ccplugins.js：统一「插件」页的 Claude 行/安装区/市场面板/命令弹层） ---------- */
 .ccp-install-row { display: flex; gap: 8px; margin: 0 0 8px; }
 .ccp-install-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--bd, #d8d8de); border-radius: 8px; font-size: 12px; background: var(--bg); color: var(--text); }
+/* 行内动作按钮（MCP 添加 / 插件安装 / 添加市场）：输地址场景，只占内容宽，
+   边框/圆角/配色同设置页底栏「取消」按钮（.modal-actions button），非 pf-add 的虚线上传语言 */
+.ccp-row-btn {
+  flex-shrink: 0; padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.ccp-row-btn:hover { background: var(--hover); }
+.ccp-row-btn:disabled { opacity: .5; cursor: not-allowed; }
 .ccp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
 .ccp-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg-tag, #eef0f4); color: var(--fg-dim, #666); }
 .ccp-comps { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 0; }
