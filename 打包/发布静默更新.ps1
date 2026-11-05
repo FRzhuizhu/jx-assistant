@@ -80,7 +80,30 @@ if ($组件 -ne "") {
     if (-not $ver) { throw "组件 $id 的 manifest.json 没有 version" }
     $zipName = "$id-$ver.zip"
     Write-Host "== 打包组件块 $id v$ver"
-    Compress-Archive -Path (Join-Path $dir "*") -DestinationPath (Join-Path $outDir $zipName) -CompressionLevel Optimal
+    # 组件目录里可能混着开发机的运行时残留（边跑边写的产物）：先复制到临时
+    # 目录、按 打包\组件运行时排除.txt 剔除属于本组件的行再压，源目录不动
+    # （被运行中实例占用的文件也照常出包）。清单相对仓库根、/ 分隔、# 注释。
+    $clean = Join-Path $env:TEMP ("jx-comp-" + $id)
+    if (Test-Path $clean) { Remove-Item $clean -Recurse -Force }
+    Copy-Item $dir $clean -Recurse -Force
+    $rtList = Join-Path $root "打包\组件运行时排除.txt"
+    if (Test-Path $rtList) {
+      $rx = "^组件/" + [regex]::Escape($id) + "/"
+      $dropped = @()
+      Get-Content $rtList -Encoding UTF8 | ForEach-Object {
+        $rel = $_.Trim()
+        if ($rel -eq "" -or $rel.StartsWith("#")) { return }
+        if ($rel -notmatch $rx) { return }
+        $tail = $rel -replace $rx, ""
+        $p = Join-Path $clean ($tail -replace "/", "\")
+        if (Test-Path $p) { Remove-Item $p -Recurse -Force; $dropped += $tail }
+      }
+      if ($dropped.Count -gt 0) {
+        Write-Host ("== 已剔除组件运行时残留：{0}" -f ($dropped -join '、'))
+      }
+    }
+    Compress-Archive -Path (Join-Path $clean "*") -DestinationPath (Join-Path $outDir $zipName) -CompressionLevel Optimal
+    Remove-Item $clean -Recurse -Force
     $compArgs += "-component", "$id=$zipName"
   }
 }

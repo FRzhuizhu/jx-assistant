@@ -140,6 +140,23 @@ $compCount = (Get-ChildItem $compDir -Directory | Where-Object {
 }).Count
 if ($compCount -eq 0) { throw "组件目录里没有任何带 manifest.json 的组件，拒绝出包" }
 Copy-Item $compDir (Join-Path $stage "组件") -Recurse -Force
+# 组件运行时残留（开发机上边跑边写的产物，如独立语音输入法的录音留档与
+# 浏览器 profile）：绝不进发行包。按 打包\组件运行时排除.txt（相对仓库根、
+# / 分隔、# 注释）逐行剔除——stage 是副本无文件锁，源目录被运行中的实例
+# 占用也不影响出包。
+$rtList = Join-Path $packDir "组件运行时排除.txt"
+if (Test-Path $rtList) {
+  $dropped = @()
+  Get-Content $rtList -Encoding UTF8 | ForEach-Object {
+    $rel = $_.Trim()
+    if ($rel -eq "" -or $rel.StartsWith("#")) { return }
+    $p = Join-Path $stage ($rel -replace "/", "\")
+    if (Test-Path $p) { Remove-Item $p -Recurse -Force; $dropped += $rel }
+  }
+  if ($dropped.Count -gt 0) {
+    Write-Host ("== 已剔除组件运行时残留：{0}" -f ($dropped -join '、'))
+  }
+}
 Write-Host "== 内置组件 $compCount 个已暂存"
 
 # 内置 MCP 组件（「操作电脑」能力的来源）：cua-driver 与 windows-mcp 依赖。
