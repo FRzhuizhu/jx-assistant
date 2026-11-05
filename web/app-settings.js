@@ -1324,13 +1324,11 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
   if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
-  // 市场服务器（market.go）与公司接入（wizard.go）：与远程接入字段同一套「回显+单字段 PATCH」
-  if (document.activeElement !== $('set-market-url')) $('set-market-url').value = c.marketURL || '';
-  // 搜索服务（websearch.go 的 searchEndpointBase）：填了用填的、空则跟随市场同源；
-  // 生效地址由后端算好下发（searchEndpoint），这里只负责原样显示
+  // 市场服务器地址与发布者姓名已随市场组件化迁入 skill-market 组件的设置区
+  // （设置 · 内置组件）；此处不再回显。搜索服务（websearch.go 的 searchEndpointBase）
+  // 仍在本页：填了用填的、空则跟随市场同源；生效地址由后端算好下发（searchEndpoint）
   if (document.activeElement !== $('set-search-url')) $('set-search-url').value = c.searchURL || '';
   syncSearchState(c);
-  if (document.activeElement !== $('set-publisher-name')) $('set-publisher-name').value = c.publisherName || '';
   if (document.activeElement !== $('set-registry-url')) $('set-registry-url').value = c.registryURL || '';
   if (document.activeElement !== $('set-update-url')) $('set-update-url').value = (c.updateURL === 'off' ? 'off' : (c.updateURL || ''));
   $('set-update-mode').value = (c.updateMode === 'manual' ? 'manual' : 'auto');
@@ -1404,8 +1402,8 @@ $('btn-remote-pk-new').onclick = async () => {
     alert('换新失败：' + e.message);
   }
 };
-// 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
-bindRemoteInput('set-market-url', 'marketURL');
+// 市场服务器地址：已随市场组件化迁入 skill-market 组件设置区（组件内自带回显与
+// 「改动即存」），此处不再绑定；后端 /api/config 的 marketURL 字段照旧。
 // 搜索服务：同一套「改动即存」；留空 = 跟随市场同源。非法地址由后端 400 拦下
 // （searchURL 不合法），这里 alert 出原因并回滚为服务端值
 bindRemoteInput('set-search-url', 'searchURL');
@@ -1418,7 +1416,6 @@ $('btn-open-sites').onclick = () => {
   if (!m) { alert('先在上方「企业技能包 / 工作流 / 小程序平台地址」里填服务器地址（如 https://example.com:PORT），托管平台与市场在同一台服务端。'); return; }
   jxOpenPage(m[1] + '/sites');
 };
-bindRemoteInput('set-publisher-name', 'publisherName');
 bindRemoteInput('set-registry-url', 'registryURL');
 bindRemoteInput('set-update-url', 'updateURL');
 // 更新方式：auto=分块静默（默认）/manual=仅提醒手动整包安装；改动即存
