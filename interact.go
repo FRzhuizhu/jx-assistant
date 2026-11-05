@@ -150,7 +150,7 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 			if !a.askAlertDue(q.ID) {
 				return
 			}
-			a.fireAskAlert(q)
+			a.fireAskAlert(q.ID, "", q.SessionID, q.SessionTitle, q.Question, a.Cfg.askAlertText())
 		})
 	}
 	defer func() {
@@ -245,21 +245,16 @@ func (a *App) holdQuestion(id string) {
 // 跑测试时不真响）。
 var askAlertBeep = systemBeep
 
-// fireAskAlert 到点执行一次久等提醒，三件事依次做：
-//  1. 把提醒顶到用户眼前——提醒浮窗是应用内 UI，软件在后台/最小化时用户根本
-//     看不见（全屏变蓝也白变）：最小化→还原、收进托盘→显示、在后台→抢前台，
-//     被系统前台锁拦下时退化为任务栏闪烁 + 托盘通知（alertfront_windows.go）；
-//  2. 叮一声（MessageBeep，不走语音组件）；
-//  3. 广播 ask_alert：前端全屏变色 + 15 秒倒计时，倒计时结束才朗读。
-//
-// 拆成方法是为了可测：断言「触发时确实去唤起了窗口 + 响了 + 广播了」，
-// 不必真等 4 分钟、也不动用户的窗口。
-func (a *App) fireAskAlert(q *UserQuestion) {
+// fireAskAlert 发一次久等提醒到点动作（唤起窗口 + 叮声 + 广播 ask_alert）。
+// 提问 / 计划审批 / 越权审批共用同一套机制与同一个设置项（设置·常规·询问提醒）：
+// questionID / approvalID 二选一填（前端按它把对应卡片与提醒层联动收起），
+// sessionTitle/summary 进浮窗文案，output 是朗读文案。
+func (a *App) fireAskAlert(questionID, approvalID, sessionID, sessionTitle, summary, output string) {
 	alertFrontHook("坚祥数字助理 · 有个请求在等你处理",
-		alertFrontText(q.SessionTitle, q.Question))
+		alertFrontText(sessionTitle, summary))
 	askAlertBeep()
-	a.broadcast(Event{Type: "ask_alert", QuestionID: q.ID, SessionID: q.SessionID,
-		Title: q.SessionTitle, Summary: q.Question, Output: a.Cfg.askAlertText()})
+	a.broadcast(Event{Type: "ask_alert", QuestionID: questionID, ApprovalID: approvalID,
+		SessionID: sessionID, Title: sessionTitle, Summary: summary, Output: output})
 }
 
 // askAlertDue 询问提醒（久等声光提醒）到点那一刻是否还该响：这条请求还在等、

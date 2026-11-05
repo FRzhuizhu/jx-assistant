@@ -3483,6 +3483,7 @@ function pushApproval(ev) {
 }
 
 function removeApproval(id) {
+  hideAskAlertIfMatched(id); // 声光提醒正为它闪着：审批已决定/超时收卡，收起并取消朗读
   state.approvals = state.approvals.filter((a) => a.id !== id);
   askDraftClear(id);
   renderPanels();
@@ -3723,10 +3724,13 @@ function showAskAlert(ev) {
   const ov = $('ask-alert');
   if (!ov) return;
   hideAskAlert(); // 上一次可能还挂着（同一条再来一次）：彻底收干净再开
-  askAlertQid = ev.questionId || '';
+  // 提问/计划审批与越权审批共用这一层提醒：kind 按来源措辞，askAlertQid 收
+  // 两种 id（问题解决/审批决定时 hideAskAlertIfMatched 据此收起并取消朗读）
+  askAlertQid = ev.questionId || ev.approvalId || '';
   askAlertPayload = ev;
+  const kind = ev.approvalId ? '审批' : '提问';
   $('ask-alert-text').textContent =
-    (ev.title ? '来自「' + ev.title + '」的提问：' : '') + (ev.summary || '有个问题需要你确认');
+    (ev.title ? '来自「' + ev.title + '」的' + kind + '：' : '') + (ev.summary || '有个请求需要你确认');
   ov.classList.remove('hidden', 'settle', 'solid'); // 从头来：先淡压暗，再慢慢渐变到主题色
   if (askAlertSettleTimer) clearTimeout(askAlertSettleTimer);
   askAlertSettleTimer = setTimeout(() => ov.classList.add('settle'), 6000);

@@ -51,8 +51,12 @@ const (
 	capComputer     = "computer"        // 能力：允许操作电脑（computer_* 工具）
 	capDevice       = "device"          // 能力：允许操作手机（device_* / adb_* 工具，仅安卓）
 	grantTTL        = 5 * time.Minute   // 授权凭证有效期
-	approvalTTL     = 2 * time.Minute   // 审批等待上限，超时视为拒绝
 )
+
+// approvalTTL 审批等待上限（超时按拒绝处理）：与提问卡的默认时限一致（5 分钟），
+// 而久等提醒默认 4 分钟——先提醒、后超时，时序顺。做成包级变量只为测试能把
+// 它换短来验证「提醒 → 超时按拒」的时序（perm_alert_test.go），产品路径永远是这个值。
+var approvalTTL = 5 * time.Minute
 
 // fullAccessCaps 是「完全访问」预设捆绑的能力：会话切到完全访问时，
 // 这些项在权限面板强制勾选并置灰（不可单独关闭），权限引擎同样视为开启；
@@ -576,7 +580,23 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 	a.permMu.Unlock()
 	a.broadcast(Event{Type: "approval_required", ApprovalID: ap.ID, SessionID: sess.ID, Title: sess.Title,
 		Name: tool, Summary: summary, Reason: reason})
+	// 久等声光提醒（与提问卡/计划审批共用同一套机制与同一个设置项——设置·常规
+	// ·询问提醒的 askAlertAfterSec，默认 4 分钟）：到点还没人决定就唤起窗口 +
+	// 叮一声 + 广播 ask_alert（浮窗文案带审批内容摘要）。提醒赶在超时之前
+	//（提醒 4 分钟 < 等待上限 5 分钟）；已决定/已超时收走的卡到点不再响。
+	var alertTimer *time.Timer
+	if a.Cfg.askAlertOn() {
+		alertTimer = time.AfterFunc(approvalAlertDelay(a), func() {
+			if !a.approvalAlertDue(ap.ID) {
+				return
+			}
+			a.fireAskAlert("", ap.ID, sess.ID, sess.Title, summary, a.Cfg.askAlertText())
+		})
+	}
 	defer func() {
+		if alertTimer != nil {
+			alertTimer.Stop()
+		}
 		a.permMu.Lock()
 		delete(a.approvals, ap.ID)
 		a.permMu.Unlock()
@@ -623,6 +643,24 @@ func (a *App) pendingApprovals() []*Approval {
 		out = append(out, ap)
 	}
 	return out
+}
+
+// approvalAlertDelay 久等提醒的触发延时：统一取「设置·常规·询问提醒」的
+// askAlertAfterSec（钳 30-600，默认 240=4 分钟），与提问卡/计划审批共用同一个
+// 设置项，不另立一套。做成包级函数变量只为测试能换短延时来验证「先提醒、
+// 后超时」的时序（perm_alert_test.go），产品路径永远是设置值。
+var approvalAlertDelay = func(a *App) time.Duration {
+	return time.Duration(a.Cfg.askAlertAfterSec()) * time.Second
+}
+
+// approvalAlertDue 审批的久等提醒到点那一刻是否还该响：这条审批还在等、
+// 没人点过（允许/拒绝/始终允许都会收卡；超时也会收走）。拆出来是为了可测
+// ——判定条件只有这一处。
+func (a *App) approvalAlertDue(id string) bool {
+	a.permMu.Lock()
+	defer a.permMu.Unlock()
+	ap, pending := a.approvals[id]
+	return pending && !ap.decided
 }
 
 // ---------- 受保护路径 ----------
