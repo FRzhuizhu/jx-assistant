@@ -726,6 +726,15 @@ func TestConfigCompactIntervalMigration(t *testing.T) {
 	if cfg.CompactInterval != 0 {
 		t.Fatalf("旧 rulePct=0 应迁移为 interval=0（规则通道保持关闭）, got %d", cfg.CompactInterval)
 	}
+	// keepChars：显式 0 合法（全压语义，不回默认）；无键的老配置补默认
+	cfg = run(`{"compactMode":"llm","keepChars":0,"compactInterval":400000}`)
+	if cfg.KeepChars != 0 {
+		t.Fatalf("显式 keepChars:0 应原样保留（全压语义）, got %d", cfg.KeepChars)
+	}
+	cfg = run(`{"compactMode":"llm"}`)
+	if cfg.KeepChars != 100000 {
+		t.Fatalf("无 keepChars 键应补默认 100000, got %d", cfg.KeepChars)
+	}
 	cfg = run(`{"compactMode":"rule","compactInterval":50000,"compactUnit":"bogus"}`)
 	if cfg.CompactUnit != "chars" {
 		t.Fatalf("非法单位应回落 chars, got %q", cfg.CompactUnit)
@@ -1145,6 +1154,49 @@ func TestCompactResendsFullEnvSnapshot(t *testing.T) {
 	}
 	if joined := joinCtx(); !strings.Contains(joined, full) {
 		t.Fatal("摘要压缩后组装输出也应包含完整环境快照")
+	}
+}
+
+// 保留预算 0 的全压语义：keepStartSeq 返回最后一条 seq+1（保留区为空，连
+// 最后一轮也不保留）；间隔触发线随预算收窄（=间隔本身），触发即全量折叠。
+func TestKeepCharsZeroFoldsEverything(t *testing.T) {
+	a := newCompactTestApp(t)
+	a.Cfg.KeepChars = 0
+	a.Cfg.CompactInterval = 1000
+	a.Cfg.CompactLlmPct = 0 // 专测规则路径
+	sess := &SessionMeta{ID: "s1", Mode: "task"}
+	if err := a.Store.Create(sess); err != nil {
+		t.Fatal(err)
+	}
+	u1, _, _, f1 := seedRound(t, a, "s1", "一轮", true)
+	_, _, _, f2 := seedRound(t, a, "s1", "二轮", true)
+	raw, _ := a.Store.RawMessagesAll("s1")
+	last := raw[len(raw)-1].Seq
+	if got := a.keepStartSeq(raw); got != last+1 {
+		t.Fatalf("KeepChars=0 应返回 last+1（保留区为空）, got %d want %d", got, last+1)
+	}
+	// 两轮 ≈1740 ≥ 间隔1000+0 → 触发；全压：最后一轮也折（正文按保留规则存视图）
+	cp, err := a.maybeAutoCompact(sess, []Message{}, 5000, false)
+	if err != nil || !cp {
+		t.Fatalf("间隔到线应触发全压, cp=%v err=%v", cp, err)
+	}
+	for _, seq := range []int64{u1, f1, f2} {
+		if got := rowBySeq(t, a, "s1", seq).Compact; got == "" {
+			t.Fatalf("全压语义下 seq=%d 也应被折叠（Compact 非空）", seq)
+		}
+	}
+	// API：keepChars=0 提交应被接受并回传（不再 >0 才收）
+	a.CfgPath = filepath.Join(t.TempDir(), "config.json")
+	body := strings.NewReader(`{"compact":{"mode":"llm","keepChars":0,"interval":0,"llmPct":0}}`)
+	w := httptest.NewRecorder()
+	a.handleSetConfig(w, httptest.NewRequest("POST", "/api/config", body))
+	if w.Code != 200 {
+		t.Fatalf("保存应成功, got %d %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["keepChars"] != float64(0) || got["compactInterval"] != float64(0) {
+		t.Fatalf("keepChars/interval 的 0 应原样回传, got %v/%v", got["keepChars"], got["compactInterval"])
 	}
 }
 

@@ -714,6 +714,15 @@ func visibleSize(m *StoredMessage) int {
 // 起点落在工具结果上时往前扩到该步的助手调用行，避免拆散调用/结果配对
 //（宁可略超预算，也不让窗口从一个孤立的 tool 结果开始）。
 func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
+	// 用户语义：保留预算 0 = 什么都不保留——连最后一轮也压（返回最后一条
+	// seq+1，让调用方的「折到保留起点-1」覆盖全部行）。与「命中轮整轮保留」
+	// 的常规路径相反，属显式全压开关。
+	if a.Cfg.KeepChars <= 0 {
+		if len(raw) == 0 {
+			return 0
+		}
+		return raw[len(raw)-1].Seq + 1
+	}
 	idx := -1
 	total := 0
 	for i := len(raw) - 1; i >= 0; i-- {

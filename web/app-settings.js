@@ -1075,14 +1075,16 @@ async function saveSettings() {
   // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
   // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
   if (!(await saveProviderDrafts())) return;
-  // 压缩阈值留空/非法输入按 0 提交（0=不启用该路）；超出 0-100 的值钳到边界；
-  // 间隔以 K 为单位输入（服务端存原值），×1000 提交，0=关闭规则自动压缩
+  // 间隔以 K 为单位输入（服务端存原值），×1000 提交，0=关闭规则自动压缩；
+  // keepChars 的 0 是合法值（全压语义），不能用 || 兜底（会把 0 吞成默认值）
   const clampPct = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+  const keepRaw = parseInt($('set-keepchars').value, 10);
+  const intervalRaw = parseFloat($('set-compact-interval').value);
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
-      keepChars: parseInt($('set-keepchars').value, 10) || 100000,
-      interval: Math.max(0, Math.round((parseFloat($('set-compact-interval').value) || 0) * 1000)),
+      keepChars: Number.isFinite(keepRaw) && keepRaw >= 0 ? keepRaw : 100000,
+      interval: Number.isFinite(intervalRaw) && intervalRaw > 0 ? Math.round(intervalRaw * 1000) : 0,
       unit: selRefs.compactUnit.get() || 'chars',
       llmPct: clampPct($('set-compact-llmpct').value),
     },

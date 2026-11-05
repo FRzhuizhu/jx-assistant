@@ -1534,8 +1534,8 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		if body.Compact.Mode == "rule" || body.Compact.Mode == "llm" {
 			a.Cfg.CompactMode = body.Compact.Mode // off 不再是合法值（自动压缩开关由两个阈值表达）
 		}
-		if body.Compact.KeepChars != nil && *body.Compact.KeepChars > 0 {
-			a.Cfg.KeepChars = *body.Compact.KeepChars
+		if body.Compact.KeepChars != nil && *body.Compact.KeepChars >= 0 {
+			a.Cfg.KeepChars = *body.Compact.KeepChars // 0 合法：连最近一轮也不保留的全压语义
 		}
 		if body.Compact.Threshold > 0.5 && body.Compact.Threshold < 1 {
 			a.Cfg.CompactThreshold = body.Compact.Threshold

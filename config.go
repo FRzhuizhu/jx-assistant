@@ -397,7 +397,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.CompactMode != "rule" && cfg.CompactMode != "llm" && cfg.CompactMode != "off" {
 		cfg.CompactMode = def.CompactMode
 	}
-	if cfg.KeepChars <= 0 {
+	// KeepChars 允许 0（= 连最近一轮也不保留的全压语义，用户显式设置）；
+	// 仅负数视为非法回默认。无键补默认在下方 compactKeys 迁移块处理。
+	if cfg.KeepChars < 0 {
 		cfg.KeepChars = def.KeepChars
 	}
 	if cfg.CompactThreshold <= 0.5 || cfg.CompactThreshold >= 1 {
@@ -411,6 +413,12 @@ func LoadConfig(path string) (*Config, error) {
 	compactMigrated := false
 	var compactKeys map[string]json.RawMessage
 	if json.Unmarshal(data, &compactKeys) == nil {
+		// keepChars 无键补默认（零值与显式 0 不可区分，无键必是老存量而非
+		// 用户置零——0 是合法的全压语义，不能被默认值覆盖）
+		if _, hasKeep := compactKeys["keepChars"]; !hasKeep {
+			cfg.KeepChars = def.KeepChars
+			compactMigrated = true
+		}
 		_, hasInterval := compactKeys["compactInterval"]
 		if !hasInterval {
 			cfg.CompactInterval = def.CompactInterval
