@@ -95,7 +95,7 @@
 | wheel | 0.48.0 | MIT | Copyright (c) 2012-2025 The wheel developers | https://github.com/pypa/wheel |
 | xlsxwriter | 3.2.9 | BSD-2-Clause | Copyright (c) 2013-2025 John McNamara | https://pypi.org/project/xlsxwriter/ |
 
-## 3. 内置组件 wmcppkg（Windows-MCP 运行时，去重后独有 70 包；与 §2.1 同名同版本的包不重复列出）
+## 3. 内置组件 wmcppkg（Windows-MCP 运行时，去重后独有 67 包；与 §2.1 同名同版本的包不重复列出）
 
 | 组件 | 版本 | License | 版权 | 来源 |
 |---|---|---|---|---|
@@ -119,7 +119,6 @@
 | exceptiongroup | 1.3.1 | (见上游) | Copyright (c) 2020-2025 Alex Grönholm | https://pypi.org/project/exceptiongroup/ |
 | fastmcp | 4.1.5 | Apache-2.0 | Copyright (c) 2024-2025 Jeremiah Lowin | https://gofastmcp.com |
 | fastmcp-slim | 4.1.5 | Apache-2.0 | https://gofastmcp.com | https://gofastmcp.com |
-| fuzzywuzzy | 0.18.0 | GPLv2 **[GPL]** | Copyright (c) 2014 SeatGeek | https://pypi.org/project/fuzzywuzzy/ |
 | griffe | 2.4.1 | ISC | Copyright (c) 2021-2025 Timothée Mazzucotelli | https://mkdocstrings.github.io/griffe |
 | h11 | 0.16.0 | MIT | Copyright (c) 2016-2025 Nathaniel J. Smith | https://pypi.org/project/h11/ |
 | httpcore2 (pydantic httpcore fork) | 2.16.0 | BSD-3-Clause | Copyright (c) 2016-2025 Encode Labs Ltd | https://github.com/pydantic/httpx2 |
@@ -129,7 +128,6 @@
 | jsonschema | 4.26.0 | MIT | Copyright (c) 2013-2025 Julian Berman | https://github.com/python-jsonschema/jsonschema |
 | jsonschema-path | 0.5.0 | Apache-2.0 | https://github.com/p1c2u/jsonschema-path | https://github.com/p1c2u/jsonschema-path |
 | jsonschema-specifications | 2025.9.1 | MIT | https://github.com/python-jsonschema/jsonschema-specifications | https://github.com/python-jsonschema/jsonschema-specifications |
-| Levenshtein | 0.27.5 | GPL-2.0-or-later **[GPL]** | Copyright (c) 2021 Max Bachmann (python-Levenshtein 由 (c) Antti Haapala 等维护) | https://github.com/rapidfuzz/Levenshtein |
 | markdown-it-py | 4.2.0 | (见上游) | https://github.com/executablebooks/markdown-it-py | https://github.com/executablebooks/markdown-it-py |
 | markdownify | 1.2.3 | (见上游) | Copyright 2012-2018 Matthew Tretter | http://github.com/matthewwithanm/python-markdownify |
 | mcp | 2.3.0 | MIT | Copyright (c) 2024 Model Context Protocol a Series of LF Projects, LLC | https://modelcontextprotocol.io |
@@ -149,7 +147,6 @@
 | PyJWT | 2.15.1 | MIT | https://github.com/jpadilla/pyjwt | https://github.com/jpadilla/pyjwt |
 | pyperclip | 1.11.0 | BSD | Copyright (c) 2014-2025 Al Sweigart | https://github.com/asweigart/pyperclip |
 | python-dotenv | 1.2.4 | BSD-3-Clause | https://github.com/theskumar/python-dotenv | https://github.com/theskumar/python-dotenv |
-| python-Levenshtein | 0.27.5 | GPL-2.0-or-later **[GPL]** | 同上（同一项目 0.27+ 的包名延续层） | https://github.com/rapidfuzz/Levenshtein |
 | python-multipart | 0.0.33 | Apache-2.0 | https://github.com/Kludex/python-multipart | https://github.com/Kludex/python-multipart |
 | RapidFuzz | 3.14.6 | MIT | https://github.com/rapidfuzz/RapidFuzz | https://github.com/rapidfuzz/RapidFuzz |
 | referencing | 0.37.0 | MIT | Copyright (c) 2022-2025 Julian Berman | https://github.com/python-jsonschema/referencing |
@@ -170,7 +167,12 @@
 | websockets | 17.4 | BSD-3-Clause | Copyright (c) 2013-2025 Aymeric Augustin | https://github.com/python-websockets/websockets |
 | windows-mcp | 0.8.8 | MIT License | https://github.com/CursorTouch | https://github.com/CursorTouch |
 
-> 标注 **[GPL]** / **[LGPL]** / **[MPL]** 的组件有额外义务，见 §8 专项说明。
+> 标注 **[LGPL]** / **[MPL]** 的组件有额外义务，见 §8 专项说明。
+> 另注：wmcppkg 内的 `fuzzywuzzy` 目录为本产品自有的几行兼容 shim
+> （Apache-2.0，把 `import fuzzywuzzy` 转发到 thefuzz，供 windows-mcp 使用），
+> 不是 fuzzywuzzy 原包——原包（GPLv2）与 python-Levenshtein（GPL-2.0+）
+> 已于 2026-11 从分发清单移除，功能由 thefuzz（MIT）+ RapidFuzz（MIT）覆盖，
+> wmcppkg 现不含任何 GPL 组件。
 
 ## 4. 随包分发的可执行组件
 
@@ -231,20 +233,13 @@ license）等。逐包清单与版本见 android/runtime/MANIFEST.json；各包�
 https://www.gnu.org/licenses/old-licenses/gpl-2.0.html 与
 https://www.gnu.org/licenses/gpl-3.0.html 。
 
-### 8.3 GPL-2.0 / GPL-2.0-or-later（fuzzywuzzy、Levenshtein）
-
-均为原样分发的 PyPI 官方 wheel，未修改。对应源码：
-- fuzzywuzzy 0.18.0：https://pypi.org/project/fuzzywuzzy/0.18.0/ （GitHub: https://github.com/seatgeek/fuzzywuzzy ）
-- Levenshtein 0.27.5：https://pypi.org/project/Levenshtein/0.27.5/ （GitHub: https://github.com/rapidfuzz/Levenshtein ）
-GPLv2 全文：https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-
-### 8.4 LGPL-2.1（paramiko 5.1.0）
+### 8.3 LGPL-2.1（paramiko 5.1.0）
 
 作为独立库动态加载（Python import），未修改；使用方（本产品）允许用户
 逆向调试与替换该库。库源码：https://github.com/paramiko/paramiko （tag 对应
 版本）。LGPL-2.1 全文：https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
 
-### 8.5 MPL-2.0（certifi、tqdm）
+### 8.4 MPL-2.0（certifi、tqdm）
 
 原样分发未修改，MPL 文件级条款随 wheel 内许可头满足；源码：
 https://github.com/certifi/python-certifi 、https://github.com/tqdm/tqdm 。
