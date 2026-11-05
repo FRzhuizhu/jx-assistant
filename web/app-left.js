@@ -598,7 +598,7 @@ function setBinView(on) {
   } else {
     document.body.classList.remove('bin-anim');
   }
-  $('ws-section-title').textContent = binView ? '回收站' : '工作区';
+  $('ws-section-title').textContent = binView ? '回收站' : '工作任务';
   $('side-search-input').placeholder = binView ? '搜索回收站' : '搜索工作任务';
   $('wst-search').title = binView ? '搜索回收站' : '搜索工作任务';
   loadSessions();
