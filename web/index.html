@@ -68,11 +68,11 @@
          最底独占整行，桌面端照常多出一行。 -->
     <div class="sidebar-foot">
       <div class="foot-grid">
-      <button id="btn-market" class="foot-btn" title="企业技能包：安装/更新 技能、组件与插件">
+      <button id="btn-market" class="foot-btn" title="企业工作流：安装/更新 技能、组件与插件">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
-        企业技能包
+        企业工作流
       </button>
-      <!-- 企业小程序平台：与「企业技能包」平级的独立主区页面（2026-10-30 用户要求）。
+      <!-- 企业小程序平台：与「企业工作流」平级的独立主区页面（2026-10-30 用户要求）。
            点它进 #sites-view——iframe 加载本端代理 /sites（sitesproxy.go 转发市场
            服务器，自签证书由 Go 端证书策略接管，浏览器自己的证书校验不再挡路）。 -->
       <button id="btn-sites" class="foot-btn" title="企业小程序平台：发布与管理小程序、数据文件、二维码">
@@ -123,12 +123,12 @@
     </header>
 
     <!-- 市场视图（app-market.js）：body.market-mode 下占领主区（对话区与输入区隐藏），
-         企业技能包/企业组件包/兼容插件/MCP 四 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
+         工作流/技能、标准组件、兼容插件、MCP 四 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
     <div id="market-view" class="hidden">
       <div class="mk-head">
         <div class="mk-title">
-          <h2>企业技能包</h2>
-          <span id="mk-server" class="mk-server" title="企业技能包/小程序平台地址（设置 · 网络访问 可改）"></span>
+          <h2>企业工作流</h2>
+          <span id="mk-server" class="mk-server" title="企业工作流/小程序平台地址（设置 · 网络访问 可改）"></span>
         </div>
         <input id="mk-search" type="search" placeholder="搜索名称 / 描述 / 标签…" autocomplete="off" spellcheck="false">
         <button id="mk-refresh" class="mk-icon-btn" title="刷新清单">
@@ -136,8 +136,8 @@
         </button>
       </div>
       <div class="mk-tabs">
-        <button data-mk-tab="skill" class="mk-tab active">企业技能包</button>
-        <button data-mk-tab="component" class="mk-tab">企业组件包</button>
+        <button data-mk-tab="skill" class="mk-tab active">工作流/技能</button>
+        <button data-mk-tab="component" class="mk-tab">标准组件</button>
         <button data-mk-tab="plugin" class="mk-tab">兼容插件</button>
         <button data-mk-tab="mcp" class="mk-tab">MCP</button>
         <span class="mk-tabs-rest">
@@ -728,9 +728,9 @@
             </div>
           </div>
           <div class="gen-section">
-            <h4>企业技能包 / 小程序平台</h4>
+            <h4>企业工作流 / 小程序平台</h4>
             <div class="set-field">
-              <div class="sf-label">企业技能包 / 小程序平台地址</div>
+              <div class="sf-label">企业工作流 / 小程序平台地址</div>
               <input id="set-market-url" class="pf-input" placeholder="https://example.com:PORT" autocomplete="off" spellcheck="false">
               <p class="sf-desc">企业技能市场与小程序平台同一台服务端：填服务器地址即可（https://域名或IP:端口），清单与 /sites 等路径后缀由程序自动拼；改动即时生效，留空则市场页显示未配置。</p>
             </div>

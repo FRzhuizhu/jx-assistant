@@ -1415,7 +1415,7 @@ $('btn-open-sites').onclick = () => {
   if (typeof openSitesPlatform === 'function') { openSitesPlatform(); return; }
   const raw = ($('set-market-url').value || '').trim();
   const m = raw.match(/^(https?:\/\/[^\/]+)/i);
-  if (!m) { alert('先在上方「企业技能包/小程序平台地址」里填服务器地址（如 https://example.com:PORT），托管平台与市场在同一台服务端。'); return; }
+  if (!m) { alert('先在上方「企业工作流/小程序平台地址」里填服务器地址（如 https://example.com:PORT），托管平台与市场在同一台服务端。'); return; }
   jxOpenPage(m[1] + '/sites');
 };
 bindRemoteInput('set-publisher-name', 'publisherName');

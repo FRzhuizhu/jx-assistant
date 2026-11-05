@@ -718,13 +718,13 @@ func (a *App) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-/* ---------- 企业技能包自动更新 ---------- */
+/* ---------- 企业工作流自动更新 ---------- */
 
 // marketAutoMu 自动更新防重入：手动「立即检查更新」与每小时轮询同拍触发时
 // 共享一轮（TryLock 跳过），避免同一技能被并发下载安装。
 var marketAutoMu sync.Mutex
 
-// autoUpdateMarketSkills 企业技能包自动更新：checkUpdateOnce 每次检查客户端
+// autoUpdateMarketSkills 企业工作流自动更新：checkUpdateOnce 每次检查客户端
 // 更新时顺带跑（每小时轮询、手动「立即检查」同一条路）。对比市场最新清单与
 // 安装记账（market_installed.json），已装且记账版本 ≠ 市场版本的技能自动下载
 // 新版覆盖安装——与手动点「更新」同一条链路（sha256 校验、装失败还原旧版、

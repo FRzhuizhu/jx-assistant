@@ -97,7 +97,7 @@ type Config struct {
 	// 手机等外部设备经网关的加密中继访问本服务；端到端 AES-256-GCM（密钥由
 	// pairKey 派生），网关只见密文。与聊天服务的 p2p.js 同协议，共用同一网关。
 	RemoteAccess RemoteAccessCfg `json:"remoteAccess"`
-	// 企业技能包/小程序平台服务器地址（域名/IP + 端口，如 https://example.com:2227）：
+	// 企业工作流/小程序平台服务器地址（域名/IP + 端口，如 https://example.com:2227）：
 	// 技能市场与小程序平台同一台 jxai-server，清单（/market/manifest.json）与 /sites
 	// 等后缀由程序自动拼（market.go 的 marketManifestURL），已带后缀的旧值同样兼容；
 	// 空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
