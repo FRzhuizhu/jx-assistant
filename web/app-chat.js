@@ -5128,8 +5128,10 @@ function hideRunError(view, remember) {
 // ① 整包路：新版本可用，「确认更新」直接下载安装包；
 // ② 就绪路（u.pendingRestart）：主程序已静默交换，「立即重启」经助手接力生效，
 //    「稍后」等下次自然重启。在线时由 update_available/update_ready 门铃事件
-//    触发，刚打开页面时从 /api/status 的 update 恢复。
-function showUpdateBanner(u) {
+//    触发，刚打开页面时从 /api/status 的 update 恢复。force=true 为用户主动
+//    唤起（左下角更新胶囊）：无视本版「稍后」记录强制弹出——胶囊是随时再入
+//    的入口，不能点了没反应。
+function showUpdateBanner(u, force) {
   syncUpdatePill(u);
   if (!u || !u.latest) return;
   const bar = document.getElementById('update-banner');
@@ -5137,8 +5139,9 @@ function showUpdateBanner(u) {
   const actions = bar.querySelector('.ub-actions');
   if (!actions) return;
   if (u.pendingRestart && u.pendingVersion) {
-    // 就绪横幅：本版本点过「稍后」不再弹（下次新版本重新提醒）
-    try { if (localStorage.getItem('jxUbLater') === u.pendingVersion) return; } catch (e) {}
+    // 就绪横幅：本版本点过「稍后」不再自动弹（下次新版本重新提醒）；胶囊
+    // 主动唤起（force）不受此限——那是用户明确要看，横幅必须出来
+    try { if (!force && localStorage.getItem('jxUbLater') === u.pendingVersion) return; } catch (e) {}
     bar.querySelector('.ub-text').innerHTML =
       '新版本 <b>' + esc(u.pendingVersion) + '</b> 已就绪（当前 ' + esc(u.current || '') +
       '），重启软件后生效' +
@@ -5180,12 +5183,12 @@ function syncUpdatePill(u) {
 }
 document.getElementById('btn-update')?.addEventListener('click', (e) => {
   e.stopPropagation(); // 拦住外层设置按钮的默认打开路径，只唤起更新横幅
-  if (curUpdateState) showUpdateBanner(curUpdateState);
+  if (curUpdateState) showUpdateBanner(curUpdateState, true); // 主动唤起：无视「稍后」必弹
 });
 document.getElementById('btn-update')?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault(); e.stopPropagation();
-    if (curUpdateState) showUpdateBanner(curUpdateState);
+    if (curUpdateState) showUpdateBanner(curUpdateState, true);
   }
 });
 
@@ -5217,7 +5220,8 @@ $('update-banner').addEventListener('click', (e) => {
       jxDownload(dl);
       bar.querySelector('.ub-text').innerHTML =
         '正在后台下载新版本安装包，下载完成后将自动运行安装…';
-      actions.innerHTML = '';
+      const acts = bar.querySelector('.ub-actions');
+      if (acts) acts.innerHTML = ''; // 防重复点击再次发起下载
     } else if (bar.dataset.url) {
       jxOpenPage(bar.dataset.url); // 没挂附件就退回发布页
       bar.classList.add('hidden');
