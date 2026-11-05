@@ -166,6 +166,8 @@ async function openSettings(pane) {
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
   $('set-snapshot-days').value = c.snapshotDays != null ? c.snapshotDays : 7;
+  // 常规页：会话浏览器数据保留天数（服务端配置，改动即时保存；缺省 3 天，0=不清理）
+  $('set-browserprofile-days').value = c.browserProfileDays != null ? c.browserProfileDays : 3;
   // 常规页：询问提醒（服务端配置，改动即时保存；三键嵌套部分提交）
   const aa = c.askAlert || {};
   $('set-askalert-on').checked = aa.enabled !== false;
@@ -1140,6 +1142,22 @@ $('set-snapshot-days').onchange = () => {
   saveSnapshotCfg({ snapshotDays: v });
 };
 
+/* ---------- 常规页：会话浏览器数据保留天数（服务端配置，改动即时保存） ---------- */
+
+async function saveBrowserProfileCfg(days) {
+  try {
+    const c = await api('/api/config', { method: 'POST', body: JSON.stringify({ browserProfileDays: days }) });
+    if (c.browserProfileDays != null) $('set-browserprofile-days').value = c.browserProfileDays;
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  }
+}
+$('set-browserprofile-days').onchange = () => {
+  const v = parseInt($('set-browserprofile-days').value, 10);
+  if (isNaN(v) || v < 0 || v > 3650) { alert('天数需为 0–3650 的整数（0=不清理）'); return; }
+  saveBrowserProfileCfg(v);
+};
+
 /* ---------- 常规页：询问提醒（服务端配置，改动即时保存；嵌套部分提交，
    只传变的键，服务端按键合并并钳制 30-600） ---------- */
 async function saveAskAlertCfg(patch) {
@@ -1324,9 +1342,10 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
   if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
-  // 市场服务器地址与发布者姓名已随市场组件化迁入 skill-market 组件的设置区
-  // （设置 · 内置组件）；此处不再回显。搜索服务（websearch.go 的 searchEndpointBase）
-  // 仍在本页：填了用填的、空则跟随市场同源；生效地址由后端算好下发（searchEndpoint）
+  // 市场服务器地址与发布者姓名已随市场组件化由 skill-market 组件注入本页
+  // （#net-market-cfg 挂载段，组件自带回显与改动即存）。搜索服务（websearch.go
+  // 的 searchEndpointBase）仍在本页：填了用填的、空则跟随市场同源；生效地址
+  // 由后端算好下发（searchEndpoint）
   if (document.activeElement !== $('set-search-url')) $('set-search-url').value = c.searchURL || '';
   syncSearchState(c);
   if (document.activeElement !== $('set-registry-url')) $('set-registry-url').value = c.registryURL || '';
@@ -1402,8 +1421,9 @@ $('btn-remote-pk-new').onclick = async () => {
     alert('换新失败：' + e.message);
   }
 };
-// 市场服务器地址：已随市场组件化迁入 skill-market 组件设置区（组件内自带回显与
-// 「改动即存」），此处不再绑定；后端 /api/config 的 marketURL 字段照旧。
+// 市场服务器地址：已随市场组件化由 skill-market 组件注入网络访问页
+// （#net-market-cfg 挂载段，组件内自带回显与「改动即存」），此处不再绑定；
+// 后端 /api/config 的 marketURL 字段照旧。
 // 搜索服务：同一套「改动即存」；留空 = 跟随市场同源。非法地址由后端 400 拦下
 // （searchURL 不合法），这里 alert 出原因并回滚为服务端值
 bindRemoteInput('set-search-url', 'searchURL');

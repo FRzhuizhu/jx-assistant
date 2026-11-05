@@ -48,7 +48,7 @@ const (
 	capUnsandboxed  = "unsandboxed"     // 能力：允许沙箱外（不受限）执行命令
 	capSandboxWrite = "sandbox-write"   // 能力：允许命令在沙箱内写入（全电脑只读档位下）
 	capBrowser      = "browser"         // 能力：允许操作浏览器（browser_* 工具）
-	capComputer     = "computer"        // 能力：允许操作电脑（computer_* 工具）
+	capComputer     = "computer"        // 能力：允许操作电脑（门控内置 MCP 连接器 cua / windows-mcp）
 	capDevice       = "device"          // 能力：允许操作手机（device_* / adb_* 工具，仅安卓）
 	grantTTL        = 5 * time.Minute   // 授权凭证有效期
 )
@@ -343,14 +343,14 @@ func capEffectDesc(cap string, on bool) string {
 		capUnsandboxed:  "沙箱外执行命令不再逐次审批（常设授权）",
 		capSandboxWrite: "全电脑只读档下命令可在沙箱内写入",
 		capBrowser:      "browser_* 工具现在可用",
-		capComputer:     "computer_* 工具现在可用",
+		capComputer:     "内置连接器 cua / windows-mcp 现在可用（截屏、点击、键入、切换窗口）",
 		capDevice:       "device_* / adb_* 工具现在可用",
 	}
 	offDesc := map[string]string{
 		capUnsandboxed:  "命令升级恢复逐次审批",
 		capSandboxWrite: "全电脑只读档下命令恢复禁止写入",
 		capBrowser:      "browser_* 工具调用将被拒绝",
-		capComputer:     "computer_* 工具调用将被拒绝",
+		capComputer:     "内置连接器 cua / windows-mcp 的调用将被拒绝",
 		capDevice:       "device_* / adb_* 工具调用将被拒绝",
 	}
 	if on {

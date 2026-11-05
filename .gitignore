@@ -3,6 +3,9 @@ config.json
 *.exe
 # jx-assistant.exe 是引擎编译产物，不再入库：发行走安装包，开发自行 go build
 !md-viewer/*.exe
+# 内置组件（Cua 驱动 / Windows-MCP 依赖）：与安装包同口径入库——「操作电脑」能力靠它，
+# 必须离线自包含、克隆即用（放在 *.exe 规则之后放行）
+!内置组件/**
 # 共享便携 Python 运行时不随仓库分发（体积大）：克隆后首次使用技能时自动联网装配
 技能/_runtime/
 # 语音识别 onnx 模型不入库（体积大）

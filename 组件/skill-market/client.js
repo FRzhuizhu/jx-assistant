@@ -32,21 +32,32 @@
   ));
   const addDocKey = (fn) => { document.addEventListener('keydown', fn); docKeys.push(fn); };
 
+  /* 挂载点内组件按钮按 data-order 稳定排序：组件注入先后由资产加载竞速决定
+   * （不可依赖），同挂载点的组件按钮以 data-order 约定相对位置——排的是
+   * 「同为组件的兄弟」，不锚定内置按钮（AGENT.md 挂载规矩）。 */
+  function sortMounts(grid) {
+    [...grid.children]
+      .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
+      .forEach((el) => grid.appendChild(el));
+  }
+
   /* ---------- DOM 注入（HTML 原样来自原 index.html，id/class 不变） ---------- */
 
   function injectDOM() {
-    // 侧栏入口：往 .foot-grid 末尾 append（组件挂载规矩：不锚定其他按钮的
-    // DOM 位置），手机端自动落进三栏格子
-    const grid = document.querySelector('.sidebar-foot .foot-grid');
+    // 侧栏入口：往组件入口格 #foot-apps（回收站上方的分区挂载点）末尾 append
+    // （组件挂载规矩：不锚定其他按钮的 DOM 位置）
+    const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
     if (grid) {
       btnEl = document.createElement('button');
       btnEl.id = 'btn-market';
       btnEl.className = 'foot-btn';
+      btnEl.dataset.order = '10'; // 挂载点内组件按钮的稳定排序（见下方 sortMounts）
       btnEl.title = '企业技能包 / 工作流：安装/更新 技能、组件与插件';
       btnEl.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>' +
         '<span class="foot-btn-label">企业技能包 / 工作流</span>';
       grid.appendChild(btnEl);
+      sortMounts(grid);
     }
     // 市场视图：#main 顶栏之后（与原 index.html 同位；.hidden 全局类控制显隐）
     const main = $('main');
@@ -59,7 +70,7 @@
         '<div class="mk-head">' +
         '<div class="mk-title">' +
         '<h2>企业技能包 / 工作流</h2>' +
-        '<span id="mk-server" class="mk-server" title="企业技能包 / 工作流 / 小程序平台地址（设置 · 内置组件 可改）"></span>' +
+        '<span id="mk-server" class="mk-server" title="企业技能包 / 工作流 / 小程序平台地址（设置 · 网络访问 可改）"></span>' +
         '</div>' +
         '<input id="mk-search" type="search" placeholder="搜索名称 / 描述 / 标签…" autocomplete="off" spellcheck="false">' +
         '<button id="mk-refresh" class="mk-icon-btn" title="刷新清单">' +
@@ -211,7 +222,7 @@
     if (ext) ext.classList.toggle('hidden', mkTab !== 'plugin');
     if (!mkData.configured) { renderUnconfigured(); return; }
     if (mkData.error) {
-      renderMarketState(esc(mkData.error) + '（<span class="mk-link" id="mk-retry">重试</span> 或到 设置 · 内置组件 检查市场地址）');
+      renderMarketState(esc(mkData.error) + '（<span class="mk-link" id="mk-retry">重试</span> 或到 设置 · 网络访问 检查市场地址）');
       const retry = $('mk-retry');
       if (retry) retry.onclick = () => loadMarket(true);
       return;
@@ -230,7 +241,7 @@
         '<div class="mk-suggest"><code>' + esc(sug) + '</code></div>' +
         '<div class="mk-suggest-acts"><button id="mk-use-suggested" class="mk-act">填入此地址</button>' +
         '<button id="mk-go-settings" class="mk-act ghost">手动设置</button></div>'
-        : '<br>到 设置 · 内置组件 · 企业技能包 / 工作流 的服务器地址里填（如 https://example.com:2227）。' +
+        : '<br>到 设置 · 网络访问 · 企业技能包 / 工作流 的服务器地址里填（如 https://example.com:2227）。' +
         '<div class="mk-suggest-acts"><button id="mk-go-settings" class="mk-act">去设置</button></div>') +
       '</div>';
     const use = $('mk-use-suggested');
@@ -243,7 +254,7 @@
       } catch (e) { alert('保存失败：' + e.message); use.disabled = false; use.textContent = '填入此地址'; }
     };
     const go = $('mk-go-settings');
-    if (go) go.onclick = () => { if (typeof openSettings === 'function') openSettings('components'); };
+    if (go) go.onclick = () => { if (typeof openSettings === 'function') openSettings('network'); };
   }
 
   function entriesOfTab(tab) {
@@ -581,7 +592,7 @@
       kind = 'ok';
       if (mkuSuggested) msg += '（ID 是按中文词表建议的，可改）';
       if (!($('mku-desc').value || '').trim()) msg += '（没写描述：市场卡片上会没有说明文字，建议补一行）';
-      if (!meName) msg += '（未设置发布者姓名：市场服务器记不了归属，发布会失败——去 设置 · 内置组件 · 企业技能包 / 工作流 填一个）';
+      if (!meName) msg += '（未设置发布者姓名：市场服务器记不了归属，发布会失败——去 设置 · 网络访问 · 企业技能包 / 工作流 填一个）';
     }
     if (mkuBusy) { msg = '正在发布…'; kind = ''; }
     else if (mkuErr) { msg = mkuErr; kind = 'err'; } // 提交/推导失败的提示盖过「就绪」
@@ -669,12 +680,17 @@
   }
   function onResize() { updateMarketCols(); }
 
-  /* ---------- 设置区（「内置组件」页本组件段：服务器地址 + 发布者姓名） ---------- */
+  /* ---------- 设置区（设置 · 网络访问页的 #net-market-cfg 挂载段） ----------
+     组件开关归「内置组件」页，参数归网络访问页（与其他网络配置放一起）。
+     init 填充、dispose 清空并隐藏；回显 + 改动即存（单字段 PATCH /api/config，
+     失败回滚为服务端值——与设置页 bindRemoteInput 同一套契约）。 */
 
-  // 回显 + 改动即存（单字段 PATCH /api/config，失败回滚为服务端值——与设置页
-  // bindRemoteInput 同一套契约）。mount 每次设置页打开/热开关时重建。
-  async function mountSettings(body) {
-    body.innerHTML =
+  async function renderNetCfg() {
+    const host = document.getElementById('net-market-cfg');
+    if (!host) return;
+    host.classList.remove('hidden');
+    host.innerHTML =
+      '<h4>企业技能包 / 工作流</h4>' +
       '<div class="set-field">' +
       '<div class="sf-label">企业技能包 / 工作流 / 小程序平台地址</div>' +
       '<input id="set-market-url" class="pf-input" placeholder="https://example.com:2227" autocomplete="off" spellcheck="false">' +
@@ -687,8 +703,8 @@
       '</div>';
     let c = null;
     try { c = await api('/api/config'); } catch (e) { /* 配置拉取失败：字段留着空着可填，保存时再报 */ }
-    const urlEl = body.querySelector('#set-market-url');
-    const pubEl = body.querySelector('#set-publisher-name');
+    const urlEl = host.querySelector('#set-market-url');
+    const pubEl = host.querySelector('#set-publisher-name');
     if (c) {
       if (urlEl) urlEl.value = c.marketURL || '';
       if (pubEl) pubEl.value = c.publisherName || '';
@@ -708,6 +724,11 @@
     if (pubEl) pubEl.onchange = () => patch(pubEl, 'publisherName');
   }
 
+  function clearNetCfg() {
+    const host = document.getElementById('net-market-cfg');
+    if (host) { host.innerHTML = ''; host.classList.add('hidden'); }
+  }
+
   /* ---------- 注册（init 建立一切，dispose 完整撤销） ---------- */
 
   function init() {
@@ -719,7 +740,7 @@
     // 判断）经 window 接口调用，摘除组件后这些引用自动退化为「不存在」
     window.marketOpen = marketOpen;
     window.closeMarket = closeMarket;
-    CX.registerSettings({ id: ID, title: '企业技能包 / 工作流', mount: mountSettings });
+    renderNetCfg(); // 设置 · 网络访问页的配置段
   }
 
   function dispose() {
@@ -734,7 +755,7 @@
     if (modalEl) { modalEl.remove(); modalEl = null; }
     delete window.marketOpen;
     delete window.closeMarket;
-    CX.unregisterSettings(ID);
+    clearNetCfg();
     mkData = null;
     mkLoading = false;
     mkuBusy = false;

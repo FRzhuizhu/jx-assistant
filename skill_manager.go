@@ -480,7 +480,11 @@ func (a *App) userSkillsPromptBlock() string {
 // 「按模式手写门控」漏掉了先于技能功能存在的 office/coding——装了技能、
 // 模型却收不到清单更新；把契约做成启动断言后，将来任何模式（含新增模式）
 // 悄悄丢掉技能可见性都会在这里炸响，而不是静默坑用户。
-// 自检用的会话 id 不落库，envPrompt 只读不写，无启动残留。
+// 自检会话 id 不落库，envPrompt 只读不写，无启动残留。
+// 自检会话按完全访问构造：连接器清单段带能力门控（能力未开时整条隐藏是
+// agent.go 环境快照明说的设计行为），自检验证的是「清单段与工具同模式注入」
+// 这条契约，不是能力过滤——会话不带能力会让带门控的连接器全被过滤、清单
+// 段为空，误报 panic（启用 cua/windows-mcp 后桌面版启动即崩的根因）。
 func (a *App) assertSkillVisibility() {
 	enabledSkills := false
 	if list, err := a.listSkills(); err == nil {
@@ -503,7 +507,7 @@ func (a *App) assertSkillVisibility() {
 			panic(fmt.Sprintf("技能可见性自检失败：模式 %s 的工具目录里没有 read_skill（toolsFor 出口应全模式追加）", mode))
 		}
 		if enabledSkills {
-			sess := &SessionMeta{ID: "__skill_selfcheck__", Mode: mode}
+			sess := &SessionMeta{ID: "__skill_selfcheck__", Mode: mode, Permission: permFull}
 			if !strings.Contains(a.envPrompt(sess), "用户技能清单") {
 				panic(fmt.Sprintf("技能可见性自检失败：模式 %s 的环境快照里没有用户技能清单（envPrompt 应为固定条目、无条件注入）", mode))
 			}
@@ -525,7 +529,7 @@ func (a *App) assertSkillVisibility() {
 				panic(fmt.Sprintf("MCP 可见性自检失败：模式 %s 的工具目录里 mcp_read_connector/mcp_call_tool 应随注册表常驻成对在场", mode))
 			}
 			if a.MCPServers.hasEnabled() {
-				sess := &SessionMeta{ID: "__skill_selfcheck__", Mode: mode}
+				sess := &SessionMeta{ID: "__skill_selfcheck__", Mode: mode, Permission: permFull}
 				if !strings.Contains(a.envPrompt(sess), "MCP 连接器清单") {
 					panic(fmt.Sprintf("MCP 可见性自检失败：模式 %s 的环境快照里没有连接器清单（PromptBlock 应与工具同模式注入）", mode))
 				}

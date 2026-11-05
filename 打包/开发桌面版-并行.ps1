@@ -27,7 +27,7 @@ if ($old.Count -gt 0) { Start-Sleep -Seconds 2 }
 if ($LASTEXITCODE -ne 0) { throw "语音输入法编译失败" }
 
 # 3) 编译主程序（失败即抛出，调用方按退出码提示；桌面形态由 -desktop 参数开启）
-go build -trimpath -ldflags "-s -w" -o $exe $root
+go build -trimpath -ldflags "-s -w -X main.appVersion=20991231-1" -o $exe $root  # appVersion 注入未来版本号：开发版永远比服务器新，不弹自动更新
 if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 Write-Host "完成：$exe（开发桌面版·并行实例，gitignore 的本地产物）"
 

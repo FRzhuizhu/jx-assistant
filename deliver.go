@@ -380,13 +380,13 @@ func (a *App) runDeliveryJob(j *DeliveryJob) {
 			err = copyFileAtomic(backup, target)
 		}
 		if err != nil {
-			fail(fmt.Sprintf("快照备份失败，已放弃本次交付（目标文件未动）：%v", err))
+			fail(fmt.Sprintf("快照备份失败，已放弃本次交付（目标文件未动）：%v（目标文件可能正被其他程序占用——如微信正在使用该文件，关闭后重试）", err))
 			return
 		}
 		j.BackupPath = backup
 	}
 	if err := copyFileAtomic(target, j.SourcePath); err != nil {
-		fail(fmt.Sprintf("搬运失败：%v（目标文件未被动过或仍为旧版）", err))
+		fail(fmt.Sprintf("搬运失败：%v（目标文件未被动过或仍为旧版。若报占用/拒绝访问，常见原因：目标文件正被其他程序占用（如微信在用它），或目标只读——文件本身带只读属性，或位于微信等软件的只读目录（微信接收文件的目录默认只读）；关闭占用程序、去掉只读或换个可写位置后可重试）", err))
 		return
 	}
 	// 移动语义：目标就位后再删源文件；删不掉只是留了双份，不算失败
@@ -406,7 +406,7 @@ func (a *App) finishDeliveryJob(j *DeliveryJob, status, errMsg string) {
 	var note string
 	switch status {
 	case "done":
-		note = fmt.Sprintf("【交付完成】已把 %s 移动到 %s。", filepath.ToSlash(j.SourcePath), target)
+		note = fmt.Sprintf("【交付结果】已把 %s 移动到 %s。", filepath.ToSlash(j.SourcePath), target)
 		if j.BackupPath != "" {
 			note += fmt.Sprintf("目标处原有同名文件，已被替代并快照备份到 %s。", filepath.ToSlash(j.BackupPath))
 		} else {
@@ -416,7 +416,7 @@ func (a *App) finishDeliveryJob(j *DeliveryJob, status, errMsg string) {
 		// 登记改写为成品新位置（打开/下载/定位都以登记路径为准）。
 		a.rewriteDeliveryPaths(j, filepath.Join(j.TargetDir, j.TargetName))
 	default:
-		note = fmt.Sprintf("【交付完成】交付《%s》失败：%s。", j.TargetName, errMsg)
+		note = fmt.Sprintf("【交付结果】交付《%s》失败：%s。", j.TargetName, errMsg)
 	}
 	_ = a.Store.AppendRow(j.SessionID, &StoredMessage{
 		Message: TextMessage("user", note), Kind: kindReport, Origin: "delivery", CreatedAt: now(),

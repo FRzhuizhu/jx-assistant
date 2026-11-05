@@ -929,7 +929,7 @@ func buildReportDigest(a *App, m *SessionMeta, rows []*StoredMessage, interrupte
 				dg.Process = append(dg.Process, clipText(t.text, reportProcessClip))
 			}
 		}
-		// 结尾消息＝最终答复之后的收尾内容（交付完成/中断/上传等系统注记都在这里）
+		// 结尾消息＝最终答复之后的收尾内容（交付结果/中断/上传等系统注记都在这里）
 		for _, r := range rows[texts[finalAt].idx+1:] {
 			if r == nil || !displayableRow(r) {
 				continue

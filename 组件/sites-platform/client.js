@@ -25,17 +25,24 @@
   /* ---------- DOM 注入（HTML 原样来自原 index.html） ---------- */
 
   function injectDOM() {
-    // 侧栏入口：往 .foot-grid 末尾 append（组件挂载规矩：不锚定其他按钮）
-    const grid = document.querySelector('.sidebar-foot .foot-grid');
+    // 侧栏入口：往组件入口格 #foot-apps（回收站上方的分区挂载点）末尾 append
+    // （组件挂载规矩：不锚定其他按钮）
+    const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
     if (grid) {
       btnEl = document.createElement('button');
       btnEl.id = 'btn-sites';
       btnEl.className = 'foot-btn';
+      btnEl.dataset.order = '20'; // 挂载点内组件按钮的稳定排序（约定见 skill-market 的 sortMounts）
       btnEl.title = '企业小程序平台：发布与管理小程序、数据文件、二维码';
       btnEl.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>' +
         '小程序平台';
       grid.appendChild(btnEl);
+      // 挂载点内组件按钮按 data-order 稳定排序（资产加载竞速决定不了注入先后；
+      // 排的是同为组件的兄弟，不锚定内置按钮——AGENT.md 挂载规矩）
+      [...grid.children]
+        .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
+        .forEach((el) => grid.appendChild(el));
     }
     // 平台视图：#main 顶栏之后（与市场视图平级的主区整页；.hidden 全局类控制显隐）
     const main = $('main');
@@ -92,19 +99,23 @@
     let cfg = null;
     try { cfg = await api('/api/market'); } catch (e) {}
     if (!(cfg && cfg.configured)) {
-      alert('还没配置企业技能包 / 工作流 / 小程序平台地址：请到 设置 · 内置组件 填服务器地址（如 https://example.com:2227），技能市场与小程序平台同一台服务端。');
-      if (typeof openSettings === 'function') openSettings('components');
+      alert('还没配置企业技能包 / 工作流 / 小程序平台地址：请到 设置 · 网络访问 填服务器地址（如 https://example.com:2227），技能市场与小程序平台同一台服务端。');
+      if (typeof openSettings === 'function') openSettings('network');
       return;
     }
     openSites();
   }
 
-  /* ---------- 设置区（「内置组件」页本组件段） ----------
-     与市场组件共用同一台服务器地址（config 的 marketURL）：市场组件在场时
-     地址归它的设置区，这里只留「打开托管平台」入口；它不在场（关闭/摘除）
-     时这里顶上地址字段，平台仍可独立配置使用。 */
+  /* ---------- 设置区（设置 · 网络访问页的 #net-sites-cfg 挂载段） ----------
+     极简：一个「打开托管平台」入口。与市场组件共用同一台服务器地址（config
+     的 marketURL）：skill-market 在场时地址归它的配置段（同在网络访问页上方），
+     这里只留入口；它不在场（关闭/摘除）时这里顶上地址字段，平台仍可独立配置
+     使用。市场组件热开关时经 cx:change 联动重挂。组件开关归「内置组件」页。 */
 
-  async function mountSettings(body) {
+  async function renderNetCfg() {
+    const host = document.getElementById('net-sites-cfg');
+    if (!host) return;
+    host.classList.remove('hidden');
     const marketLive = !!(window.CX && CX.isActive('skill-market'));
     let urlHtml = '';
     if (!marketLive) {
@@ -114,11 +125,9 @@
         '<input id="set-market-url" class="pf-input" placeholder="https://example.com:2227" autocomplete="off" spellcheck="false">' +
         '<p class="sf-desc">小程序平台（与技能市场同一台服务端）：填服务器地址即可（https://域名或IP:端口），/sites 等路径后缀由程序自动拼；改动即时生效。</p>' +
         '</div>';
-    } else {
-      urlHtml =
-        '<p class="sf-desc" style="margin-top:0">与「企业技能包 / 工作流」同一台服务端：服务器地址在上方该组件的设置区里改。</p>';
     }
-    body.innerHTML =
+    host.innerHTML =
+      '<h4>小程序平台</h4>' +
       urlHtml +
       '<div class="set-field">' +
       '<div class="sf-label">网页托管平台</div>' +
@@ -133,7 +142,7 @@
     if (!marketLive) {
       let c = null;
       try { c = await api('/api/config'); } catch (e) { /* 拉取失败：字段空着可填，保存时再报 */ }
-      const urlEl = body.querySelector('#set-market-url');
+      const urlEl = host.querySelector('#set-market-url');
       if (urlEl) {
         if (c) urlEl.value = c.marketURL || '';
         urlEl.onchange = async () => {
@@ -149,9 +158,18 @@
         };
       }
     }
-    const openBtn = body.querySelector('#btn-open-sites');
+    const openBtn = host.querySelector('#btn-open-sites');
     if (openBtn) openBtn.onclick = () => openSitesPlatform();
   }
+
+  function clearNetCfg() {
+    const host = document.getElementById('net-sites-cfg');
+    if (host) { host.innerHTML = ''; host.classList.add('hidden'); }
+  }
+
+  // 市场组件激活态变化（热开关/注册注销）→ 重挂本段：地址字段在「归市场组件」与
+  // 「本段顶上」之间联动
+  function onCxChange() { renderNetCfg(); }
 
   /* ---------- 注册（init 建立一切，dispose 完整撤销） ---------- */
 
@@ -173,18 +191,21 @@
     // 摘除组件后这些引用自动退化为「不存在」
     window.sitesViewOpen = sitesViewOpen;
     window.closeSites = closeSites;
-    CX.registerSettings({ id: ID, title: '小程序平台', mount: mountSettings });
+    renderNetCfg(); // 设置 · 网络访问页的配置段
+    // 市场组件激活态变化时联动重挂（地址字段归属切换，见 renderNetCfg）
+    window.addEventListener('cx:change', onCxChange);
   }
 
   function dispose() {
     if (sitesViewOpen()) closeSites(); // 平台正开着：先还回对话区
     docKeys.forEach((fn) => document.removeEventListener('keydown', fn));
     docKeys.length = 0;
+    window.removeEventListener('cx:change', onCxChange);
     if (btnEl) { btnEl.remove(); btnEl = null; }
     if (viewEl) { viewEl.remove(); viewEl = null; }
     delete window.sitesViewOpen;
     delete window.closeSites;
-    CX.unregisterSettings(ID);
+    clearNetCfg();
   }
 
   CX.register({ id: ID, init, dispose });

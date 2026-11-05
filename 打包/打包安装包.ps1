@@ -18,7 +18,12 @@ param(
   [string]$Version = "",
   [string]$ExeSource = "",
   [string]$SkillsSource = "",
-  [string]$ExeBaseName = "坚祥数字助理GO"
+  [string]$ExeBaseName = "坚祥数字助理GO",
+  # IssFile：Inno 脚本（默认正式版；测试版传 安装包-测试版.iss——独立 AppId 并行安装）
+  [string]$IssFile = "安装包.iss",
+  # ConfigTemplate：随包内置的 config.json 模板（测试版用来首装即指测试环境；
+  # iss 侧用 onlyifdoesntexist 落盘，升级不覆盖用户配置）。空=不带。
+  [string]$ConfigTemplate = ""
 )
 if (-not $Version) { $Version = (Get-Date -Format "yyyyMMdd") + "-1" }
 
@@ -137,6 +142,32 @@ if ($compCount -eq 0) { throw "组件目录里没有任何带 manifest.json 的�
 Copy-Item $compDir (Join-Path $stage "组件") -Recurse -Force
 Write-Host "== 内置组件 $compCount 个已暂存"
 
+# 内置 MCP 组件（「操作电脑」能力的来源）：cua-driver 与 windows-mcp 依赖。
+# 与上面的「组件/」是两回事——那个是程序内的默认组件（护栏/待办/Git/语音），
+# 这个只被内置 MCP 连接器按 {app}\内置组件 解析。缺任一项，装上以后
+# 「操作电脑」就是残废，所以缺一不出包。
+Write-Host "== 暂存内置 MCP 组件（Cua 驱动 / Windows-MCP 依赖）"
+$builtinMcpDir = Join-Path $root "内置组件"
+if (-not (Test-Path $builtinMcpDir)) { throw "内置组件目录缺失：$builtinMcpDir（操作电脑能力必须随包）" }
+Copy-Item $builtinMcpDir (Join-Path $stage "内置组件") -Recurse -Force
+# __pycache__ 跨机器无效、白占体积，不入包
+Get-ChildItem (Join-Path $stage "内置组件") -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# 依赖去重：与共享运行时版本一致的第三方包剔掉（numpy/Pillow/cryptography/pywin32…）。
+# Windows-MCP 跑的就是同一个便携运行时，这些是纯重复——实测 138.1→54.7 MB，
+# 去重后 MCP 握手 21 个工具、Snapshot 实调均正常。版本不一致的包一律保留。
+$stripPy = Join-Path $packDir "精简内置组件.py"
+$siteDir = Join-Path $SkillsSource "_runtime\python\Lib\site-packages"
+if (-not (Test-Path $stripPy)) { throw "缺少去重脚本：$stripPy" }
+& $pyExe $stripPy --site $siteDir --target (Join-Path $stage "内置组件\wmcppkg")
+if ($LASTEXITCODE -ne 0) { throw "内置组件依赖去重失败（退出码 $LASTEXITCODE）" }
+
+foreach ($must in @("cua-driver\cua-driver.exe", "wmcppkg\windows_mcp", "windows-mcp-boot.py")) {
+  # 嵌套 Join-Path：三参形态只有 PowerShell 7 认，5.1 会当位置参数错误（20261104 实测）
+  if (-not (Test-Path (Join-Path (Join-Path $stage "内置组件") $must))) { throw "内置组件不完整，缺少 $must，拒绝出包" }
+}
+Write-Host "== 内置 MCP 组件已暂存"
+
 # 本地语音识别 worker 已随「组件/voice」自包含（worker 与模型迁入组件本体，
 # 见提交 623f93cb77），上方「暂存内置组件」已把它整体带入 stage\组件\voice；
 # 这里只做防呆校验：组件里缺 worker 同样拒绝出包（缺文件时语音组件的
@@ -165,6 +196,13 @@ Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
 $notices = Join-Path $root "THIRD-PARTY-NOTICES.md"
 if (-not (Test-Path $notices)) { throw "缺少第三方组件声明：$notices（仓库根目录必须有 THIRD-PARTY-NOTICES.md）" }
 Copy-Item $notices $stage -Force
+
+# 测试版：内置配置模板 → stage\config.json（iss 以 onlyifdoesntexist 落盘）
+if ($ConfigTemplate -ne "") {
+  if (-not (Test-Path $ConfigTemplate)) { throw "ConfigTemplate 不存在：$ConfigTemplate" }
+  Copy-Item $ConfigTemplate (Join-Path $stage "config.json") -Force
+  Write-Host "== 已内置配置模板：$ConfigTemplate"
+}
 
 # ---- 安装期清理清单（清理清单.iss，被 安装包.iss 的 [InstallDelete] 段包含）----
 # 随包目录在升级安装时整目录重装（先删后装），包内已移除的文件不再残留——
@@ -196,7 +234,7 @@ Write-Host "== Inno Setup 编译安装包（LZMA2 压缩，耐心等待）"
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
 if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe，请先安装 Inno Setup 6" }
-& $iscc "/DMyAppVersion=$Version" "/DMyAppName=$ExeBaseName" "/DMyAppExeName=$ExeBaseName.exe" (Join-Path $packDir "安装包.iss")
+& $iscc "/DMyAppVersion=$Version" "/DMyAppName=$ExeBaseName" "/DMyAppExeName=$ExeBaseName.exe" (Join-Path $packDir $IssFile)
 if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败" }
 
 $out = Join-Path $packDir "输出\$ExeBaseName-安装包-$Version.exe"

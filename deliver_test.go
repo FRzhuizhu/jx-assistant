@@ -79,7 +79,7 @@ func deliveryPaths(t *testing.T, a *App, sid string) []string {
 	return out
 }
 
-// reportNote 包含指定子串的交付注记存在（kind=report 的【交付完成】注记）。
+// reportNote 包含指定子串的交付注记存在（kind=report 的【交付结果】注记）。
 func hasReportNote(t *testing.T, a *App, sid, sub string) bool {
 	t.Helper()
 	rows, err := a.Store.RawMessagesAll(sid)
@@ -196,8 +196,8 @@ func TestDeliverMoveRewritesCard(t *testing.T) {
 		t.Fatalf("备份内容异常: %q %v", old, err)
 	}
 	// 注记落库（下一轮模型可见）
-	if !hasReportNote(t, a, sess.ID, "【交付完成】已把") || !hasReportNote(t, a, sess.ID, "快照备份") {
-		t.Fatal("缺【交付完成】注记")
+	if !hasReportNote(t, a, sess.ID, "【交付结果】已把") || !hasReportNote(t, a, sess.ID, "快照备份") {
+		t.Fatal("缺【交付结果】注记")
 	}
 }
 

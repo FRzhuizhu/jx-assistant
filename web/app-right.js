@@ -10,7 +10,11 @@
       （jx.contentWidth，与对话区两侧拖把手共享同一记忆），
       因此关闭再打开，右栏自动回到「新的剩余宽」，等效记住了拖拽结果；
    4) 窄窗口时右栏停在最小宽，对话区列（max-width 模型）自然让步，
-      不把更小的可见宽写进记忆。 */
+      不把更小的可见宽写进记忆；
+   5) 推导口径是「对话列可见宽」：消息列 .msg-col 在 #messages 滚动容器
+      内，经典滚动条要占 8px 布局宽——右栏必须把这 8px 也留给对话区
+      （rpScrollbarW），否则开栏瞬间 #main 恰好等于 --content-w、滚动条
+      再吃掉一截，整条消息列变窄重排（一开一关宽度来回跳的根源）。 */
 
 const RP_MIN = 300;          // 右栏最小宽
 const RP_CONTENT_MIN = 640;  // 对话区最小宽（与拖把手一致）
@@ -81,9 +85,16 @@ function rpRegister(id, def) {
   }
 }
 
-function rpAvail() { // 右栏可瓜分的总宽 = #app 宽 − 左侧栏（折叠时 offsetWidth 为 0）
+function rpAvail() { // 右栏可瓜分的总宽 = #app 宽 − 左侧栏（折叠时 rect 宽为 0）
+  // 用 getBoundingClientRect 而非 clientWidth/offsetWidth：后两者各自取整，
+  // 高 DPI 缩放下两次取整最多差出 1px，会让「恰好留够对话区宽」差零点几像素
   const app = $('app'), sb = $('sidebar');
-  return Math.max(0, (app ? app.clientWidth : window.innerWidth) - (sb ? sb.offsetWidth : 0));
+  return Math.max(0, (app ? app.getBoundingClientRect().width : window.innerWidth) - (sb ? sb.getBoundingClientRect().width : 0));
+}
+
+function rpScrollbarW() { // #messages 滚动条占位宽（内容不溢出时 0，无滚动条即无占位）
+  const m = $('messages');
+  return m ? Math.max(0, m.offsetWidth - m.clientWidth) : 0;
 }
 
 function rpCurrentW() {
@@ -96,8 +107,10 @@ function rpApply() { // 重算并应用右栏宽度（仅打开时有效）
   if (!panel || panel.classList.contains('hidden')) return;
   if (isNarrow()) return; // 窄屏浮层恒为整屏宽，推导冻结（断点回宽屏时由 mq 监听补算）
   const avail = rpAvail();
-  const upper = Math.max(avail - RP_CONTENT_MIN, RP_MIN); // 窄窗口时上限退化到最小宽
-  const w = Math.round(Math.min(Math.max(avail - contentWidth(), RP_MIN), upper));
+  const sbw = rpScrollbarW(); // 滚动条占位留给对话区（宽度契约第 5 条），列宽才不随开合跳变
+  const upper = Math.max(avail - RP_CONTENT_MIN - sbw, RP_MIN); // 窄窗口时上限退化到最小宽
+  // floor 而非 round：多出的零头归右栏，保证 #main ≥ 对话区宽 + 滚动条，不差亚像素
+  const w = Math.floor(Math.min(Math.max(avail - contentWidth() - sbw, RP_MIN), upper));
   document.documentElement.style.setProperty('--rp-w', w + 'px');
 }
 
@@ -248,9 +261,10 @@ function setupRpanelResize() {
     h.classList.remove('dragging');
     bpwDragPause(false); // 拖完先让原生面板按新宽度回来，再做下面的落盘
     if (!moved) return; // 窄窗口宽度被钉死时不算一次调整，别覆盖记忆
-    // 对话区新宽 = 可用宽 − 右栏拖定宽。直接写 var + 落盘：
+    // 对话区新宽 = 可用宽 − 右栏拖定宽 − 滚动条占位（存的是「可见列宽」，与
+    // rpApply 的推导口径互逆，关开往返才不跳）。直接写 var + 落盘：
     // 不走 setContentWidth——它按当前可视宽夹取，右栏打开时会把值越夹越小
-    const cw = Math.max(avail - rpCurrentW(), RP_CONTENT_MIN);
+    const cw = Math.round(Math.max(avail - rpCurrentW() - rpScrollbarW(), RP_CONTENT_MIN));
     document.documentElement.style.setProperty('--content-w', cw + 'px');
     lsSet('jx.contentWidth', String(cw));
   };
@@ -873,7 +887,8 @@ $('bpw-external').onclick = () => {
 function bpwApplyViewport(w) {
   if (!w || isNarrow() || !bpwActive()) return;
   const avail = rpAvail();
-  const cw = Math.max(avail - Math.round(w), RP_CONTENT_MIN);
+  // 与拖拽同口径（减滚动条占位）：rpApply 按此重算后面板宽 ≈ 请求宽，不多不少
+  const cw = Math.max(avail - Math.round(w) - rpScrollbarW(), RP_CONTENT_MIN);
   document.documentElement.style.setProperty('--content-w', cw + 'px');
   rpApply();
   bpwReport(true);

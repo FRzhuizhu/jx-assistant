@@ -63,13 +63,15 @@
 
     <!-- 底部框架：设置行独占最后一行；其上是按钮格 .foot-grid——桌面
          display:contents 完全透明（按钮就是 sidebar-foot 的普通行，观感与
-         从前一致），手机端切成三栏网格。以后组件要往侧栏底部加入口，一律
-         append 进 .foot-grid：手机端自动落进三栏格子往上叠行，设置行恒在
-         最底独占整行，桌面端照常多出一行。 -->
+         从前一致），手机端切成三栏网格。分区挂载点：组件入口一律 append 进
+         #foot-apps（回收站上方——内置格 .foot-grid 之前），不锚定任何兄弟
+         按钮；手机端两个格容器同吃 sidebar-foot 的三栏网格（见 style.css），
+         设置行恒在最底独占整行。 -->
     <div class="sidebar-foot">
+      <!-- 组件入口格（skill-market / sites-platform 等由组件 append 注入） -->
+      <div class="foot-grid" id="foot-apps"></div>
+      <!-- 内置格：回收站 -->
       <div class="foot-grid">
-      <!-- 企业技能包 / 工作流、小程序平台：均已组件化（组件/skill-market/ 与
-           组件/sites-platform/），侧栏入口由组件各自 append 进本格。 -->
       <button id="btn-recycle" class="foot-btn" title="回收站">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         回收站
@@ -409,7 +411,7 @@
       <label class="strong">姓名<input id="wz-user" placeholder="如 张三（服务端按人分配 API key 并统计用量）" autocomplete="off"></label>
       <div class="wz-either"><b>公司名称与服务器地址，两项填其中一项即可</b></div>
       <label>公司名称<input id="wz-company" placeholder="局域网内自动发现（配对口令）" autocomplete="off"></label>
-      <label>服务器地址<input id="wz-server" placeholder="如 example.com:PORT（与上项二选一，自动按 https）" autocomplete="off" spellcheck="false"></label>
+      <label>服务器地址<input id="wz-server" placeholder="如 example.com:2227（与上项二选一，自动按 https）" autocomplete="off" spellcheck="false"></label>
     </div>
     <div id="wz-result" class="remote-result hidden"></div>
     <div class="modal-actions">
@@ -649,8 +651,11 @@
               <p class="sf-desc">中继网关的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
             </div>
           </div>
-          <!-- 小程序平台区已组件化（组件/sites-platform/）：入口与「打开托管平台」
-               在 设置 · 内置组件 · 小程序平台；服务器地址与市场共用（skill-market 组件）。 -->
+          <!-- 企业技能包/工作流 与 小程序平台 的网络配置挂载点：由组件注入内容
+               （组件/skill-market/、组件/sites-platform/），组件不在场（关闭/摘除）时
+               容器保持空置隐藏——开关归「内置组件」页，参数归本页。 -->
+          <div class="gen-section hidden" id="net-market-cfg"></div>
+          <div class="gen-section hidden" id="net-sites-cfg"></div>
           <div class="gen-section">
             <h4>联网搜索（web_search）</h4>
             <div class="set-field">
@@ -679,12 +684,12 @@
             </div>
             <div class="set-field">
               <div class="sf-label">总服务器地址</div>
-              <input id="set-registry-url" class="pf-input" placeholder="http://总服务器:PORT（可选，公司名发现不到时兜底）" autocomplete="off" spellcheck="false">
+              <input id="set-registry-url" class="pf-input" placeholder="http://总服务器:2229（可选，公司名发现不到时兜底）" autocomplete="off" spellcheck="false">
               <p class="sf-desc">公司总服务器的地址：局域网广播被隔离时，向导按公司名到这里查询贵公司服务端的内网地址。留空则只走局域网发现。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">更新检查源</div>
-              <input id="set-update-url" class="pf-input" placeholder="https://公司服务端:PORT/updates/latest" autocomplete="off" spellcheck="false">
+              <input id="set-update-url" class="pf-input" placeholder="https://公司服务端:2227/updates/latest" autocomplete="off" spellcheck="false">
               <p class="sf-desc">软件更新检查地址（填 off 关闭检查）；接入向导会自动填好。每小时检查一次，有新版会在页顶提示。检查与安装操作在 设置 · 关于 · 软件更新。</p>
             </div>
           </div>
@@ -747,6 +752,16 @@
               <div class="sf-inline">
                 <input id="set-snapshot-days" type="number" min="1" max="3650">
                 <span class="sf-desc">超龄快照每天清一次；填 -1 表示永不过期</span>
+              </div>
+            </div>
+          </div>
+          <div class="gen-section">
+            <h4>会话浏览器数据</h4>
+            <div class="set-field">
+              <div class="sf-label">保留天数</div>
+              <div class="sf-inline">
+                <input id="set-browserprofile-days" type="number" min="0" max="3650">
+                <span class="sf-desc">每个会话的浏览器数据超过该天数未使用即自动删除（下次使用时重建，已存登录态会丢失）；0 = 不清理</span>
               </div>
             </div>
           </div>
@@ -960,7 +975,7 @@
         允许操作浏览器</span><input type="checkbox" data-tool="browser" title="开启后模型可打开网页、读取内容、点击、输入、截图（走本机 Edge/Chrome 的内建通道，不经命令沙箱；命令行里起浏览器会被沙箱拒绝）"></label>
       <label class="perm-opt"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-        允许操作电脑</span><input type="checkbox" data-tool="computer" title="开启后模型可截屏、点击、键入、切换窗口；坐标以 computer_screenshot 的图片为准"></label>
+        允许操作电脑</span><input type="checkbox" data-tool="computer" title="开启后模型可截屏、点击、键入、滚动、切换窗口（经内置连接器 cua / windows-mcp，不占工具目录，按需读取）"></label>
       <label class="perm-opt" id="perm-opt-device"><span class="po-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
         允许操作手机</span><input type="checkbox" data-tool="device" title="开启后模型可截屏、点按、滑动、输入、打开应用（需无障碍服务）；连接无线调试后还可经 adb_* 以 shell 权限执行命令"></label>

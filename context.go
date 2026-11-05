@@ -879,7 +879,9 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 		// token 单位：压缩改变了上下文，等下一个 usage 作为新基线
 		a.markCompactBase(sess.ID)
 		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
-		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		//（reason=compact 让前端作废前缀缓存全量重建——标记 UPDATE 不改 seq，
+		// 不作废前缀复用判定永远命中，边界行出不来）
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID, Data: map[string]any{"reason": "compact"}})
 		// 折叠可能埋掉最后一条环境快照行：埋了就完整重发一条
 		a.resendEnvAfterCompact(sess)
 		return folded
@@ -902,7 +904,7 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 		a.auditWrite(sess, map[string]any{"type": "compact", "upgraded": upgraded, "from": from, "to": endSeq})
 		// 二级升级同样大幅改写了上下文：token 基线等下一个 usage 刷新
 		a.markCompactBase(sess.ID)
-		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID, Data: map[string]any{"reason": "compact"}})
 		// 二级升级不改变快照行的可见性（已 omit 的仍 omit），但若此前从未
 		// 重发过（跨进程重启等边缘态），这里兜底再查一次，幂等
 		a.resendEnvAfterCompact(sess)
@@ -942,7 +944,8 @@ func (a *App) foldUpTo(sess *SessionMeta, raw []*StoredMessage, endSeq int64) in
 		// token 单位：压缩改变了上下文，等下一个 usage 作为新基线
 		a.markCompactBase(sess.ID)
 		// 通知前端重取：compact 标记变了，对话区要在真实位置翻新「已折叠」行
-		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
+		//（reason=compact 让前端作废前缀缓存全量重建，口径同 foldRounds）
+		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID, Data: map[string]any{"reason": "compact"}})
 		// 折叠可能埋掉最后一条环境快照行：埋了就完整重发一条
 		a.resendEnvAfterCompact(sess)
 	}
@@ -1580,6 +1583,10 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		Message: TextMessage("system", content), Kind: kindSummary, // 上下文材料，非用户发言；发送时现场构造 user 视图
 		Origin: origin, CoversUpTo: segEnd, CreatedAt: now(),
 	})
+	// 通知前端：摘要行已落库，对话区在覆盖边界处翻新压缩卡片（reason=compact
+	// 同时作废前缀缓存——摘要行 append 在会话末尾、不改末条 seq，前缀复用
+	// 判定感知不到，卡片会一直不出现在正打开的会话里直到全量重建）
+	a.broadcast(Event{Type: "session_updated", SessionID: sess.ID, Data: map[string]any{"reason": "compact"}})
 	// 摘要边界埋掉最后一条环境快照行时完整重发一条（与规则折叠同一兜底）
 	a.resendEnvAfterCompact(sess)
 	return summary, nil

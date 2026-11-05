@@ -163,7 +163,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			// 任务会话专注实操（需要时由总控代调）。
 			askUserQuestionTool(), requestPermissionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
-		}, skillCreate...), append(append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), computerTools()...), deviceTools()...), history...)...)
+		}, skillCreate...), append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), deviceTools()...), history...)...)
 	}
 	return append(tools, readUserSkillTool())
 }

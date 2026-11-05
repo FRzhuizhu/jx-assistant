@@ -23,12 +23,14 @@ function mcpConnectorCard(s) {
   else if (s.lastError) badges.push('连接失败');
   else badges.push('待命 · 按需启动');
   const fromCatalog = (s.source || '').startsWith('catalog:');
+  // 内置连接器（cua / windows-mcp）：随包分发、受能力门控，与用户手加的分开标
+  const fromBuiltin = (s.source || '').startsWith('builtin:');
   const cmdLine = (s.type === 'http' || s.type === 'sse')
     ? s.url : [s.command, ...(s.args || [])].filter(Boolean).join(' ');
   info.innerHTML =
     `<div class="pr-line"><b>${esc(s.name)}</b>` +
     `<span class="pr-ver">${esc(s.type || 'stdio')}</span>` +
-    `<span class="pr-ver">${fromCatalog ? '设计软件桥' : '手动添加'}</span></div>` +
+    `<span class="pr-ver">${fromBuiltin ? '内置' : fromCatalog ? '设计软件桥' : '手动添加'}</span></div>` +
     (badges.length ? `<div class="ccp-badges">${badges.map(b => `<span class="ccp-badge">${esc(b)}</span>`).join('')}</div>` : '') +
     (s.description ? `<p>${esc(s.description)}</p>` : '') +
     (cmdLine ? `<div class="mcp-cmd">${esc(cmdLine)}</div>` : '') +

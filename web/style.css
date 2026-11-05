@@ -301,10 +301,11 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   display: flex; flex-direction: column; gap: 3px;
   padding: 4px 10px 12px;
 }
-/* 底部按钮格（市场/回收站/以后的组件入口）：桌面 display:contents 完全透明，
-   按钮仍是 .sidebar-foot 的直接行、观感与从前一致；手机端窄屏媒体查询里切三栏
-   网格（设置行不在格内，永远独占最后一行）。组件往底部加按钮 append 进
-   .foot-grid 即可，两端自动各就各位（契约见 index.html 同名注释） */
+/* 底部按钮格（组件入口格 #foot-apps / 内置格 .foot-grid）：桌面 display:contents
+   完全透明，按钮仍是 .sidebar-foot 的直接行；手机端窄屏媒体查询里整个
+   .sidebar-foot 切三栏网格（两个格容器都透明，market/sites/回收站同吃一行三格）。
+   组件往底部加按钮 append 进 #foot-apps（回收站上方）即可，不锚定兄弟按钮
+   （契约见 index.html 同名注释） */
 .foot-grid { display: contents; }
 /* 连接状态胶囊：嵌在设置行右侧、紧跟反馈胶囊（行内居中由 flex 的 align-items:center
    保证；右对齐交给 .foot-feedback 的 margin-left:auto 这一个锚点） */
@@ -587,9 +588,8 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
 /* 长消息折叠（作用于所有会话与视图的用户位气泡：用户气泡，
    以及 AI 发出的用户消息气泡（.msg.user.ai），见 app-chat.js 的 applyFolds；数字助理的正文
    （.md）不折叠、多长都完整显示（foldTargets 的目标选择器里没有它）。判定用
-   **实际渲染高度**（行高 × 行数，foldLinesOf：用户气泡 6 行、AI 用户气泡 2 行）
-   而不是字符数——对话区宽度、字号一变每行能放多少字就变。折叠态：按阈值行数
-   高度裁剪 + 底部渐隐到气泡自身底色 + 居中「展开」小按钮；
+   **实际渲染高度**（行高 × 6）而不是字符数——对话区宽度、字号一变每行能放多少
+   字就变。折叠态：按 6 行高度裁剪 + 底部渐隐到气泡自身底色 + 居中「展开」小按钮；
    展开态：不再裁剪，按钮落到正文下方变成「收起」。
    --fold-bg 是渐隐终点色：气泡里等于气泡自身底色（.msg.user 一处赋值）；
    数字助理正文不折叠，再没有别的赋值点，兜底取页面底色。 */
@@ -1650,11 +1650,11 @@ body.rp-open .w-handle { display: none; }
   border: 1px solid var(--border-2); border-radius: 6px; background: var(--bg); color: var(--text);
 }
 /* 设置页数字小框统一外观（对话历史「自动清理（天）」/常规「最大步数」「触发
-   时长（秒）」）：紧凑圆角框，与语音设置里听写时长等数字框同款。原先各项是
+   时长（秒）」「会话浏览器数据·保留天数」）：紧凑圆角框，与语音设置里听写时长等数字框同款。原先各项是
    裸 number 输入 + 各自内联宽度，宽窄不一、与页面控件不搭。flex-shrink:0
    是统一宽度的关键——sf-inline 是 flex 行，旁边的长说明文字会把可收缩的
    输入框挤窄（曾出现 77/83/96 三种宽度并存的「不一致」）。 */
-#set-snapshot-days, #set-maxsteps, #set-askalert-sec {
+#set-snapshot-days, #set-maxsteps, #set-askalert-sec, #set-browserprofile-days {
   flex-shrink: 0;
   font-size: 12px; padding: 4px 8px; width: 96px;
   border: 1px solid var(--border-2); border-radius: 6px; background: var(--bg); color: var(--text);
@@ -3087,9 +3087,11 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  /* 底部框架：设置行不变；其上市场/回收站（及以后组件按钮）三栏网格往上叠行
-     （桌面侧 .foot-grid 的 display:contents 在这里被覆盖成网格） */
-  .foot-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+  /* 底部框架：设置行不变；组件入口（#foot-apps 格）/回收站（.foot-grid 格）的
+     按钮同吃一个三栏网格——网格上移到 .sidebar-foot，两个格容器保持
+     display:contents（桌面侧同款），设置行 grid-column 整行独占最底 */
+  .sidebar-foot { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+  #btn-settings { grid-column: 1 / -1; }
 
   /* 输入工具栏（用户敲定的排布）：左组（加号+权限）恒为标准形状不参与收缩，
      权限右侧留 8px 固定间距（与其他按钮间距一致）后紧跟右组；右组是整体

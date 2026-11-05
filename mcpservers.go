@@ -40,7 +40,10 @@ type mcpServerEntry struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
 	Enabled     bool              `json:"enabled"`
-	Source      string            `json:"source,omitempty"` // manual | catalog:<id>
+	Source      string            `json:"source,omitempty"` // manual | catalog:<id> | builtin:<id>
+	// RequiresCap 需要的会话能力（内置连接器用，如 computer）：能力没开时
+	// 既不进环境快照的清单（软性），调用也会被 requireCapability 拦下（硬性）。
+	RequiresCap string            `json:"requiresCap,omitempty"`
 	AddedAt     string            `json:"addedAt,omitempty"`
 	Type        string            `json:"type,omitempty"` // ""（stdio）| http | sse
 	Command     string            `json:"command,omitempty"`
@@ -111,6 +114,12 @@ func InitMCPServers(app *App, dataDir string) *MCPServersRegistry {
 		clients:   map[string]*mcpClient{},
 		lastErr:   map[string]string{},
 	}
+	// root 是连接器进程的工作目录（mcpPlainHost.dir，见 connectOne）：
+	// 不先建出来，cmd.Dir 指向不存在的路径，启动会报 "The directory name is invalid"。
+	// 干净机器上必然踩到，所以初始化时就建。
+	if err := os.MkdirAll(root, 0755); err != nil {
+		log.Printf("[MCP] 创建连接器工作目录失败: %v", err)
+	}
 	if data, err := os.ReadFile(r.statePath); err == nil {
 		_ = jsonUnmarshalLoose(data, &r.file)
 	}
@@ -165,6 +174,52 @@ func (e *mcpServerEntry) validate() error {
 		return fmt.Errorf("未知传输类型 %q（stdio/http/sse）", e.Type)
 	}
 	return nil
+}
+
+// HasName 报告注册表里是否已有同名服务器（内置连接器释放时判重，避免覆盖
+// 用户改过的定义或把用户删掉的再塞回来）。
+func (r *MCPServersRegistry) HasName(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.file.Servers {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// requiresCapOf 取一条服务器的能力门控（空 = 不门控）。
+func (r *MCPServersRegistry) requiresCapOf(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.entryOf(name); ok {
+		return e.RequiresCap
+	}
+	return ""
+}
+
+// addQuiet 登记一条服务器定义并落盘，但不建立连接。
+// 与 Upsert 的差别只有这一点：内置连接器在启动期释放，必须保持
+// 「引擎启动期零 MCP 进程」（见 InitMCPServers 注释），连接留到首次调用时懒启动。
+func (r *MCPServersRegistry) addQuiet(e mcpServerEntry) error {
+	if err := e.validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	for _, s := range r.file.Servers {
+		if s.Name == e.Name {
+			r.mu.Unlock()
+			return nil // 已存在，保持用户现状
+		}
+	}
+	if e.AddedAt == "" {
+		e.AddedAt = time.Now().Format(time.RFC3339)
+	}
+	r.file.Servers = append(r.file.Servers, &e)
+	err := r.save()
+	r.mu.Unlock()
+	return err
 }
 
 // Upsert 新增或更新一条服务器定义并重连。同名覆盖（AddedAt/Source 原值
@@ -410,12 +465,19 @@ func (r *MCPServersRegistry) List() []mcpServerStatus {
 const mcpConnectorBodyMax = 8000
 
 // PromptBlock 生成环境快照的连接器清单段（无条件注入，见 agent.go envPrompt）。
-func (r *MCPServersRegistry) PromptBlock() string {
+//
+// sess 用于能力门控：内置连接器带 RequiresCap 且该能力没开时**整条不出现**——
+// 模型看不到就不会去试（软性管控）；真正的拦截在 mcp_read_connector /
+// mcp_call_tool 里走 requireCapability（硬性）。sess 为 nil 时按"没有任何能力"处理。
+func (r *MCPServersRegistry) PromptBlock(sess *SessionMeta) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var b strings.Builder
 	for _, s := range r.file.Servers {
 		if !s.Enabled {
+			continue
+		}
+		if s.RequiresCap != "" && (sess == nil || !hasCapability(sess, s.RequiresCap)) {
 			continue
 		}
 		b.WriteString("  - " + s.Name)
@@ -536,6 +598,13 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 				if t.app.MCPServers == nil {
 					return "", fmt.Errorf("MCP 注册表未初始化")
 				}
+				// 内置连接器带能力门控（如「操作电脑」）：没开就走 requireCapability
+				// 弹审批卡——与 browser_*/computer_* 同一套升级通道。
+				if req := t.app.MCPServers.requiresCapOf(strings.TrimSpace(p.Name)); req != "" {
+					if err := requireCapability(t, req, capZh(req), args); err != nil {
+						return "", err
+					}
+				}
 				return t.app.MCPServers.ReadConnector(t.ctx, strings.TrimSpace(p.Name))
 			},
 		},
@@ -565,6 +634,13 @@ func (r *MCPServersRegistry) ConnectorTools() []Tool {
 				}
 				if t.app.MCPServers == nil {
 					return "", fmt.Errorf("MCP 注册表未初始化")
+				}
+				// 同 mcp_read_connector：内置连接器受能力门控，没开就拦下并弹审批卡。
+				// 读清单与真正执行都要拦——只拦前者的话，知道名字就能绕过。
+				if req := t.app.MCPServers.requiresCapOf(strings.TrimSpace(p.Connector)); req != "" {
+					if err := requireCapability(t, req, capZh(req), args); err != nil {
+						return "", err
+					}
 				}
 				text, images, err := t.app.MCPServers.CallToolByName(t.ctx, strings.TrimSpace(p.Connector), strings.TrimSpace(p.Tool), p.Arguments)
 				if err != nil {

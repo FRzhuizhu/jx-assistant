@@ -38,6 +38,6 @@ try {
 & (Join-Path $PSScriptRoot "编译语音输入法.ps1")
 if ($LASTEXITCODE -ne 0) { throw "语音输入法编译失败" }
 
-go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1" -o (Join-Path $root "坚祥数字助理GO.exe") $root
+go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1 -X main.appVersion=20991231-1" -o (Join-Path $root "坚祥数字助理GO.exe") $root  # appVersion 注入未来版本号：开发版永远比服务器新，不弹自动更新
 if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 Write-Host "完成：$root\坚祥数字助理GO.exe（开发桌面版，gitignore 的本地产物）"

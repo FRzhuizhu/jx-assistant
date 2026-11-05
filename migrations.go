@@ -59,6 +59,13 @@ var appMigrations = []appMigration{
 			return nil
 		},
 	},
+	{
+		id:   "20261103.builtin-mcp",
+		desc: "释放内置 MCP 连接器（cua / windows-mcp）：随包分发、默认可用，受「操作电脑」能力门控",
+		run: func(a *App) error {
+			return a.materializeBuiltinMCP()
+		},
+	},
 }
 
 // migrationsPath 账本：data/migrations.json（id → 执行时刻）。

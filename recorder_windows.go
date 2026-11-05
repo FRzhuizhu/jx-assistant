@@ -35,12 +35,13 @@ import (
 )
 
 var (
-	procSetWindowsHookEx    = compUser32.NewProc("SetWindowsHookExW")
-	procUnhookWindowsHookEx = compUser32.NewProc("UnhookWindowsHookEx")
-	procCallNextHookEx      = compUser32.NewProc("CallNextHookEx")
-	procGetMessageW         = compUser32.NewProc("GetMessageW")
-	procPostThreadMessageW  = compUser32.NewProc("PostThreadMessageW")
-	procGetForegroundWindow = compUser32.NewProc("GetForegroundWindow")
+	procSetWindowsHookEx    = user32.NewProc("SetWindowsHookExW")
+	procUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
+	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
+	procGetMessageW         = user32.NewProc("GetMessageW")
+	procPostThreadMessageW  = user32.NewProc("PostThreadMessageW")
+	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+	procGetWindowTextW      = user32.NewProc("GetWindowTextW")
 	procGetCurrentThreadID  = syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
 )
 
@@ -739,7 +740,11 @@ func (r *demoRec) shoot(t int) {
 	if int(r.shots.Load()) >= recorderMaxShots {
 		return
 	}
-	raw, _, _, err := computerCaptureScreen()
+	w, h := screenMetrics()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	raw, err := panelCaptureRect(0, 0, w, h)
 	if err != nil {
 		return
 	}

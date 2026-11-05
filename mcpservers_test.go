@@ -95,7 +95,7 @@ func TestMCPServersStateRoundTrip(t *testing.T) {
 func TestMCPPromptBlockAndConnectorTools(t *testing.T) {
 	r := newTestMCPR(t)
 	// 空注册表：清单段为空，两个常驻工具仍在（工具目录形状恒定）
-	if blk := r.PromptBlock(); blk != "" {
+	if blk := r.PromptBlock(nil); blk != "" {
 		t.Errorf("空注册表不应有清单段: %q", blk)
 	}
 	tools := r.ConnectorTools()
@@ -111,7 +111,7 @@ func TestMCPPromptBlockAndConnectorTools(t *testing.T) {
 	if err := r.Upsert(mcpServerEntry{Name: "beta", Type: "http", URL: "https://x/mcp", Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
-	blk := r.PromptBlock()
+	blk := r.PromptBlock(nil)
 	if !strings.Contains(blk, "alpha") || strings.Contains(blk, "beta") {
 		t.Errorf("清单段应只含启用的连接器: %q", blk)
 	}

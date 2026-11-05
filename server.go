@@ -50,57 +50,57 @@ type App struct {
 	apiCatalogCache  string              // 完整目录文本的渲染缓存（注册表启动后不变，callapi.go）
 	apiMetaMu        sync.Mutex          // 上述字段的锁（registerRoutes 期间不与 a.mu 互斥）
 
-	mu              sync.Mutex
-	sessLocks       map[string]*sync.Mutex
-	compactMu       sync.Mutex              // 规则自动压缩的 token 用量基线锁（context.go）
-	compactUsage    map[string]*compactUsageMark // 会话id → 最近 usage 与压缩基线（间隔制 token 模式的触发依据，context.go）
-	runMu           sync.Mutex
-	runners         map[string]*sessionRun // 正在执行的会话（含后台派发）
-	permMu          sync.Mutex
-	grants          map[string]*Grant        // 授权凭证（perm.go）
-	approvals       map[string]*Approval     // 等待用户决定的越权审批（perm.go）
-	permNotes       map[string]string        // 待落快照的「权限变更」注记（perm.go，env 通道）
-	observedFiles   sync.Map                 // 会话内已观察文件集（观察策略，perm.go）
-	skillGuideOnce  sync.Map                 // 会话内已随工具结果附带过 SKILL.md 指南的技能（key: 会话id\x00技能id，tool_docs.go 的 appendSkillGuide）
-	questions       map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
-	jobsMu          sync.Mutex
-	jobs            map[string]*jobRun // 会话内后台作业（jobs.go）
-	protectPaths    []string           // 助手自身配置/数据目录，任何模式禁访问
-	skillsMu        sync.Mutex
-	skillsReady     bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
-	skillsDirOurs   string // 已解析的技能目录（App 级缓存，避免跨实例污染）
-	marketMu        sync.Mutex
-	marketCache     marketCacheEntry // 市场清单拉取缓存（60s，见 market.go）
-	remoteMu        sync.Mutex
-	remotes         map[string]*remoteClient // SSH 远程连接池（remote.go）
-	listenPort      int                      // 本机监听端口（远程中继的桥接目标，热重启连接用）
-	remoteCtlMu     sync.Mutex
-	remoteCtlCancel context.CancelFunc // 中继连接存活句柄（nil=未运行，remoteaccess.go）
-	shellEpochMu    sync.Mutex
-	shellEpoch      int64 // 远程外壳版本代数：「关于」页一键清缓存按钮递增（remoteaccess.go，落盘 data/shell-epoch.json）
-	evtMu           sync.Mutex
-	subscribers     map[chan Event]bool // /api/events 的订阅者
-	syncFailMu      sync.Mutex
-	syncFails       int // 公司服务端连续失联轮数（sync.go：连续 2 轮自动停用公司通道）
-	pendMu          sync.Mutex
-	pendingSteer    map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
-	pendingQueue    map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
-	queuePaused     map[string]bool          // 会话队列是否暂停（暂停后本轮结束不自动续发；恢复时空闲即接着发）
-	errMu           sync.Mutex
-	runErrors       map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
-	stopWatchdog    time.Duration     // 停止看门狗：协作取消后等多久仍未收口就强制终结（runtime.go watchStop）
-	streamKillMu    sync.Mutex
-	streamKills     map[string]func() // 会话 → 在跑模型流的强制断开器（llm.go 注册，停止看门狗硬终结时调用）
-	osOnce          sync.Once
-	osDesc          string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
-	selfOnce        sync.Once
-	selfExe         string // 引擎程序绝对路径（os.Executable，探测一次缓存；系统提示词用）
-	skillRTPrompt   string // 内置技能运行时段（技能/_runtime/python 绝对路径，探测一次缓存；系统提示词用）
-	browserMu         sync.Mutex
-	browsersEmbedded  map[string]*BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标，按会话隔离（""=共享；browser_host.go，惰性创建）
-	browsersHeaded    map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
-	nativePanel       browserTarget            // Electron 壳的右栏 <webview> 面板（单例，browser_panel_electron.go）；原生桌面壳/网页形态为 nil
-	browserActive     map[string]browserTarget // 工具作用目标：每会话最近一次 browser_open 选定的实例（键=browserProfileKey）
+	mu                  sync.Mutex
+	sessLocks           map[string]*sync.Mutex
+	compactMu           sync.Mutex                   // 规则自动压缩的 token 用量基线锁（context.go）
+	compactUsage        map[string]*compactUsageMark // 会话id → 最近 usage 与压缩基线（间隔制 token 模式的触发依据，context.go）
+	runMu               sync.Mutex
+	runners             map[string]*sessionRun // 正在执行的会话（含后台派发）
+	permMu              sync.Mutex
+	grants              map[string]*Grant        // 授权凭证（perm.go）
+	approvals           map[string]*Approval     // 等待用户决定的越权审批（perm.go）
+	permNotes           map[string]string        // 待落快照的「权限变更」注记（perm.go，env 通道）
+	observedFiles       sync.Map                 // 会话内已观察文件集（观察策略，perm.go）
+	skillGuideOnce      sync.Map                 // 会话内已随工具结果附带过 SKILL.md 指南的技能（key: 会话id\x00技能id，tool_docs.go 的 appendSkillGuide）
+	questions           map[string]*UserQuestion // 等待用户回答的提问/计划审批（interact.go）
+	jobsMu              sync.Mutex
+	jobs                map[string]*jobRun // 会话内后台作业（jobs.go）
+	protectPaths        []string           // 助手自身配置/数据目录，任何模式禁访问
+	skillsMu            sync.Mutex
+	skillsReady         bool   // 技能母本是否已释放（SkillsDir 首次解析后置位）
+	skillsDirOurs       string // 已解析的技能目录（App 级缓存，避免跨实例污染）
+	marketMu            sync.Mutex
+	marketCache         marketCacheEntry // 市场清单拉取缓存（60s，见 market.go）
+	remoteMu            sync.Mutex
+	remotes             map[string]*remoteClient // SSH 远程连接池（remote.go）
+	listenPort          int                      // 本机监听端口（远程中继的桥接目标，热重启连接用）
+	remoteCtlMu         sync.Mutex
+	remoteCtlCancel     context.CancelFunc // 中继连接存活句柄（nil=未运行，remoteaccess.go）
+	shellEpochMu        sync.Mutex
+	shellEpoch          int64 // 远程外壳版本代数：「关于」页一键清缓存按钮递增（remoteaccess.go，落盘 data/shell-epoch.json）
+	evtMu               sync.Mutex
+	subscribers         map[chan Event]bool // /api/events 的订阅者
+	syncFailMu          sync.Mutex
+	syncFails           int // 公司服务端连续失联轮数（sync.go：连续 2 轮自动停用公司通道）
+	pendMu              sync.Mutex
+	pendingSteer        map[string][]*PendingMsg // 执行中会话的插话（下一次调用模型前生效）
+	pendingQueue        map[string][]*PendingMsg // 执行中会话的排队（本轮结束后作为独立一轮发送）
+	queuePaused         map[string]bool          // 会话队列是否暂停（暂停后本轮结束不自动续发；恢复时空闲即接着发）
+	errMu               sync.Mutex
+	runErrors           map[string]string // 会话最近一次失败原因（前端输入框上方报错条 + 重试）
+	stopWatchdog        time.Duration     // 停止看门狗：协作取消后等多久仍未收口就强制终结（runtime.go watchStop）
+	streamKillMu        sync.Mutex
+	streamKills         map[string]func() // 会话 → 在跑模型流的强制断开器（llm.go 注册，停止看门狗硬终结时调用）
+	osOnce              sync.Once
+	osDesc              string // 环境快照用的系统描述（Windows 版本 + PowerShell 版本，探测一次缓存）
+	selfOnce            sync.Once
+	selfExe             string // 引擎程序绝对路径（os.Executable，探测一次缓存；系统提示词用）
+	skillRTPrompt       string // 内置技能运行时段（技能/_runtime/python 绝对路径，探测一次缓存；系统提示词用）
+	browserMu           sync.Mutex
+	browsersEmbedded    map[string]*BrowserHost  // 无头 chromedp 宿主：网页形态的内嵌目标，按会话隔离（""=共享；browser_host.go，惰性创建）
+	browsersHeaded      map[string]*BrowserHost  // 有头独立窗口宿主：按会话隔离（""=共享；browser_host.go，惰性创建）
+	nativePanel         browserTarget            // Electron 壳的右栏 <webview> 面板（单例，browser_panel_electron.go）；原生桌面壳/网页形态为 nil
+	browserActive       map[string]browserTarget // 工具作用目标：每会话最近一次 browser_open 选定的实例（键=browserProfileKey）
 	browserUserClosedAt map[string]time.Time     // 用户在右栏 ✕ 关闭浏览器页面的时刻，按会话记账（键=browserProfileKey，browserMu 保护）：browser_* 报「未在运行」时据此区分为用户主动关闭（非崩溃）；browserFor 重新打开时清零
 
 	// 原生桌面壳（desktop_windows.go）的会话面板集合：右栏浏览器每个会话
@@ -215,6 +215,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 	recorderASR = a.transcribeWavBytes
 	// 文件快照保留策略：按天超龄清理 + 按会话限量驱逐（见 snapshot.go）
 	go a.snapshotJanitor()
+	// 会话浏览器 profile 的按天回收（见 browser_cleanup.go）：启动先跑一轮，之后每天
+	go a.browserProfileJanitor()
 	// 公司接入自动同步（sync.go）：跟随服务端变化（模型/公司名/地址迁移）
 	go startCompanySyncer(a)
 	// 公司通道 内网/外网 状态翻转的通知（llm.go setAltPreferred）：广播 providers
@@ -1182,9 +1184,9 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		Preset        bool       `json:"preset"`
 		PresetURL     string     `json:"presetURL,omitempty"`
 		Models        []ModelCfg `json:"models"`
-		Enabled       bool       `json:"enabled"`                // 手动启停（解析后：nil=开）
-		AutoDisabled  bool       `json:"autoDisabled,omitempty"` // 公司通道自动停用（连不上服务端）
-		Company       bool       `json:"company,omitempty"`      // 公司内部通道（wizardProviderID）
+		Enabled       bool       `json:"enabled"`                 // 手动启停（解析后：nil=开）
+		AutoDisabled  bool       `json:"autoDisabled,omitempty"`  // 公司通道自动停用（连不上服务端）
+		Company       bool       `json:"company,omitempty"`       // 公司内部通道（wizardProviderID）
 		PublicBaseURL string     `json:"publicBaseURL,omitempty"` // 外网备用地址（公司通道由服务端下发，只读展示）
 		Via           string     `json:"via,omitempty"`           // 公司通道当前线路：lan/wan（配了外网地址才有值）
 		// Quota 公司通道的额度快照（服务端随公告下发；老服务端/私人通道为空）
@@ -1232,18 +1234,18 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		searchBaseErrText = searchBaseErr.Error()
 	}
 	writeJSON(w, 200, map[string]any{
-		"baseURL":          t.BaseURL,
-		"apiKeyMasked":     maskKey(t.APIKey),
-		"model":            t.Model,
-		"providers":        providers,
-		"presets":          presets,
-		"workspace":        a.Cfg.Workspace,
-		"allowShell":       a.Cfg.AllowShell,
-		"bindHost":         a.Cfg.BindHost,
-		"lanIPs":           lanIPv4s(),
-		"remoteAccess":     remoteStatus(a.Cfg.RemoteAccess),
-		"marketURL":        a.Cfg.MarketURL,
-		"publisherName":    a.Cfg.PublisherName,
+		"baseURL":       t.BaseURL,
+		"apiKeyMasked":  maskKey(t.APIKey),
+		"model":         t.Model,
+		"providers":     providers,
+		"presets":       presets,
+		"workspace":     a.Cfg.Workspace,
+		"allowShell":    a.Cfg.AllowShell,
+		"bindHost":      a.Cfg.BindHost,
+		"lanIPs":        lanIPv4s(),
+		"remoteAccess":  remoteStatus(a.Cfg.RemoteAccess),
+		"marketURL":     a.Cfg.MarketURL,
+		"publisherName": a.Cfg.PublisherName,
 		// 搜索服务（web_search）：searchURL 填了就用它，空则跟随市场同源。
 		// endpoint 是后端此刻真正会打的那个 base（含上面的回退结果），设置页
 		// 直接把它显示给用户——「现在搜索走哪」一眼可见，不用自己推。
@@ -1252,22 +1254,24 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"searchEndpointErr": searchBaseErrText,
 		// 公司接入的「身份三件套」：只用于向导表单预填（重跑接入向导、以及新版
 		// 一次性重新接入失败时弹出的向导），不含任何密钥
-		"wizardCompany":    a.Cfg.WizardCompany,
-		"wizardServer":     a.Cfg.WizardServer,
-		"wizardDone":       a.Cfg.WizardDone,
-		"companyLinkOff":   a.Cfg.CompanyLinkOff, // 公司接入停用（设置·网络访问开关）：true=不弹向导、不连公司服务端
-		"registryURL":      a.Cfg.RegistryURL,
-		"updateURL":        a.Cfg.UpdateURL,
-		"maxSteps":         a.Cfg.MaxSteps,
-		"compactMode":      a.Cfg.CompactMode,
-		"keepChars":        a.Cfg.KeepChars,
-		"compactInterval":  a.Cfg.CompactInterval,
-		"compactUnit":      a.Cfg.CompactUnit,
-		"compactLlmPct":    a.Cfg.CompactLlmPct,
-		"snapshotEnabled":  a.snapshotsEnabled(),
-		"snapshotDays":     a.Cfg.SnapshotDays,
-		"compactThreshold": a.Cfg.CompactThreshold,
-		"accentColor":      a.Cfg.AccentColor,
+		"wizardCompany":   a.Cfg.WizardCompany,
+		"wizardServer":    a.Cfg.WizardServer,
+		"wizardDone":      a.Cfg.WizardDone,
+		"companyLinkOff":  a.Cfg.CompanyLinkOff, // 公司接入停用（设置·网络访问开关）：true=不弹向导、不连公司服务端
+		"registryURL":     a.Cfg.RegistryURL,
+		"updateURL":       a.Cfg.UpdateURL,
+		"maxSteps":        a.Cfg.MaxSteps,
+		"compactMode":     a.Cfg.CompactMode,
+		"keepChars":       a.Cfg.KeepChars,
+		"compactInterval": a.Cfg.CompactInterval,
+		"compactUnit":     a.Cfg.CompactUnit,
+		"compactLlmPct":   a.Cfg.CompactLlmPct,
+		"snapshotEnabled": a.snapshotsEnabled(),
+		"snapshotDays":    a.Cfg.SnapshotDays,
+		// 会话浏览器 profile 保留天数（下发解析后的生效值：nil=默认 3）
+		"browserProfileDays": a.browserProfileRetentionDays(),
+		"compactThreshold":   a.Cfg.CompactThreshold,
+		"accentColor":        a.Cfg.AccentColor,
 		// 询问提醒（设置·常规）：下发解析后的生效值（enabled 已按 nil=开解析）
 		"askAlert": map[string]any{
 			"enabled":  a.Cfg.askAlertOn(),
@@ -1283,35 +1287,36 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		BaseURL         *string `json:"baseURL"`
-		APIKey          *string `json:"apiKey"` // 空串表示保持不变
-		Model           *string `json:"model"`
-		Workspace       *string `json:"workspace"`
-		BindHost        *string `json:"bindHost"`
-		RemoteEnabled   *bool   `json:"remoteEnabled"`  // 远程接入（公网中继）总开关，即时生效（保存即热启停）
-		RemoteMyID      *string `json:"remoteMyId"`     // 远程接入设备号（手机入口 /a/<设备号>）
-		RemotePairKey   *string `json:"remotePairKey"`  // 远程接入配对密钥（端到端加密密钥的种子）
-		RemoteHost      *string `json:"remoteHost"`     // 中继网关地址（域名或 IP，不带协议与端口）
-		RemotePort      *int    `json:"remotePort"`     // 中继网关端口
-		MarketURL       *string `json:"marketURL"`      // 市场（技能/组件/插件）服务器清单地址
-		SearchURL       *string `json:"searchURL"`      // 搜索服务地址（web_search 的 /api/search 网关；空=跟随市场同源）
-		PublisherName   *string `json:"publisherName"`  // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
-		WizardDone      *bool   `json:"wizardDone"`     // 首启向导：完成/跳过（不再自动弹）
-		CompanyLinkOff  *bool   `json:"companyLinkOff"` // 公司接入停用（设置·网络访问开关）：不弹向导、向导接口拒绝、同步器停转
-		RegistryURL     *string `json:"registryURL"`    // 总服务器地址（向导发现不到公司时的查询兜底）
-		UpdateURL       *string `json:"updateURL"`      // 更新检查发布源（"off"/空串关闭）
-		UpdateMode      *string `json:"updateMode"`     // 更新方式：auto=分块静默（默认）/manual=仅提醒
-		AllowShell      *bool   `json:"allowShell"`
-		MaxSteps        *int    `json:"maxSteps"`
-		SnapshotEnabled *bool   `json:"snapshotEnabled"` // 文件备份总开关（常规页）
-		SnapshotDays    *int    `json:"snapshotDays"`    // 快照自动清理天数（-1=永不过期）
-		Compact *struct {
-			Mode      string `json:"mode"`
-			KeepChars *int   `json:"keepChars"`
+		BaseURL            *string `json:"baseURL"`
+		APIKey             *string `json:"apiKey"` // 空串表示保持不变
+		Model              *string `json:"model"`
+		Workspace          *string `json:"workspace"`
+		BindHost           *string `json:"bindHost"`
+		RemoteEnabled      *bool   `json:"remoteEnabled"`  // 远程接入（公网中继）总开关，即时生效（保存即热启停）
+		RemoteMyID         *string `json:"remoteMyId"`     // 远程接入设备号（手机入口 /a/<设备号>）
+		RemotePairKey      *string `json:"remotePairKey"`  // 远程接入配对密钥（端到端加密密钥的种子）
+		RemoteHost         *string `json:"remoteHost"`     // 中继网关地址（域名或 IP，不带协议与端口）
+		RemotePort         *int    `json:"remotePort"`     // 中继网关端口
+		MarketURL          *string `json:"marketURL"`      // 市场（技能/组件/插件）服务器清单地址
+		SearchURL          *string `json:"searchURL"`      // 搜索服务地址（web_search 的 /api/search 网关；空=跟随市场同源）
+		PublisherName      *string `json:"publisherName"`  // 发布者姓名（市场条目归属名；发布/删除自己条目时用）
+		WizardDone         *bool   `json:"wizardDone"`     // 首启向导：完成/跳过（不再自动弹）
+		CompanyLinkOff     *bool   `json:"companyLinkOff"` // 公司接入停用（设置·网络访问开关）：不弹向导、向导接口拒绝、同步器停转
+		RegistryURL        *string `json:"registryURL"`    // 总服务器地址（向导发现不到公司时的查询兜底）
+		UpdateURL          *string `json:"updateURL"`      // 更新检查发布源（"off"/空串关闭）
+		UpdateMode         *string `json:"updateMode"`     // 更新方式：auto=分块静默（默认）/manual=仅提醒
+		AllowShell         *bool   `json:"allowShell"`
+		MaxSteps           *int    `json:"maxSteps"`
+		SnapshotEnabled    *bool   `json:"snapshotEnabled"`    // 文件备份总开关（常规页）
+		SnapshotDays       *int    `json:"snapshotDays"`       // 快照自动清理天数（-1=永不过期）
+		BrowserProfileDays *int    `json:"browserProfileDays"` // 会话浏览器 profile 保留天数（0=不清理；nil=不改）
+		Compact            *struct {
+			Mode      string  `json:"mode"`
+			KeepChars *int    `json:"keepChars"`
 			Threshold float64 `json:"threshold"` // 旧字段（0.8/0.9）：兼容旧页面提交仍接受，新逻辑不读
-			Interval  *int   `json:"interval"`   // 规则自动压缩间隔（0=关闭）
-			Unit      string `json:"unit"`       // 间隔计量单位：chars | tokens
-			LlmPct    *int   `json:"llmPct"`     // 模型自动压缩阈值（0-100，0=关闭）
+			Interval  *int    `json:"interval"`  // 规则自动压缩间隔（0=关闭）
+			Unit      string  `json:"unit"`      // 间隔计量单位：chars | tokens
+			LlmPct    *int    `json:"llmPct"`    // 模型自动压缩阈值（0-100，0=关闭）
 		} `json:"compact"`
 		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：设置页换点缀色时同步写进来
 		AskAlert    *struct {
@@ -1529,6 +1534,9 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SnapshotDays != nil && (*body.SnapshotDays > 0 || *body.SnapshotDays == -1) {
 		a.Cfg.SnapshotDays = *body.SnapshotDays
+	}
+	if body.BrowserProfileDays != nil && *body.BrowserProfileDays >= 0 {
+		a.Cfg.BrowserProfileDays = body.BrowserProfileDays
 	}
 	if body.Compact != nil {
 		if body.Compact.Mode == "rule" || body.Compact.Mode == "llm" {
@@ -1879,8 +1887,8 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		"meta": m, "messages": msgs,
 		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
 		"checkpoints": cps, "deliveries": dvs,
-		"error": a.runError(m.ID), // 最近一次失败原因（输入框上方报错条 + 重试）
-		"titlePinned": m.TitlePinned, // 手动命名钉住：AI 自动标题（组件 session-title）停改
+		"error":       a.runError(m.ID), // 最近一次失败原因（输入框上方报错条 + 重试）
+		"titlePinned": m.TitlePinned,    // 手动命名钉住：AI 自动标题（组件 session-title）停改
 	})
 }
 

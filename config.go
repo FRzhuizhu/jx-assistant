@@ -90,6 +90,11 @@ type Config struct {
 	SnapshotDays        int   `json:"snapshotDays"`        // 快照保留天数，默认 7；-1=永不过期
 	SnapshotMaxMB       int   `json:"snapshotMaxMB"`       // 每会话自动快照总量上限（MB），默认 32；-1=不限量
 	SnapshotManualMaxMB int   `json:"snapshotManualMaxMB"` // 每会话手动快照总量上限（MB），默认 -1 不限量；需要时设 500/1024
+	// 会话浏览器 profile 的保留天数（browser_cleanup.go 的按天回收）：每会话
+	// 独立的浏览器配置目录（browser-profiles/-headed、webview-browsers）超过
+	// 该天数未活跃即整体删除，下次使用时重建（登录态丢失，已确认可接受）。
+	// 指针类型：没写过这一键 = 默认 3；显式 0 = 不清理；负数按 0 处理。
+	BrowserProfileDays *int `json:"browserProfileDays,omitempty"`
 	// 子对话专家（专家团）预设：dispatch_sub 按名称选用的命名预设（追加提示词/
 	// 默认模型/上下文继承/启用开关）。配置文件没写过这一键时补种演示专家。
 	Experts []ExpertCfg `json:"experts"`
@@ -118,8 +123,8 @@ type Config struct {
 	// companyLinkOff=公司接入整体停用（设置·网络访问的开关）：永不在公司使用的
 	// 机器关掉后不再连服务端，首启向导也不弹；开启的一切（含已配好的内部模型
 	// 通道）原样保留，重新打开即恢复同步与向导。
-	WizardDone         bool   `json:"wizardDone"`
-	RegistryURL        string `json:"registryURL"`
+	WizardDone  bool   `json:"wizardDone"`
+	RegistryURL string `json:"registryURL"`
 	// 小程序平台不再有独立地址（2026-11-03 用户口径）：一律从市场地址（marketURL）
 	// 推导——内嵌走本端透明反向代理 /sites（sitesproxy.go），"在浏览器中打开"由
 	// 前端按市场 origin 拼 /sites。服务端也不再随公告/配置包下发 sitesURL。
@@ -130,8 +135,8 @@ type Config struct {
 	// CompanyQuota 公司内部通道的额度快照（服务端 /announce 与 /provision 下发，
 	// 客户端只存不算；回显在设置页公司通道卡片与模型菜单）。nil = 服务端没下发
 	// （老服务端或未配模型通道）——此时不显示额度。
-	CompanyQuota *CompanyQuotaCfg `json:"companyQuota,omitempty"`
-	CompanyLinkOff     bool   `json:"companyLinkOff,omitempty"`     // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
+	CompanyQuota   *CompanyQuotaCfg `json:"companyQuota,omitempty"`
+	CompanyLinkOff bool             `json:"companyLinkOff,omitempty"` // 公司接入停用（设置·网络访问的开关）：给永不在公司、连不上服务端的机器——首启向导不弹（status 接口把它并进 wizardDone）、向导 discover/connect 拒绝、公司同步器（sync.go）停转；再开即恢复
 	// companyResync=已完成「一次性重新接入」的标记版本（0=从未做过）。发新版时
 	// 把 companyResyncTarget 提高，老客户端启动后自动重跑一次公司接入（按人
 	// 重领 provision / 至少拉一次公告），把 10-16 之后没再跑过向导、模型清单
@@ -328,13 +333,13 @@ func DefaultConfig() *Config {
 			Enabled: false,
 			Host:    "example.com",
 			Port:    2227,
-			MyID:    "", // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
+			MyID:    "",            // 留空：首次加载时为每台安装生成唯一设备号（多人安装互不冲突）
 			RegKey:  "chat_p2p_v1", // legacy 全局口令：仅兼容未升级的旧网关；注册凭据实际走 PairKey 派生的 auth（remoteaccess.go hubAuthKey）
 		},
 		RegistryURL: "https://example.com:PORT", // 总服务器（公司名查询的入口）：内网发现超时后按公司名查它拿接入地址；"off"=禁用
-		UpdateURL:  "https://example.com:PORT/api/v1/repos/your-org/your-repo/releases/latest",
-		UpdateMode: "auto",
-		AskAlert:   AskAlertCfg{AfterSec: askAlertDefaultSec, Text: askAlertDefaultText},
+		UpdateURL:   "https://example.com:3000/api/v1/repos/your-org/your-repo/releases/latest",
+		UpdateMode:  "auto",
+		AskAlert:    AskAlertCfg{AfterSec: askAlertDefaultSec, Text: askAlertDefaultText},
 	}
 }
 
@@ -485,7 +490,7 @@ func LoadConfig(path string) (*Config, error) {
 	ensureRemoteIdentity(cfg, path)
 	// 一次性迁移（2026-10-25 明文停用）：存量配置里指向自家服务端的明文 http://
 	// 地址（向导/市场/搜索/更新/公司通道 baseURL）统一收敛到
-	// https://example.com:PORT——TLS 证书只覆盖域名，IP 直连的 https 证书校验必
+	// https://example.com:2227——TLS 证书只覆盖域名，IP 直连的 https 证书校验必
 	// 失败；服务端明文口只剩 308 重定向。用户自配的第三方明文地址一律不碰。
 	plainSelfMigrated := false
 	swapPlain := func(u string) string {
@@ -570,7 +575,7 @@ func LoadConfig(path string) (*Config, error) {
 var legacyPlainHosts = []string{"example.com", "jxaizz.cn", "nas.example.org", "192.0.2.210"}
 
 // migrateLegacyPlainURL 把「http://<自家host>[:任意端口]<路径…>」迁到
-// https://example.com:PORT<路径…>（端口无关：2227/2228 是服务端口、3000/3001 是
+// https://example.com:2227<路径…>（端口无关：2227/2228 是服务端口、3000/3001 是
 // 内网明文直连 new-api 的历史下发，一律收敛到服务端 TLS 口；provider baseURL
 // 的 /v1 路径随地址完整保留）。host 不在自家清单（用户自配的第三方明文服务）
 // 原样返回。幂等：迁过即 https，不再匹配。

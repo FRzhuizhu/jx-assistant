@@ -351,7 +351,7 @@ function isSysNote(txt) {
   return txt.startsWith('【派发回报】') || txt.startsWith('【系统中断】') || txt.startsWith('【执行中断】') ||
     txt.startsWith('【文件上传】') || txt.startsWith('【演示记录】') || txt.startsWith('【文件回退】') || txt.startsWith('【目标续跑】') ||
     txt.startsWith('【派发子对话】') || txt.startsWith('【数字助理派发】') || txt.startsWith('【数字助理转达】') ||
-    txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>') || txt.startsWith('【交付完成】');
+    txt.startsWith('【待办任务派发｜') || txt.startsWith('<goal_round>') || txt.startsWith('【交付完成】') || txt.startsWith('【交付结果】');
 }
 
 // 显示宽度（按「字」计）：CJK/全角 1 字，英文与半角符号 3 个才算 1 字——折叠
@@ -609,14 +609,26 @@ function summaryRow(text, origin, covers, seq) {
 }
 
 // 规则压缩折叠行：在压缩真实发生的位置（连续折叠段的末尾）标注「此处及更早
-// 已折叠」。前端仍完整展示原文（所见≥所发），这行只标注发给模型的是精简表示
-function foldRow(rounds, seq) {
+// 已折叠」。前端仍完整展示原文（所见≥所发），这行只标注发给模型的是精简表示。
+// 压缩时后端落的「压缩区结束+变更账本+结论摘录」账本行（report 通道）不再按
+// 落库位置画成通知块——正文挂在这里点开查看（groupTurns 按覆盖区间归到段上），
+// 行本身保持一两行的紧凑高度，与思考/工具行同一族
+function foldRow(rounds, seq, notes) {
   const row = document.createElement('div');
   row.className = 'proc-row';
   if (seq != null) row.dataset.seq = seq;
+  const sub = '· 此前 ' + rounds +
+    ' 个回合发给模型的是精简版（保留用户输入与正文、工具调用名与参数；省略思考过程、工具结果与环境快照，原文可经历史查询工具读取）';
+  if (!notes || !notes.length) {
+    row.innerHTML = '<div class="proc-head"><span class="p-name">已折叠</span><span class="p-sub">' + sub + '</span></div>';
+    return row;
+  }
   row.innerHTML =
-    '<div class="proc-head"><span class="p-name">已折叠</span><span class="p-sub">· 此前 ' + rounds +
-    ' 个回合发给模型的是精简版（保留用户输入与正文、工具调用名与参数；省略思考过程、工具结果与环境快照，原文可经历史查询工具读取）</span></div>';
+    '<div class="proc-head">' + chev('p-chev') +
+    '<span class="p-name">已折叠</span><span class="p-sub">· 此前 ' + rounds + ' 个回合已折叠，点开看压缩账本（改了哪些文件、结论摘录）</span></div>' +
+    '<div class="proc-body"><div class="tk-text"></div></div>';
+  row.querySelector('.tk-text').textContent = notes.join('\n\n');
+  bindProcToggle(row);
   return row;
 }
 
@@ -871,6 +883,14 @@ function pushTimeNote(st, m) {
   if (txt) st.cur.items.push({ k: 'time', seq: m.seq, text: txt });
 }
 
+// 规则压缩账本行：压缩完成后落库的「══════ 压缩区结束（第 N 次压缩 · 覆盖
+// seq X–Y …）══════ + 变更账本 + 结论摘录」report 行（后端 appendCompactNote，
+// 前缀见 context.go compactNotePrefix）。它不按落库位置画通知块——正文挂到
+// 折叠段边界的「已折叠」行上点开查看（groupTurns 按覆盖区间归位）
+function isCompactNoteRow(m) {
+  return m.kind === 'report' && String(m.content ?? '').startsWith('══════ 压缩区结束');
+}
+
 // 行的展示类型：新行一律带显式 kind（后端保证）；旧库残留的 chat+【】前缀
 // user 行按 report 兼容（规范 §5）。此后一切分发只看 kind，不猜内容。
 function displayKindOf(m) {
@@ -920,6 +940,10 @@ const ROW_ITEM_BUILDERS = {
     // 压缩通知（origin=compact）不再显示为通知块：压缩发生的位置已有常显的
     // 压缩卡片标注，两处都画会重复；这条通知本身仍会发给模型，只是界面不画
     if (m.origin === 'compact') return;
+    // 规则压缩的「压缩区结束」账本行同样不画通知块：它落库在压缩发生时刻
+    //（会话末尾），按落库位置画就是一整块直出的长通知——正文由 groupTurns
+    // 挂到折叠段边界的「已折叠」行上点开查看，位置与形态才是压缩真实发生的
+    if (isCompactNoteRow(m)) return;
     st.ensure();
     st.cur.items.push({ k: 'note', m });
   },
@@ -1034,12 +1058,25 @@ function groupTurns(msgs, resultOf, base) {
     sumAt.set(m.coversUpTo, m);
     if (m.coversUpTo > st.envBoundary) st.envBoundary = m.coversUpTo; // 组装层 boundary 同口径：取摘要覆盖边界最大值
   }
+  // 规则压缩账本行按覆盖区间归到折叠段：账本正文写明「覆盖 seq X–Y」，
+  // Y 落在哪个段的边界之内就归哪段（段边界是段内最后一条可见行，Y 有可能
+  // 压在段尾的归档行上、略过边界，所以取第一个边界 ≥ Y 的段）。归好后挂在
+  // fold 条目上点开查看——不在落库位置（会话末尾）画长通知块
+  const compactNotes = [];
+  for (const m of msgs) {
+    if (!isCompactNoteRow(m)) continue;
+    const hit = String(m.content ?? '').match(/覆盖 seq (\d+)–(\d+)/);
+    compactNotes.push({ to: hit ? +hit[2] : 0, text: String(m.content ?? '') });
+  }
+  compactNotes.sort((a, b) => a.to - b.to);
   for (const m of msgs) {
     const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
     if (build) build(m, st);
     if (foldEndSeq.has(m.seq)) {
       st.ensure();
-      st.cur.items.push({ k: 'fold', seq: m.seq, rounds: foldEndSeq.get(m.seq) });
+      const notes = [];
+      while (compactNotes.length && compactNotes[0].to <= m.seq) notes.push(compactNotes.shift().text);
+      st.cur.items.push({ k: 'fold', seq: m.seq, rounds: foldEndSeq.get(m.seq), notes });
     }
     if (sumAt.has(m.seq)) {
       const s = sumAt.get(m.seq);
@@ -1211,7 +1248,7 @@ function renderRowItem(it, opts) {
   if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
   if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
   if (it.k === 'summary') return summaryRow(it.text, it.origin, it.covers, it.seq);
-  if (it.k === 'fold') return foldRow(it.rounds, it.seq);
+  if (it.k === 'fold') return foldRow(it.rounds, it.seq, it.notes);
   if (it.k === 'think') return thinkRow(it.text, it.seq);
   if (it.k === 'tool') return toolRow(it.tc, it.result, { seq: it.seq });
   if (it.k === 'plancard') return planCardRow(it.tc, it.seq, it.result);
@@ -1334,16 +1371,14 @@ function subTaskCard(tc, result) {
 
 /* ---------- 长消息折叠（作用于**所有会话、所有视图**的用户位气泡：
    主对话、工作任务会话、右栏子对话抽屉里的用户气泡，以及 AI 发出的用户消息
-   气泡（.msg.user.ai，偏白）——同一套折叠机制、同一套交互，只是阈值分家
-   （用户 6 行 / AI 用户 2 行，见 foldLinesOf）。
+   气泡（.msg.user.ai，偏白）——同一套 6 行规则、同一套交互。
    **系统通知气泡（.msg.sysnote）与数字助理的正文回复（.msg.assistant 的 .md）
    都不在折叠目标里**：通知内容直接全量显示，不裁剪、不出「展开 / 收起」控件
    （见 foldTargets）；模型回复多长都完整展开显示。 ----------
-   需求：渲染高度超过阈值行数就默认只显示到阈值行数，底部渐隐 + 「展开 / 收起」
-   按钮；短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区
-   宽度、字号一变，同一段文字换行出的行数就变，所以：
-     - 阈值 = 运行时读到的行高（line-height）× 行数（foldLinesOf：用户气泡 6、
-       AI 用户气泡 2），与元素内容高度（scrollHeight 去掉
+   需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
+   短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区宽度、
+   字号一变，同一段文字换行出的行数就变，所以：
+     - 阈值 = 运行时读到的行高（line-height）× 6，与元素内容高度（scrollHeight 去掉
        内边距）比较；裁剪用 max-height + overflow: hidden，scrollHeight 始终是完整
        内容高度，所以一个阈值同时管折叠态与展开态，不必先解开裁剪再量（判定不受
        自己上一次裁剪的影响，也就不会自激）；
@@ -1354,15 +1389,11 @@ function subTaskCard(tc, result) {
        事件都会重建、用户气泡随之换新元素，展开过的气泡靠记忆恢复展开，不再
        被新出的思考/工具行反复折回（刷新页面才回到默认折叠）。
    作用域（2026-10-14 放开）：主对话与右栏子对话两个视图都生效，不再看会话
-   mode——按《消息类型规范.md》§7「用户与 AI 消息同一套折叠体系」，任务会话、
+   mode——按《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」，任务会话、
    子对话与主对话一致；仍不折叠的只有流式输出中的那半句与编辑态气泡
-   （2026-10-20 起，发送中/插话占位同样折叠，见 foldTargets）。
-   阈值分家（2026-11-05）：用户自己的消息气泡仍 6 行；AI 发出的用户消息气泡
-   （.msg.user.ai，【派发回报】/【数字助理转达】那类）默认只露 2 行——核心
-   内容（任务标题/结论）都在开头，底下细节一般人不用看。交互不变，见 foldLinesOf。 */
-const FOLD_LINES = 6;    // 用户气泡折叠阈值（行）
-const FOLD_LINES_AI = 2; // AI 用户气泡折叠阈值（行）：理由见上方注释与 foldLinesOf
-const FOLD_SLACK = 2;    // 容差（px）：溢出不足 2px 不算，避免取整误差误判
+   （2026-10-20 起，发送中/插话占位同样折叠，见 foldTargets）。 */
+const FOLD_LINES = 6;   // 折叠阈值（行）
+const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取整误差误判
 
 let foldScheduled = false;
 let foldTimer = 0;
@@ -1392,7 +1423,7 @@ function foldKeyOf(el, view) {
 }
 
 // 是否需要折叠：**所有会话、所有视图一律生效**（此前只做数字助理主对话
-// mode=assistant，与《消息类型规范.md》§7「用户与 AI 消息同一套折叠体系」不符；
+// mode=assistant，与《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」不符；
 // 放开后工作任务会话、右栏子对话抽屉与主对话同一套规则，保留本函数作为唯一开关）
 function foldEnabled() {
   return true;
@@ -1425,25 +1456,16 @@ function foldTargets(view) {
   return out;
 }
 
-// 气泡各自的折叠阈值（行）：用户自己的消息气泡 6 行；AI 发出的用户消息气泡
-//（.msg.user.ai——【派发回报】/【数字助理转达】/派发指令那类灰框）只 2 行：
-// 核心内容（任务标题/结论）都在开头两行，底下细节一般人不用看，默认折起、
-// 点开看全量。展开/收起交互与用户气泡完全同一套，差别只在默认露出行数。
-function foldLinesOf(el) {
-  return el.parentElement && el.parentElement.classList.contains('ai') ? FOLD_LINES_AI : FOLD_LINES;
-}
-
 // 溢出判定：与「当前是否折叠」无关——裁剪用的是 max-height + overflow: hidden，
 // scrollHeight 始终是完整内容高度，所以一个阈值同时管折叠态与展开态，不需要先
 // 解开裁剪再量（也就不会因为切换类名反过来触发 ResizeObserver）。阈值取
-// 运行时读到行高 × 行数（foldLinesOf：用户气泡 6、AI 用户气泡 2），行高随
-// 字号设置变化，所以不写死像素值。
+// 运行时读到行高 × 6 行，行高随字号设置变化，所以不写死像素值。
 function foldMeasure(el) {
   const cs = getComputedStyle(el);
   const lh = parseFloat(cs.lineHeight);
   if (!lh) return null;
   const pad = parseFloat(cs.paddingTop || 0) + parseFloat(cs.paddingBottom || 0);
-  const limit = lh * foldLinesOf(el);
+  const limit = lh * FOLD_LINES;
   return { overflow: el.scrollHeight - pad > limit + FOLD_SLACK, maxH: pad + limit };
 }
 
@@ -1501,7 +1523,7 @@ function applyFoldsIn(view, enabled) {
     const m = enabled ? foldMeasure(el) : null;
     const btn = el.querySelector(':scope > .fold-btn');
     if (!m || !m.overflow) {
-      // 不超过阈值行数（或已切走会话）：彻底恢复原样，不留按钮与遮罩
+      // 不超过 6 行（或已切走会话）：彻底恢复原样，不留按钮与遮罩
       el.classList.remove('folded', 'fold-box');
       el.style.removeProperty('--fold-h');
       const fade = el.querySelector(':scope > .fold-fade');
@@ -1529,7 +1551,7 @@ function applyFoldsIn(view, enabled) {
         const fk = foldKeyOf(el, view);
         const open = !!fk && foldOpenMem.get(fk) === '1';
         el.dataset.foldOpen = open ? '1' : '0';
-        el.classList.toggle('folded', !open); // 无记忆时默认折叠：只显示到阈值行数（foldLinesOf）
+        el.classList.toggle('folded', !open); // 无记忆时默认折叠：只显示前 6 行
         b.textContent = open ? '收起' : '展开';
         b.setAttribute('aria-expanded', open ? 'true' : 'false');
       } else {
@@ -1564,7 +1586,7 @@ function toggleFold(el, btn) {
   if (fk) { folded ? foldOpenMem.delete(fk) : foldOpenMem.set(fk, '1'); } // 只记展开；手动收起=回到默认
   btn.textContent = folded ? '展开' : '收起';
   btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
-  if (folded) followScroll(foldViewOf(el), false); // 收回到阈值行数后按所在视图重新贴底
+  if (folded) followScroll(foldViewOf(el), false); // 收起到 6 行后按所在视图重新贴底
   else pinViewForRead(el); // 展开阅读即钉住：与过程行/折叠段同一套展开交互
 }
 
@@ -3178,6 +3200,15 @@ function handleGlobalEvent(ev) {
         loadSessions().then(() => applySessionPermFromList(ev.sessionId));
       }
       refreshDrawer();
+      // 压缩改写了历史（reason=compact：compact 标记 UPDATE、摘要行落库，均不
+      // 改变消息条数与末条 seq）——前缀缓存主动作废，否则前缀复用判定永远命中，
+      // 边界处的「已折叠」行与压缩卡片在流式期间与就地翻新中出不来（要等切换
+      // 会话/刷新页面才全量重建）。作废后：非流式由下方 refreshCurrentSoon 立即
+      // 重建；流式中等下一条 message 事件或 done 后的翻新落地
+      if (ev.data && ev.data.reason === 'compact') {
+        if (viewing) mainView.state._pfxSid = null;
+        if (subViewing) subView.state._pfxSid = null;
+      }
       if (viewing && !state.streaming) refreshCurrentSoon();
       break;
     case 'title':

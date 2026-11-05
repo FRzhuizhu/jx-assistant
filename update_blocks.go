@@ -48,6 +48,9 @@ type updateBlocks struct {
 	// 写死的路径，用户技能（技能\user）永不参与——见 update_runtime.go。
 	Runtime *updateBlock `json:"runtime,omitempty"`
 	Skills  *updateBlock `json:"skills,omitempty"`
+	// Builtin 内置组件（Cua 驱动 / Windows-MCP 依赖）：{app}\内置组件 整目录替换。
+	// 与 components 不同——那些是程序内的默认组件，这块只服务内置 MCP 连接器。
+	Builtin *updateBlock `json:"builtin,omitempty"`
 }
 
 // updateBlock 单个块：file 是 release 附件名（按名在 assets 里查下载直链）。
@@ -65,6 +68,7 @@ type updateBlockState struct {
 	Applied       map[string]string `json:"applied,omitempty"` // 已应用的组件块：id → 版本
 	Runtime       string            `json:"runtime,omitempty"` // 已应用的运行时块版本（py3.14.8）
 	Skills        string            `json:"skills,omitempty"`  // 已应用的内置技能包版本
+	Builtin       string            `json:"builtin,omitempty"` // 已应用的内置组件版本（Cua / Windows-MCP 依赖）
 }
 
 var (
@@ -225,6 +229,8 @@ func (a *App) applyBlocksPlan(blocks *updateBlocks, rel releaseInfo, sourceURL s
 	// 只动 <技能库>\_runtime 与白名单内置技能目录，用户技能永不参与。
 	a.applyRuntimeBlock(blocks.Runtime, rel, sourceURL)
 	a.applySkillsBlock(blocks.Skills, rel, sourceURL)
+	// 内置组件块：操作电脑的二进制（Cua / Windows-MCP 依赖）
+	a.applyBuiltinBlock(blocks.Builtin, rel, sourceURL)
 	// 组件块：各自独立，失败不影响 engine
 	if len(blocks.Components) > 0 {
 		a.applyComponentBlocks(blocks.Components, rel, sourceURL)

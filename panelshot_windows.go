@@ -14,11 +14,59 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// 屏幕截取的共享原语（GDI，纯 syscall，不引 cgo）：右侧栏截图与演示录制器
+// 都用它，所以归到截屏职责的本文件，不依附任何业务组件。
+var (
+	shotUser32 = syscall.NewLazyDLL("user32.dll")
+	shotGdi32  = syscall.NewLazyDLL("gdi32.dll")
+
+	procGetDC              = shotUser32.NewProc("GetDC")
+	procReleaseDC          = shotUser32.NewProc("ReleaseDC")
+	procSetProcessDPIAware = shotUser32.NewProc("SetProcessDPIAware")
+	procGetSystemMetrics   = shotUser32.NewProc("GetSystemMetrics")
+
+	procCreateCompatibleDC = shotGdi32.NewProc("CreateCompatibleDC")
+	procDeleteDC           = shotGdi32.NewProc("DeleteDC")
+	procSelectObject       = shotGdi32.NewProc("SelectObject")
+	procDeleteObject       = shotGdi32.NewProc("DeleteObject")
+	procBitBlt             = shotGdi32.NewProc("BitBlt")
+	procCreateDIBSection   = shotGdi32.NewProc("CreateDIBSection")
+)
+
+var shotDpiOnce sync.Once
+
+// ensureDPIAware 声明进程 DPI 感知：截屏要的是真实像素，不是系统缩放后的逻辑值。
+func ensureDPIAware() {
+	shotDpiOnce.Do(func() { _, _, _ = procSetProcessDPIAware.Call() })
+}
+
+// screenMetrics 返回主屏物理像素尺寸。
+func screenMetrics() (int, int) {
+	ensureDPIAware()
+	w, _, _ := procGetSystemMetrics.Call(0)
+	h, _, _ := procGetSystemMetrics.Call(1)
+	return int(int32(w)), int(int32(h))
+}
+
+func putU32(b []byte, v uint32) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+}
+
+func putU16(b []byte, v uint16) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+}
 
 var procPanelClientToScreen = windows.NewLazySystemDLL("user32.dll").NewProc("ClientToScreen")
 

@@ -1,3 +1,8 @@
-# 二进制与生成物不参与 diff/merge；批处理必须 CRLF 检出：cmd 按 CRLF 语义
-# 解析批处理，裸 LF 会把命令拆行错乱（powershell 拆出 'rshell' 当命令执行）。
+# 第三方 Python 包（内置组件/wmcppkg）保持安装原样（LF），不做行尾转换。
+# 不加这条：git 会把成千上万个 .py 全部转成 CRLF，产生海量警告、仓库变大，
+# 且每次 pip 重装都会出现整库虚假 diff。二进制（Cua 驱动）同理按原样存。
+内置组件/wmcppkg/** -text
+内置组件/cua-driver/** -text
+# 批处理必须 CRLF：cmd 按 CRLF 语义解析行，裸 LF 会把命令拆行错乱
+# （powershell 拆出 'rshell'、'[失败]' 当命令执行）。检出时强制 CRLF。
 *.bat text eol=crlf

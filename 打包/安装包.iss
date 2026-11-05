@@ -72,6 +72,9 @@ Source: "stage\技能\*"; DestDir: "{app}\技能"; Flags: ignoreversion recurses
 ; 程序按 {app}\组件\*/manifest.json 发现组件，装不进就没有
 ; 默认组件（危险命令护栏会一并失效）；打包脚本已强校验 stage\组件 存在且非空。
 Source: "stage\组件\*"; DestDir: "{app}\组件"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 内置组件（Cua 驱动 / Windows-MCP 依赖）：「操作电脑」能力靠它，随包分发才能离线自包含。
+; 装到 {app}\内置组件，与 exe 同级——内置 MCP 连接器按此路径解析，缺了就不注册。
+Source: "stage\内置组件\*"; DestDir: "{app}\内置组件"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; MD 查看器（装完即有）：单文件 exe 全自包含，随包只带 exe + 使用说明；
 ; .md 关联由下方 [Run] 装完时 /register 静默写入（HKCU，无需提权）
 Source: "stage\md-viewer\*"; DestDir: "{app}\md-viewer"; Flags: ignoreversion

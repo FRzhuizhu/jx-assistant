@@ -30,7 +30,7 @@ try {
 
 # 3) 编译 Go 引擎（控制台版；不注入 desktopDefault，形态由 Electron 的
 #    -electron 参数决定）
-go build -trimpath -ldflags "-s -w" -o (Join-Path $root "jx-assistant.exe") $root
+go build -trimpath -ldflags "-s -w -X main.appVersion=20991231-1" -o (Join-Path $root "jx-assistant.exe") $root  # appVersion 注入未来版本号：开发版永远比服务器新，不弹自动更新
 if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 Write-Host "完成：$root\jx-assistant.exe（sidecar 引擎）"
 

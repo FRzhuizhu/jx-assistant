@@ -72,7 +72,7 @@ func TestReportDigestFullAnswerAndVerifiedFiles(t *testing.T) {
 	final := strings.Repeat("结论：本轮把所有改动落盘并核对完毕。", 200)
 	appendRowOf(t, a, sub.ID, TextMessage("assistant", final), kindChat, "")
 	// 结尾消息：最终答复之后的收尾内容
-	appendRowOf(t, a, sub.ID, TextMessage("user", "【交付完成】已把 .jxai\\tmp\\报告.md 交付到上传目录"), kindReport, "deliver")
+	appendRowOf(t, a, sub.ID, TextMessage("user", "【交付结果】已把 .jxai\\tmp\\报告.md 交付到上传目录"), kindReport, "deliver")
 
 	rows, err := a.Store.MessagesWithSeq(sub.ID)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestReportDigestFullAnswerAndVerifiedFiles(t *testing.T) {
 	if strings.Contains(out, "工具调用：") || strings.Contains(out, "×1") {
 		t.Fatalf("回报不该再有工具调用统计：\n%s", out)
 	}
-	if !strings.Contains(out, "· 结尾消息（最终答复之后的收尾内容）") || !strings.Contains(out, "【交付完成】") {
+	if !strings.Contains(out, "· 结尾消息（最终答复之后的收尾内容）") || !strings.Contains(out, "【交付结果】") {
 		t.Fatalf("回报应附最终答复之后的结尾消息：\n%s", out)
 	}
 	if !strings.Contains(out, "· 过程要点（正常完成，只留要点）") {
@@ -205,7 +205,7 @@ func TestAssistantReadOnlyTools(t *testing.T) {
 	}
 	// 红线：写、执行、交互、协调类工具绝不进场（只读定位）
 	for _, gone := range []string{"write", "edit", "run_command", "run_python", "snapshot_file",
-		"deliver_file", "dispatch_sub", "browser_open", "computer_screenshot", "request_manager"} {
+		"deliver_file", "dispatch_sub", "browser_open", "mcp_call_tool", "request_manager"} {
 		if as[gone] {
 			t.Fatalf("数字助理不该有 %s（只读红线）", gone)
 		}

@@ -28,6 +28,7 @@ var (
 	procAttachThreadInput = alertUser32.NewProc("AttachThreadInput")
 	procFlashWindowEx     = alertUser32.NewProc("FlashWindowEx")
 	procAllowSetForegnd   = alertUser32.NewProc("AllowSetForegroundWindow")
+	procIsWindowVisible   = alertUser32.NewProc("IsWindowVisible")
 )
 
 const (
