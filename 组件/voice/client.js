@@ -1600,6 +1600,125 @@
     } else {
       note('快捷键的录制与统一管理需要新版主程序（未找到快捷键登记通道）。');
     }
+
+    /* ----- 最近语音记录（全局语音输入法落档；识别/注入失败的轮次也在，
+       可试听、可复制、可重新识别——说过的话不该因为哪一环失败就丢） ----- */
+    group('最近语音记录（全局语音输入法）');
+    const histBox = document.createElement('div');
+    histBox.className = 'vt-hist';
+    el.appendChild(histBox);
+
+    // 试听单飞：一次只播一条，切条自动停前一条
+    let histAudio = null;
+    const stopHistAudio = () => {
+      if (histAudio) { histAudio.pause(); histAudio = null; }
+      histBox.querySelectorAll('.vt-hist-op-play').forEach((b) => { b.textContent = '试听'; });
+    };
+
+    const histStatus = { injected: ['已输入', 'ok'], copied: ['已复制', 'ok'],
+      asr_failed: ['识别失败', 'fail'], empty: ['没听清', 'fail'] };
+
+    const renderHistory = (items) => {
+      stopHistAudio();
+      histBox.innerHTML = '';
+      if (!items || !items.length) {
+        const p = document.createElement('p');
+        p.className = 'sp-note';
+        p.textContent = '还没有记录——用全局语音输入法（上面设置的热键，任何程序里）说一句话就有。'
+          + '每条保留原始语音与文字，保留最近 3 条；识别失败、没输入进去的也在，随时可以重新识别或复制。';
+        histBox.appendChild(p);
+        return;
+      }
+      items.forEach((it, i) => {
+        const [stLabel, stKind] = histStatus[it.status] || [it.status || '未知', ''];
+        const rowEl = document.createElement('div');
+        rowEl.className = 'vt-hist-item';
+        const tm = document.createElement('span');
+        tm.className = 'vt-hist-time';
+        tm.textContent = (it.time || '').slice(5, 16); // "11-05 12:30"
+        const badge = document.createElement('span');
+        badge.className = 'vt-hist-badge' + (stKind ? ' ' + stKind : '');
+        badge.textContent = stLabel;
+        const txt = document.createElement('span');
+        txt.className = 'vt-hist-text' + (it.text ? '' : ' none');
+        txt.textContent = it.text || '（' + stLabel + '——原始语音在，可重新识别）';
+        txt.title = it.text || '';
+        rowEl.append(tm, badge, txt);
+
+        const ops = document.createElement('span');
+        ops.className = 'vt-hist-ops';
+        if (it.audio) {
+          const play = btn('试听', '播放这条的原始语音');
+          play.className = 'sp-btn vt-hist-op-play';
+          play.onclick = () => {
+            if (histAudio && histAudio.dataset.i === String(i)) { stopHistAudio(); return; }
+            stopHistAudio();
+            histAudio = new Audio('/api/voicetype/history/wav?i=' + i);
+            histAudio.dataset.i = String(i);
+            histAudio.onended = stopHistAudio;
+            histAudio.play().catch((e) => voiceToast('试听失败：' + (e && e.message ? e.message : e)));
+            play.textContent = '停止';
+          };
+          ops.appendChild(play);
+        }
+        if (it.text) {
+          const copy = btn('复制', '复制识别文字');
+          copy.onclick = () => {
+            navigator.clipboard.writeText(it.text).then(
+              () => voiceToast('已复制'),
+              () => voiceToast('复制失败（浏览器剪贴板不可用）'));
+          };
+          ops.appendChild(copy);
+        }
+        if (it.audio) {
+          const reid = btn('重新识别', '用本地模型重新识别这条的原始语音');
+          reid.onclick = async () => {
+            reid.disabled = true;
+            reid.textContent = '识别中…';
+            try {
+              const res = await fetch('/api/voicetype/history/reidentify', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ i }),
+              });
+              if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+              const d = await res.json();
+              if (d.queued) {
+                // 输入法在跑：它在做完整链路（含悬浮窗与分发），稍等再取结果
+                await new Promise((r) => setTimeout(r, 1200));
+                await fetchHistory();
+              } else {
+                renderHistory(d.items || []);
+                if (!d.text) voiceToast('仍没识别出文字');
+              }
+            } catch (e) {
+              voiceToast('重新识别失败：' + (e && e.message ? e.message : e));
+              reid.disabled = false;
+              reid.textContent = '重新识别';
+            }
+          };
+          ops.appendChild(reid);
+        }
+        rowEl.appendChild(ops);
+        histBox.appendChild(rowEl);
+      });
+    };
+
+    const fetchHistory = async () => {
+      try {
+        const res = await fetch('/api/voicetype/history');
+        if (!res.ok) throw new Error(apiErrMsg(res, await res.text().catch(() => '')));
+        const d = await res.json();
+        if (!histBox.isConnected) return; // 设置区已收起：结果作废
+        renderHistory(d.items || []);
+      } catch (e) {
+        const p = document.createElement('p');
+        p.className = 'sp-note';
+        p.textContent = '记录读取失败：' + (e && e.message ? e.message : e);
+        histBox.innerHTML = '';
+        histBox.appendChild(p);
+      }
+    };
+    fetchHistory();
   }
 
 

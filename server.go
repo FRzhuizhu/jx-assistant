@@ -279,6 +279,11 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	// 语音输入法联动（voicetype_link.go）：把听写快捷键与主题色写进 voicetype.json，
 	// 独立语音输入法（VoiceTypeGo）读它——它读不到本页 localStorage，也不该读 config.json。
 	a.apiRoute(mux, "POST /api/voicetype/link", a.handleVoicetypeLink, apiMeta{Summary: "同步听写快捷键/主题色给独立语音输入法", Params: "main、sub（键名数组）、accentColor、textColor，均可选", Perm: permReadOnly})
+	// 最近语音记录（voicetype_history.go）：输入法落档的原始语音+文字+结果，
+	// 设置页「语音」底下展示，支持试听/复制/重新识别。
+	a.apiRoute(mux, "GET /api/voicetype/history", a.handleVoicetypeHistory, apiMeta{Summary: "最近语音记录（独立输入法 history.json）", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/voicetype/history/wav", a.handleVoicetypeHistoryWav, apiMeta{Summary: "第 i 条记录的原始语音（wav，试听）", Params: "i=序号", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/voicetype/history/reidentify", a.handleVoicetypeHistoryReidentify, apiMeta{Summary: "重新识别第 i 条记录", Params: "i=序号；输入法在跑则交它做（走完整分发）", Perm: permReadOnly})
 	a.apiRoute(mux, "GET /api/models", a.handleModels, apiMeta{Summary: "模型清单（全部渠道）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/llm/ask", a.handleLLMAsk, apiMeta{Summary: "独立单轮模型调用（一次请求一次输出，不进会话上下文）", Params: "system、user、session 可选（跟随该会话的模型）", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/modes", a.handleChatModes, apiMeta{Summary: "工作模式清单（新建会话可选的模式）", Perm: permReadOnly}) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源

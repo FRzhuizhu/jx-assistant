@@ -18,6 +18,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -182,6 +183,51 @@ func TestPickTargetPure(t *testing.T) {
 		if got.Hwnd != c.wantHwnd {
 			t.Errorf("%s：现场窗口=%#x 期望=%#x", c.name, got.Hwnd, c.wantHwnd)
 		}
+	}
+}
+
+// TestHistoryWavAndRoll 历史记录的纯逻辑：wav 头格式、PCM→WAV→PCM 无损往返、
+// 滚动裁剪会删掉被挤出的音频文件。写盘用临时目录，不碰真实 history.json。
+func TestHistoryWavAndRoll(t *testing.T) {
+	pcm := make([]byte, vtSampleRate*2) // 1 秒静音
+	for i := range pcm { // 填非零防"空切片侥幸相等"
+		pcm[i] = byte(i * 7)
+	}
+	wav := vtPCMToWav(pcm)
+	if string(wav[0:4]) != "RIFF" || string(wav[8:12]) != "WAVE" || string(wav[36:40]) != "data" {
+		t.Fatalf("wav 头不对: %q", wav[:44])
+	}
+	if le32at(wav, 24) != uint32(vtSampleRate) || wav[34] != 16 || wav[35] != 0 {
+		t.Fatalf("采样率/位深不对: %d %d", le32at(wav, 24), wav[34]|wav[35]<<8)
+	}
+	if back := vtWavToPCM(wav); len(back) != len(pcm) {
+		t.Fatalf("往返长度变了: %d -> %d", len(pcm), len(back))
+	}
+
+	oldDir := vtDir
+	tmp := t.TempDir()
+	vtDir = tmp
+	defer func() { vtDir = oldDir }()
+
+	vtSaveHistory(pcm, "第一条", "injected")
+	vtSaveHistory(pcm, "第二条", "copied")
+	vtSaveHistory(nil, "第三条无音频", "empty")
+	vtSaveHistory(pcm, "第四条挤出第一条", "injected")
+	arr := vtReadHistory()
+	if len(arr) != vtHistoryKeep {
+		t.Fatalf("应滚动保留 %d 条，实际 %d", vtHistoryKeep, len(arr))
+	}
+	if arr[0].Text != "第二条" || arr[len(arr)-1].Text != "第四条挤出第一条" {
+		t.Fatalf("滚动裁剪错了: %v", arr)
+	}
+	// 第一条的音频应随裁剪删除（只剩第二、四条的文件）
+	entries, _ := os.ReadDir(filepath.Join(tmp, "history"))
+	if len(entries) != 2 {
+		t.Fatalf("被挤出的音频文件没删干净：history/ 下有 %d 个文件", len(entries))
+	}
+	// 时间格式可被设置页直接展示
+	if len(arr[0].Time) != len("2006-01-02 15:04:05") {
+		t.Fatalf("时间格式不对: %q", arr[0].Time)
 	}
 }
 

@@ -5,9 +5,10 @@ package main
 // VoiceTypeGo —— 独立语音输入法（Go + WebView2，零主程序依赖）。
 //
 // 链路：热键按住（默认 Alt，hotkeys.json 可配）→ waveIn 采集 + WebView2 胶囊波形
-//       → 松开/点击胶囊 → 结束时检测前台可编辑（caret/类名）
-//       → 自带 python X-ASR 本地识别（asr_server.py，随本目录分发）
-//       → 可编辑=剪贴板+Ctrl+V 注入，不可编辑=仅进剪贴板。历史保留 2 条。
+//       → 松开/点击胶囊 → 自带 python X-ASR 本地识别（asr_server.py，随本目录分发）
+//       → 识别完成、注入前一刻检测前台可编辑（caret/类名/UIA）
+//       → 可编辑=剪贴板+Ctrl+V 注入，不可编辑=仅进剪贴板。
+//       历史保留最近 3 条（原始语音+文字+结果，失败的也在，可重识别）。
 //
 // 与主程序组件版的差异（独立化要点）：
 //   · ASR 不走主程序组件桥——启动时自拉 python asr_server.py（127.0.0.1:8320），
@@ -40,7 +41,7 @@ import (
 )
 
 const (
-	vtHistoryKeep = 2
+	vtHistoryKeep = 3 // 最近语音记录条数（设置页展示用）：原始语音+文字+结果
 	asrHost       = "127.0.0.1"
 	asrPort       = 8320
 )
@@ -279,23 +280,99 @@ func vtPcmToWav(pcm []byte, rate int) []byte {
 	return append(hdr, pcm...)
 }
 
-// ---------- 历史：滚动保留 2 条 ----------
+// ---------- 历史：滚动保留最近 vtHistoryKeep 条（原始语音 + 文字 + 结果） ----------
+//
+// 为什么连失败的轮次也要留：识别失败/没听清的音频是"重新识别"的唯一原料，
+// 只复制/注入失败的文字是"手动再粘贴"的兜底——记录在，东西就没丢过。
+// status：injected=已输入；copied=已复制；asr_failed=识别失败；empty=没听清。
 
-func vtPushHistory(text string, injected bool) {
-	type item struct {
-		Time     string `json:"time"`
-		Text     string `json:"text"`
-		Injected bool   `json:"injected"`
-	}
-	var arr []item
+type vtHistoryItem struct {
+	Time   string `json:"time"`            // 2026-11-05 12:30:45
+	Text   string `json:"text"`            // 识别文字（失败为空）
+	Status string `json:"status"`          // injected/copied/asr_failed/empty
+	Audio  string `json:"audio,omitempty"` // wav 相对路径（history/xxx.wav）
+}
+
+func vtReadHistory() []vtHistoryItem {
+	var arr []vtHistoryItem
 	if raw, err := os.ReadFile(filepath.Join(vtDir, "history.json")); err == nil {
 		json.Unmarshal(raw, &arr)
 	}
-	arr = append(arr, item{Time: time.Now().Format("15:04:05"), Text: text, Injected: injected})
+	return arr
+}
+
+// vtSaveHistory 落一条记录：pcm 存成 wav（nil 则不带音频），滚动裁掉最老的
+// 并删除其音频文件。旧格式（text/injected 字段）读进来直接被新结构替换。
+func vtSaveHistory(pcm []byte, text, status string) {
+	arr := vtReadHistory()
+	item := vtHistoryItem{Time: time.Now().Format("2006-01-02 15:04:05"), Text: text, Status: status}
+	if len(pcm) > 0 {
+		os.MkdirAll(filepath.Join(vtDir, "history"), 0755)
+		name := "history/" + time.Now().Format("20060102-150405.000") + ".wav"
+		if err := os.WriteFile(filepath.Join(vtDir, filepath.FromSlash(name)), vtPCMToWav(pcm), 0644); err != nil {
+			vtLog("历史音频写入失败: %v", err)
+		} else {
+			item.Audio = name
+		}
+	}
+	arr = append(arr, item)
 	if len(arr) > vtHistoryKeep {
+		for _, old := range arr[:len(arr)-vtHistoryKeep] {
+			if old.Audio != "" {
+				_ = os.Remove(filepath.Join(vtDir, filepath.FromSlash(old.Audio)))
+			}
+		}
 		arr = arr[len(arr)-vtHistoryKeep:]
 	}
 	os.WriteFile(filepath.Join(vtDir, "history.json"), mustJSON(arr), 0644)
+}
+
+// vtPCMToWav 16kHz/16bit/单声道 PCM 加 44 字节 WAV 头（历史音频自给自足，
+// 播放器与识别服务都吃标准 WAV）。
+func vtPCMToWav(pcm []byte) []byte {
+	const hdr = 44
+	w := make([]byte, hdr+len(pcm))
+	dataLen := len(pcm)
+	copy(w[0:], "RIFF")
+	le32(w[4:], uint32(hdr+dataLen-8))
+	copy(w[8:], "WAVE")
+	copy(w[12:], "fmt ")
+	le32(w[16:], 16)          // fmt chunk 长度
+	le16(w[20:], 1)           // PCM
+	le16(w[22:], 1)           // 单声道
+	le32(w[24:], vtSampleRate)
+	le32(w[28:], vtSampleRate*2) // 字节率 = 采样率×声道×位深/8
+	le16(w[32:], 2)           // 块对齐
+	le16(w[34:], 16)          // 位深
+	copy(w[36:], "data")
+	le32(w[40:], uint32(dataLen))
+	copy(w[hdr:], pcm)
+	return w
+}
+
+// vtWavToPCM 剥掉 WAV 头取 PCM（找 data 块；非 WAV 原样返回，容错 reid）。
+func vtWavToPCM(wav []byte) []byte {
+	if len(wav) < 44 || string(wav[0:4]) != "RIFF" {
+		return wav
+	}
+	for i := 12; i+8 <= len(wav); {
+		chunk := string(wav[i : i+4])
+		size := int(le32at(wav, i+4))
+		if chunk == "data" {
+			if i+8+size <= len(wav) {
+				return wav[i+8 : i+8+size]
+			}
+			return wav[i+8:]
+		}
+		i += 8 + size + (size & 1) // chunk 按 2 字节对齐
+	}
+	return wav[44:]
+}
+
+func le16(b []byte, v uint16)  { b[0] = byte(v); b[1] = byte(v >> 8) }
+func le32(b []byte, v uint32)  { b[0] = byte(v); b[1] = byte(v >> 8); b[2] = byte(v >> 16); b[3] = byte(v >> 24) }
+func le32at(b []byte, i int) uint32 {
+	return uint32(b[i]) | uint32(b[i+1])<<8 | uint32(b[i+2])<<16 | uint32(b[i+3])<<24
 }
 
 func mustJSON(v any) []byte { b, _ := json.MarshalIndent(v, "", "  "); return b }
@@ -474,18 +551,20 @@ func vtPickTarget(end, now vtTarget) vtTarget {
 }
 
 // vtDeliverAfterAsr 识别完成后的完整收尾：准备输入 → 检测此刻焦点 →
-// 在输入框就注入、不在（含焦点落在菜单上）就只进剪贴板。
+// 在输入框就注入、不在（含焦点落在菜单上）就只进剪贴板 → 落历史记录。
 //
 // 检测时机 = 准备要输入的此刻：识别要几百毫秒到数秒，录音开始/结束时焦点
 // 都可能已变（历史 bug：同一窗口沿用录音开始的结论注入，Ctrl+V 落空还显示
 // "已输入"）。绝不替用户按任何多余的键——焦点不在输入框就老老实实只复制。
-func vtDeliverAfterAsr(gen int32, text string, end vtTarget) {
+// pcm 是本轮原始语音：无论注入/复制成败都进历史（可试听、可复制、可重识别）。
+func vtDeliverAfterAsr(gen int32, text string, pcm []byte, end vtTarget) {
 	now := vtCaptureTarget(true, "注入前")
 	tgt := vtPickTarget(end, now)
 	gate := vtEditabilityGate(tgt)
 	vtLog("目标判定: gate=%s 可输入=%v | %s",
 		gate, gate.editable(), tgt.describe())
-	vtDeliver(gen, text, gate)
+	status := vtDeliver(gen, text, gate)
+	vtSaveHistory(pcm, text, status)
 	time.Sleep(700 * time.Millisecond)
 	vtOverlayHideIf(gen)
 }
@@ -520,6 +599,8 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 		var err error
 		if text, err = vtTranscribe(pcm); err != nil {
 			vtLog("识别失败: %v", err)
+			// 失败也留档：音频是"重新识别"的原料，不能这轮白说
+			vtSaveHistory(pcm, "", "asr_failed")
 			if vtGenOK(gen) {
 				vtSetStateIf(gen, "error", "识别失败，请重试")
 				time.Sleep(1100 * time.Millisecond)
@@ -532,6 +613,10 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 	vtLog("会话完成: 代数=%d 音频=%.1fs 文本=%q",
 		gen, float64(len(pcm))/2/float64(vtSampleRate), text)
 	if text == "" {
+		if len(pcm) > vtSampleRate/8 {
+			// 识别正常但没听清：音频留档，设置页可重新识别
+			vtSaveHistory(pcm, "", "empty")
+		}
 		if vtGenOK(gen) {
 			vtSetStateIf(gen, "empty", "没听清，再试一次")
 			time.Sleep(1500 * time.Millisecond) // 停久一点：让用户看清提示
@@ -541,14 +626,15 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 	}
 	// 判定与输出收拢在 vtDeliverAfterAsr：识别完的此刻检测焦点、立刻分发，
 	// 不加任何人为延时（代码自身的耗时就是全部延迟）。
-	vtDeliverAfterAsr(gen, text, end)
+	vtDeliverAfterAsr(gen, text, pcm, end)
 }
 
 // vtDeliver 输出一段文本：判定为可输入 → 剪贴板+Ctrl+V 注入；否则只进剪贴板。
+// 返回结果状态（injected/copied），历史记录由调用方统一落。
 //
 // 两条路径都先把文本写进剪贴板——注入失败（误判、目标程序吞掉按键）时用户
 // 手上至少还有可粘贴的内容，这是最差情况的兜底。
-func vtDeliver(gen int32, text string, gate vtGate) {
+func vtDeliver(gen int32, text string, gate vtGate) string {
 	editable := gate.editable()
 	if editable {
 		// 注入路径：临时占用剪贴板 → Ctrl+V → 恢复原剪贴板
@@ -559,8 +645,7 @@ func vtDeliver(gen int32, text string, gate vtGate) {
 		if got, ok := vtClipboardGetText(); !wrote || !ok || got != text {
 			vtLog("剪贴板写入未生效（wrote=%v 回读匹配=%v），本轮改为只提示、不注入", wrote, ok && got == text)
 			vtSetStateIf(gen, "copied", "已复制")
-			vtPushHistory(text, false)
-			return
+			return "copied"
 		}
 		seq := vtClipboardSeq() // 记下"我们刚写入后"的序号
 		// 注入前记下物理状态：注入后用它判断"是不是我们留下的残留"
@@ -593,8 +678,11 @@ func vtDeliver(gen int32, text string, gate vtGate) {
 		vtClipboardSetText(text)
 		vtSetStateIf(gen, "copied", "已复制")
 	}
-	vtPushHistory(text, editable)
 	vtLog("输出: %s 可输入=%v 文本=%q", gate, editable, text)
+	if editable {
+		return "injected"
+	}
+	return "copied"
 }
 
 // vtDeliver 输出一段文本：判定为可输入 → 剪贴板+Ctrl+V 注入；否则只进剪贴板。
@@ -966,6 +1054,15 @@ func vtTriggerLoop() {
 			t := vtCaptureTarget(true, "探针")
 			g := vtEditabilityGate(t)
 			vtLog("探针判定: gate=%s 可输入=%v | %s", g, g.editable(), t.describe())
+		case strings.HasPrefix(cmd, "reid"):
+			// 重新识别历史第 n 条（0 起，从旧到新）：读 wav → 重跑识别 →
+			// 更新该条记录并走完整分发（此刻焦点在输入框就直接打进去）。
+			// 设置页「最近语音记录」的"重新识别"按钮将来也走这里。
+			n := 0
+			if v, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(cmd, "reid"))); err == nil {
+				n = v
+			}
+			go vtReidentify(n)
 		case strings.HasPrefix(cmd, "dry"):
 			// 输出路径自测（不录音、不识别）：trigger.txt 写 "dry 要输出的文字"，
 			// 走与正式流程同一个判定 + 注入/复制实现。做回归时不用真的对着麦克风说话。
@@ -986,6 +1083,61 @@ func vtTriggerLoop() {
 			}()
 		}
 	}
+}
+
+// vtReidentify 重新识别历史第 n 条：音频重跑 ASR → 更新记录 → 走完整分发
+// （此刻焦点在输入框就直接注入，否则只复制——与正常一轮完全同一套规则）。
+func vtReidentify(n int) {
+	defer func() {
+		if r := recover(); r != nil {
+			vtLog("重新识别发生 panic（已拦截）：%v", r)
+		}
+	}()
+	arr := vtReadHistory()
+	if n < 0 || n >= len(arr) {
+		vtLog("重新识别：没有第 %d 条（共 %d 条）", n, len(arr))
+		return
+	}
+	item := arr[n]
+	if item.Audio == "" {
+		vtLog("重新识别：第 %d 条没有音频", n)
+		return
+	}
+	wav, err := os.ReadFile(filepath.Join(vtDir, filepath.FromSlash(item.Audio)))
+	if err != nil {
+		vtLog("重新识别：音频读不出（%v）", err)
+		return
+	}
+	pcm := vtWavToPCM(wav)
+	gen := vtSessionGen.Add(1)
+	vtOverlayShow()
+	vtSetState3If(gen, "processing", "识别中", vtEstimateSec(len(pcm)/2/vtSampleRate))
+	text, err := vtTranscribe(pcm)
+	if err != nil {
+		vtLog("重新识别失败: %v", err)
+		if vtGenOK(gen) {
+			vtSetStateIf(gen, "error", "识别失败，请重试")
+			time.Sleep(1100 * time.Millisecond)
+			vtOverlayHideIf(gen)
+		}
+		return
+	}
+	text = strings.TrimSpace(text)
+	vtLog("重新识别完成: 第 %d 条 文本=%q", n, text)
+	if text == "" {
+		if vtGenOK(gen) {
+			vtSetStateIf(gen, "empty", "没听清，再试一次")
+			time.Sleep(1500 * time.Millisecond)
+			vtOverlayHideIf(gen)
+		}
+		return
+	}
+	// 更新该条的识别结果（原音频保留，状态由分发结果决定——用替换重写整份）
+	arr[n].Text = text
+	os.WriteFile(filepath.Join(vtDir, "history.json"), mustJSON(arr), 0644)
+	// 分发：此刻焦点判定照走（end 兜底也现采一份，reid 没有录音结束时刻）
+	end := vtCaptureTarget(false, "录音结束")
+	vtDeliverAfterAsr(gen, text, pcm, end)
 }
 
 // vtHotkeysVKFirst 主热键第一枚键的 vk（后门模拟按下时用）。

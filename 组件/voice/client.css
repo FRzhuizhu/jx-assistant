@@ -101,3 +101,23 @@
 .hk-sub-wrap { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sp-note { font-size: 12px; color: var(--text-3); margin: 6px 0; line-height: 1.6; }
 
+/* ---------- 最近语音记录（全局语音输入法落档；设置 → 语音 底部） ----------
+   每条一行：时间+结果徽标+文字摘要+操作（试听/复制/重新识别）。
+   识别失败/没听清的轮次也在列（音频是重新识别的原料，不能这轮白说）。 */
+.vt-hist { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.vt-hist-item {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
+}
+.vt-hist-time { color: var(--text-3); flex: 0 0 auto; }
+.vt-hist-badge {
+  flex: 0 0 auto; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+  border: 1px solid var(--border); color: var(--text-2);
+}
+.vt-hist-badge.ok { color: var(--accent); border-color: var(--accent); }
+.vt-hist-badge.fail { color: var(--danger); border-color: var(--danger); }
+.vt-hist-text { flex: 1 1 160px; min-width: 0; color: var(--text-1); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.vt-hist-text.none { color: var(--text-3); font-style: italic; }
+.vt-hist-ops { display: inline-flex; gap: 6px; flex: 0 0 auto; }
+

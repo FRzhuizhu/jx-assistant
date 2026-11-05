@@ -147,6 +147,7 @@ bool 版，两份判据迟早漂移）。`vt.log` 每次都会记一行 `目标�
 | `combrec` | 模拟「录音期间按了别的键」→ 应看到"取消本轮录音…音频丢弃、不注入" |
 | `probe` | 把当前前台的完整现场与判定结论写进 `vt.log`（排查"该复制却注入了"） |
 | `dry 任意文字` | 走正式流程同一个判定 + 注入/复制实现输出这段文字（不录音不识别） |
+| `reid n` | 重新识别历史第 n 条（0 起）：读留档音频重跑识别 → 更新记录 → 走完整分发（设置页「最近语音记录」的重新识别走的就是它） |
 
 ```
 go test ./...                    # 判定逻辑 + 吞键规则 + 真窗口验收（记事本=注入、桌面=只复制）
@@ -167,7 +168,16 @@ $env:VT_PROBE_HWND="<hwnd>"; go test -run TestCaptureForeground -v   # 指定窗
 | `籰╒翾user.config` 这类怪名字文件 | 搜狗按 GBK 写文件名、被当成 UTF-8 显示的重复副本 |
 
 它们和语音输入法无关，**可以随手删**（删了搜狗会写回它自己的目录，不影响任何功能）。
-本程序自己只写 `vt.log`、`history.json`（临时还有 `trigger.txt`、`asr.log`）。
+本程序自己只写 `vt.log`、`history.json`、`history/`（历史音频，临时还有 `trigger.txt`、`asr.log`）。
+
+## 最近语音记录（history.json + history/）
+
+每轮语音结束都留一条（**识别失败、没听清的也在**——音频是重新识别的原料，
+说过的话不该因为哪一环失败就丢）：`time`（时间）、`text`（文字，失败为空）、
+`status`（injected=已输入 / copied=已复制 / asr_failed=识别失败 / empty=没听清）、
+`audio`（原始语音 wav，`history/` 子目录）。滚动保留最近 3 条，被挤出的音频文件
+一并删除。主程序设置页「语音」底部读它展示（试听 / 复制 / 重新识别，
+`/api/voicetype/history*`，见主程序 `voicetype_history.go`）。
 
 ## 目录内容
 
@@ -178,7 +188,7 @@ $env:VT_PROBE_HWND="<hwnd>"; go test -run TestCaptureForeground -v   # 指定窗
 | models/ | 识别模型（xasr onnx + silero_vad） |
 | overlay.html | 悬浮窗胶囊界面 |
 | hotkeys.json | 热键配置（键位/长按阈值/点按回放/退避宿主），保存后自动热加载 |
-| vt.log / history.json | 运行日志（含每次判定结论与吞键/代数痕迹）/ 最近 2 条识别历史 |
+| vt.log / history.json / history/ | 运行日志（含每次判定结论与吞键/代数痕迹）/ 最近 3 条语音记录（文字+结果）/ 原始语音 wav |
 
 ## python 依赖
 
