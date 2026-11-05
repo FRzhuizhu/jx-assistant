@@ -217,6 +217,30 @@ def main():
                   or k == "numpy" or k.startswith("numpy.")]:
             del sys.modules[k]
 
+    # ---------- 分片模型拼回 ----------
+    def ensure_parts(xasr_dir):
+        """GitHub 单文件 100MB 限制：X-ASR 的 encoder（153MB）以 *.onnx.partN 分片入库，
+        首次加载时拼回整体文件；整体文件已存在（安装包分发 / 软著版仓库）就直接用。
+        拼回走临时文件 + os.replace，中断不会留下半截模型。"""
+        if not xasr_dir.is_dir():
+            return
+        stems = sorted({p.name.rsplit(".part", 1)[0] for p in xasr_dir.glob("*.onnx.part*")})
+        for stem in stems:
+            target = xasr_dir / stem
+            if target.exists():
+                continue
+            parts = sorted(xasr_dir.glob(stem + ".part*"),
+                           key=lambda q: int(q.name.rsplit(".part", 1)[1]))
+            tmp = target.with_name(target.name + ".tmp")
+            with open(tmp, "wb") as out:
+                for q in parts:
+                    with open(q, "rb") as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            out.write(chunk)
+            os.replace(tmp, target)
+            print(f"[voice] 分片模型已拼回：{target.name}"
+                  f"（{target.stat().st_size // (1 << 20)}MB）", file=sys.stderr)
+
     # ---------- 加载 ----------
     def load_engine(model, device):
         """装好并返回离线引擎（不回话、不动 state——load 与流式精修共用）。"""
@@ -226,6 +250,7 @@ def main():
             # 离线/流式一体（这里用离线档），int8 约 170MB
             import sherpa_onnx
             d = models_root / "xasr"
+            ensure_parts(d)
 
             def one(pattern):
                 hits = sorted(glob.glob(str(d / "**" / pattern), recursive=True))

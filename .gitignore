@@ -6,10 +6,19 @@ config.json
 # 内置组件（Cua 驱动 / Windows-MCP 依赖）：与安装包同口径入库——「操作电脑」能力靠它，
 # 必须离线自包含、克隆即用（放在 *.exe 规则之后放行）
 !内置组件/**
-# 共享便携 Python 运行时不随仓库分发（体积大）：克隆后首次使用技能时自动联网装配
-技能/_runtime/
-# 语音识别 onnx 模型不入库（体积大）
-组件/voice/models/
+# 共享便携 Python 运行时入库（全部内置技能与语音组件共用，全新克隆零装配即用）：
+# 与软著版同口径——Python 本体与 site-packages 一起入库，克隆后跑「编译并启动」即可用，
+# 不再依赖 python.org/华为镜像 + PyPI 清华源那一路联网装配。
+!技能/_runtime/**
+技能/_runtime/**/__pycache__/
+技能/_runtime/**/*.pyc
+技能/_runtime/**/~*/
+# 语音识别 onnx 模型入库（X-ASR 中文流式 + silero VAD）：克隆即用，不再分头下载
+!组件/voice/models/**
+组件/voice/models/**/__pycache__/
+# GitHub 单文件 100MB 硬限制：X-ASR encoder（153MB）以 .onnx.partN 分片入库，
+# asr_worker.py 首次加载时拼回整体文件；整体文件本身不入库
+组件/voice/models/xasr/encoder-epoch-99-avg-1.int8.onnx
 *.exe~
 .zcode/
 node_modules/
