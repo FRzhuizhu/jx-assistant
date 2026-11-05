@@ -706,13 +706,14 @@ func visibleSize(m *StoredMessage) int {
 
 // keepStartSeq 按保留预算（KeepChars，字）算保留区的起点 seq：从最新一条往前
 // 累计模型可见字数，预算耗尽处（命中点）所在的轮**整轮保留**——起点扩到该轮
-// 的起始行。轮首不必是用户亲发的消息：数字助理转发消息（report/aiuser）同权
-// 开轮（见 splitRounds），主对话里大部分回合由转发消息开启，同样能作为保留区
-// 的边界——否则按用户消息数轮会把几十个回合算成一个超长轮，窗口形同虚设。
-// 巨轮例外：命中轮自身就超预算（单轮由几十次工具调用拼成时一轮可达百万字，
-// 整轮保等于压缩失效）时回退行级窗口——只折巨轮的前半段，保留最近一段原文；
-// 起点落在工具结果上时往前扩到该步的助手调用行，避免拆散调用/结果配对
-//（宁可略超预算，也不让窗口从一个孤立的 tool 结果开始）。
+// 的起始行，压缩边界永远落在轮与轮之间，绝不从一轮中间切（用户口径：命中点
+// 所在的那一整轮不进行压缩）。轮首不必是用户亲发的消息：数字助理转发消息
+//（report/aiuser）同权开轮（见 splitRounds），主对话里大部分回合由转发消息
+// 开启——早年轮次不认派发消息，几十个回合被算成一个超长轮，才有过「巨轮回退
+// 行级窗口」的例外；那个例外已砍掉（它会把一轮切成两半，压缩边界落在轮中间，
+// 实测普通任务轮也被判成巨轮）。正常任务轮不会超长；真遇到按预算压不动的
+// 超长轮，由溢出兜底（overflowCompact 按轮强压）处理——那是撞模型窗口的最后
+// 防线，不走这条预算路径。
 func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
 	// 用户语义：保留预算 0 = 什么都不保留——连最后一轮也压（返回最后一条
 	// seq+1，让调用方的「折到保留起点-1」覆盖全部行）。与「命中轮整轮保留」
@@ -723,56 +724,37 @@ func (a *App) keepStartSeq(raw []*StoredMessage) int64 {
 		}
 		return raw[len(raw)-1].Seq + 1
 	}
-	idx := -1
 	total := 0
 	for i := len(raw) - 1; i >= 0; i-- {
-		s := visibleSize(raw[i])
-		if total+s > a.Cfg.KeepChars && idx >= 0 {
-			// 命中点：这一行装不下了。它所在的轮不超预算就整轮保留
-			if start, ok := a.hitRoundStart(raw, i); ok {
-				return start
-			}
-			break // 巨轮：回退行级窗口
+		total += visibleSize(raw[i])
+		if total > a.Cfg.KeepChars {
+			// 命中点：这一行装不下了——它所在的轮整轮保留（含本轮内更早的行）
+			return a.roundStartOf(raw, raw[i].Seq)
 		}
-		total += s
-		idx = i
 	}
-	if idx < 0 {
-		return 0
+	// 全部装得下：保留区从第一条起（不压缩）。调用方按「start <= 1 即无可压」
+	// 判断，返回首条 seq 与 0 等价，这里取可读性更好的首条 seq
+	if len(raw) > 0 {
+		return raw[0].Seq
 	}
-	// 不把窗口起点落在工具结果上：往前扩到调用行（同一 step 一起保留）
-	for idx > 0 && raw[idx].Role == "tool" {
-		idx--
-	}
-	return raw[idx].Seq
+	return 0
 }
 
-// hitRoundStart 返回 raw[i] 所在轮的起始 seq；该轮自身的可见字数超预算（巨轮，
-// 整轮保等于压缩失效）时 ok=false，调用方回退行级窗口。命中行总有尺寸、必在
-// 某轮内（零尺寸的归档行 summary/prompt/request/audit/inherit 不会成为命中行）。
-func (a *App) hitRoundStart(raw []*StoredMessage, i int) (int64, bool) {
-	seq := raw[i].Seq
+// roundStartOf 返回 seq 所在轮（见 splitRounds）的起始 seq。整轮保留是硬口径：
+// 压缩边界只在轮与轮之间，与这一轮多大无关。找不到所属轮时返回该行自身
+//（防御：正常不会走到——每行都归属于某个轮）。
+func (a *App) roundStartOf(raw []*StoredMessage, seq int64) int64 {
 	for _, r := range splitRounds(raw) {
-		if seq < r.startSeq || seq > r.endSeq {
-			continue
+		if seq >= r.startSeq && seq <= r.endSeq {
+			return r.startSeq
 		}
-		size := 0
-		for _, m := range raw {
-			if m.Seq >= r.startSeq && m.Seq <= r.endSeq {
-				size += visibleSize(m)
-			}
-		}
-		if size > a.Cfg.KeepChars {
-			return 0, false
-		}
-		return r.startSeq, true
 	}
-	return 0, false
+	return seq
 }
 
 // ruleCompactAuto 阈值触发/溢出兜底的自动入口：把保留窗口之外、尚未折叠的
 // 行折叠掉。keep<0 表示自动触发——按 KeepChars 字数预算保留最近的完整轮
-//（命中轮整轮保留，见 keepStartSeq；巨轮回退行级窗口）；keep=0 表示全部
+//（命中轮整轮保留、边界只在轮之间，见 keepStartSeq）；keep=0 表示全部
 // 折叠（溢出兜底）；keep>0 表示只留最近 keep 轮（溢出兜底的两级：先只留 1 轮，
 // 再全部折叠）。返回折叠的行数（0 = 没有可折叠的）。
 func (a *App) ruleCompactAuto(sess *SessionMeta, keep int) int {
@@ -848,8 +830,9 @@ func (a *App) ruleCompactTo(sess *SessionMeta, upTo int64) (int, error) {
 // 返回本次实际变化的轮数（新折轮数或升级轮数；0 = 无变化，重复点击报错用）。
 // 已折叠边界 = 带任意 compact 标记的行（含 omit 的工具结果与环境快照）的最大
 // seq——compactRound 对每轮至少标一行（用户输入也标），边界因此总能推进。
-// 升级二级要求整轮都在边界之内（r.endSeq ≤ 边界）：巨轮被行级折叠截过半时，
-// 只折了前半、后半还是原文，这种半折轮不能升级。
+// 升级二级要求整轮都在边界之内（r.endSeq ≤ 边界）：边界只在轮之间，整轮要么
+// 全在折叠区、要么全在保留区，这个条件正常恒成立——保留它作防御：旧库历史里
+// 可能留有早前行级回退口径切开的半轮，半折轮不能升级。
 func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round, endSeq int64) int {
 	ruleSeq := int64(0)
 	for _, m := range raw {
@@ -913,9 +896,9 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 }
 
 // foldUpTo 行级折叠：把 endSeq 及更早、尚未折叠的行按一级规则折叠掉（自动预算
-// 压缩用）。endSeq 由 keepStartSeq 决定：命中轮不超预算时边界对齐到轮首，这里
-// 折的实际是整轮整轮的历史；命中轮是巨轮时边界落在轮中间——只折它的前半段也能
-// 立刻把上下文降下来，最近约 KeepChars 字原文原样留给模型。
+// 压缩用）。endSeq 由 keepStartSeq 决定，边界永远对齐到命中轮的轮首-1——这里
+// 折的就是整轮整轮的历史，绝不从一轮中间切（命中轮整轮保留）。行级只是折叠
+// 的实施粒度（逐行 compactOne），不是边界口径。
 // 与 foldRounds 的差别只在粒度：行级更细，所以这里不做轮级那套「二级升级」
 //（也避免每次自动压缩改写旧折叠行、持续打断 KV 缓存）；反复触发仍压不动时由
 // overflowCompact 的按轮全折兜底。
@@ -1491,8 +1474,8 @@ const summarizeInstruction = `请把下面这段对话历史压缩成一份结�
 // origin=auto 时合并旧自动摘要（DSH 式单一检查点）；origin=manual 时独立叠加、永不重压。
 // upTo>0（手动按钮）时压缩终点=upTo 所在轮（含），之后的轮保持原文；
 // 否则按保留窗口从尾部倒数——keepTail<0 表示自动触发，与规则压缩共用同一
-// 字数预算（keepStartSeq，行级不按轮）；keepTail=0 表示摘要覆盖全部历史（最近
-// 一轮自身超预算时兜底用到）；溢出兜底显式传 1（只留最近一轮）。
+// 字数预算（keepStartSeq：命中轮整轮保留，边界只在轮之间，绝不切轮）；
+// keepTail=0 表示摘要覆盖全部历史（溢出兜底用到）；溢出兜底显式传 1（只留最近一轮）。
 func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo int64) (string, error) {
 	raw, err := a.Store.RawMessagesAll(sess.ID)
 	if err != nil {
@@ -1532,7 +1515,7 @@ func (a *App) doSummarize(sess *SessionMeta, origin string, keepTail int, upTo i
 		}
 	case keepTail < 0:
 		// 自动触发：与规则压缩同一口径——按 KeepChars 预算保留最近的完整轮
-		//（命中轮整轮保留，巨轮回退行级窗口），摘要覆盖到保留区起点之前那一条
+		//（命中轮整轮保留，边界只在轮之间），摘要覆盖到保留区起点之前那一条
 		if st := a.keepStartSeq(raw); st > 1 {
 			segEnd = st - 1
 		}

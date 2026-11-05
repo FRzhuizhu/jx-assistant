@@ -346,20 +346,34 @@ func TestAssistantCompactWorksWhenAutoCompactOff(t *testing.T) {
 	}
 }
 
-// 只有一轮历史且该轮自身超预算：修复后不再「至少保 1 轮」硬保它——应照常
-// 摘要掉（覆盖到这一轮），而不是报「没有可压缩的区间」让超长上下文压不动。
-func TestAssistantCompactSingleOversizedRoundGetsSummarized(t *testing.T) {
+// 只有一轮历史且该轮自身超预算：按「命中轮整轮保留」的硬口径——预算压缩
+// 不切轮，如实报「没有可压缩的区间」（压缩边界只在轮与轮之间）；真撞模型
+// 窗口时由溢出兜底（keep=0，整轮强压）处理，不走预算路径。
+// 早年这里断言「超预算单轮也要压掉」——那个口径靠把一轮切成两半来降上下文，
+// 实测普通任务轮也被判成巨轮、压缩落在轮中间，已砍掉。
+func TestAssistantCompactSingleOversizedRoundKeptWhole(t *testing.T) {
 	f := newAssistantOpsFixture(t)
 	a, main := f.app, f.main
 	if _, err := a.Store.ClearSession(main.ID); err != nil {
 		t.Fatal(err)
 	}
 	seedRound(t, a, main.ID, "唯一一轮", true)
-	a.Cfg.KeepChars = 10 // 预算小于这一轮：修复后仍要压
+	a.Cfg.KeepChars = 10 // 预算小于这一轮：命中轮整轮保留，预算压缩压不动
 
 	w := post(t, a.handleAssistantCompact, "/api/assistant/compact")
-	if w.Code != 200 {
-		t.Fatalf("超预算单轮应压缩成功, got %d %s", w.Code, w.Body.String())
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "没有可压缩的区间") {
+		t.Fatalf("超预算单轮应整轮保留、如实报无可压区间, got %d %s", w.Code, w.Body.String())
+	}
+	if all, _ := a.Store.RawMessagesAll(main.ID); len(all) != 0 {
+		for _, m := range all {
+			if m.Kind == kindSummary {
+				t.Fatal("压不动时不应落摘要行")
+			}
+		}
+	}
+	// 溢出兜底（keep=0：摘要覆盖全部历史）能压——撞窗口的最后防线
+	if _, err := a.doSummarize(main, "manual", 0, 0); err != nil {
+		t.Fatalf("溢出兜底应能压超长单轮: %v", err)
 	}
 	summaries := 0
 	all, _ := a.Store.RawMessagesAll(main.ID)
@@ -369,7 +383,7 @@ func TestAssistantCompactSingleOversizedRoundGetsSummarized(t *testing.T) {
 		}
 	}
 	if summaries != 1 {
-		t.Fatalf("应落 1 条模型摘要行, got %d", summaries)
+		t.Fatalf("溢出兜底应落 1 条模型摘要行, got %d", summaries)
 	}
 }
 
