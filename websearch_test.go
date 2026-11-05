@@ -21,9 +21,9 @@ func TestSearchEndpointBase(t *testing.T) {
 		t.Fatalf("未配置应报错: %v", err)
 	}
 	// 只配市场地址：取同源。
-	a.Cfg.MarketURL = "http://192.168.1.10:PORT/market/manifest.json"
+	a.Cfg.MarketURL = "http://192.168.1.10:2228/market/manifest.json"
 	base, err := a.searchEndpointBase()
-	if err != nil || base != "http://192.168.1.10:PORT" {
+	if err != nil || base != "http://192.168.1.10:2228" {
 		t.Fatalf("市场同源不对: %s %v", base, err)
 	}
 	// 配了 searchURL：优先于市场。

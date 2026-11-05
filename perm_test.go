@@ -111,11 +111,11 @@ func TestPermChangeNoteCapsOnly(t *testing.T) {
 	note := permChangeNote(permSrcApproval, "workspace-write", []string{capBrowser}, s)
 	wantAll(t, note, "能力开关注记",
 		"权限模式不变（修改工作区）",
-		"新增能力：「操作电脑」内置连接器 cua / windows-mcp 现在可用")
+		"新增能力：「操作电脑」computer_* 工具现在可用")
 
 	rev := permChangeNote(permSrcApproval, "workspace-write", []string{capBrowser, capDevice}, s)
 	wantAll(t, rev, "能力取消注记",
-		"新增能力：「操作电脑」内置连接器 cua / windows-mcp 现在可用",
+		"新增能力：「操作电脑」computer_* 工具现在可用",
 		"取消能力：「操作手机」device_* / adb_* 工具调用将被拒绝")
 }
 
