@@ -47,7 +47,7 @@ func TestWizardRegistryLookupServerField(t *testing.T) {
 		t.Fatalf("server 字段应优先: %v %v", got, err)
 	}
 	got2, err := wizardRegistryLookup(srv.URL, "老式公司")
-	if err != nil || len(got2) != 2 || got2[0].Server != "https://192.168.1.10:PORT" {
+	if err != nil || len(got2) != 2 || got2[0].Server != "https://192.168.1.10:2228" {
 		t.Fatalf("无 server 字段应按 addrs 拼 https: %v %v", got2, err)
 	}
 	// off：不查询（服务器关了也不报错）

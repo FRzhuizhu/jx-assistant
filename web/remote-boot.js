@@ -4,7 +4,8 @@
    工作方式（与 210 网关 gate.html 的帧协议逐字节兼容）：
    1. gate 换页时注入 window.P2P_GATE=true 与 P2P_APP_ID，配对信息已存
       localStorage['p2p_cfg_v1_<设备号>']
-   2. 本脚本劫持 window.fetch：同源 /api/* 请求 → 封 {t:'req'} 帧 AES-GCM 加密后
+   2. 本脚本劫持 window.fetch：同源白名单路径（/api/、/sites、/s/，tunnelPath）
+      请求 → 封 {t:'req'} 帧 AES-GCM 加密后
       POST /relay（NDJSON 流式响应）→ 还原成带流的 Response（对话流/事件流可用）；
       请求附 x-p2p-gzip 头（浏览器支持 DecompressionStream 时），服务端只对
       一次性 JSON 响应整体 gzip（先压再 base64/加密，膨胀只作用于压缩后字节），
@@ -13,7 +14,8 @@
       （210 对单请求有 150s 上限，断开后 3s 重连；会话执行流的接回由应用既有
       「接回执行流」机制自动完成）
    4. FormData 上传自动改走 multipart 帧协议；window.JX_REMOTE 提供附件/下载的
-      blob 化助手（供 app-chat.js 的少量兜底调用）
+      blob 化助手（供 app-chat.js 的少量兜底调用）与小程序平台 iframe 代载
+      （loadSitesFrame，见文末——iframe 导航不经 fetch 劫持，须整体代载）
 
    加密：非安全上下文（http 网关）无 WebCrypto，内置纯 JS AES-256-GCM
    （与 gate.html 同源代码；密钥 = SHA-256(配对密钥)，网关只见密文）。 */
@@ -300,7 +302,13 @@
 
   var seq = 0;
 
-  /* ---------- 隧道 fetch：/api/* → 加密中继，返回带流的 Response ---------- */
+  /* ---------- 隧道 fetch：白名单路径 → 加密中继，返回带流的 Response ---------- */
+  // tunnelPath 走隧道的同源路径白名单：/api/ 常规接口；/sites（含 /sites-assets/）
+  // 与 /s/ 是小程序平台的页面/资源/数据——远程外壳形态由 loadSitesFrame 经隧道
+  // 代载并 hook 回本隧道（家侧白名单 remoteaccess.go 放行同一组前缀）。
+  function tunnelPath(p) {
+    return p.indexOf('/api/') === 0 || p.indexOf('/sites') === 0 || p.indexOf('/s/') === 0;
+  }
   function tunnelFetch(input, init) {
     init = init || {};
     var urlStr = typeof input === 'string' ? input : (input && input.url) || String(input);
@@ -309,8 +317,8 @@
     var base = location.protocol === 'blob:' ? location.origin + '/' : location.href;
     var u;
     try { u = new URL(urlStr, base); } catch (e) { return realFetch(input, init); }
-    if (u.origin !== location.origin || u.pathname.indexOf('/api/') !== 0) {
-      return realFetch(input, init); // 非同源或非 API：原样放行
+    if (u.origin !== location.origin || !tunnelPath(u.pathname)) {
+      return realFetch(input, init); // 非同源或不在隧道路径白名单：原样放行
     }
     return prepareKey().then(function () {
       return normalizeBody(init);
@@ -737,6 +745,84 @@
       }
       return window.JX_REMOTE.assetURL(path).then(function (u) { window.open(u, '_blank'); });
     },
+  };
+
+  /* ---------- 小程序平台（/sites）远程代载（2026-11-03） ----------
+     平台是 iframe 加载 '/sites'——浏览器导航不经过上面的 fetch 劫持，外壳形态
+     下会打到网关源、打开网关（总服务器）自己的平台页（客户现场：本机正常、
+     远程访问内容错）。改为：平台页 HTML 与 /sites-assets/* 资源经隧道密文拉回
+     家侧，本地拼装 blob 装进 iframe，并在文档内注入 hook，把平台页自己的
+     fetch/XMLHttpRequest/window.open 接回 parent 的隧道 fetch——与企业技能
+     市场同一条通路（网关零改动，密文端到端模型不变）。iframe 常驻只代载一次
+     （sites-platform 组件的 renderSitesFrame 分流到这里）。 */
+  var SITES_HOOK = '(' + function () {
+    var PRE = ['/api/', '/s/', '/sites'];
+    function hit(p) { for (var i = 0; i < PRE.length; i++) if (p.indexOf(PRE[i]) === 0) return true; return false; }
+    var realFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      var s = typeof input === 'string' ? input : (input && input.url) || '';
+      if (s.charAt(0) === '/' && hit(s)) return parent.__jxSitesFetch(s, init);
+      return realFetch(input, init);
+    };
+    // XHR 垫片：平台页上传（发布 zip / 封面）用 XHR + FormData + upload.progress。
+    // 隧道 fetch 原生支持 FormData（multipart 帧协议），进度派发起步/完成两拍
+    //（中间进度隧道侧拿不到，进度条两头动足够用）。
+    function XHRShim() {
+      var self = this;
+      this.status = 0; this.responseText = '';
+      this._ls = {};
+      this.upload = { addEventListener: function (_, fn) { self._prog = fn; } };
+      this.addEventListener = function (t, fn) { (self._ls[t] = self._ls[t] || []).push(fn); };
+      this.setRequestHeader = function () {};
+      this.open = function (m, u) { self._m = m; self._u = u; };
+      this.send = function (body) {
+        var fire = function (t) { (self._ls[t] || []).forEach(function (fn) { fn({ target: self }); }); };
+        var prog = function (lo) { if (self._prog) self._prog({ lengthComputable: true, loaded: lo, total: 100 }); };
+        prog(1);
+        parent.__jxSitesFetch(self._u, { method: self._m, body: body }).then(function (r) {
+          return r.text().then(function (t) {
+            self.status = r.status; self.responseText = t;
+            prog(100); fire('load');
+          });
+        }).catch(function () { fire('error'); });
+      };
+    }
+    window.XMLHttpRequest = XHRShim;
+    // 新开站点预览（window.open('/s/...')）：站点是任意多资源页面，blob 单文件
+    // 装不完整；远程形态先提示回家端打开（完整预览需要整站代理，后续另做）。
+    var realOpen = window.open ? window.open.bind(window) : null;
+    window.open = function (u) {
+      if (typeof u === 'string' && u.charAt(0) === '/') {
+        alert('远程访问暂不支持新开站点预览：请在运行数字助理的电脑上打开。');
+        return null;
+      }
+      return realOpen ? realOpen.apply(null, arguments) : null;
+    };
+  } + ')();';
+
+  window.__jxSitesFetch = function (input, init) { return window.fetch(input, init); };
+  window.JX_REMOTE.loadSitesFrame = function (frame) {
+    window.fetch('/sites').then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (html) {
+      var m = /<script src="(\/sites-assets\/[^"]+)"><\/script>/.exec(html);
+      var pre = m ? window.fetch(m[1]).then(function (r) { return r.ok ? r.text() : ''; }) : Promise.resolve('');
+      return pre.then(function (js) {
+        // 注意：本文件会被 p2p-shell 原样内联进外壳的 script 标签——这里与下面
+        // 拼接用的闭合标签字面量必须拆成 '</scr' + 'ipt>'，否则内联脚本会在
+        // 第一处闭合标签字面量被 HTML 解析器提前闭合，整段解析失败：fetch 劫持、
+        // 隧道、组件加载、外壳自愈全部不存在，页面表面正常但所有 /api/ 打到网关源
+        // 404（服务离线 + 小程序平台加载失败，2026-11-04 手机端事故，已实测复现）。
+        if (m && js) html = html.replace(m[0], '<scr' + 'ipt>\n' + js + '\n</scr' + 'ipt>');
+        html = html.replace('<head>', '<head>\n<scr' + 'ipt>' + SITES_HOOK + '</scr' + 'ipt>');
+        frame.src = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      });
+    }).catch(function (e) {
+      frame.src = URL.createObjectURL(new Blob(
+        ['<meta charset="utf-8"><body style="font:14px/1.7 system-ui,sans-serif;padding:24px;color:#333">小程序平台加载失败（' + (e && e.message || e) + '）：请确认家端数字助理在线、市场服务器已配置。</body>'],
+        { type: 'text/html' }));
+    });
   };
 
   /* ---------- 外壳缓存自愈 ----------

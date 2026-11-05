@@ -91,8 +91,10 @@ async function openAssistant() {
 // 「新工作任务」不立即建会话：留在首页聚焦输入框，发出第一条消息才真正创建
 function goHomeNewTask() {
   narrowClosePanels(); // 窄屏：从左栏浮层发起，选中目标即收起浮层
-  if (marketOpen()) closeMarket(); // 新工作任务也是一张「对话页」：回首页即关掉市场页
-  if (sitesViewOpen()) closeSites(); // 小程序平台同款：回首页即关（app-market.js）
+  // 视图收口：市场/小程序平台已组件化（组件可能关闭或摘除，接口由组件挂 window，
+  // 不在场即跳过）——回首页即关掉占领主区的整页视图
+  if (typeof marketOpen === 'function' && marketOpen() && typeof closeMarket === 'function') closeMarket();
+  if (typeof sitesViewOpen === 'function' && sitesViewOpen() && typeof closeSites === 'function') closeSites();
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   if (state.cur) rpSnapshot(state.cur.id); // 回首页前记住这个对话的右栏状态（resetEmpty 会收起右栏）
   flushMainDraft(); // cur 置空前把防抖窗口内的输入落进旧会话草稿（resetEmpty 会整体替换输入框）
@@ -113,8 +115,9 @@ function goHomeNewTask() {
 
 async function openSession(id) {
   narrowClosePanels(); // 窄屏：在左栏浮层里选中会话即收起浮层
-  if (marketOpen()) closeMarket(); // 市场像一张对话页：打开任何对话即关掉它（app-market.js）
-  if (sitesViewOpen()) closeSites(); // 小程序平台同款：打开任何对话即关（app-market.js）
+  // 市场像一张对话页：打开任何对话即关掉它——两个视图均已组件化，接口不在场即跳过
+  if (typeof marketOpen === 'function' && marketOpen() && typeof closeMarket === 'function') closeMarket();
+  if (typeof sitesViewOpen === 'function' && sitesViewOpen() && typeof closeSites === 'function') closeSites();
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
@@ -512,11 +515,59 @@ function toolsChangeRow(prevTools, tools, seq) {
   return row;
 }
 
-// 运行环境更新行：轮内权限提升/模式切换/能力开关/技能增减等真实变化导致环境
-// 变化时，在发生位置展示变化内容（diff）与新快照全文
-function envNoteRow(text, prev, seq) {
-  return procTextRow('运行环境更新', '随下次请求尾部发送 · ' + fmtCount(String(text).length) + ' 字',
-    prev == null ? String(text) : diffBody(prev, text), seq);
+// 运行环境更新行：展示这条快照在下次请求里实际发给模型的消息——正文即发送
+// 原文、字数即发送量（差分时是几十~几百字，整份/完整重发时才是全文 5k 级）。
+// 形态由 groupTurns 的 env 构造器按组装层口径复刻判定，见 ENV_FULL_RESEND_AFTER。
+const ENV_FULL_RESEND_AFTER = 5; // 与后端 context.go envFullResendAfter 同值：连续差分到顶后完整重发一次校准
+
+// envUpdateMessageJS / fullResendEnvJS：组装层 context.go envUpdateMessage /
+// fullResendEnv 的前端镜像（行多重集差 + 中文标签清单，逐字节同输出）。
+// envnote 展示的正是模型将收到的消息——改任一侧必须同步另一侧。
+function envUpdateMessageJS(prev, cur) {
+  prev = String(prev); cur = String(cur);
+  const prevLines = prev.split('\n'), curLines = cur.split('\n');
+  const prevCount = new Map(), curCount = new Map();
+  prevLines.forEach((l) => prevCount.set(l, (prevCount.get(l) || 0) + 1));
+  curLines.forEach((l) => curCount.set(l, (curCount.get(l) || 0) + 1));
+  const added = []; // 新快照里有、旧快照里没有的行（含换值后的新值行）
+  for (const l of curLines) {
+    const c = prevCount.get(l) || 0;
+    if (c > 0) { prevCount.set(l, c - 1); continue; }
+    added.push(l);
+  }
+  const removed = []; // 旧快照里有、新快照里没了的 "- " 条目行（注记行等静默消失）
+  for (const l of prevLines) {
+    const c = curCount.get(l) || 0;
+    if (c > 0) { curCount.set(l, c - 1); continue; }
+    if (l.trimStart().startsWith('- ')) removed.push(l);
+  }
+  let b = '';
+  if (removed.length) {
+    b = '# 环境更新（条目有增删/变更：移除行 = 早前快照中该条目整行作废，新增行 = 最新状态，均给整行原文；连续差分积累多了系统会自动完整重发一次校准）\n';
+    removed.forEach((l) => { b += '【移除】' + l + '\n'; });
+    added.forEach((l) => { b += '【新增】' + l + '\n'; });
+    return b.replace(/\n+$/, '');
+  }
+  if (!added.length) return '';
+  added.sort(); // 与后端 sort.Strings 同为确定性排序（快照行为 BMP 字符，序一致）
+  b = '# 环境更新（新增条目，叠加在更早的快照与更新之上；条目减少或变更时改发增删变更清单）\n';
+  added.forEach((l) => { b += l + '\n'; });
+  return b.replace(/\n+$/, '');
+}
+
+// 完整重发形态：正文用新快照原文，首行标题换成「完整重发」声明（镜像 fullResendEnv）
+function fullResendEnvJS(cur) {
+  let body = String(cur);
+  const i = body.indexOf('\n');
+  if (i >= 0 && body.startsWith('# ')) body = body.slice(i + 1);
+  return '# 运行环境快照（完整重发，取代更早的快照与更新）\n' + body.replace(/\n+$/, '');
+}
+
+function envNoteRow(it) {
+  const kindLabel = it.mode === 'full' ? '整份' : it.mode === 'resend' ? '完整重发（差分校准）' : '差分';
+  return procTextRow('运行环境更新',
+    '随下次请求尾部发送 · ' + fmtCount(String(it.text).length) + ' 字 · ' + kindLabel,
+    String(it.text), it.seq);
 }
 
 // 时间提示词行：与「运行环境」同款折叠行——模型收到的每条时间消息都在这里
@@ -858,7 +909,7 @@ const ROW_ITEM_BUILDERS = {
   // AI 发出的用户消息（数字助理派发的指令/派发回报/子对话派发/待办转交）：
   // 与用户消息完全同权——开新回合，上一回合随之收口（最终输出带出复制/压缩
   // 等回合按钮）；后面同样跟一条时间提示词；气泡由 userBubble 渲染为左对齐
-  // 白底的「AI 用户」变体（.msg.user.ai），不可编辑重发
+  // 灰底的「AI 用户」变体（.msg.user.ai，正文按 Markdown 渲染），不可编辑重发
   aiuser(m, st) {
     st.cur = { userMsg: m, items: [] };
     st.turns.push(st.cur);
@@ -875,15 +926,29 @@ const ROW_ITEM_BUILDERS = {
   // 压缩摘要：不按落库位置产条目——卡片由 groupTurns 的 sumAt 归位到覆盖
   // 边界（最后一条被压缩的消息之后）就地插入，位置才是压缩真实发生的地方
   summary() {},
-  // 运行环境快照：与最近一次已知环境相同则跳过；有真实变化（权限提升、
-  // 模式切换、能力开关、技能增减、用户新发了一条消息等）才在发生位置显示
-  // 「运行环境更新」折叠行
+  // 运行环境快照：按组装层（context.go envRowRender）同一口径复刻「模型实际
+  // 收到什么」——首条（或摘要折叠后首条）整份、其后差分（envUpdateMessageJS
+  // 行多重集差）、连续差分满 ENV_FULL_RESEND_AFTER 后完整重发校准、同文不发；
+  // 已被摘要覆盖（seq≤envBoundary）或规则压缩整行省略（omit）的快照模型已
+  // 看不到，不再显示。envnote 的正文与字数因此与下次请求的发送内容一致
+  // （所见即所发：差分时几十~几百字，整份/完整重发才显示全文字数）。
   env(m, st) {
+    if (m.seq <= st.envBoundary) return;   // 摘要已覆盖：模型看不到这条快照
+    if (m.compact === 'omit') return;      // 规则压缩整行省略：同上
     const txt = String(m.content ?? '');
-    if (txt === st.lastEnv) return;
+    let mode = null, body = '';
+    if (st.lastEnv == null) {
+      mode = 'full'; body = txt; st.envUpdates = 0;
+    } else if (st.envUpdates >= ENV_FULL_RESEND_AFTER) {
+      mode = 'resend'; body = fullResendEnvJS(txt); st.envUpdates = 0;
+    } else {
+      body = envUpdateMessageJS(st.lastEnv, txt);
+      if (body) { mode = 'diff'; st.envUpdates++; }
+    }
+    st.lastEnv = txt; // 基线无条件推进（同文/注记过期静默消失也不回退，与后端一致）
+    if (!mode) return;
     st.ensure();
-    st.cur.items.push({ k: 'envnote', seq: m.seq, text: txt, prev: st.lastEnv });
-    st.lastEnv = txt;
+    st.cur.items.push({ k: 'envnote', seq: m.seq, text: body, mode });
   },
   // 提示词拼装快照：变化驱动展示（规范 §4）——首轮完整交代拼装结构
   // （工具定义 + 系统提示词在用户消息上方、运行环境在请求末尾，即请求真实排布），
@@ -933,6 +998,10 @@ function groupTurns(msgs, resultOf, base) {
     sawPrompt: false, lastSys: '', lastToolsJson: '', lastTools: null, lastEnv: null,
     ...(base || {}),
   };
+  // 环境快照的组装口径状态（镜像 context.go buildContext）：envUpdates 差分
+  // 计数（继承段接力），envBoundary 摘要覆盖边界（边界内的快照模型已看不到）
+  st.envUpdates = st.envUpdates || 0;
+  st.envBoundary = 0;
   st.ensure = () => {
     if (!st.cur) { st.cur = { userMsg: null, items: [] }; st.turns.push(st.cur); }
   };
@@ -963,6 +1032,7 @@ function groupTurns(msgs, resultOf, base) {
   for (const m of msgs) {
     if (displayKindOf(m) !== 'summary' || !m.coversUpTo) continue;
     sumAt.set(m.coversUpTo, m);
+    if (m.coversUpTo > st.envBoundary) st.envBoundary = m.coversUpTo; // 组装层 boundary 同口径：取摘要覆盖边界最大值
   }
   for (const m of msgs) {
     const build = ROW_ITEM_BUILDERS[displayKindOf(m)];
@@ -977,7 +1047,7 @@ function groupTurns(msgs, resultOf, base) {
       st.cur.items.push({ k: 'summary', seq: s.seq, text: String(s.content ?? ''), origin: s.origin, covers: s.coversUpTo });
     }
   }
-  st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv };
+  st.base = { sawPrompt: st.sawPrompt, lastSys: st.lastSys, lastToolsJson: st.lastToolsJson, lastTools: st.lastTools, lastEnv: st.lastEnv, envUpdates: st.envUpdates };
   st.turns.base = st.base; // 挂在返回的 turns 上：renderMessages 接力给正文段的分组
   return st.turns;
 }
@@ -1006,15 +1076,18 @@ function actTime(iso, side) {
 
 // 用户消息气泡：气泡上方悬停操作（时间 / 复制 / 编辑重发）。编辑只对真实用户消息
 // 开放（kind=chat）；系统注入的回报/上传/目标续跑/继承标记不参与。AI 发出的
-// 用户消息（kind=aiuser，数字助理派发的指令/回报）同款气泡但底色偏白（.ai），
+// 用户消息（kind=aiuser，数字助理派发的指令/回报）同款气泡但灰底（.ai），
 // 操作行有时间与复制、没有编辑——它是 AI 说的，不能编辑重发。
+// aiuser 正文按 Markdown 渲染（2026-11-05 用户在三档预览页拍板方向 A）：派发
+// 回报里的「最终答复全文」是任务模型按正文习惯写的，纯文本显示时表格/井号/
+// 星号全裸露；渲染器与数字助理正文同款（md()）。复制按钮仍复制原文，不受影响。
 function userBubble(m, view) {
   const wrap = document.createElement('div');
   wrap.className = 'msg user' + (m.kind === 'aiuser' ? ' ai' : '');
   wrap.dataset.seq = m.seq; // 搜索命中定位用
   const b = document.createElement('div');
-  b.className = 'bubble';
-  appendQuotedBody(b, String(m.content ?? '')); // 带引用前缀的消息拆成灰色引用行 + 正文
+  b.className = 'bubble' + (m.kind === 'aiuser' ? ' md' : '');
+  appendQuotedBody(b, String(m.content ?? ''), m.kind === 'aiuser'); // 带引用前缀的消息拆成灰色引用行 + 正文（aiuser 正文走 MD 渲染）
   wrap.appendChild(b);
   if ((m.kind === 'chat' || m.kind === 'aiuser') && view) {
     const acts = document.createElement('div');
@@ -1064,7 +1137,7 @@ function msgActions(m, opts) {
   cb.className = 'act-copy act-compact';
   const cbOrig = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"/><path d="m9.5 5.5 2.5 2.5 2.5-2.5"/><path d="M12 21v-5"/><path d="m9.5 18.5 2.5-2.5 2.5 2.5"/><path d="M4 12h16"/></svg>压缩';
   cb.innerHTML = cbOrig;
-  cb.title = '折叠这一轮及更早的对话（这一轮本身也在内）：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果；原文可随时用历史查询工具搜回';
+  cb.title = '折叠这一轮及更早的对话（这一轮本身也在内）：保留用户输入与正文、工具调用名与参数，去掉思考过程与工具结果。这一段都已折叠过时再点一次，才进一步只留用户输入与结论。原文可随时用历史查询工具搜回';
   cb.onclick = async () => {
     if (!state.cur || state.streaming) return;
     const sid = m.sessionId || state.cur.id;
@@ -1133,7 +1206,7 @@ async function forkFromAnswer(m, btn) {
 
 function renderRowItem(it, opts) {
   if (it.k === 'prompttail') return promptTailRows(it.env, it.seq);
-  if (it.k === 'envnote') return envNoteRow(it.text, it.prev, it.seq);
+  if (it.k === 'envnote') return envNoteRow(it);
   if (it.k === 'time') return timeNoteRow(it.text, it.seq);
   if (it.k === 'syschange') return sysChangeRow(it.prev, it.sys, it.seq);
   if (it.k === 'toolschange') return toolsChangeRow(it.prevTools, it.tools, it.seq);
@@ -1261,14 +1334,16 @@ function subTaskCard(tc, result) {
 
 /* ---------- 长消息折叠（作用于**所有会话、所有视图**的用户位气泡：
    主对话、工作任务会话、右栏子对话抽屉里的用户气泡，以及 AI 发出的用户消息
-   气泡（.msg.user.ai，偏白）——同一套 6 行规则、同一套交互。
+   气泡（.msg.user.ai，偏白）——同一套折叠机制、同一套交互，只是阈值分家
+   （用户 6 行 / AI 用户 2 行，见 foldLinesOf）。
    **系统通知气泡（.msg.sysnote）与数字助理的正文回复（.msg.assistant 的 .md）
    都不在折叠目标里**：通知内容直接全量显示，不裁剪、不出「展开 / 收起」控件
    （见 foldTargets）；模型回复多长都完整展开显示。 ----------
-   需求：渲染高度超过 6 行就默认只显示前 6 行，底部渐隐 + 「展开 / 收起」按钮；
-   短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区宽度、
-   字号一变，同一段文字换行出的行数就变，所以：
-     - 阈值 = 运行时读到的行高（line-height）× 6，与元素内容高度（scrollHeight 去掉
+   需求：渲染高度超过阈值行数就默认只显示到阈值行数，底部渐隐 + 「展开 / 收起」
+   按钮；短消息不折叠、不出按钮。判定必须基于**实际渲染出来的高度**——对话区
+   宽度、字号一变，同一段文字换行出的行数就变，所以：
+     - 阈值 = 运行时读到的行高（line-height）× 行数（foldLinesOf：用户气泡 6、
+       AI 用户气泡 2），与元素内容高度（scrollHeight 去掉
        内边距）比较；裁剪用 max-height + overflow: hidden，scrollHeight 始终是完整
        内容高度，所以一个阈值同时管折叠态与展开态，不必先解开裁剪再量（判定不受
        自己上一次裁剪的影响，也就不会自激）；
@@ -1279,11 +1354,15 @@ function subTaskCard(tc, result) {
        事件都会重建、用户气泡随之换新元素，展开过的气泡靠记忆恢复展开，不再
        被新出的思考/工具行反复折回（刷新页面才回到默认折叠）。
    作用域（2026-10-14 放开）：主对话与右栏子对话两个视图都生效，不再看会话
-   mode——按《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」，任务会话、
+   mode——按《消息类型规范.md》§7「用户与 AI 消息同一套折叠体系」，任务会话、
    子对话与主对话一致；仍不折叠的只有流式输出中的那半句与编辑态气泡
-   （2026-10-20 起，发送中/插话占位同样折叠，见 foldTargets）。 */
-const FOLD_LINES = 6;   // 折叠阈值（行）
-const FOLD_SLACK = 2;   // 容差（px）：溢出不足 2px 不算，避免取整误差误判
+   （2026-10-20 起，发送中/插话占位同样折叠，见 foldTargets）。
+   阈值分家（2026-11-05）：用户自己的消息气泡仍 6 行；AI 发出的用户消息气泡
+   （.msg.user.ai，【派发回报】/【数字助理转达】那类）默认只露 2 行——核心
+   内容（任务标题/结论）都在开头，底下细节一般人不用看。交互不变，见 foldLinesOf。 */
+const FOLD_LINES = 6;    // 用户气泡折叠阈值（行）
+const FOLD_LINES_AI = 2; // AI 用户气泡折叠阈值（行）：理由见上方注释与 foldLinesOf
+const FOLD_SLACK = 2;    // 容差（px）：溢出不足 2px 不算，避免取整误差误判
 
 let foldScheduled = false;
 let foldTimer = 0;
@@ -1313,7 +1392,7 @@ function foldKeyOf(el, view) {
 }
 
 // 是否需要折叠：**所有会话、所有视图一律生效**（此前只做数字助理主对话
-// mode=assistant，与《消息类型规范.md》§7「用户与 AI 消息同一套 6 行折叠」不符；
+// mode=assistant，与《消息类型规范.md》§7「用户与 AI 消息同一套折叠体系」不符；
 // 放开后工作任务会话、右栏子对话抽屉与主对话同一套规则，保留本函数作为唯一开关）
 function foldEnabled() {
   return true;
@@ -1346,16 +1425,25 @@ function foldTargets(view) {
   return out;
 }
 
+// 气泡各自的折叠阈值（行）：用户自己的消息气泡 6 行；AI 发出的用户消息气泡
+//（.msg.user.ai——【派发回报】/【数字助理转达】/派发指令那类灰框）只 2 行：
+// 核心内容（任务标题/结论）都在开头两行，底下细节一般人不用看，默认折起、
+// 点开看全量。展开/收起交互与用户气泡完全同一套，差别只在默认露出行数。
+function foldLinesOf(el) {
+  return el.parentElement && el.parentElement.classList.contains('ai') ? FOLD_LINES_AI : FOLD_LINES;
+}
+
 // 溢出判定：与「当前是否折叠」无关——裁剪用的是 max-height + overflow: hidden，
 // scrollHeight 始终是完整内容高度，所以一个阈值同时管折叠态与展开态，不需要先
 // 解开裁剪再量（也就不会因为切换类名反过来触发 ResizeObserver）。阈值取
-// 运行时读到行高 × 6 行，行高随字号设置变化，所以不写死像素值。
+// 运行时读到行高 × 行数（foldLinesOf：用户气泡 6、AI 用户气泡 2），行高随
+// 字号设置变化，所以不写死像素值。
 function foldMeasure(el) {
   const cs = getComputedStyle(el);
   const lh = parseFloat(cs.lineHeight);
   if (!lh) return null;
   const pad = parseFloat(cs.paddingTop || 0) + parseFloat(cs.paddingBottom || 0);
-  const limit = lh * FOLD_LINES;
+  const limit = lh * foldLinesOf(el);
   return { overflow: el.scrollHeight - pad > limit + FOLD_SLACK, maxH: pad + limit };
 }
 
@@ -1413,7 +1501,7 @@ function applyFoldsIn(view, enabled) {
     const m = enabled ? foldMeasure(el) : null;
     const btn = el.querySelector(':scope > .fold-btn');
     if (!m || !m.overflow) {
-      // 不超过 6 行（或已切走会话）：彻底恢复原样，不留按钮与遮罩
+      // 不超过阈值行数（或已切走会话）：彻底恢复原样，不留按钮与遮罩
       el.classList.remove('folded', 'fold-box');
       el.style.removeProperty('--fold-h');
       const fade = el.querySelector(':scope > .fold-fade');
@@ -1441,7 +1529,7 @@ function applyFoldsIn(view, enabled) {
         const fk = foldKeyOf(el, view);
         const open = !!fk && foldOpenMem.get(fk) === '1';
         el.dataset.foldOpen = open ? '1' : '0';
-        el.classList.toggle('folded', !open); // 无记忆时默认折叠：只显示前 6 行
+        el.classList.toggle('folded', !open); // 无记忆时默认折叠：只显示到阈值行数（foldLinesOf）
         b.textContent = open ? '收起' : '展开';
         b.setAttribute('aria-expanded', open ? 'true' : 'false');
       } else {
@@ -1476,7 +1564,7 @@ function toggleFold(el, btn) {
   if (fk) { folded ? foldOpenMem.delete(fk) : foldOpenMem.set(fk, '1'); } // 只记展开；手动收起=回到默认
   btn.textContent = folded ? '展开' : '收起';
   btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
-  if (folded) followScroll(foldViewOf(el), false); // 收起到 6 行后按所在视图重新贴底
+  if (folded) followScroll(foldViewOf(el), false); // 收回到阈值行数后按所在视图重新贴底
   else pinViewForRead(el); // 展开阅读即钉住：与过程行/折叠段同一套展开交互
 }
 
@@ -1850,7 +1938,7 @@ function renderFileDiff(t) {
   if (t.binary || (cur.exists && cur.binary)) {
     $('fvw-stat').textContent = '二进制文件 · 不支持文本对比';
     note.textContent = '这个文件的内容是二进制（改动前 ' + (t.binary ? fmtBytes(t.size || 0) : '未知') +
-      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '）。文件工具只支持文本类文件，二进制请用系统默认程序打开。';
+      '，当前 ' + (cur.exists ? fmtBytes(cur.size || 0) : '已不存在') + '）。文件工具只支持文本类文件，请点顶栏「打开方式」用系统默认程序打开。';
     note.classList.add('bad');
     note.classList.remove('hidden');
     body.innerHTML = '';
@@ -1909,13 +1997,19 @@ function renderFileDiff(t) {
   say();
 }
 
-// 顶栏：折行切换（长行横向滚动 ↔ 折行）与重新读取
+// 顶栏：折行切换（长行横向滚动 ↔ 折行）、用系统默认应用打开当前文件
+// （open-path 用户手势直通端点，与浏览器页签「打开方式」同一链路）与重新读取
 $('fvw-wrap').onclick = () => {
   fvwWrap = !fvwWrap;
   $('fvw-wrap').classList.toggle('on', fvwWrap);
   $('fvw-wrap').title = fvwWrap ? '当前：长行折行显示（点击改为横向滚动）' : '当前：长行横向滚动（点击改为折行显示）';
   const tbl = $('fvw-body').querySelector('.fdiff-table');
   if (tbl) tbl.classList.toggle('wrap', fvwWrap);
+};
+$('fvw-sysopen').onclick = () => {
+  if (!fvwSid || !fvwPath) return; // 空态（没在看任何文件）：无事可做
+  api('/api/sessions/' + encodeURIComponent(fvwSid) + '/open-path', { method: 'POST', body: JSON.stringify({ path: fvwPath }) })
+    .catch((e) => alert('打开失败：' + e.message));
 };
 $('fvw-reload').onclick = () => loadFileDiff();
 
@@ -2694,12 +2788,12 @@ function renderMessages(msgs, view, opts) {
     wrap.className = 'msg user' + (pm.kind === 'aiuser' ? ' ai' : '') + ' pending-steer';
     wrap.dataset.pendingSteer = pm.id;
     const b = document.createElement('div');
-    b.className = 'bubble';
+    b.className = 'bubble' + (pm.kind === 'aiuser' ? ' md' : '');
     const badge = document.createElement('span');
     badge.className = 'q-badge q-badge-steer';
     badge.textContent = '插话中';
     b.appendChild(badge);
-    appendQuotedBody(b, pm.content); // 附件块/引用块与正式气泡同款拆行渲染（含折叠，长注记不再是一大坨原文）
+    appendQuotedBody(b, pm.content, pm.kind === 'aiuser'); // 附件块/引用块与正式气泡同款拆行渲染（含折叠，长注记不再是一大坨原文）；aiuser 正文同样 MD 渲染，落库前后形态一致
     wrap.appendChild(b);
     // 悬停操作行：与正式用户气泡同一套样式，只有「编辑」（退回输入框改完重发）。
     // 只给自己发的插话（kind 空/chat）；派发注入的其他形态不参与。
@@ -3407,6 +3501,7 @@ function pushApproval(ev) {
 }
 
 function removeApproval(id) {
+  hideAskAlertIfMatched(id); // 声光提醒正为它闪着：审批已决定/超时收卡，收起并取消朗读
   state.approvals = state.approvals.filter((a) => a.id !== id);
   askDraftClear(id);
   renderPanels();
@@ -3647,10 +3742,13 @@ function showAskAlert(ev) {
   const ov = $('ask-alert');
   if (!ov) return;
   hideAskAlert(); // 上一次可能还挂着（同一条再来一次）：彻底收干净再开
-  askAlertQid = ev.questionId || '';
+  // 提问/计划审批与越权审批共用这一层提醒：kind 按来源措辞，askAlertQid 收
+  // 两种 id（问题解决/审批决定时 hideAskAlertIfMatched 据此收起并取消朗读）
+  askAlertQid = ev.questionId || ev.approvalId || '';
   askAlertPayload = ev;
+  const kind = ev.approvalId ? '审批' : '提问';
   $('ask-alert-text').textContent =
-    (ev.title ? '来自「' + ev.title + '」的提问：' : '') + (ev.summary || '有个问题需要你确认');
+    (ev.title ? '来自「' + ev.title + '」的' + kind + '：' : '') + (ev.summary || '有个请求需要你确认');
   ov.classList.remove('hidden', 'settle', 'solid'); // 从头来：先淡压暗，再慢慢渐变到主题色
   if (askAlertSettleTimer) clearTimeout(askAlertSettleTimer);
   askAlertSettleTimer = setTimeout(() => ov.classList.add('settle'), 6000);
@@ -5235,7 +5333,7 @@ function renderQueueDock(view) {
     txt.textContent = qdPrev.length > 200 ? qdPrev.slice(0, 200) + '…' : qdPrev;
     txt.title = pm.content;
     li.appendChild(txt);
-    li.appendChild(qdAction('steer', view, pm, '插话发送：下一次调用模型前生效', '', '立即插话'));
+    li.appendChild(qdAction('steer', view, pm, '插话发送：模型输出中立即打断生效；工具执行中等下一步调用模型', '', '立即插话'));
     // 编辑只给自己发的排队项（kind 空/chat）；数字助理派发注入的不参与
     if (!pm.kind || pm.kind === 'chat') {
       li.appendChild(qdAction('edit', view, pm, '退回输入框编辑', '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'));
@@ -5355,7 +5453,7 @@ async function pendingAction(view, id, action) {
       method: 'POST', body: JSON.stringify({ id, action }),
     });
     applyPending(view, d.pending);
-    pendingHint(view, action === 'steer' ? '已提前为插话：下一次调用模型前生效' : '已移出队列');
+    pendingHint(view, action === 'steer' ? '已提前为插话：模型输出中立即打断生效' : '已移出队列');
   } catch (e) {
     pendingHint(view, '操作失败：' + e.message);
   }
@@ -5423,7 +5521,7 @@ async function sendMidrun(content, viaInput, view, voiceUsed) {
     renderQueueDock(view);
     view._pinned = false; // 插话/排队展示在对话末尾：恢复跟随看得到回执
     renderMessages(view.state.msgs, view);
-    pendingHint(view, d.mode === 'steer' ? '已插话：下一次调用模型前注入生效' : '已排队：本轮结束后自动发送');
+    pendingHint(view, d.mode === 'steer' ? '已插话：模型输出中立即打断生效；工具执行中等下一步调用模型' : '已排队：本轮结束后自动发送');
   } catch (e) {
     pendingHint(view, '发送失败：' + e.message);
     return;
@@ -5464,7 +5562,13 @@ function userChatLanded(msgs, content) {
 // 中途放弃发送的出口要收回（armed 只记自己置的位：进函数时已在流式态的，段
 // 属于正在跑的那轮，不动）。
 async function prepareSend(forceContent, view) {
-  if (view._sendBusy) return null;
+  if (view._sendBusy) {
+    // 第一次发送还停在附件落盘阶段（flush 期间 _sendBusy/_attachFlush 都占着）：
+    // 静默吞掉这次点击，用户以为点了没反应——给一句指路（✕ 移除上传中的附件
+    // 即解锁）。普通防重入（钩子/建会话中的连按回车）依旧静默忽略。
+    if (view._attachFlush) attachHint(view, '附件还在上传中，稍候再发送；点附件上的 ✕ 可移除它', 4000);
+    return null;
+  }
   view._sendBusy = true;
   const armed = !view.state.streaming;
   if (armed) runHintOn(view);
@@ -5486,7 +5590,7 @@ async function prepareSend(forceContent, view) {
     if (armed) runHintOff(view);
     return;
   }
-  if (view._attachFlush) { if (armed) runHintOff(view); return; } // 附件正在落盘：忽略重复点发送
+  if (view._attachFlush) { if (armed) runHintOff(view); return; } // 附件正在落盘：忽略重复点发送（提示在入口 _sendBusy 处统一给）
   if (view.state.streaming) {
     // 执行中插话/排队：先传附件（返回注记），组装后的内容进插话/排队队列——
     // 模型在消息真正生效那一刻才看到附件块与正文，文件信息不再先于消息到达
@@ -6274,10 +6378,10 @@ function splitQuoted(raw) {
 // 气泡正文渲染：附件块逐行渲染灰色附件行（与引用行同款：CSS 截断 + title 全文），
 // 引用块拆成灰色引用行（截断 + title 全文），正文里“引用N”与对得上号的文件标记
 // 渲染成灰色胶囊
-function appendQuotedBody(b, raw) {
+function appendQuotedBody(b, raw, mdBody) {
   const qm = splitQuoted(raw);
-  // 没有任何块也走标记切段：文件标记因对不上号按普通文字放行（兜底语义一致）
-  if (!qm) { appendQuoteBodyText(b, raw, [], []); return; }
+  // 没有任何块：正文整段落位（普通消息走标记切段兜底，mdBody 时整段 MD 渲染）
+  if (!qm) { appendBodyText(b, raw, [], [], mdBody); return; }
   qm.attNotes.forEach((n) => {
     const line = document.createElement('span');
     line.className = 'msg-quote';
@@ -6292,7 +6396,23 @@ function appendQuotedBody(b, raw) {
     line.title = q;
     b.appendChild(line);
   });
-  appendQuoteBodyText(b, qm.rest, qm.quotes, qm.attNotes);
+  appendBodyText(b, qm.rest, qm.quotes, qm.attNotes, mdBody);
+}
+
+// 正文渲染分流：mdBody=true（aiuser：任务书/派发回报/待办转交）时整段按
+// Markdown 渲染——这些消息天然带 MD 结构（模型正文习惯：列表/表格/路径），
+// 渲染器与数字助理正文同款（md()，见 app-core.js）；否则走「引用N/文件标记→
+// 灰胶囊」的用户消息切段（那是用户输入语法，aiuser 正文不依赖，两分支不交叉）
+function appendBodyText(b, text, quotes, attNotes, mdBody) {
+  if (mdBody) {
+    const src = String(text == null ? '' : text);
+    if (!src) return;
+    const box = document.createElement('div');
+    box.innerHTML = md(src);
+    b.appendChild(box);
+    return;
+  }
+  appendQuoteBodyText(b, text, quotes, attNotes);
 }
 
 // 正文按标记切段：引用标记与文件名形态的引号串（以 .扩展名 结尾，如“报告fina….docx”）
@@ -6580,6 +6700,7 @@ function setupInputMarks(view) {
       sp.textContent = seg.text;
       bd.appendChild(sp);
     }
+    syncBdScroll(); // 重建会把滚动归零：按输入框当前 scrollTop 对齐（内容流位置）
   }
   let raf = 0;
   function schedule() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
@@ -6596,8 +6717,12 @@ function setupInputMarks(view) {
   } catch (e) { /* 老内核：靠 input 事件兜底 */ }
 
   ta.addEventListener('input', schedule);
-  // 内容超高时输入框自己滚：背衬层跟着上移保持对齐（同语音灰字层）
-  ta.addEventListener('scroll', () => { bd.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)'; });
+  // 内容超高时输入框自己滚：背衬层用 scrollTop 镜像跟着滚——裁剪窗（盒子本身
+  // 的 overflow:hidden，钉在输入框位置）不动、只滚内容，胶囊与文字同步进出
+  // 可视区。绝不能平移盒子本身（曾用 translateY：裁剪窗跟着上移逃出输入卡，
+  // 超长输入时灰胶囊悬空浮在输入区上方——裁剪窗脱离了该管它的上下文）。
+  ta.addEventListener('scroll', syncBdScroll);
+  function syncBdScroll() { bd.scrollTop = ta.scrollTop; }
   window.addEventListener('resize', () => { syncMetrics(); render(); });
   syncMetrics();
   render();
@@ -7288,10 +7413,13 @@ function syncComposer(view) {
   // 以下只属于主对话区（首页草稿 / 顶栏徽标 / 目录胶囊）
   if (view !== mainView) return;
   syncPlusChecks(view);
-  // 顶栏远程徽标（挂了远程工作区的会话）
+  // 顶栏远程徽标（挂了远程工作区的会话）。只显示固定短字「远程」：完整地址
+  // （user@host:dir）放 title 悬停与点击后的 SSH 弹窗里——2026-11-04 前徽标
+  // 内联整段地址，手机端两行顶栏被它挤断（标题被顶到第三行、同行胶囊被裁），
+  // 桌面端也挤标题。电脑/手机同一套：短徽标 + flex:none，永不参与换行压缩。
   const rb = $('remote-badge');
   if (state.cur && state.cur.remote) {
-    rb.textContent = '远程 ' + remoteDisplay(state.cur.remote);
+    rb.textContent = '远程';
     rb.title = 'SSH 远程工作区 ' + remoteDisplay(state.cur.remote) + '（点击配置/解除）';
     rb.classList.remove('hidden');
   } else {
@@ -7674,6 +7802,11 @@ function removeAttachment(view, id) {
   const i = list.findIndex((a) => a.id === id);
   if (i < 0) return;
   const a = list[i];
+  // 上传中的附件：中止其挂起中的上传（flushAttachments 还 await 着它的 fetch）。
+  // 不中止的话请求要等到自身失败/超时才结束——期间 _attachFlush 一直占着（点
+  // 发送全被吞），结束后还会对这个已删附件再弹一次上传失败：正是「删了附件仍
+  // 报同一个文件未上传」的残留链
+  if (a._abort) { try { a._abort.abort(); } catch (e) { /* 已结束的上传再 abort 无害 */ } }
   if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   // 它在输入框里的胶囊标记一并摘掉：认领要在移出列表之前算，而且只摘它自己那一处
   // （同名两份的标记文字相同，按文本 split 全删会把另一份的一起带走）
@@ -7808,26 +7941,37 @@ async function flushAttachments(view) {
   if (box) box.classList.add('busy');
   let failed = 0, firstErr = '';
   const notes = [];
+  // 迭代用快照：上传是多轮 await，期间用户可能 ✕ 掉任何一项。直接 for..of 原数组
+  // 会在删掉"当前正在传的那项"时让迭代器跳位漏传后面的附件（消息发出、附件却
+  // 没带上）；快照 + includes 校验让被删项自然跳过，其余项一个不少。
+  const queue = [...list];
   try {
-    for (const a of list) {
+    for (const a of queue) {
+      if (!list.includes(a)) continue; // 已被 ✕ 删掉：不再上传
       a.status = 'uploading';
+      a._abort = new AbortController(); // 删除附件时按它中止挂起中的上传
       renderAttachments(view);
       try {
         const url = '/api/sessions/' + sid + '/upload';
         let r;
         if (a.path) {
-          r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: a.path }) });
+          r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: a.path }), signal: a._abort.signal });
         } else {
           const fd = new FormData();
           fd.append('file', a.file, a.name);
-          r = await fetch(url, { method: 'POST', body: fd });
+          r = await fetch(url, { method: 'POST', body: fd, signal: a._abort.signal });
         }
         if (!r.ok) throw new Error(await uploadErrText(r));
         const d = await r.json().catch(() => ({}));
-        a.status = 'staged';
         a.note = (d && d.note) || '';
-        if (a.note) notes.push(a.note);
+        // 注记是「用户附件：」块的唯一来源：响应正常却没带回注记时若按成功放行，
+        // 消息照发、文件块缺失——比报错拦下更糟的静默失败，按失败处理
+        if (!a.note) throw new Error('上传响应缺少注记');
+        if (!list.includes(a)) continue; // 传完了但它已被 ✕ 删掉：丢弃注记，不并入本轮
+        a.status = 'staged';
+        notes.push(a.note);
       } catch (e) {
+        if (!list.includes(a)) continue; // 已被删掉（含 ✕ 触发的 abort）：不计失败、不提示
         a.status = 'error';
         a.error = String((e && e.message) || e);
         if (!firstErr) firstErr = a.error;

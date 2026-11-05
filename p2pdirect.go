@@ -30,7 +30,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -214,7 +213,11 @@ func (s *dcSession) onFrame(d *webrtc.DataChannel, data string) {
 	}
 	switch f.T {
 	case "req":
-		if !strings.HasPrefix(f.Path, "/api/") {
+		// 路径白名单与中继侧（remoteaccess.go）同口径：/api/ 常规接口 + /sites、
+		// /s/（小程序平台内嵌代理）。2026-11-04 事故：平台代载上线时只扩了中继侧
+		// 白名单，直连侧漏改——手机 P2P 直连（默认更快路径）打开平台页必 403
+		// 「path not allowed」，错误文案又指向「家端不在线」，极具误导性。
+		if !relayPathAllowed(f.Path) {
 			s.send(d, map[string]any{"t": "err", "id": f.ID, "msg": "[403] path not allowed"})
 			return
 		}

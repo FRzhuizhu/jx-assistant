@@ -151,7 +151,7 @@ func TestAskAlertWakesWindowAndBeeps(t *testing.T) {
 
 	q := &UserQuestion{ID: "q-wake", SessionID: "s1", SessionTitle: "会话一",
 		Kind: askKindPlan, Question: "请审批以下执行计划"}
-	a.fireAskAlert(q)
+	a.fireAskAlert(q.ID, "", q.SessionID, q.SessionTitle, q.Question, "领导，在吗？有个问题需要您审批确认一下。")
 
 	select {
 	case got := <-front:

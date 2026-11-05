@@ -1,0 +1,35 @@
+# VoiceTypeGo —— 独立语音输入法（Go + WebView2）
+#
+# 只纳入源码与配置；大件与运行时产物一律不入库：
+#   models/        模型（168MB）：与主程序「语音组件」共用同一份，
+#                  运行时由 VT_MODEL_DIR 指向 <主程序>/组件/voice/models
+#   models_off/    历史重复副本（等确认后删除）
+#   webview2-profile/ WebView2 用户数据目录（缓存、几十 MB）
+#   go-webview2/   本地依赖库（go.mod 里 replace 指向它，需随仓库存在，
+#                  但它是第三方源码，单独管理更清楚——见 README）
+
+# 模型（大件，共用组件那份）
+models/
+models_off/
+
+# WebView2 运行时目录
+webview2-profile/
+
+# 构建产物
+*.exe
+*.exe~
+*.syso
+
+# 运行日志与运行时状态
+vt.log
+asr.log
+trigger.txt
+history.json
+
+# 本地诊断输出
+*.bmp
+*.png
+
+# Python
+__pycache__/
+*.pyc

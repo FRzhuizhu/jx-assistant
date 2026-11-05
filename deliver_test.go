@@ -2,14 +2,16 @@ package main
 
 // deliver_result 合并后的针对性测试（deliver.go）：
 //   - 只填 path：只登记交付卡片，无搬运作业；
-//   - path + upload：卡片登记 + 轮末搬运作业；flush 执行后卡片路径改写为
-//     原件位置——产品核心语义：搬运成功 → 卡片指 B；失败/没搬 → 卡片指 A
-//     （源文件不动，卡片照常可打开）；
+//   - path + upload + filename（与门）：卡片登记 + 轮末搬运作业；flush 执行后
+//     卡片路径改写为原件位置——产品核心语义：搬运成功 → 卡片指 B；失败/没搬 →
+//     卡片指 A（源文件不动，卡片照常可打开）；
+//   - 与门：upload 与 filename 只给其一，调用立即报错、零登记零作业；
 //   - 搬运失败（目标目录被同名文件占位，MkdirAll 兜底也救不回来）：卡片
 //     保持 A、源文件未动；
 //   - 计划模式：带 upload 拒绝（原 deliver_file 的硬拦语义收窄到 upload 参数），
 //     不带照常登记；
-//   - upload 解析：uid / 原件路径 / 不填自动按副本路径反查；解析不了报可读错误。
+//   - upload 解析：uid / 原件路径 / 工作区副本路径；解析不了报可读错误；
+//     不给 upload＝不搬运（自动反查已随与门移除）。
 
 import (
 	"encoding/json"
@@ -114,6 +116,40 @@ func TestDeliverCardOnly(t *testing.T) {
 	}
 }
 
+// TestDeliverUploadFilenameGate 与门：upload 与 filename 必须成对提供——
+// 只给其一在调用时立即报错（不落到轮末执行），不产生任何登记与作业；
+// 两者都给才登记搬运。
+func TestDeliverUploadFilenameGate(t *testing.T) {
+	a, tctx, sess, ws := deliverFixture(t)
+	u := seedUpload(t, a, sess, ws, "报告.docx", "原稿")
+
+	// 只给 upload 缺 filename：立即失败
+	args, _ := json.Marshal(map[string]any{"files": []map[string]any{{"path": u.CopyPath, "upload": "u1"}}})
+	if _, err := deliverResultTool().Run(tctx, json.RawMessage(args)); err == nil || !strings.Contains(err.Error(), "缺 filename") {
+		t.Fatalf("缺 filename 应立即报错: %v", err)
+	}
+
+	// 只给 filename 缺 upload：立即失败
+	args, _ = json.Marshal(map[string]any{"files": []map[string]any{{"path": u.CopyPath, "filename": "新名.docx"}}})
+	if _, err := deliverResultTool().Run(tctx, json.RawMessage(args)); err == nil || !strings.Contains(err.Error(), "缺 upload") {
+		t.Fatalf("缺 upload 应立即报错: %v", err)
+	}
+
+	// 与门拒绝即整体失败：零登记、零作业（不产生半截登记）
+	if got := deliveryPaths(t, a, sess.ID); len(got) != 0 {
+		t.Fatalf("与门拒绝时不应产生登记: %v", got)
+	}
+	if n := a.Store.PendingDeliveryCount(sess.ID); n != 0 {
+		t.Fatalf("与门拒绝时不应产生作业: %d", n)
+	}
+
+	// 成对提供：正常登记搬运
+	deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": "u1", "filename": "报告.docx"})
+	if n := a.Store.PendingDeliveryCount(sess.ID); n != 1 {
+		t.Fatalf("成对提供应登记 1 项搬运: %d", n)
+	}
+}
+
 // TestDeliverMoveRewritesCard 核心语义：upload 搬运成功后，卡片路径改写为
 // 原件位置；源文件删除、原件位置内容为成品、被替代的旧文件快照备份。
 func TestDeliverMoveRewritesCard(t *testing.T) {
@@ -122,7 +158,7 @@ func TestDeliverMoveRewritesCard(t *testing.T) {
 	if err := os.WriteFile(u.CopyPath, []byte("改好的成品"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	out := deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": "u1"})
+	out := deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": "u1", "filename": "报告.docx"})
 	if !strings.Contains(out, "已登记 1 个交付文件") || !strings.Contains(out, "已登记轮末搬运") {
 		t.Fatalf("回执异常: %s", out)
 	}
@@ -169,7 +205,7 @@ func TestDeliverMoveRewritesCard(t *testing.T) {
 func TestDeliverMoveFailureKeepsCard(t *testing.T) {
 	a, tctx, sess, ws := deliverFixture(t)
 	u := seedUpload(t, a, sess, ws, "报告.docx", "原稿")
-	deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": "u1"})
+	deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": "u1", "filename": "报告.docx"})
 	// 登记后目标目录被删、原地变同名文件占位：MkdirAll 兜底救不回来
 	origDir := filepath.Dir(u.OrigPath)
 	if err := os.RemoveAll(origDir); err != nil {
@@ -198,7 +234,7 @@ func TestDeliverPlanModeRejectsUpload(t *testing.T) {
 	a, tctx, sess, ws := deliverFixture(t)
 	u := seedUpload(t, a, sess, ws, "报告.docx", "原稿")
 	tctx.sess.PlanMode = true
-	args, _ := json.Marshal(map[string]any{"files": []map[string]any{{"path": u.CopyPath, "upload": "u1"}}})
+	args, _ := json.Marshal(map[string]any{"files": []map[string]any{{"path": u.CopyPath, "upload": "u1", "filename": "报告.docx"}}})
 	if _, err := deliverResultTool().Run(tctx, json.RawMessage(args)); err == nil || !strings.Contains(err.Error(), "计划模式下不能登记搬运") {
 		t.Fatalf("计划模式带 upload 应被拒: %v", err)
 	}
@@ -215,26 +251,26 @@ func TestDeliverPlanModeRejectsUpload(t *testing.T) {
 	}
 }
 
-// TestDeliverUploadRefResolution upload 引用的三条解析路：显式给原件路径、
-// 不给（按副本自动反查）、给不存在的编号报可读错误。
+// TestDeliverUploadRefResolution upload 引用的解析路：显式给原件路径、
+// 不给（不搬运，自动反查已随与门移除）、给不存在的编号报可读错误。
 func TestDeliverUploadRefResolution(t *testing.T) {
 	a, tctx, sess, ws := deliverFixture(t)
 	u := seedUpload(t, a, sess, ws, "报告.docx", "原稿")
 
-	// 显式给原件路径
-	deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": u.OrigPath})
+	// 显式给原件路径（换新文件名送回）
+	deliverCall(t, tctx, map[string]any{"path": u.CopyPath, "upload": u.OrigPath, "filename": "报告-改.docx"})
 	if n := a.Store.PendingDeliveryCount(sess.ID); n != 1 {
 		t.Fatalf("原件路径应解析成功: %d", n)
 	}
 
-	// 不给 upload：按 source（工作区副本）自动反查同一条上传记录
+	// 不给 upload：只登记卡片，不产生搬运作业
 	deliverCall(t, tctx, map[string]any{"path": u.CopyPath})
-	if n := a.Store.PendingDeliveryCount(sess.ID); n != 1 { // 同目标 pending 去重覆盖，仍 1
-		t.Fatalf("自动反查后同目标作业应去重仍为 1: %d", n)
+	if n := a.Store.PendingDeliveryCount(sess.ID); n != 1 {
+		t.Fatalf("不带 upload 不应产生新作业: %d", n)
 	}
 
-	// 给不存在的编号：可读错误并列出可用编号
-	args, _ := json.Marshal(map[string]any{"files": []map[string]any{{"path": u.CopyPath, "upload": "u9"}}})
+	// 给不存在的编号（filename 成对给齐，穿过与门后走到解析失败）：可读错误并列出可用编号
+	args, _ := json.Marshal(map[string]any{"files": []map[string]any{{"path": u.CopyPath, "upload": "u9", "filename": "报告.docx"}}})
 	_, err := deliverResultTool().Run(tctx, json.RawMessage(args))
 	if err == nil || !strings.Contains(err.Error(), "找不到上传记录 u9") || !strings.Contains(err.Error(), "u1=") {
 		t.Fatalf("错误应列出可用编号: %v", err)

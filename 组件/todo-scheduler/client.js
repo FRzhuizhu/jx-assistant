@@ -1,6 +1,6 @@
 /* 组件：待办与定时任务 —— 浏览器半边。
  *
- * 侧边栏「数字助理主对话」下方插一个入口按钮（与相邻按钮同一个 .side-btn 组件），
+ * 侧栏入口区（.actions）末尾独立挂载一个入口按钮（与其他入口同一个 .side-btn 组件），
  * 点击后把待办页渲染进主列（#msg-col）——就是对话页的同一个容器，等同级页面而非
  * 浮窗：顶栏标题改成本页名字、底部输入区收起，内容随 #messages 自然滚动。
  *   - 一条持久化的任务清单：新建 / 编辑 / 删除（两段确认）/ 启用停用 / 立即执行 /
@@ -96,10 +96,10 @@
       '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M5 3L2 6M19 3l3 3"/></svg>' +
       '<span class="sb-label">待办与定时任务</span>';
     btn.onclick = () => { if (st.page) closePage(); else openPage(); };
-    // 位置：紧跟「跟数字经理对话」入口，在工作区段头之上
-    const anchor = document.getElementById('btn-new-assistant');
-    if (anchor && anchor.parentElement === actions) anchor.insertAdjacentElement('afterend', btn);
-    else actions.appendChild(btn);
+    // 位置：入口区末尾独立挂载——组件按钮不锚定其他按钮的 DOM 位置（锚定＝把
+    // 自己的排序耦合进别人的 DOM，别人换位/下线时组件按钮被动搬家或落入兜底
+    // 路径）。与其他入口平级自然排列（当前序：数字助理 → 派任务给新助理 → 待办）
+    actions.appendChild(btn);
   }
 
   /* ---------- 主列页面 ---------- */

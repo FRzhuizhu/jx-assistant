@@ -34,6 +34,10 @@ try {
 } catch { }
 
 # 3) 编译（失败即抛出，调用方按退出码拒绝启动旧 exe）
+# 先把组件里的独立语音输入法编出来（独立 Go 模块，主程序 build 不带它）
+& (Join-Path $PSScriptRoot "编译语音输入法.ps1")
+if ($LASTEXITCODE -ne 0) { throw "语音输入法编译失败" }
+
 go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1" -o (Join-Path $root "坚祥数字助理GO.exe") $root
 if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 Write-Host "完成：$root\坚祥数字助理GO.exe（开发桌面版，gitignore 的本地产物）"

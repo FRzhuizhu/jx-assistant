@@ -267,6 +267,13 @@ dispatch_task 的可选参数与人工在界面新建工作任务**一一对应*
 
 - **工作区必须给准确的仓库地址**：dispatch_task 的 workspace 要精确到项目仓库目录——用户的 Git 组件只能在正确的仓库地址下使用，工作区给得随意（给到上级目录或工作区根），用户在那个任务里就没法用 Git 面板了。找地址的优先级：① 自己查（用 list_dir / glob 在常见位置找两下）；② 查不到就直接问用户，别猜；③ 必要时可先派个只读小任务专人查地址，查到再派主任务。找两下找不到就问，不硬猜。
 
+**常事沉淀成技能（干前查重、干完沉淀）**：
+
+- **时不时查重**：时不时看一眼用户要干的功能在企业技能包 / 工作流（技能市场）里是否已有现成的——有就用，没有再从零干。
+- 长期陪伴用户时留意他**反复做的常事**：同样的活干过两三次，就值得主动建议把它沉淀成标准工作流/技能——用 skill-create 模式派个任务去制作，做好后以后一句话就能复用，不必每次从头交代。
+- 属于**企业共同的工作流程**（同事也会用到的），做好后建议用户把它上传到公司的技能市场（界面「企业技能包 / 工作流」页），共享给全公司。
+- **上传/共享前必须检查技能内容不含敏感信息**：API 密钥、密码、内网地址凭据等一律不得出现在将要上传的技能里。
+
 ## 汇报
 
 派发工具立即返回后，先简短告知用户「已经安排」。任务会话在后台执行，结束时你会**自动收到**一条【派发回报】消息：首句写明这一轮是怎么结束的（正常完成 / 用户手动停止 / 中断原因），下面是它的压缩摘要——共几轮几步、**最终答复全文**（不再截断，只在极长时才截断并注明完整版在第几条）、最终答复之后的结尾消息、过程要点（正常完成只给要点；中断时给断点附近的原文）、**改动文件清单**（路径已与实际落盘核对过，相对路径标注了所属工作区）。系统会随即触发你说一轮面向用户的汇报：用用户听得懂的话讲清楚做成了什么、结果在哪、有没有留下没做完的事。用户想细看，就提示他点开该任务。
@@ -294,7 +301,7 @@ const managerCoordPrompt = `
 - 排先后是你的活：同一样东西同一时间只让一个会话动，给每个会话讲清顺序；判断依据就用 list_sessions / read_session_summary 看谁在跑、改了哪些文件。
 - 这条通道只传消息，不是审批：删除、发布、提权这类事仍然要用户点头。处理完顺手给用户一句话汇报。
 
-**中途发话一律插话。**用 send_to_session 给正在执行的会话发话时，内容会注入它**正在执行的这一轮**——对方下一次调用模型就能看到并纳入上下文（与 call_api 调 POST /api/sessions/{id}/interject mode=steer 完全等价，直接用 send_to_session 即可，不必绕 call_api）；对方空闲时则作为新需求直接开跑。所以只要中途发话，肯定是当场插进去的：纠偏（发现任务方向错了，立刻喊停转向）、回答刚发来的求助、补一句要求，都直接发。
+**中途发话一律插话。**用 send_to_session 给正在执行的会话发话时，内容会注入它**正在执行的这一轮**：对方正处于模型调用中（思考/正文输出）会被**立即打断**——半截输出带打断标注落库，下一步带着你的话重新调模型；对方正在执行工具则等它下一步调用模型前注入（与 call_api 调 POST /api/sessions/{id}/interject mode=steer 完全等价，直接用 send_to_session 即可，不必绕 call_api）；对方空闲时则作为新需求直接开跑。所以只要中途发话，肯定是当场插进去的：纠偏（发现任务方向错了，立刻喊停转向）、回答刚发来的求助、补一句要求，都直接发。
 - 想等那条 AI 干完当前活、再让它接下一个任务的，就不要现在发——等它的【派发回报】来了再派下一个活（正好先确认它这轮的回复内容）。不要用提前发一句占位排队的方式衔接任务。
 - 停掉会话用 stop_session（仅按用户指示）。`
 
@@ -711,12 +718,12 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString(block + "\n")
 		}
 	}
-	// 企业技能市场（marketURL 来自服务端下发/设置页「网络」分区的同一个值）：
+	// 企业技能包 / 工作流（marketURL 来自服务端下发/设置页「网络」分区的同一个值）：
 	// 一句话告知地址与自签证书注意点即可——命令行带 -k 就能拉到 JSON 清单，
 	// 不展开接口与装卸细节。未配置不注入；行落在快照尾部，升级后存量会话以
 	// 纯新增差分送达，不触发全量重发。
 	if a.Cfg.MarketURL != "" {
-		b.WriteString("- 企业技能市场：" + a.Cfg.MarketURL + "（自签 HTTPS，命令行访问需带 -k）\n")
+		b.WriteString("- 企业技能包 / 工作流：" + a.Cfg.MarketURL + "（自签 HTTPS，命令行访问需带 -k）\n")
 	}
 	return b.String()
 }
@@ -851,7 +858,7 @@ func winEncodingNotes(hasPwsh7 bool) string {
 	}
 	return "- 中文编码：PowerShell 命令引擎已自动前置 $OutputEncoding=[Console]::OutputEncoding=UTF8，并注入 PYTHONUTF8=1、PYTHONIOENCODING=utf-8；需要 GBK 老程序（如 findstr 按代码页匹配中文）时在命令内自行改回：$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(936)，只影响该条命令\n" +
 		ps1 + "\n" +
-		"- 其他文件编码：文本文件一律 UTF-8 无 BOM 读写；.cmd/.bat 按系统代码页（GBK）解析，不要把中文面值写进批处理；路径、标识符、命令保持原文不翻译\n"
+		"- 其他文件编码：文本文件一律 UTF-8 无 BOM 读写；.cmd/.bat 须 ANSI/GBK 编码 + CRLF 行尾（防 cmd 乱码/拆行）；路径、标识符、命令保持原文不翻译\n"
 }
 
 // kernelRelease：uname -r，失败返回空。
@@ -1170,9 +1177,11 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 	modelFallback := false   // 专家预设模型不可用 → 切全局默认重试过一次（防循环）
 	autoSwitched := false    // 公司通道连接失败 → 自动停用并切可用提供方（每轮执行体一次）
 
-	// interjectsBefore 在下一次调用模型前落库插话（不打断当前步骤），
-	// 返回是否注入了消息。落库即可——上下文每步从存储重建，自然带上。
-	// 落库身份取待生效项自带的 kind/origin（用户插话=chat，派发注入=aiuser）。
+	// interjectsBefore 在下一次调用模型前落库插话，返回是否注入了消息。落库即可
+	// ——上下文每步从存储重建，自然带上。模型调用中来的插话已由 pushPending 里的
+	// kickModelStream 掐断了当前流，主循环 continue 到这里接着注入（打断见 RunAgent
+	// 的 steered 分支）。落库身份取待生效项自带的 kind/origin（用户插话=chat，
+	// 派发注入=aiuser）。
 	interjectsBefore := func(emit func(Event)) bool {
 		got := a.drainSteer(sess.ID)
 		for _, pm := range got {
@@ -1238,6 +1247,13 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 		}
 		req := ChatRequest{Model: target.Model, Messages: msgs, Tools: pack.Tools}
 		req.ApplyThinking(sess.Thinking) // 会话级思考档位（空串=服务端默认）
+		// 本步模型调用的步级 ctx：插话到达时 kickModelStream 取消它——当前模型流
+		// 立即中断，主循环 continue 到下一步带着插话重组重调（见下方 steered
+		// 分支）。句柄在模型调用结束、进入工具执行段前注销：工具运行中来的插话
+		// 不触发取消，照旧等下一步调用模型前注入。用户停止走 run.ctx 取消，
+		// 会传导到 stepCtx，语义不变。
+		stepCtx, stepCancel := context.WithCancel(ctx)
+		modelKick := a.beginModelStream(sess.ID, stepCancel)
 		var text strings.Builder
 		var reasoning strings.Builder
 		var calls []ToolCall
@@ -1268,7 +1284,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 				}
 				lastOut = t
 			}
-			err = StreamChat(ctx, target, req, StreamCallbacks{
+			err = StreamChat(stepCtx, target, req, StreamCallbacks{
 				// 模型流强断登记（停止看门狗硬终结用）：流建立时注册、结束时注销——
 				// 硬停止时直接断开底层连接，不依赖 ctx 取消生效
 				OnBody: func(abort func()) {
@@ -1301,6 +1317,9 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					sess.UsageOutput += int64(u.CompletionTokens)
 					sess.UsageCalls++
 					_ = a.Store.TouchRunMeta(sess) // 只回写用量列，不覆盖并发的权限等配置改动
+					// 间隔制压缩的 token 单位记录（chars 单位下 no-op）：间隔 = 最近
+					// usage − 压缩后基线（context.go 的 noteCompactUsage）
+					a.noteCompactUsage(sess.ID, target.Model, u.PromptTokens)
 				},
 			})
 			// 调用日志（引擎记录）：成败都落——发送规模、前缀指纹、返回、缓存命中、耗时、
@@ -1332,7 +1351,7 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 					continue
 				}
 			}
-			if attempt >= modelTries || ctx.Err() != nil || !isRetryableModelErr(err) {
+			if attempt >= modelTries || stepCtx.Err() != nil || !isRetryableModelErr(err) {
 				break
 			}
 			delay := modelRetryDelays[attempt-1]
@@ -1340,16 +1359,34 @@ func (a *App) RunAgent(ctx context.Context, sess *SessionMeta, emit func(Event))
 			emit(Event{Type: "auto_retry", Output: fmt.Sprintf("网络异常（%s）；%d 秒后自动重试（第 %d/%d 次）…",
 				truncateRunes(strings.Join(strings.Fields(err.Error()), " "), 120), int(delay/time.Second), attempt+1, modelTries)})
 			select {
-			case <-ctx.Done(): // 等待期间被停止：不再重试，走下方的停止收尾
-				err = ctx.Err()
+			case <-stepCtx.Done(): // 等待期间被停止或被插话打断：不再重试，走下方的收尾
+				err = stepCtx.Err()
 			case <-time.After(delay):
 				continue
 			}
 			break
 		}
+		steered := stepCtx.Err() != nil && ctx.Err() == nil // 被插话打断的模型调用（非用户停止）
+		modelKick.end()
+		stepCancel()
 		if err != nil {
 			if attempt > 1 {
 				emit(Event{Type: "auto_retry"}) // 重试耗尽：收掉重试提示条，失败原因走报错区
+			}
+			// 插话打断：模型流被掐断，本轮**不收尾**——下一步循环头排水插话、
+			// 重组上下文重新调模型。已流出的半截思考/正文落库留痕（带打断标注，
+			// 模型下一轮能看到自己被打断在哪）；emit message 是必须的：执行不
+			// 结束、前端不会 reload，不推事件半截正文就只活在 live 气泡里。
+			// 半截 tool_calls 丢弃（流未收完 OnToolCall 不会回调），不留悬空调用。
+			if steered {
+				if strings.TrimSpace(text.String()) != "" {
+					sm := a.appendMessageThinking(sess, TextMessage("assistant", text.String()+"\n\n（被插话打断，输出提前结束）"), reasoning.String())
+					emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq, Kind: kindChat})
+				} else if strings.TrimSpace(reasoning.String()) != "" {
+					sm := a.appendMessageThinking(sess, TextMessage("assistant", ""), reasoning.String())
+					emit(Event{Type: "message", Message: &sm.Message, Thinking: reasoning.String(), Seq: sm.Seq, Kind: kindChat})
+				}
+				continue
 			}
 			// 上下文超限兜底：强制压缩一次后重发（DSH 式），每轮最多一次
 			if isOverflowError(err) && !overflowRetried {

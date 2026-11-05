@@ -14,9 +14,10 @@ package main
 //
 // 交付目标来自 uploads 表登记的原件路径（OrigPath）所在目录：桌面端把文件拖进
 // 输入框、或用「＋→文件上传」选一次，都会登记原件真实路径，交付就是把成品送回
-// 那个位置。模型不必指认是哪一次上传——只给 source 时按工作区副本路径反查同一条
-// 记录（见 resolveUploadFor）；查不到原件路径时给出可操作的原因（那种来源交付
-// 回不了原处，如实说明而不是硬搬）。
+// 那个位置。要搬运必须显式指认是哪一次上传并显式给文件名：upload（编号或原件
+// 路径）与 filename 是与门关系——只给其一在调用时就报错（不留到轮末执行才失败），
+// 两者都不给则只登记交付卡片不搬运。查不到上传记录时给出可操作的原因（那种来源
+// 交付回不了原处，如实说明而不是硬搬）。
 //
 // 搬运语义（对齐产品定义）：
 //   - 移动：source 复制到目标位置后删除原处（删不掉只留双份，不算失败）；
@@ -69,7 +70,7 @@ func deliverResultTool() Tool {
 	return Tool{
 		Spec: toolSpec("deliver_result",
 			"登记本轮的最终交付文件：每个文件都会在用户界面展示交付卡片（可打开/下载），这是用户拿到成果的正式入口。产出成果文件（尤其是 docx/xlsx/pptx 等经程序生成的文档）后必须调用；只在回复里贴路径不算交付。每轮可多次调用，后登记的会并列展示。"+
-				"可选搬运：文件项里给 upload（上传注记里的编号如 u1，或该次上传的原件路径）＝要求把成品送回用户上传时的原件位置——本轮对话结束后系统移动该文件过去；目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换；搬运成功后交付卡片自动改指原件位置，没给 upload 或搬运失败则卡片保持指向工作区里的文件。upload 只接受本会话上传登记过的原件路径，不能随意填别的位置。"+
+				"可选搬运（与门参数）：文件项里 upload（上传注记里的编号如 u1，或该次上传的原件路径）与 filename（送回后的文件名）必须成对提供——只给其一调用立即报错、两者都不给＝只登记交付卡片不搬运；这是有意设计，搬运目标（位置+文件名）必须由你显式确认。两者齐备时，本轮对话结束后系统把成品移动到该上传的原件位置；目标处若有将被替代的同名文件，会先快照备份到工作区 .jxai/delivery-backups/ 下再完成替换；搬运成功后交付卡片自动改指原件位置，搬运失败则卡片保持指向工作区里的文件。upload 只接受本会话上传登记过的原件路径，不能随意填别的位置。"+
 				"注意：用 write/edit 等文件工具在工作区内写出的常规改动【不需要】用本工具交付（系统本来就能跟踪那些改动）。调用本工具不会结束对话（对话结束的判定仍是：只输出思考和正文、没有工具调用），所以应在调用本工具之后再输出给用户的正文总结。",
 			objSchema(map[string]any{
 				"files": arrayProp("交付文件清单", map[string]any{
@@ -77,8 +78,8 @@ func deliverResultTool() Tool {
 					"properties": map[string]any{
 						"path":     strProp("文件路径（相对或绝对）"),
 						"note":     strProp("一句话说明这个文件是什么（可选）"),
-						"upload":   strProp("送回原件位置（可选）：上传注记里的编号（如 u1）或该次上传的原件路径；不给＝只登记交付卡片不搬运。通常不必显式给——成品若是从某个上传文件改出来的，系统按文件自动反查它的原件位置"),
-						"filename": strProp("送回原件时的文件名（可选，缺省用该次上传原件的文件名）"),
+						"upload":   strProp("送回原件位置（与 filename 成对提供）：上传注记里的编号（如 u1）或该次上传的原件路径；与 filename 必须同时给或同时不给——只给其一调用立即报错，都不给＝只登记交付卡片不搬运"),
+						"filename": strProp("送回时的文件名（与 upload 成对提供；纯文件名不带路径，两者必须同时给或同时不给）"),
 					},
 					"required": []string{"path"},
 				}),
@@ -114,6 +115,19 @@ func runDeliverResult(t *toolContext, args json.RawMessage) (string, error) {
 	}
 	if len(p.Files) == 0 {
 		return "", fmt.Errorf("files 不能为空")
+	}
+	// 搬运与门：upload（送回哪次上传的原件位置）与 filename（送回后的文件名）
+	// 必须成对提供——搬运目标由模型显式确认，缺一个在调用时就报错，绝不落到
+	// 轮末执行阶段才失败；两者都不给＝只登记交付卡片，不涉及搬运。
+	for _, f := range p.Files {
+		hasUp := strings.TrimSpace(f.Upload) != ""
+		hasName := strings.TrimSpace(f.Filename) != ""
+		if hasUp && !hasName {
+			return "", fmt.Errorf("文件 %s 给了 upload 但缺 filename：搬运必须同时显式提供 upload（送回位置）与 filename（送回后的文件名），请补上 filename 后重试；或不带这对参数、只登记交付卡片", f.Path)
+		}
+		if hasName && !hasUp {
+			return "", fmt.Errorf("文件 %s 给了 filename 但缺 upload：filename 只在搬运（送回上传原件位置）时有效，请补上 upload（上传注记编号如 u1 或原件路径）后重试；或去掉 filename 只登记交付卡片", f.Path)
+		}
 	}
 	// 计划模式：登记卡片是无害展示，照常允许；upload 是搬运承诺，对齐原
 	// deliver_file 的计划模式硬拦（登记即承诺搬运，计划模式下不该落任何实际行动）。
@@ -177,17 +191,15 @@ func runDeliverResult(t *toolContext, args json.RawMessage) (string, error) {
 		if !t.inWorkspace(abs) {
 			return "", fmt.Errorf("待搬运文件必须位于工作区内：%s（工作区外的文件不属于可搬运的模型产物）", filepath.ToSlash(abs))
 		}
-		up, uerr := t.resolveUploadFor(f.Upload, abs)
+		up, uerr := t.resolveUploadFor(f.Upload)
 		if uerr != nil {
 			return "", uerr
 		}
 		targetDir := filepath.Dir(up.OrigPath)
+		// 与门校验已保证 filename 非空，这里只做清洗（拒绝路径分隔符等）
 		name, err := sanitizeDeliveryName(f.Filename)
 		if err != nil {
 			return "", err
-		}
-		if name == "" {
-			name = filepath.Base(up.OrigPath)
 		}
 		if di, err := os.Stat(targetDir); err != nil || !di.IsDir() {
 			return "", fmt.Errorf("交付目标目录当前不存在：%s（用户可能移动或删除了该目录，请向用户说明）", filepath.ToSlash(targetDir))
@@ -272,46 +284,19 @@ func (t *toolContext) findUpload(ref string) *Upload {
 	return nil
 }
 
-// resolveUploadFor 解析本次交付要用的上传记录（交付目标的来源）。
-//   - 模型显式给了引用：按 uid / 原件路径 / 工作区副本路径解析，解析不了就
-//     报可读错误并列出可用编号（新生成的文件要走这条路）；
-//   - 没给引用：按待交付文件（source）反查——工作区里的成品文件若是从某个
-//     上传文件改出来的，它就在那条记录的 CopyPath 上，原件位置随之确定。
-//     同一路径被多次登记时取最后一条（UploadsFor 按 id 升序）。
-//
-// 反查不到说明这份文件不是从本机拖拽/选择进来的（浏览器、手机、粘贴上传
-// 只送内容、不登记原件路径），此时不能瞎猜一个目录去覆盖，如实说明并给出
-// 用户可操作的做法。
-func (t *toolContext) resolveUploadFor(ref, sourceAbs string) (*Upload, error) {
+// resolveUploadFor 解析本次交付要用的上传记录（交付目标的来源）。模型必须
+// 显式给引用（与门：upload 与 filename 成对，缺一在参数校验就被拦下）：按
+// uid / 原件路径 / 工作区副本路径解析，解析不了就报可读错误并列出可用编号。
+// 不做按成品路径的自动反查——搬运目标（位置+文件名）必须由模型显式确认。
+func (t *toolContext) resolveUploadFor(ref string) (*Upload, error) {
 	ups, err := t.app.Store.UploadsFor(t.sess.ID)
 	if err != nil {
 		return nil, fmt.Errorf("读取上传记录失败: %v", err)
 	}
-	if strings.TrimSpace(ref) != "" {
-		if u := t.findUpload(ref); u != nil {
-			return u, nil
-		}
-		return nil, fmt.Errorf("找不到上传记录 %s；可用的编号与原件位置：%s", ref, uploadRefList(ups))
+	if u := t.findUpload(ref); u != nil {
+		return u, nil
 	}
-	src := canonicalFor(sourceAbs)
-	var hit *Upload
-	for _, u := range ups {
-		if u.OrigPath == "" || u.CopyPath == "" {
-			continue
-		}
-		// 大小写不敏感：canonicalFor 在文件已不存在时会退回词法 Clean（不改大小写），
-		// 而归一化拿到的真实大小写两边可能不同（Windows 路径本就大小写不敏感）。
-		if strings.EqualFold(canonicalFor(u.CopyPath), src) {
-			hit = u
-		}
-	}
-	if hit != nil {
-		return hit, nil
-	}
-	return nil, fmt.Errorf("这份文件没有登记原件路径，交付不了：本会话的上传记录里没有它的原件位置（浏览器、手机、粘贴进来的文件只送内容、登记不了本机路径；新生成的文件也从没登记过）。"+
-		"请如实向用户说明，并给两条出路：①要送回桌面上的原位置——让用户把原文件从桌面拖进输入框、或用「＋→文件上传」选一次，再重新交付；"+
-		"②这次不交回原处也行——成品就在工作区 %s，用户可以自己取走（也可以用其它方式说明想要的位置）。本会话已登记原件路径的上传：%s.",
-		filepath.ToSlash(sourceAbs), uploadRefList(ups))
+	return nil, fmt.Errorf("找不到上传记录 %s；可用的编号与原件位置：%s", ref, uploadRefList(ups))
 }
 
 // uploadRefList 列出本会话可用的上传编号与原件位置（给模型纠错用）。
@@ -329,7 +314,8 @@ func uploadRefList(ups []*Upload) string {
 }
 
 // sanitizeDeliveryName 清洗模型给的交付文件名：只取 basename、拒绝路径
-// 分隔符与点目录；空串是合法返回（表示未指定、用原件名）。
+// 分隔符与点目录；空串是合法返回（Android 端表示未指定、用源文件名；桌面端
+// 与门校验保证到这里的 filename 必非空）。
 func sanitizeDeliveryName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {

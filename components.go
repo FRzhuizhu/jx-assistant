@@ -21,8 +21,8 @@ import (
 // 主程序的组件桥（componentbridge.go）按声明拉起子进程并把端点桥到它的
 // stdin/stdout——后端逻辑零主程序代码，组件可免编译安装（市场 zip 直装）。
 type ComponentWorkerDef struct {
-	Name   string `json:"name"`   // worker 标识（同组件内唯一；端点按它归属进程）
-	Command []string `json:"command"` // argv 模板：{python}=共享便携运行时 {dir}=组件目录，其余原样
+	Name      string                    `json:"name"`    // worker 标识（同组件内唯一；端点按它归属进程）
+	Command   []string                  `json:"command"` // argv 模板：{python}=共享便携运行时 {dir}=组件目录，其余原样
 	Endpoints []ComponentWorkerEndpoint `json:"endpoints"`
 	// Hooks 可选：订阅的主程序钩子事件（白名单见 componentbridge.go，如
 	// prompt.submit/run.end）。声明了钩子的 worker 启用帧协议（stdin/stdout
@@ -258,6 +258,11 @@ func (a *App) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	// 组件关闭即杀它声明的全部 worker 进程（热卸载做真；重开会懒启复活）
 	a.Bridge.KillComponent(body.ID)
+	// 语音组件：关闭时连独立语音输入法一起收掉（见 Bridge.onKill）；
+	// 重新启用时立刻把它拉回来（懒启对"进程"没意义——用户点了开就该能用）。
+	if body.ID == voiceComponentID && body.Enabled {
+		go a.spawnVoiceType()
+	}
 	writeJSON(w, 200, map[string]any{"ok": 1, "components": a.Components.List()})
 }
 

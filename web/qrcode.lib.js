@@ -1,6 +1,6 @@
 /* qrcode.lib.js —— npm qrcode(1.5.4) 浏览器版官方实现
    （lib/browser.js 入口）单文件打包：源码逐字未改，仅包 CommonJS 模块壳。
-   MIT License © soulwing, 详见包内 license 文件。打包脚本一次性生成，更新库版本时重跑。 */
+   MIT License, Copyright (c) 2012 Ryan Day, https://github.com/soldair/node-qrcode 。打包脚本一次性生成，更新库版本时重跑。 */
 (function (global) {
 'use strict';
 var __mods = [];

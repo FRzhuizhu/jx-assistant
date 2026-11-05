@@ -10,11 +10,12 @@
 //
 // 挂载路径与服务端 jxaiserver/sites.go 的平台页依赖一一对应（页面内部的绝对路径
 // fetch 因此天然命中本端同路径代理）：
-//   /sites            平台页本体
-//   /sites-assets/    平台页静态资源（qr.js 等）
-//   /api/sites/*      站点管理接口（list/publish/delete/cover…）
-//   /api/whoami       当前访问者身份
-//   /s/               已发布站点与其数据文件接口（平台页里直接查数据清单）
+//
+//	/sites            平台页本体
+//	/sites-assets/    平台页静态资源（qr.js 等）
+//	/api/sites/*      站点管理接口（list/publish/delete/cover…）
+//	/api/whoami       当前访问者身份
+//	/s/               已发布站点与其数据文件接口（平台页里直接查数据清单）
 //
 // 身份：服务端取值顺序是 X-Jxai-User 头 > ?user= 查询参数 > cookie（浏览器 fetch
 // 的 header 不允许中文，网页端只能走查询参数）。代理统一注入本机发布者姓名头——
@@ -57,6 +58,18 @@ func (a *App) handleSitesProxy(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// Origin/Referer 改写成目标源：本代理已把 Host 换成市场服务器，浏览器
+			// 带来的 Origin（http://127.0.0.1:本机端口）若原样透传，服务端数据 API
+			// 的同源校验（sameOriginOK：Origin.host vs r.Host）必然不一致——应用内
+			// 打开小程序一切正常（读接口 GET 不带 Origin），一到填数据/提交就被
+			// 403「跨站写入被拒绝」（2026-11-04 现场报障，已实测复现）。顺带不再
+			// 把本机端口泄露给服务端日志。
+			if o := req.Header.Get("Origin"); o != "" {
+				req.Header.Set("Origin", target.Scheme+"://"+target.Host)
+			}
+			if ref := req.Header.Get("Referer"); ref != "" {
+				req.Header.Set("Referer", target.Scheme+"://"+target.Host+req.URL.Path)
+			}
 			// 页面没显式传身份（平台页名字框的 ?user= 或自带头）才注入本机
 			// 发布者姓名——服务端取值头优先，注入了就会盖过页面，必须让着页面
 			if req.Header.Get(marketUserHeader) == "" && req.URL.Query().Get("user") == "" {

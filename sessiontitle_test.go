@@ -24,10 +24,26 @@ import (
 )
 
 // fakeLLMServer 起一个 OpenAI 兼容的 SSE 假模型：无 tools 的请求回复 *reply
-//（指向变量的指针：测试中途可切换后续回复）。
-func fakeLLMServer(t *testing.T, reply *string) *httptest.Server {
+//（指向变量的指针：测试中途可切换后续回复）。sysGot 非空时记录最近一次请求
+// 的 system 提示词（E2E 断言 worker 用的命名规则版式用）。
+func fakeLLMServer(t *testing.T, reply *string, sysGot *string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sysGot != nil {
+			var req struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			for _, m := range req.Messages {
+				if m.Role == "system" {
+					*sysGot = m.Content
+					break
+				}
+			}
+		}
 		enc, _ := json.Marshal(*reply)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", enc)
@@ -196,7 +212,7 @@ func TestSessionMessagesRoleFilter(t *testing.T) {
 // ③ 独立单轮调用：一次请求一次输出，不落会话消息表。
 func TestLLMAskSingleTurn(t *testing.T) {
 	reply := "「组件标题」"
-	llm := fakeLLMServer(t, &reply)
+	llm := fakeLLMServer(t, &reply, nil)
 	a := newTitleTestApp(t, llm.URL)
 	mkTitleSession(t, a, "s-ask")
 
@@ -228,7 +244,8 @@ func TestLLMAskSingleTurn(t *testing.T) {
 func TestSessionTitleWorkerEndToEnd(t *testing.T) {
 	testPython(t) // 共享运行时缺失时 skip（同桥钩子集成测试口径）；解释器由声明解析
 	reply := "  \"订单导出与透视表\"\n"
-	llm := fakeLLMServer(t, &reply)
+	var sysGot string
+	llm := fakeLLMServer(t, &reply, &sysGot)
 	a := newTitleTestApp(t, llm.URL)
 	// 临时组件根 + 组件目录 + 绝对解释器路径：真实 worker 脚本原样拷贝
 	//（{python} 在 go test 的构建目录下解析不到仓库里的共享运行时）
@@ -300,6 +317,14 @@ func TestSessionTitleWorkerEndToEnd(t *testing.T) {
 	appendMsg("把生产订单导出并做成透视表", "")
 	runEnd()
 	waitTitle("订单导出与透视表", "首轮命名")
+	// 命名规则版式：核心段「最近主题|最初主题」近期在前（侧栏窄，靠前的字
+	// 先被看到）——旧顺序「最初主题|最近主题」不许再出现
+	if !strings.Contains(sysGot, "「最近主题|最初主题」") {
+		t.Fatalf("命名提示词应含新版式「最近主题|最初主题」，实际：\n%s", sysGot)
+	}
+	if strings.Contains(sysGot, "「最初主题|最近主题」") {
+		t.Fatalf("命名提示词仍含旧版式「最初主题|最近主题」：\n%s", sysGot)
+	}
 
 	// 第 2、3 轮（n=3）：不到改写轮，标题不动
 	appendMsg("再加上按月份分组", "")

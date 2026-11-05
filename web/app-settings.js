@@ -159,9 +159,9 @@ async function openSettings(pane) {
   renderProvCards();
   selRefs.compactMode.set(c.compactMode === 'llm' ? 'llm' : 'rule');
   $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
-  $('set-compact-rulepct').value = c.compactRulePct != null ? c.compactRulePct : 60;
+  $('set-compact-interval').value = c.compactInterval != null ? Math.round(c.compactInterval / 1000) : 400;
+  selRefs.compactUnit.set(c.compactUnit === 'tokens' ? 'tokens' : 'chars');
   $('set-compact-llmpct').value = c.compactLlmPct != null ? c.compactLlmPct : 80;
-  $('set-compact-cooldown').value = c.compactCooldown != null ? c.compactCooldown : 1;
   // 常规页：文件备份（服务端配置，改动即时保存）
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
@@ -1075,15 +1075,18 @@ async function saveSettings() {
   // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
   // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
   if (!(await saveProviderDrafts())) return;
-  // 压缩阈值留空/非法输入按 0 提交（0=不启用该路）；超出 0-100 的值钳到边界
+  // 间隔以 K 为单位输入（服务端存原值），×1000 提交，0=关闭规则自动压缩；
+  // keepChars 的 0 是合法值（全压语义），不能用 || 兜底（会把 0 吞成默认值）
   const clampPct = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+  const keepRaw = parseInt($('set-keepchars').value, 10);
+  const intervalRaw = parseFloat($('set-compact-interval').value);
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
-      keepChars: parseInt($('set-keepchars').value, 10) || 100000,
-      rulePct: clampPct($('set-compact-rulepct').value),
+      keepChars: Number.isFinite(keepRaw) && keepRaw >= 0 ? keepRaw : 100000,
+      interval: Number.isFinite(intervalRaw) && intervalRaw > 0 ? Math.round(intervalRaw * 1000) : 0,
+      unit: selRefs.compactUnit.get() || 'chars',
       llmPct: clampPct($('set-compact-llmpct').value),
-      cooldown: Math.max(0, parseInt($('set-compact-cooldown').value, 10) || 0),
     },
   };
   try {
@@ -1321,13 +1324,11 @@ function syncRemoteState(c) {
   if (document.activeElement !== $('set-remote-pk')) $('set-remote-pk').value = ra.pairKey || '';
   if (document.activeElement !== $('set-remote-host')) $('set-remote-host').value = ra.host || '';
   if (document.activeElement !== $('set-remote-port')) $('set-remote-port').value = ra.port || 2227;
-  // 市场服务器（market.go）与公司接入（wizard.go）：与远程接入字段同一套「回显+单字段 PATCH」
-  if (document.activeElement !== $('set-market-url')) $('set-market-url').value = c.marketURL || '';
-  // 搜索服务（websearch.go 的 searchEndpointBase）：填了用填的、空则跟随市场同源；
-  // 生效地址由后端算好下发（searchEndpoint），这里只负责原样显示
+  // 市场服务器地址与发布者姓名已随市场组件化迁入 skill-market 组件的设置区
+  // （设置 · 内置组件）；此处不再回显。搜索服务（websearch.go 的 searchEndpointBase）
+  // 仍在本页：填了用填的、空则跟随市场同源；生效地址由后端算好下发（searchEndpoint）
   if (document.activeElement !== $('set-search-url')) $('set-search-url').value = c.searchURL || '';
   syncSearchState(c);
-  if (document.activeElement !== $('set-publisher-name')) $('set-publisher-name').value = c.publisherName || '';
   if (document.activeElement !== $('set-registry-url')) $('set-registry-url').value = c.registryURL || '';
   if (document.activeElement !== $('set-update-url')) $('set-update-url').value = (c.updateURL === 'off' ? 'off' : (c.updateURL || ''));
   $('set-update-mode').value = (c.updateMode === 'manual' ? 'manual' : 'auto');
@@ -1401,21 +1402,13 @@ $('btn-remote-pk-new').onclick = async () => {
     alert('换新失败：' + e.message);
   }
 };
-// 市场服务器：改动即存（保存回包顺带刷新回显；失败回滚为回包值）
-bindRemoteInput('set-market-url', 'marketURL');
+// 市场服务器地址：已随市场组件化迁入 skill-market 组件设置区（组件内自带回显与
+// 「改动即存」），此处不再绑定；后端 /api/config 的 marketURL 字段照旧。
 // 搜索服务：同一套「改动即存」；留空 = 跟随市场同源。非法地址由后端 400 拦下
 // （searchURL 不合法），这里 alert 出原因并回滚为服务端值
 bindRemoteInput('set-search-url', 'searchURL');
-// 网页托管平台（小程序平台）：与应用内「小程序平台」入口同一去处——市场视图的
-// 内嵌 tab（本端代理 /sites），不再跳系统浏览器直面服务端自签证书
-$('btn-open-sites').onclick = () => {
-  if (typeof openSitesPlatform === 'function') { openSitesPlatform(); return; }
-  const raw = ($('set-market-url').value || '').trim();
-  const m = raw.match(/^(https?:\/\/[^\/]+)/i);
-  if (!m) { alert('先在上方「市场服务器」里填服务端地址（如 https://example.com:PORT/market/manifest.json），托管平台与市场在同一台服务端。'); return; }
-  jxOpenPage(m[1] + '/sites');
-};
-bindRemoteInput('set-publisher-name', 'publisherName');
+// 网页托管平台（小程序平台）：已随小程序平台组件化迁入 sites-platform 组件的
+// 设置区（设置 · 内置组件），此处不再绑定；后端 /sites 代理照旧。
 bindRemoteInput('set-registry-url', 'registryURL');
 bindRemoteInput('set-update-url', 'updateURL');
 // 更新方式：auto=分块静默（默认）/manual=仅提醒手动整包安装；改动即存
@@ -1847,6 +1840,32 @@ function applyAccent(color, hover, save) {
       body: JSON.stringify({ accentColor: color }),
     }).catch(() => {});
   }
+  // 无论保存还是启动时应用，都把「点缀色 + 当前主题文字色」推给独立语音输入法：
+  // 只放在 save 分支里的话，用户不改颜色就永远不生成 voicetype.json，输入法拿不到
+  // 主程序的点缀色（首启即生效才叫联动）。
+  pushVoiceTypeTheme(color);
+}
+
+// pushVoiceTypeTheme 推送点缀色 + 主题文字色。
+// 文字色优先读 CSS 变量 --text 的计算值；取不到时按主程序主题档位直接给值
+// （style.css 里 :root 是 #1f2328、深色是 #e6e8eb）——首次实测里 applyAccent
+// 有可能在样式表生效前就跑，computed 拿到空串，此时不能把空值推过去。
+function pushVoiceTypeTheme(color, retried) {
+  let textColor = '';
+  try { textColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim(); } catch (e) {}
+  if (!textColor) {
+    let dark = false;
+    try {
+      const t = lsGet('jx.theme', 'light');
+      dark = t === 'dark' ||
+        (t === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    } catch (e) { /* 读不到主题：按浅色 */ }
+    textColor = dark ? '#e6e8eb' : '#1f2328';
+  }
+  fetch('/api/voicetype/link', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accentColor: color, textColor }),
+  }).catch(() => {});
 }
 
 function buildAccentRow() {
@@ -1904,11 +1923,15 @@ buildAccentRow();
 // onChange 的 lsSet('jx.midrun', v) 记住，选过「插话」的照旧保持插话。
 makeSelect('sel-midrun', 'midrun', [
   { v: 'queue', label: '等待：本轮结束后排队逐条发送' },
-  { v: 'interject', label: '插话：不打断，下一步调用模型前注入' },
+  { v: 'interject', label: '插话：模型思考/输出中立即打断生效；工具执行中等下一步注入' },
 ], (v) => lsSet('jx.midrun', v));
 makeSelect('sel-compact-mode', 'compactMode', [
-  { v: 'rule', label: '规则折叠（默认）' },
-  { v: 'llm', label: '模型摘要' },
+  { v: 'llm', label: '模型摘要（默认）' },
+  { v: 'rule', label: '规则折叠' },
+], null);
+makeSelect('sel-compact-unit', 'compactUnit', [
+  { v: 'chars', label: '字数（默认，模型无关）' },
+  { v: 'tokens', label: 'token（模型返回的实际用量）' },
 ], null);
 
 /* ---------- 技能管理（/api/skills：自带只读展示，用户可加/开关/删） ---------- */

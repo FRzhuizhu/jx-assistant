@@ -101,6 +101,7 @@ func (a *App) closeSessionBrowser(sid string, by browserCloseBy) browserCloseRes
 		a.panelSetVisible("")
 	}
 	a.broadcast(Event{Type: "browser_nav", URL: "", Title: "", SessionID: sid}) // 工具栏地址/标题复位（面板形态 Close 自带广播，无头/有头形态这里统一补）
+	a.frameForget(sid) // 远程帧镜像缓存一并清掉：关闭后远程端不该再轮询到旧画面
 	log.Printf("[browser-close] 发起=%s 会话=%q 目标=%s", by, sid, res.Where)
 	if by == closeByAI {
 		res.Fallback = a.activeBrowser(sid) // 显式关闭：回退到另一形态仍在运行的实例

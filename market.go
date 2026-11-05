@@ -89,10 +89,6 @@ type marketView struct {
 	Me         *marketMe        `json:"me,omitempty"`        // 本机发布者身份（空=还没设置姓名，前端不显示发布者管理按钮）
 	Error      string           `json:"error,omitempty"`
 	UpdatedAt  string           `json:"updatedAt,omitempty"`
-	// SitesURL 小程序平台地址（服务端随公告下发）：优先用它塞 iframe。服务端开了明文口
-	// 就是 http://host:PORT/sites——iframe 不经过本程序的 http 客户端，"忽略证书"帮不上，
-	// 用 https+IP 会静默失败（2026-10-30 现场）。
-	SitesURL string `json:"sitesURL,omitempty"`
 	Skills     []marketEntryOut `json:"skills"`
 	Components []marketEntryOut `json:"components"`
 	Plugins    []marketEntryOut `json:"plugins"`
@@ -165,9 +161,32 @@ func (a *App) removeMarketRec(typ, id string) {
 	}
 }
 
+// marketManifestURL 市场地址规范化（2026-11-03 用户口径）：设置里只填服务器地址
+// （域名/IP + 端口，如 https://example.com:2227），路径后缀由程序自动拼——
+// /market/manifest.json；已带后缀或反代子路径（如 /jxai）的旧值原样兼容。
+func marketManifestURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return raw
+	}
+	path := strings.TrimRight(u.Path, "/")
+	for _, suf := range []string{"/market/manifest.json", "/market"} {
+		if strings.HasSuffix(path, suf) { // 只剥一层：基地址上不该叠两层后缀
+			path = strings.TrimRight(strings.TrimSuffix(path, suf), "/")
+			break
+		}
+	}
+	return u.Scheme + "://" + u.Host + path + "/market/manifest.json"
+}
+
 // fetchMarketManifest 拉市场清单（60s 缓存；force 用于安装前取最新）。带上
 // 身份头（设置了发布者姓名时）——服务端把它记进下载/安装明细（events.go）。
 func (a *App) fetchMarketManifest(rawURL string, force bool) (*marketManifestIn, error) {
+	rawURL = marketManifestURL(rawURL)
 	a.marketMu.Lock()
 	if !force && a.marketCache.man != nil && a.marketCache.url == rawURL &&
 		time.Since(a.marketCache.at) < time.Minute {
@@ -247,14 +266,10 @@ func (a *App) marketMe() *marketMe {
 
 func (a *App) buildMarketView() marketView {
 	v := marketView{Skills: []marketEntryOut{}, Components: []marketEntryOut{}, Plugins: []marketEntryOut{}, Mcps: []marketEntryOut{}, Me: a.marketMe()}
-	// 小程序平台地址：服务端下发的优先（能直接放进 iframe），否则前端按市场地址推导
-	if u := strings.TrimSpace(a.Cfg.SitesURL); u != "" {
-		v.SitesURL = u
-	}
 	raw := strings.TrimSpace(a.Cfg.MarketURL)
 	if raw == "" {
 		if a.Cfg.RemoteAccess.Host != "" && a.Cfg.RemoteAccess.Port > 0 {
-			v.Suggested = fmt.Sprintf("https://%s:%d/market/manifest.json",
+			v.Suggested = fmt.Sprintf("https://%s:%d",
 				a.Cfg.RemoteAccess.Host, a.Cfg.RemoteAccess.Port)
 		}
 		return v
@@ -703,13 +718,13 @@ func (a *App) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-/* ---------- 企业技能包自动更新 ---------- */
+/* ---------- 企业技能包 / 工作流自动更新 ---------- */
 
 // marketAutoMu 自动更新防重入：手动「立即检查更新」与每小时轮询同拍触发时
 // 共享一轮（TryLock 跳过），避免同一技能被并发下载安装。
 var marketAutoMu sync.Mutex
 
-// autoUpdateMarketSkills 企业技能包自动更新：checkUpdateOnce 每次检查客户端
+// autoUpdateMarketSkills 企业技能包 / 工作流自动更新：checkUpdateOnce 每次检查客户端
 // 更新时顺带跑（每小时轮询、手动「立即检查」同一条路）。对比市场最新清单与
 // 安装记账（market_installed.json），已装且记账版本 ≠ 市场版本的技能自动下载
 // 新版覆盖安装——与手动点「更新」同一条链路（sha256 校验、装失败还原旧版、

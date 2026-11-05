@@ -21,6 +21,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,12 +32,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -956,6 +960,23 @@ func (h *BrowserHost) Screenshot() ([]byte, error) {
 	return buf, nil
 }
 
+// CaptureFrame 无头宿主的远程帧镜像截取（WebP q60）：网页形态家端被远程接入
+// 时，右栏浏览器画面同样可被镜像。
+func (h *BrowserHost) CaptureFrame() ([]byte, error) {
+	var buf []byte
+	if err := h.do(func(ctx context.Context) error {
+		b, err := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatWebp).WithQuality(60).Do(ctx)
+		if err != nil {
+			return err
+		}
+		buf = b
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
 type BrowserState struct {
 	Running bool   `json:"running"`
 	URL     string `json:"url"`
@@ -1157,6 +1178,105 @@ func (a *App) handleBrowserState(w http.ResponseWriter, r *http.Request) {
 // 全零上报。因此：带矩形却未标 desktop 的上报忽略；UA 不含 Mozilla 的
 // （非浏览器页）上报忽略。前端侧配合（app-right.js bpwReport）：网页形态
 // 一个字节都不发。
+// handleBrowserFrame GET /api/browser/frame?session=<id>&v=<客户端已有帧版本>
+//
+// 远程接入时右栏浏览器的只读画面镜像：远程端（手机/外网电脑，远程形态前端）
+// 以 ~2fps 轮询本端点，家端浏览器是唯一渲染权威，远程只是它的照片直播。
+// 设计要点（人的意图）：
+//   - 懒截图：没人轮询就不截图——收起右栏/切走视图时零开销；
+//   - 内容指纹去重：页面静止时连续轮询只回 changed=false（几十字节），有
+//     变化才带整帧 WebP base64；
+//   - 最小间隔节流：frameEvery 内的重复请求共享缓存帧，多客户端或异常高频
+//     请求都不会把 UI 线程的截图打满；
+//   - ver 用毫秒时间戳（JSON 的 float64 往返在 2^53 内精确）：浏览器真关闭
+//     重开后缓存重建，版本号不会回退到客户端已有的旧值而永远发不出新帧。
+func (a *App) handleBrowserFrame(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("session")
+	h := a.embeddedTarget(sid)
+	st := h.State()
+	if !st.Running {
+		writeJSON(w, http.StatusOK, map[string]any{"running": false})
+		return
+	}
+	cap, ok := h.(browserFrameCaptor)
+	if !ok {
+		writeErr(w, http.StatusNotImplemented, "当前浏览器形态不支持远程画面镜像")
+		return
+	}
+	key := browserProfileKey(sid)
+	a.frameMu.Lock()
+	if a.frameCache == nil {
+		a.frameCache = map[string]*browserFrameEntry{}
+	}
+	e := a.frameCache[key]
+	if e == nil {
+		e = &browserFrameEntry{}
+		a.frameCache[key] = e
+	}
+	a.frameMu.Unlock()
+
+	clientVer, _ := strconv.ParseInt(r.URL.Query().Get("v"), 10, 64)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ver == 0 || time.Since(e.last) >= frameEvery {
+		data, err := cap.CaptureFrame()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		sum := sha256.Sum256(data)
+		if sum != e.sum {
+			nv := time.Now().UnixMilli() // 毫秒时间戳：JSON 经 float64 往返（前端
+			// JSON.parse）仍精确（2^53 内），纳秒会丢精度导致版本永远对不上；
+			// 同毫秒内内容再变时单调 +1，避免版本碰撞把新帧吃掉
+			if nv <= e.ver {
+				nv = e.ver + 1
+			}
+			e.ver = nv
+			e.sum = sum
+			e.data = data
+		}
+		e.last = time.Now()
+	}
+	resp := map[string]any{"running": true, "ver": e.ver, "vw": st.VW, "vh": st.VH}
+	if e.ver != clientVer && len(e.data) > 0 {
+		resp["changed"] = true
+		resp["mime"] = "image/webp"
+		resp["data"] = base64.StdEncoding.EncodeToString(e.data)
+	} else {
+		resp["changed"] = false
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// browserFrameCaptor 内嵌形态的可选帧截取（WebP q60，远程镜像专用——比
+// Screenshot 的 PNG 小一个量级，是 2fps 轮询下的带宽主力）。原生桌面面板
+// 与无头 chromedp 宿主实现；Electron 面板桥只出 PNG，暂不参与（无实现即
+// 由 handler 报「不支持」）。
+type browserFrameCaptor interface {
+	CaptureFrame() ([]byte, error)
+}
+
+// frameEvery 相邻两次截图的最小间隔：远程观察 2fps，450ms 足够跟住且不挤占
+// UI 线程（截图经 Dispatch 投递，与用户操作同队列）。
+const frameEvery = 450 * time.Millisecond
+
+// browserFrameEntry 一个会话的镜像缓存（自带锁：截图慢时不阻塞其他会话）。
+type browserFrameEntry struct {
+	mu   sync.Mutex
+	ver  int64 // 帧版本=内容变化时刻的毫秒时间戳；0=还没有帧
+	last time.Time
+	sum  [32]byte // 最后一帧的 SHA-256（内容指纹）
+	data []byte
+}
+
+// frameForget 清掉该会话的帧镜像缓存（浏览器真关闭后远程端不该再轮询到旧画面）。
+func (a *App) frameForget(sid string) {
+	a.frameMu.Lock()
+	delete(a.frameCache, browserProfileKey(sid))
+	a.frameMu.Unlock()
+}
+
 func (a *App) handleBrowserPanelRect(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		Session string  `json:"session"`

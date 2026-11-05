@@ -52,8 +52,8 @@ type App struct {
 
 	mu              sync.Mutex
 	sessLocks       map[string]*sync.Mutex
-	compactMu       sync.Mutex             // 规则自动压缩冷却状态锁（context.go）
-	compactAttempts map[string]compactMark // 会话id → 规则压缩冷却标记（上次尝试轮序号/审计去重轮）
+	compactMu       sync.Mutex              // 规则自动压缩的 token 用量基线锁（context.go）
+	compactUsage    map[string]*compactUsageMark // 会话id → 最近 usage 与压缩基线（间隔制 token 模式的触发依据，context.go）
 	runMu           sync.Mutex
 	runners         map[string]*sessionRun // 正在执行的会话（含后台派发）
 	permMu          sync.Mutex
@@ -114,6 +114,11 @@ type App struct {
 	panelMainWnd  uintptr
 	panels        map[string]browserTarget // 键=browserProfileKey（""=共享面板，兼容无会话上下文的入口）
 	panelVisible  string
+
+	// 远程帧镜像缓存（handleBrowserFrame）：右栏浏览器画面按会话缓存最后一帧
+	// （内容指纹去重 + 最小间隔节流），远程端轮询命中缓存就不再截图。
+	frameMu    sync.Mutex
+	frameCache map[string]*browserFrameEntry // 键=browserProfileKey
 
 	// 桌面壳（runDesktop）注入的右侧栏截图通道（panelshot_windows.go）：
 	// shellEval 往主界面注入 JS、panelViewCh 收回右栏矩形回传，shellWnd 是
@@ -271,6 +276,14 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "GET /api/search/content", a.handleSearchContent, apiMeta{Summary: "按内容搜会话", Params: "q=关键词", Perm: permReadOnly})
 	a.apiRoute(mux, "GET /api/config", a.handleGetConfig, apiMeta{Summary: "读全局配置（Key 已掩码）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/config", a.handleSetConfig, apiMeta{Summary: "改全局配置", Params: "要改的字段（providers 之外的一般项）", Perm: permFull, Danger: "修改全局配置，影响所有会话"})
+	// 语音输入法联动（voicetype_link.go）：把听写快捷键与主题色写进 voicetype.json，
+	// 独立语音输入法（VoiceTypeGo）读它——它读不到本页 localStorage，也不该读 config.json。
+	a.apiRoute(mux, "POST /api/voicetype/link", a.handleVoicetypeLink, apiMeta{Summary: "同步听写快捷键/主题色给独立语音输入法", Params: "main、sub（键名数组）、accentColor、textColor，均可选", Perm: permReadOnly})
+	// 最近语音记录（voicetype_history.go）：输入法落档的原始语音+文字+结果，
+	// 设置页「语音」底下展示，支持试听/复制/重新识别。
+	a.apiRoute(mux, "GET /api/voicetype/history", a.handleVoicetypeHistory, apiMeta{Summary: "最近语音记录（独立输入法 history.json）", Perm: permReadOnly})
+	a.apiRoute(mux, "GET /api/voicetype/history/wav", a.handleVoicetypeHistoryWav, apiMeta{Summary: "第 i 条记录的原始语音（wav，试听）", Params: "i=序号", Perm: permReadOnly})
+	a.apiRoute(mux, "POST /api/voicetype/history/reidentify", a.handleVoicetypeHistoryReidentify, apiMeta{Summary: "重新识别第 i 条记录", Params: "i=序号；输入法在跑则交它做（走完整分发）", Perm: permReadOnly})
 	a.apiRoute(mux, "GET /api/models", a.handleModels, apiMeta{Summary: "模型清单（全部渠道）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/llm/ask", a.handleLLMAsk, apiMeta{Summary: "独立单轮模型调用（一次请求一次输出，不进会话上下文）", Params: "system、user、session 可选（跟随该会话的模型）", Perm: permWorkspace})
 	a.apiRoute(mux, "GET /api/modes", a.handleChatModes, apiMeta{Summary: "工作模式清单（新建会话可选的模式）", Perm: permReadOnly}) // 工作模式清单（chatmodes.go）：模式下拉与 dispatch_task 的 mode 参数同一数据源
@@ -444,6 +457,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/navigate", a.handleBrowserNavigate)
 	mux.HandleFunc("POST /api/browser/viewport", a.handleBrowserViewport)
 	mux.HandleFunc("GET /api/browser/state", a.handleBrowserState)
+	mux.HandleFunc("GET /api/browser/frame", a.handleBrowserFrame)
 	mux.HandleFunc("POST /api/browser/close", a.handleBrowserClose)
 	mux.HandleFunc("POST /api/browser/open-view", a.handleBrowserOpenView)
 	mux.HandleFunc("GET /api/browser/view", a.handleBrowserView)
@@ -1247,9 +1261,9 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
 		"keepChars":        a.Cfg.KeepChars,
-		"compactRulePct":   a.Cfg.CompactRulePct,
+		"compactInterval":  a.Cfg.CompactInterval,
+		"compactUnit":      a.Cfg.CompactUnit,
 		"compactLlmPct":    a.Cfg.CompactLlmPct,
-		"compactCooldown":  a.Cfg.CompactCooldown,
 		"snapshotEnabled":  a.snapshotsEnabled(),
 		"snapshotDays":     a.Cfg.SnapshotDays,
 		"compactThreshold": a.Cfg.CompactThreshold,
@@ -1295,9 +1309,9 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			Mode      string `json:"mode"`
 			KeepChars *int   `json:"keepChars"`
 			Threshold float64 `json:"threshold"` // 旧字段（0.8/0.9）：兼容旧页面提交仍接受，新逻辑不读
-			RulePct   *int   `json:"rulePct"`   // 规则自动压缩阈值（0-100，0=关闭）
-			LlmPct    *int   `json:"llmPct"`    // 模型自动压缩阈值（0-100，0=关闭）
-			Cooldown  *int   `json:"cooldown"`  // 规则压缩冷却（轮，0=不冷却）
+			Interval  *int   `json:"interval"`   // 规则自动压缩间隔（0=关闭）
+			Unit      string `json:"unit"`       // 间隔计量单位：chars | tokens
+			LlmPct    *int   `json:"llmPct"`     // 模型自动压缩阈值（0-100，0=关闭）
 		} `json:"compact"`
 		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：设置页换点缀色时同步写进来
 		AskAlert    *struct {
@@ -1426,7 +1440,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if v := body.MarketURL; v != nil {
 		u := strings.TrimSpace(*v)
 		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			writeErr(w, 400, "市场地址需为 http(s) 的清单地址（jxai-server 的 /market/manifest.json）")
+			writeErr(w, 400, "企业技能包 / 工作流 / 小程序平台地址需为 http(s) 的服务器地址（如 https://example.com:2227，清单路径后缀自动拼）")
 			return
 		}
 		a.Cfg.MarketURL = u
@@ -1520,8 +1534,8 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		if body.Compact.Mode == "rule" || body.Compact.Mode == "llm" {
 			a.Cfg.CompactMode = body.Compact.Mode // off 不再是合法值（自动压缩开关由两个阈值表达）
 		}
-		if body.Compact.KeepChars != nil && *body.Compact.KeepChars > 0 {
-			a.Cfg.KeepChars = *body.Compact.KeepChars
+		if body.Compact.KeepChars != nil && *body.Compact.KeepChars >= 0 {
+			a.Cfg.KeepChars = *body.Compact.KeepChars // 0 合法：连最近一轮也不保留的全压语义
 		}
 		if body.Compact.Threshold > 0.5 && body.Compact.Threshold < 1 {
 			a.Cfg.CompactThreshold = body.Compact.Threshold
@@ -1535,18 +1549,18 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			return v
 		}
-		if body.Compact.RulePct != nil {
-			a.Cfg.CompactRulePct = clampPct(*body.Compact.RulePct)
-		}
-		if body.Compact.LlmPct != nil {
-			a.Cfg.CompactLlmPct = clampPct(*body.Compact.LlmPct)
-		}
-		if body.Compact.Cooldown != nil {
-			v := *body.Compact.Cooldown
+		if body.Compact.Interval != nil {
+			v := *body.Compact.Interval
 			if v < 0 {
 				v = 0
 			}
-			a.Cfg.CompactCooldown = v
+			a.Cfg.CompactInterval = v
+		}
+		if body.Compact.Unit == "chars" || body.Compact.Unit == "tokens" {
+			a.Cfg.CompactUnit = body.Compact.Unit
+		}
+		if body.Compact.LlmPct != nil {
+			a.Cfg.CompactLlmPct = clampPct(*body.Compact.LlmPct)
 		}
 	}
 	// 询问提醒三键合并（只传变的键）：afterSec 钳 30-600；text 去空白，空串
@@ -1585,6 +1599,12 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if err := a.Cfg.Save(a.CfgPath); err != nil {
 		writeErr(w, 500, "保存配置失败: "+err.Error())
 		return
+	}
+	// 点缀色有变：顺手同步给语音输入法的联动文件（输入法胶囊底色跟着主题走）
+	if body.AccentColor != nil {
+		if err := a.writeVoicetypeLink(nil, nil, "", a.Cfg.AccentColor, ""); err != nil {
+			log.Printf("[voicetype-link] 同步点缀色失败: %v", err)
+		}
 	}
 	// 远程接入字段有变（开关/设备号/密钥/网关）：立即热启停，无需重启进程
 	if a.Cfg.RemoteAccess != oldRA {
@@ -2602,8 +2622,10 @@ func (a *App) handlePickFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"path": first, "paths": paths})
 }
 
-// handleInterject 对话中途发消息：不打断当前执行。
-// mode=steer（插话）：排进插话队列，主循环在下一次调用模型前注入生效；
+// handleInterject 对话中途发消息。
+// mode=steer（插话）：排进插话队列；模型调用中（思考/正文输出）会立即打断
+// 当前模型流、下一步带着插话重新调模型（kickModelStream），工具执行中则等
+// 主循环下一次调用模型前注入生效；
 // mode=queue（排队）：排进排队队列，本轮结束后作为独立一轮自动发送。
 // 会话没在执行时一律按排队处理并顺手把执行拉起来，消息不会卡在队列里。
 func (a *App) handleInterject(w http.ResponseWriter, r *http.Request) {

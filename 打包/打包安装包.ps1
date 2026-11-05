@@ -75,6 +75,9 @@ if ($ExeSource -ne "") {
   Copy-Item $ExeSource $exe -Force
 } else {
   Write-Host "== 编译主程序（注入桌面模式默认值）"
+  # 先把组件里的独立语音输入法编出来（独立 Go 模块，主程序 build 不带它）
+  & (Join-Path $PSScriptRoot "编译语音输入法.ps1")
+  if ($LASTEXITCODE -ne 0) { throw "语音输入法编译失败" }
   go build -trimpath -ldflags "-s -w -H=windowsgui -X main.desktopDefault=1 -X main.appVersion=$Version" -o $exe $root
   if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 }
@@ -156,6 +159,12 @@ Copy-Item (Join-Path $mdvDir "MD查看器.exe") (Join-Path $stage "md-viewer") -
 Copy-Item (Join-Path $mdvDir "使用说明.txt") (Join-Path $stage "md-viewer") -Force
 
 Copy-Item (Join-Path $packDir "使用说明.md") $stage -Force
+
+# 第三方组件声明（开源合规）：随安装包分发，装到 {app}\THIRD-PARTY-NOTICES.md；
+# 与 aria2c 的 COPYING/LICENSE.OpenSSL（bin 目录自带）共同覆盖分发义务。
+$notices = Join-Path $root "THIRD-PARTY-NOTICES.md"
+if (-not (Test-Path $notices)) { throw "缺少第三方组件声明：$notices（仓库根目录必须有 THIRD-PARTY-NOTICES.md）" }
+Copy-Item $notices $stage -Force
 
 # ---- 安装期清理清单（清理清单.iss，被 安装包.iss 的 [InstallDelete] 段包含）----
 # 随包目录在升级安装时整目录重装（先删后装），包内已移除的文件不再残留——

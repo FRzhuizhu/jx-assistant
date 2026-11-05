@@ -601,7 +601,7 @@ func runDispatchTask(t *toolContext, args json.RawMessage) (string, error) {
 	if dispRemote != nil {
 		remoteDisp = dispRemote.Display()
 	}
-	taskMsg := "【数字助理派发】\n\n" + p.Task
+	taskMsg := "【数字助理派发】\n" + p.Task
 	if len(attNotes) > 0 {
 		taskMsg = ATTACH_HEAD + "\n" + strings.Join(attNotes, "\n") + "\n\n" + taskMsg
 	}
@@ -673,7 +673,7 @@ func runSendToSession(t *toolContext, args json.RawMessage) (string, error) {
 	// 需求正文（【数字助理转达】+ task）由 deliverSub 走统一投递落库：投递一律
 	// 插话——目标执行中就注入它当前这一轮（下一次调用模型前生效），空闲则直接
 	// 落库开跑（两种情况都立即生效，不排队占位）
-	return t.deliverSub(m, "【数字助理转达】\n\n"+p.Task, note), nil
+	return t.deliverSub(m, "【数字助理转达】\n"+p.Task, note), nil
 }
 
 func stopSessionTool() Tool {

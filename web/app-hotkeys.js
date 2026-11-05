@@ -160,6 +160,47 @@
         try { def.onChanged(); } catch (e) { console.warn('[HK] onChanged', defId, e); }
       }
       try { JX.emit('hotkeys:change', defId); } catch (e) { /* JX 缺席（极端加载序）忽略 */ }
+      // 语音听写快捷键/触发方式变了 → 同步给独立语音输入法（VoiceTypeGo）：
+      // 输入法是独立进程，读不到本页 localStorage，所以由主程序落一份
+      // voicetype.json（只含热键/触发方式/颜色，见 voicetype_link.go）。
+      if (defId === 'voice.dictation' && def) {
+        try {
+          const main = HK.effectiveKeys(def, 'main');
+          const sub = HK.effectiveKeys(def, 'sub');
+          // 触发方式由「设置·语音」决定，组件存在 cx:voice:shortcutMode（JSON 字符串）
+          let mode = '';
+          try {
+            const raw = localStorage.getItem('cx:voice:shortcutMode');
+            const v = raw ? JSON.parse(raw) : 'tap';
+            mode = v === 'hold' ? 'hold' : 'tap';
+          } catch (e) { /* 读不到就不带 mode，输入法沿用自己配置 */ }
+          // 颜色也一起带上：这是**启动时必然会发生的一次推送**（组件注册即触发），
+          // 不能只靠设置页的 applyAccent——用户不打开外观设置就永远拿不到颜色。
+          let accent = '';
+          try {
+            const a = lsGet('jx.accent', '');
+            if (a) accent = String(a).split('|')[0];
+          } catch (e) { /* 没存过点缀色：不带，输入法用默认 */ }
+          // 文字色无条件带上（与 accent 是否存过无关）：主程序的主题文字色。
+          let textColor = '';
+          try {
+            textColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim();
+          } catch (e) { /* 样式表可能还没算：下面按主题档位给值 */ }
+          if (!textColor) {
+            let dark = false;
+            try {
+              const t = lsGet('jx.theme', 'light');
+              dark = t === 'dark' || (t === 'auto' && window.matchMedia &&
+                window.matchMedia('(prefers-color-scheme: dark)').matches);
+            } catch (e) { /* 读不到主题：按浅色 */ }
+            textColor = dark ? '#e6e8eb' : '#1f2328'; // 与 style.css 的 --text 一致
+          }
+          fetch('/api/voicetype/link', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ main, sub, mode, accentColor: accent || undefined, textColor: textColor || undefined }),
+          }).catch(() => {});
+        } catch (e) { /* 组件未就绪：忽略，下一次变更再同步 */ }
+      }
     },
 
     keyCapBox, choiceChips, renderTable, keyLabel, comboText,

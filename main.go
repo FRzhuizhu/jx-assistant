@@ -240,7 +240,7 @@ func main() {
 	app.FinalizeRuntimeState()
 	StartUpdateChecker(app)
 	startCompanyResyncOnce(app) // 一次性重新接入：把 10-16 之后没再跑过向导的机器模型配置追平
-	StartRunSweepOnce(app) // 启动 30s 后补扫一次孤儿会话（只扫一次，不做持续轮询）
+	StartRunSweepOnce(app)      // 启动 30s 后补扫一次孤儿会话（只扫一次，不做持续轮询）
 
 	if wantDesktop && !*browser {
 		// 服务跑在后台 goroutine；窗口关闭即整体退出
@@ -254,6 +254,10 @@ func main() {
 		// 行为」时，能直接看出该安装包是哪个工具链构建的（回调栈缺陷等运行
 		// 时 bug 与 Go 版本强相关）。
 		log.Printf("AI数字助理 桌面版已启动: %s（%s）", url, runtime.Version())
+		// 把独立语音输入法作为子进程拉起来（幂等；找不到/已在跑都只记日志）。
+		// 放在 runDesktop 之前：窗口一出来用户就能用听写，不必再手动双击 bat。
+		app.spawnVoiceType()
+		defer stopVoiceType() // 主程序退出时一并收掉子进程，不留孤儿
 		if derr := runDesktop(app, url); derr != nil {
 			log.Fatalf("桌面模式启动失败: %v", derr)
 		}

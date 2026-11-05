@@ -70,15 +70,17 @@ type Config struct {
 	AllowShell bool          `json:"allowShell"`
 	DataDir    string        `json:"dataDir"`
 	SkillsDir  string        `json:"skillsDir"` // 技能目录；空 = 可执行文件旁的 技能/（不可写时落数据目录）
-	// 上下文压缩设置。自动压缩是两条独立阈值：规则阈值（默认 60%）先做零成本
-	// 折叠，压不动涨到模型阈值（默认 80%）由摘要兜底，任一填 0 即关闭该路；
-	// CompactMode 只决定手动「压缩」按钮的默认行为，不参与自动选路。
-	CompactMode      string  `json:"compactMode"`      // 手动压缩按钮的默认行为：rule=规则折叠(默认) llm=模型摘要；旧值 off 读入时归一为 rule
+	// 上下文压缩设置。规则自动压缩为**间隔制**：自上次压缩边界起新增未压缩
+	// 内容达到 CompactInterval（随 CompactUnit 取字数或 token）就触发一次零
+	// 成本规则折叠；模型摘要阈值（CompactLlmPct，默认 80%）仍按窗口百分比，
+	// 作为更晚的兜底（先折后摘）。CompactMode 只决定手动「压缩」按钮的默认
+	// 行为，不参与自动选路；CompactInterval=0 表示关闭规则自动压缩。
+	CompactMode      string  `json:"compactMode"`      // 手动压缩按钮的默认行为：llm=模型摘要(默认) rule=规则折叠；旧值 off 读入时归一为当前默认
 	KeepChars        int     `json:"keepChars"`        // 自动压缩的保留预算（字）：从最新往前累计模型可见字数，预算耗尽处（命中点）所在的轮整轮保留——轮首可以是用户消息，也可以是数字助理转发消息；命中轮自身超预算（巨轮）时回退行级窗口，至少保最近一条原文
+	CompactInterval  int     `json:"compactInterval"`  // 规则自动压缩间隔：自上次压缩边界起新增未压缩内容达到该值触发一次规则折叠（0=关闭）。单位随 CompactUnit，默认 400000 字
+	CompactUnit      string  `json:"compactUnit"`      // 间隔计量单位：chars=字数（默认，模型无关）| tokens=token（用模型返回的 usage 真值，不估算）
 	CompactThreshold float64 `json:"compactThreshold"` // 旧版单阈值（0.8/0.9）：新逻辑不读它，仅保留字段让旧版 exe 回滚时还能用
-	CompactRulePct   int     `json:"compactRulePct"`   // 规则自动压缩阈值（%）：估算 token 占窗口比例，0=不启用（默认 60）
-	CompactLlmPct    int     `json:"compactLlmPct"`    // 模型自动压缩阈值（%）：0=不启用（默认 80）——规则压不动后的摘要兜底
-	CompactCooldown  int     `json:"compactCooldown"`  // 规则压缩冷却（轮）：触发一次后 N 轮内轮中不再重试、每轮末固定再判断一次；0=不冷却（默认 1）
+	CompactLlmPct    int     `json:"compactLlmPct"`    // 模型自动压缩阈值（%）：0=不启用（默认 80）——默认压缩方式，到线即摘要
 	// 文件快照保留策略：按天超龄清理是主力（旧配置缺省回落默认值；-1 = 该项关闭）。
 	// 自动池管 write/edit 的小快照；手动池（snapshot_file，往往是
 	// Office 文档等大文件）默认不限量——清理靠 7 天过期；确有磁盘压力时再配
@@ -95,8 +97,10 @@ type Config struct {
 	// 手机等外部设备经网关的加密中继访问本服务；端到端 AES-256-GCM（密钥由
 	// pairKey 派生），网关只见密文。与聊天服务的 p2p.js 同协议，共用同一网关。
 	RemoteAccess RemoteAccessCfg `json:"remoteAccess"`
-	// 市场（技能/组件/插件）服务器清单地址：指向 jxai-server 的
-	// /market/manifest.json；空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
+	// 企业技能包 / 工作流 / 小程序平台服务器地址（域名/IP + 端口，如 https://example.com:2227）：
+	// 技能市场与小程序平台同一台 jxai-server，清单（/market/manifest.json）与 /sites
+	// 等后缀由程序自动拼（market.go 的 marketManifestURL），已带后缀的旧值同样兼容；
+	// 空 = 未配置（市场页提示并给出与中继网关同 host 的建议值）。
 	MarketURL string `json:"marketURL"`
 	// 联网搜索服务端地址（web_search 工具的上游网关，jxai-server 的 /api/search，
 	// 见 websearch.go）：空 = 跟随市场地址同源——市场与搜索本就同一台服务端。
@@ -116,11 +120,9 @@ type Config struct {
 	// 通道）原样保留，重新打开即恢复同步与向导。
 	WizardDone         bool   `json:"wizardDone"`
 	RegistryURL        string `json:"registryURL"`
-	// SitesURL 小程序平台地址（服务端随公告下发）。2026-10-30 起前端内嵌走本端
-	// 透明反向代理 /sites（sitesproxy.go，证书校验由 Go 端证书策略接管），不再
-	// 直接把该地址塞进 iframe——服务端由此不必照顾"浏览器能不能加载"（2228 明文
-	// 口不再依赖）；该字段保留给"在浏览器中打开"等直面服务端的出口做提示用。
-	SitesURL string `json:"sitesURL,omitempty"`
+	// 小程序平台不再有独立地址（2026-11-03 用户口径）：一律从市场地址（marketURL）
+	// 推导——内嵌走本端透明反向代理 /sites（sitesproxy.go），"在浏览器中打开"由
+	// 前端按市场 origin 拼 /sites。服务端也不再随公告/配置包下发 sitesURL。
 	WizardCompany      string `json:"wizardCompany,omitempty"`
 	WizardServer       string `json:"wizardServer,omitempty"`
 	WizardPublicServer string `json:"wizardPublicServer,omitempty"` // 服务端公网地址（仅由服务端公告/provision 下发，本地永不写死）：内网失联时改从它拉公告——公司通道配了外网地址就出公司也能用，否则自动停用
@@ -311,12 +313,12 @@ func DefaultConfig() *Config {
 		MaxSteps:            maxStepsDefault,
 		AllowShell:          true,
 		DataDir:             "data",
-		CompactMode:         "rule",
+		CompactMode:         "llm",
 		KeepChars:           100000, // 10 万字 ≈ 7.5 万 token 的近期原文（各工具压缩后常见余量）
+		CompactInterval:     400000, // 40 万字（单次压缩约 30 万 + 保留 10 万）；token 单位时为 40 万 token
+		CompactUnit:         "chars",
 		CompactThreshold:    0.8,
-		CompactRulePct:      60,
 		CompactLlmPct:       80,
-		CompactCooldown:     1,
 		SnapshotDays:        7,
 		SnapshotMaxMB:       32,
 		SnapshotManualMaxMB: -1,
@@ -395,29 +397,50 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.CompactMode != "rule" && cfg.CompactMode != "llm" && cfg.CompactMode != "off" {
 		cfg.CompactMode = def.CompactMode
 	}
-	if cfg.KeepChars <= 0 {
+	// KeepChars 允许 0（= 连最近一轮也不保留的全压语义，用户显式设置）；
+	// 仅负数视为非法回默认。无键补默认在下方 compactKeys 迁移块处理。
+	if cfg.KeepChars < 0 {
 		cfg.KeepChars = def.KeepChars
 	}
 	if cfg.CompactThreshold <= 0.5 || cfg.CompactThreshold >= 1 {
 		cfg.CompactThreshold = def.CompactThreshold
 	}
-	// 双阈值迁移：老配置没有这三个键时补默认（旧 off 模式 = 自动压缩全关），
-	// 迁移过就立即落盘，配置文件与运行时口径一致。CompactMode 旧值 off 归一为
-	// rule——自动压缩的开关已由两个阈值表达（全 0=关），off 只剩「手动按钮
-	// 默认行为」一层含义，而手动按钮总要有个行为。
+	// 间隔制迁移（旧版为规则阈值百分比+冷却，已废）：老配置没有 compactInterval
+	// 键时补默认 400000；旧 CompactMode=off 的语义是「自动压缩全关」，迁移为
+	// interval=0（规则通道关）——llm 阈值仍按旧迁移保持。迁移过就立即落盘，
+	// 配置文件与运行时口径一致；旧配置里遗留的 compactRulePct/compactCooldown
+	// 键在结构体上已无对应字段，读入时被忽略、下次保存自然消失。
 	compactMigrated := false
 	var compactKeys map[string]json.RawMessage
 	if json.Unmarshal(data, &compactKeys) == nil {
-		_, hasRule := compactKeys["compactRulePct"]
-		_, hasLlm := compactKeys["compactLlmPct"]
-		_, hasCooldown := compactKeys["compactCooldown"]
-		if !hasRule {
-			cfg.CompactRulePct = def.CompactRulePct
+		// keepChars 无键补默认（零值与显式 0 不可区分，无键必是老存量而非
+		// 用户置零——0 是合法的全压语义，不能被默认值覆盖）
+		if _, hasKeep := compactKeys["keepChars"]; !hasKeep {
+			cfg.KeepChars = def.KeepChars
+			compactMigrated = true
+		}
+		_, hasInterval := compactKeys["compactInterval"]
+		if !hasInterval {
+			cfg.CompactInterval = def.CompactInterval
 			if cfg.CompactMode == "off" {
-				cfg.CompactRulePct = 0
+				cfg.CompactInterval = 0
+			}
+			// 旧配置显式 compactRulePct:0 = 用户明确关闭规则通道（0=不启用是
+			// 旧字段的既定语义）：迁移后语义延续为间隔 0，不因换机制被重新打开
+			if rawRule, ok := compactKeys["compactRulePct"]; ok {
+				var oldRule int
+				if json.Unmarshal(rawRule, &oldRule) == nil && oldRule == 0 {
+					cfg.CompactInterval = 0
+				}
 			}
 			compactMigrated = true
 		}
+		_, hasUnit := compactKeys["compactUnit"]
+		if !hasUnit {
+			cfg.CompactUnit = def.CompactUnit
+			compactMigrated = true
+		}
+		_, hasLlm := compactKeys["compactLlmPct"]
 		if !hasLlm {
 			cfg.CompactLlmPct = def.CompactLlmPct
 			if cfg.CompactMode == "off" {
@@ -425,22 +448,18 @@ func LoadConfig(path string) (*Config, error) {
 			}
 			compactMigrated = true
 		}
-		if !hasCooldown {
-			cfg.CompactCooldown = def.CompactCooldown
-			compactMigrated = true
-		}
 	}
-	if cfg.CompactRulePct < 0 || cfg.CompactRulePct > 100 {
-		cfg.CompactRulePct = def.CompactRulePct
+	if cfg.CompactInterval < 0 {
+		cfg.CompactInterval = def.CompactInterval
+	}
+	if cfg.CompactUnit != "chars" && cfg.CompactUnit != "tokens" {
+		cfg.CompactUnit = def.CompactUnit
 	}
 	if cfg.CompactLlmPct < 0 || cfg.CompactLlmPct > 100 {
 		cfg.CompactLlmPct = def.CompactLlmPct
 	}
-	if cfg.CompactCooldown < 0 {
-		cfg.CompactCooldown = 0
-	}
 	if cfg.CompactMode == "off" {
-		cfg.CompactMode = "rule"
+		cfg.CompactMode = def.CompactMode
 		compactMigrated = true
 	}
 	// 远程接入：老配置没有这一键时补默认网关地址；设备号与配对密钥留空则
@@ -534,9 +553,9 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.Providers = []ProviderCfg{p}
 	}
-	// 步数上限从历次默认迁移过（旧默认 → 不限制）：立即落盘，让设置页读数、
-	// 配置文件与运行时三者一致（免得用户看到配置文件里还是 200，以为没生效；
-	// 其他补全都留给下一次保存）
+	// 步数上限从历次默认迁移过（旧默认 → 不限制）、压缩从百分比阈值迁移到
+	// 间隔制：立即落盘，让设置页读数、配置文件与运行时三者一致（免得用户看到
+	// 配置文件里还是旧键，以为没生效；其他补全都留给下一次保存）
 	if maxStepsBumped || remoteHostMigrated || compactMigrated || plainSelfMigrated {
 		if err := cfg.Save(path); err != nil {
 			log.Printf("回写配置迁移失败: %v", err)

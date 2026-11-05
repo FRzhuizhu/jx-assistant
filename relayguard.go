@@ -24,6 +24,10 @@ import (
 // relayRegLoggedAt 上次记「已注册」日志的时刻（unix ms），用于日志节流。
 var relayRegLoggedAt atomic.Int64
 
+// relayCooldownUntil 验密失败熔断的重连冷却截止（unix ms，跨连接生效：hubCtx
+// 每次重连新建，冷却必须留在包级）。见 remoteaccess.go 的 noteAuthFail。
+var relayCooldownUntil atomic.Int64
+
 // 重连节奏：稳定链路断了就快速重连；「注册成功后很快被断」要按退避递增——
 // 那正是被网关踢（设备号冲突）或网关异常的形态，立刻重连只会变成热循环。
 const (
@@ -31,6 +35,17 @@ const (
 	relayRetryMax    = 30 * time.Second
 	relayStableAfter = 60 * time.Second // 连接活过这么久再断，视为「正常断线」，快速重连
 	relayRegLogEvery = time.Minute      // 「已注册」日志节流（重连风暴时别刷爆日志）
+)
+
+// 验密失败熔断（2026-11-04 洪泛防护）：/relay 匿名，攻击者知道设备号即可持续
+// 灌密文（每条都要家端做一次 AES-GCM 解密尝试）。窗口内连败超阈即主动断开
+// hub 连接并冷却——网关侧该设备的挂起中继全部立即失败（503），代价从家端
+// 解密 CPU 转嫁给连接层；冷却结束重连恢复。真用户密钥输错远达不到阈值，且
+// 成功一次即清零计数。
+const (
+	relayAuthFailWindow = 30 * time.Second // 失败计数观测窗
+	relayAuthFailBurst  = 20               // 窗口内连败熔断阈值
+	relayAuthFailCool   = 60 * time.Second // 熔断后的重连冷却
 )
 
 // relayLockPath 中继归属文件路径（放 data 目录，与库、配置同处）。

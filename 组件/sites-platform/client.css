@@ -1,0 +1,11 @@
+/* 小程序平台独立视图（sites-platform 组件的浏览器半边，后端 sitesproxy.go）：
+   与市场视图平级的主区整页——让位规则照 market-mode 抄（#msg-zone 是运行时
+   定位层，只藏 #messages 会平分主区高度）。不套壳：无 padding、iframe 无边框
+   无圆角，顶栏以下直接就是平台网页（2026-10-30 用户口径：别出现"框中框"） */
+body.sites-mode #progress-panel,
+body.sites-mode #msg-zone,
+body.sites-mode #messages,
+body.sites-mode #composer-wrap { display: none; }
+
+#sites-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.sites-frame { flex: 1; min-height: 0; width: 100%; border: none; background: var(--bg); }

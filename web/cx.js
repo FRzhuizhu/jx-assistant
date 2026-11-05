@@ -230,7 +230,7 @@
       return { hot: false };
     },
 
-    // 重拉清单并对账（市场安装/卸载组件后由 app-market.js 调用）：
+    // 重拉清单并对账（市场安装/卸载组件后由 skill-market 组件调用）：
     // 新出现且启用的组件立即注入、消失的组件热卸载，全程不刷新页面。
     async refresh() {
       let fresh;

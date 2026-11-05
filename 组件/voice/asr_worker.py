@@ -36,6 +36,125 @@ import wave
 from pathlib import Path
 
 
+# ---------- 识别内核：VAD 分段 + 每段增益 ----------
+#
+# 从 backup/voice-20261103 分支取回（2026-11-03）。只取这一段识别内核：
+# 悬浮窗（overlay.html / port.txt / hotkeys 端点 / client.js 的 overlay 保活）
+# 一概不恢复——那次组件化改造引入的问题已由原样回退处理。
+#
+# 为什么必须切分再识别（原注释保留，均为实测结论）：
+#   · X-ASR encoder 约 24s 上限，超出必须切；固定点硬切会切在字中间丢字，
+#     所以超长段回看 2.5s 找能量谷（换气处）切。
+#   · 切分必须在【原始音频】上跑——整段峰值归一会把底噪同倍放大，破坏 silero
+#     的静音判定导致漏字（"所以我们要先切分"曾被切丢前半）；
+#     增益只能在切分之后、识别之前，**逐段**做。
+#
+# 增益目标峰值：按产品结论取 0.7（可用环境变量 VOICE_AGC_TARGET 覆盖）。
+# 历史实测记录（原注释原文，留档备查）："引擎舒适区实测在峰值 0.33~0.55，
+# 小声（峰值 0.07）会错词、拉到 0.35 恢复；峰值到 0.7 以上过响，反而让边界词
+# 劣化（'礼拜二'→'liba'，实测对照）"——若将来发现边界词劣化，把默认值改回 0.35。
+
+_vad = None
+_GAIN_TARGET = float(os.environ.get("VOICE_AGC_TARGET", "0.7"))
+_MAX_SEG_SEC = 20.0  # X-ASR encoder 实测约 24s 上限，留余量
+
+
+def _get_vad(models_root):
+    """silero VAD（惰性单例）。按停顿切分：0.4s 静音断句、<0.25s 碎语丢弃。"""
+    global _vad
+    if _vad is None:
+        import sherpa_onnx
+        cfg = sherpa_onnx.VadModelConfig()
+        cfg.silero_vad.model = str(models_root / "silero_vad.onnx")
+        cfg.silero_vad.min_silence_duration = 0.4   # 与前端/切段器一致的断句阈值
+        cfg.silero_vad.min_speech_duration = 0.25    # "嗯"级碎语不单独成段
+        cfg.silero_vad.max_speech_duration = 600     # 超长段由能量谷智能切
+        _vad = sherpa_onnx.VoiceActivityDetector(config=cfg, buffer_size_in_seconds=600)
+    return _vad
+
+
+def _normalize_gain(samples, target=None):
+    """数字增益：峰值归一化（只放大不衰减）。X-ASR int8 对绝对音量敏感。"""
+    import numpy as np
+    t = _GAIN_TARGET if target is None else target
+    peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
+    if 1e-4 < peak < t:
+        samples = samples * (t / peak)
+    return samples
+
+
+def _smart_hard_split(samples, sr, limit):
+    """超长连续语音（一口气说不停无停顿）的智能切分：到 limit 回看 2.5s
+    找能量谷（换气处）切，避免固定点硬切切在字中间导致丢字。"""
+    import numpy as np
+    if len(samples) <= limit:
+        return [samples]
+    frame = int(sr * 0.02)
+    n = len(samples) // frame
+    if n == 0:
+        return [samples]
+    rms = np.sqrt(np.mean(samples[:n * frame].reshape(n, frame) ** 2, axis=1))
+    lookback = int(sr * 2.5)
+    valley_frames = max(1, int(sr * 0.16) // frame)
+    pieces, start = [], 0
+    while len(samples) - start > limit:
+        f_hi = (start + limit) // frame
+        f_lo = max((start + limit - lookback) // frame, start // frame + 1)
+        if f_hi - f_lo >= valley_frames:
+            win = np.convolve(rms[f_lo:f_hi], np.ones(valley_frames), "valid")
+            best_f = f_lo + int(np.argmin(win)) + valley_frames // 2
+            cut = best_f * frame
+        else:
+            cut = start + limit
+        pieces.append(samples[start:cut])
+        start = cut
+    pieces.append(samples[start:])
+    return pieces
+
+
+def _split_segments(samples, sr, models_root):
+    """VAD 按停顿切段（在原始音频上跑）。每段增益由调用方在识别前做。"""
+    import numpy as np
+    try:
+        vad = _get_vad(models_root)
+    except Exception as e:  # noqa: BLE001 —— VAD 文件缺失/加载失败：整段直送保底
+        print(f"[voice] VAD 不可用，退化为整段识别: {e}", file=sys.stderr)
+        limit = int(_MAX_SEG_SEC * sr)
+        return [(0, samples[i:i + limit]) for i in range(0, len(samples), limit)] if len(samples) else []
+    vad.reset()
+    for i in range(0, len(samples), 512):  # silero 必须按窗口分块流式喂
+        vad.accept_waveform(samples[i:i + 512])
+    vad.flush()
+    segs = []
+    while not vad.empty():
+        seg = vad.front
+        s = np.array(seg.samples, copy=True)
+        start = int(getattr(seg, "start", 0))
+        vad.pop()
+        limit = int(_MAX_SEG_SEC * sr)
+        if len(s) <= limit:
+            segs.append((start, s))
+            continue
+        for piece in _smart_hard_split(s, sr, limit):
+            segs.append((start, piece))
+            start += len(piece)
+    if not segs:  # 全静音兜底
+        limit = int(_MAX_SEG_SEC * sr)
+        return [(i, samples[i:i + limit]) for i in range(0, len(samples), limit)] if len(samples) else []
+    return segs
+
+
+def _join_texts(texts):
+    """跨段拼接：英文/数字开头补空格，中文直连。"""
+    out = ""
+    for t in texts:
+        if out and t and t[0].isascii() and t[0].isalnum():
+            out += " " + t
+        else:
+            out += t
+    return out
+
+
 def main():
     root = Path(__file__).resolve().parent  # 组件/voice：worker 与 models/ 同级（自包含）
     models_root = root / "models"
@@ -148,11 +267,30 @@ def main():
         if ch > 1:
             samples = samples.reshape(-1, ch).mean(axis=1).astype(np.int16)
         t0 = time.time()
+        f32 = samples.astype(np.float32) / 32768.0
 
-        stream = engine.create_stream()
-        stream.accept_waveform(sr, samples.astype(np.float32) / 32768.0)
-        engine.decode_stream(stream)
-        text = (stream.result.text or "").strip()
+        # 极小声（峰值 < 0.02 ≈ -34dBFS）先整体提一级再做 VAD：
+        # 这种录音的底噪也极低，整体提级不会污染静音判定；不提的话 silero 会把
+        # 段首当静音切掉——实测 1.5%/0.8% 音量时"这"字会丢（备份版原样即如此）。
+        # 正常音量**不走**这一步，严格保留"原始音频切分"的实测纪律。
+        import numpy as _np
+        _peak = float(_np.max(_np.abs(f32))) if f32.size else 0.0
+        if 1e-4 < _peak < 0.02:
+            before = _peak
+            f32 = _normalize_gain(f32)
+            print(f"[voice] 极小声(峰值 {before:.4f})：整体提级后再切分", file=sys.stderr)
+
+        # 识别内核：先 VAD 切分（原始音频）→ 每段各自增益 → 逐段识别 → 拼接
+        texts = []
+        for _start, seg in _split_segments(f32, sr, models_root):
+            seg = _normalize_gain(seg)
+            stream = engine.create_stream()
+            stream.accept_waveform(sr, seg)
+            engine.decode_stream(stream)
+            t = (stream.result.text or "").strip()
+            if t:
+                texts.append(t)
+        text = _join_texts(texts)
         infer_ms = int((time.time() - t0) * 1000)
         reply({"ok": True, "text": text, "audio_ms": audio_ms,
                "infer_ms": infer_ms, "rtf": round(infer_ms / max(audio_ms, 1), 3),

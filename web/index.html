@@ -20,19 +20,19 @@
          手机端（窄屏媒体查询）藏全名、亮短名，更窄连短字也隐掉只剩图标。
          以后往这组里加新入口，照这个结构写（span + data-short），否则手机端只能显示图标 -->
     <div class="actions">
-      <button id="btn-new-task" class="side-btn" data-short="新任务">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        <span class="sb-label">派任务给新助理</span>
-      </button>
       <button id="btn-new-assistant" class="side-btn" data-short="数字助理">
         <span class="doll-wrap"><svg id="da-face" width="16" height="16" viewBox="4 4 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-da-face="" data-state="idle"><g class="bob"><g class="head"><circle cx="24" cy="24" r="15.5" fill="none" stroke="currentColor" stroke-width="2.6"></circle><g class="da-eyes"><g transform="translate(17.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g><g transform="translate(30.5 22.5)"><path class="da-eye" d="M2.96 1.22 Q2.93 2.44 2.83 3.11 Q2.73 3.78 2.55 4.27 Q2.38 4.76 2.13 5.11 Q1.89 5.45 1.55 5.66 Q1.22 5.86 0.61 5.93 Q0.00 6.00 -0.61 5.93 Q-1.22 5.86 -1.55 5.66 Q-1.89 5.45 -2.13 5.11 Q-2.38 4.76 -2.55 4.27 Q-2.73 3.78 -2.83 3.11 Q-2.93 2.44 -2.96 1.22 Q-3.00 0.00 -2.96 -1.22 Q-2.93 -2.44 -2.83 -3.11 Q-2.73 -3.78 -2.55 -4.27 Q-2.38 -4.76 -2.13 -5.11 Q-1.89 -5.45 -1.55 -5.66 Q-1.22 -5.86 -0.61 -5.93 Q0.00 -6.00 0.61 -5.93 Q1.22 -5.86 1.55 -5.66 Q1.89 -5.45 2.13 -5.11 Q2.38 -4.76 2.55 -4.27 Q2.73 -3.78 2.83 -3.11 Q2.93 -2.44 2.96 -1.22 Q3.00 0.00 2.96 1.22Z" fill="currentColor"></path></g></g><g class="da-smile" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"><path d="M14.8 23 Q17.5 19.5 20.2 23"></path><path d="M27.8 23 Q30.5 19.5 33.2 23"></path></g></g><g class="da-paper"><rect x="26.5" y="28.5" width="12" height="14" rx="1.6"></rect><line x1="29" y1="32.5" x2="36" y2="32.5"></line><line x1="29" y1="35.5" x2="36" y2="35.5"></line><line x1="29" y1="38.5" x2="33.5" y2="38.5"></line></g></g></svg><span id="da-badge" class="da-badge hidden">1</span></span>
         <!-- 显示名「跟长期助理对话」（2026-10-30 起「助理」不再加粗，整行常规字重） -->
         <span class="sb-label">跟长期助理对话</span>
       </button>
+      <button id="btn-new-task" class="side-btn" data-short="新任务">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sb-label">派任务给新助理</span>
+      </button>
     </div>
 
     <div class="side-section" id="ws-section">
-      <span id="ws-section-title">工作区</span>
+      <span id="ws-section-title">工作任务</span>
       <div class="ws-tools">
         <button id="wst-search" title="搜索工作任务">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -68,17 +68,8 @@
          最底独占整行，桌面端照常多出一行。 -->
     <div class="sidebar-foot">
       <div class="foot-grid">
-      <button id="btn-market" class="foot-btn" title="企业技能包：安装/更新 技能、组件与插件">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>
-        企业技能包
-      </button>
-      <!-- 企业小程序平台：与「企业技能包」平级的独立主区页面（2026-10-30 用户要求）。
-           点它进 #sites-view——iframe 加载本端代理 /sites（sitesproxy.go 转发市场
-           服务器，自签证书由 Go 端证书策略接管，浏览器自己的证书校验不再挡路）。 -->
-      <button id="btn-sites" class="foot-btn" title="企业小程序平台：发布与管理小程序、数据文件、二维码">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>
-        小程序平台
-      </button>
+      <!-- 企业技能包 / 工作流、小程序平台：均已组件化（组件/skill-market/ 与
+           组件/sites-platform/），侧栏入口由组件各自 append 进本格。 -->
       <button id="btn-recycle" class="foot-btn" title="回收站">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
         回收站
@@ -122,77 +113,8 @@
       </button>
     </header>
 
-    <!-- 市场视图（app-market.js）：body.market-mode 下占领主区（对话区与输入区隐藏），
-         企业技能包/企业组件包/兼容插件/MCP 四 tab + 搜索 + 一键安装/更新/卸载，全走 /api/market（远程手机端天然可用） -->
-    <div id="market-view" class="hidden">
-      <div class="mk-head">
-        <div class="mk-title">
-          <h2>企业技能包</h2>
-          <span id="mk-server" class="mk-server" title="市场服务器（设置 · 网络访问 可改）"></span>
-        </div>
-        <input id="mk-search" type="search" placeholder="搜索名称 / 描述 / 标签…" autocomplete="off" spellcheck="false">
-        <button id="mk-refresh" class="mk-icon-btn" title="刷新清单">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-        </button>
-      </div>
-      <div class="mk-tabs">
-        <button data-mk-tab="skill" class="mk-tab active">企业技能包</button>
-        <button data-mk-tab="component" class="mk-tab">企业组件包</button>
-        <button data-mk-tab="plugin" class="mk-tab">兼容插件</button>
-        <button data-mk-tab="mcp" class="mk-tab">MCP</button>
-        <span class="mk-tabs-rest">
-          <span id="mk-count"></span>
-          <button id="mk-upload-btn" class="mk-act hidden" title="把一个已安装的用户技能发布到市场服务器（先装后传）">＋ 上传技能</button>
-          <button id="mk-ext-market" class="mk-link hidden">管理外部 Claude 市场</button>
-        </span>
-      </div>
-      <div id="mk-list" class="mk-list"></div>
-    </div>
-
-    <!-- 小程序平台独立视图（app-market.js 的 sites* 系列）：与市场视图平级的主区
-         整页。不套任何壳（无标题/工具条/边框，2026-10-30 用户口径：进来直接就是
-         平台网页，别出现"框中框"）——iframe 铺满顶栏以下主区，加载本端代理 /sites
-         （sitesproxy.go 转发市场服务器，自签证书由 Go 端证书策略接管）；
-         平台页自带刷新/上传/站点管理，本端不重复实现。 -->
-    <div id="sites-view" class="hidden">
-      <iframe id="sites-frame" class="sites-frame" title="企业小程序平台"></iframe>
-    </div>
-
-    <!-- 上传技能到市场弹层（app-market.js 的 mku* 系列；2026-10-30 凌晨 e2017df54e
-         清理小程序平台 iframe 入口时被整块误删——点「＋ 上传技能」在 null 上抛异常、
-         弹层永远不出现，从 e2017df54e^ 原样恢复） -->
-    <div id="mk-upload-modal" class="modal hidden">
-      <div class="modal-card mku-card">
-        <h3>上传技能到市场</h3>
-        <p class="mku-sub">从<b>已安装的用户技能</b>里选一个发布——技能先在本机装好、试过能用，再上市场。想传新技能，先去 设置 · 技能 安装（支持拖入 zip、.md 文件或文件夹）。</p>
-        <div id="mku-skills" class="mku-skills"></div>
-        <div class="mku-meta">
-          <label>技能 ID <span class="mku-req">必填</span>
-            <input id="mku-id" placeholder="英文短名，如 wechat-chat-ops" autocomplete="off" spellcheck="false">
-          </label>
-          <label>显示名称 <span class="mku-opt">中文为主</span>
-            <input id="mku-name" placeholder="市场上与技能清单里显示的名字" autocomplete="off">
-          </label>
-          <label>版本
-            <input id="mku-version" placeholder="如 1.0.0" autocomplete="off" spellcheck="false">
-          </label>
-          <label>标签 <span class="mku-opt">逗号分隔</span>
-            <input id="mku-tags" placeholder="如 办公, 自动化" autocomplete="off">
-          </label>
-          <label class="mku-wide">描述
-            <input id="mku-desc" placeholder="一句话说明这个技能做什么（显示在市场的卡片上，上限 1024 字）" autocomplete="off">
-          </label>
-        </div>
-        <div id="mku-status" class="mku-status"></div>
-        <div class="modal-actions">
-          <button id="mku-clear">清空</button>
-          <span class="spacer"></span>
-          <button id="mku-cancel">取消</button>
-          <button id="mku-submit" class="accent" disabled>发布到市场</button>
-        </div>
-      </div>
-    </div>
-
+    <!-- 市场视图、小程序平台视图均已组件化（组件/skill-market/ 与
+         组件/sites-platform/，视图 DOM 由组件注入 #main）。 -->
     <div id="progress-panel" class="hidden"></div>
     <div id="messages"><div class="msg-col" id="msg-col"></div></div>
 
@@ -424,6 +346,7 @@
           <span class="fvw-path" id="fvw-path" title=""></span>
           <span class="fvw-stat" id="fvw-stat"></span>
           <button id="fvw-wrap" class="fvw-ico" type="button" title="当前：长行横向滚动（点击改为折行显示）">折行</button>
+          <button id="fvw-sysopen" class="fvw-ico" type="button" title="用系统默认应用打开这个文件">打开方式</button>
           <button id="fvw-reload" class="fvw-ico" type="button" title="重新读取（文件与快照）">⟳</button>
         </div>
         <div class="fvw-note hidden" id="fvw-note"></div>
@@ -438,6 +361,7 @@
           <button id="bpw-sysopen" title="用系统默认应用打开这个文件" hidden>打开方式</button>
           <button id="bpw-reveal" title="在文件资源管理器中定位这个文件" hidden>📁</button>
           <button id="bpw-external" title="在系统浏览器打开当前页">↗</button>
+<button id="bpw-fit" title="画面显示：等比缩放 / 原始像素（1:1，可滚动）切换" hidden>⛶</button>
         </div>
         <div class="bpw-stage" id="bpw-stage">
           <div class="bpw-hint" id="bpw-hint">浏览器面板仅在桌面版可用</div>
@@ -445,6 +369,10 @@
                渲染页这类必须就地看的页面铺在这里（app-right.js 的 bpwShowFrame）。
                桌面/Electron 形态由原生控件覆盖舞台，本元素保持隐藏。 -->
           <iframe id="bpw-frame" class="bpw-frame hidden" title="右栏预览"></iframe>
+          <!-- 远程形态（手机/外网电脑接入）的右栏浏览器：家端面板画面的只读
+               镜像（WebP 帧流，app-right.js 的 bpwMirror*）。默认等比缩放居中，
+               .raw 为原始像素 1:1+滚动条。桌面/本机网页形态不显示。 -->
+          <div class="bpw-mirror hidden" id="bpw-mirror"><img id="bpw-mirror-img" alt="远程浏览器画面"></div>
           <!-- Electron 桌面壳：右栏网页区是真正的 DOM 内嵌浏览器（独立持久
                partition，登录态与主界面隔离）。地址栏/工具栏逻辑不变——仍经
                Go 的 /api/browser/* 走，Go 再经壳的 panel-bridge 驱动本元素，
@@ -590,7 +518,7 @@
             <div class="set-field">
               <div class="sf-label">对话中途发送行为</div>
               <div id="sel-midrun"></div>
-              <p class="sf-desc">插话不打断执行：下一步调用模型时插话进去；等待则排入队列，本轮彻底结束后逐条发送。</p>
+              <p class="sf-desc">插话会立即打断模型正在进行的思考或正文输出，下一步带着插话重新调用模型；工具执行中不打断，等下一步调用模型时注入。等待则排入队列，本轮彻底结束后逐条发送。</p>
             </div>
             <div class="set-field">
               <div class="sf-label">排队消息自动续发</div>
@@ -721,27 +649,8 @@
               <p class="sf-desc">中继网关的域名或 IP 与端口，不带 http:// 前缀；给别人分发本软件时，这里应改成对方自己部署的网关。</p>
             </div>
           </div>
-          <div class="gen-section">
-            <h4>市场（技能 / 组件 / 插件）</h4>
-            <div class="set-field">
-              <div class="sf-label">市场服务器</div>
-              <input id="set-market-url" class="pf-input" placeholder="https://example.com:PORT/market/manifest.json" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">市场的清单地址；填好即用，改动即时生效。留空则市场页显示未配置。</p>
-            </div>
-            <div class="set-field">
-              <div class="sf-label">发布者姓名</div>
-              <input id="set-publisher-name" class="pf-input" placeholder="如 张三" autocomplete="off" spellcheck="false">
-              <p class="sf-desc">发布技能时随包上报的市场条目归属名：市场卡片上只有「发布者 = 这个姓名」的条目才显示「更新发布 / 删除」（即只能管自己发的）。首次接入向导里填的姓名会自动写入这里；留空则不带归属，发布后自己也删不了。</p>
-            </div>
-            <div class="set-field">
-              <div class="sf-label">网页托管平台</div>
-              <div class="sf-inline">
-                <button id="btn-open-sites" class="pf-add" type="button">打开托管平台</button>
-                <span class="sf-desc">与市场同一台服务端（jxai-server）；把 HTML/文件夹拖进去即发布成网址，收集的表单数据也托管在服务端。</span>
-              </div>
-              <p class="sf-desc">助手可在对话里用 publish_webpage 工具直接把工作区里的网页发布成网址；这里打开的是网页管理端（拖拽上传 / 站点列表 / 数据下载）。</p>
-            </div>
-          </div>
+          <!-- 小程序平台区已组件化（组件/sites-platform/）：入口与「打开托管平台」
+               在 设置 · 内置组件 · 小程序平台；服务器地址与市场共用（skill-market 组件）。 -->
           <div class="gen-section">
             <h4>联网搜索（web_search）</h4>
             <div class="set-field">
@@ -790,22 +699,22 @@
         <div class="set-pane" id="set-pane-context">
           <h3>对话历史与压缩</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留、可随时查回，压缩只影响发给模型的内容。两条自动压缩阈值各自独立、可填 0–100 的任意值，填 0 或留空＝不启用该路：规则阈值（默认 60%）先零成本折叠，压不动涨到模型阈值（默认 80%）由摘要兜底；保留字数预算内的最近完整轮不受压缩影响。规则压缩带按轮冷却（默认 1 轮）：一轮内只尝试一次、整轮结束时再判断一次，压不动也不会反复空转。折叠保留用户输入与正文、工具调用名与参数，丢弃思考过程、工具结果与环境快照；摘要则把较早历史整理成一份结构化摘要。</div>
+            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留、可随时查回，压缩只影响发给模型的内容。规则自动压缩按<b>间隔</b>触发：自上次压缩后新增未压缩内容达到间隔（默认 40 万）就做一次零成本规则折叠，压缩后增量归零、天然不会反复触发；<b>间隔填 0 或留空＝关闭规则自动压缩</b>。保留字数设 0＝连最近一轮也不保留（每次触发即全量压缩）。模型阈值（默认 80%，对上下文窗口的百分比）仍是最后防线：折叠后估算仍达线才生成模型摘要。间隔与保留字数共用同一计量单位（字数或 token；token 用模型返回的实际用量差值，不估算）。折叠保留用户输入与正文原文、工具调用简化为带编号的动作行（编号即数据库序号，可一步查回原文），写入类参数默认原样保留；丢弃思考过程与环境快照，图片卸载为标注行。</div>
             <div class="compact-row">
               <label>手动压缩按钮的默认行为
                 <div id="sel-compact-mode"></div>
               </label>
-              <label>保留字数（自动压缩）
-                <input id="set-keepchars" type="number" min="10000" step="5000">
+              <label>保留字数（自动压缩，0＝全压）
+                <input id="set-keepchars" type="number" min="0" step="5000">
               </label>
-              <label>规则自动压缩阈值（%）
-                <input id="set-compact-rulepct" type="number" min="0" max="100" step="5">
+              <label>规则压缩间隔（K，0＝关闭）
+                <input id="set-compact-interval" type="number" min="0" step="50">
+              </label>
+              <label>间隔计量单位
+                <div id="sel-compact-unit"></div>
               </label>
               <label>模型自动压缩阈值（%）
                 <input id="set-compact-llmpct" type="number" min="0" max="100" step="5">
-              </label>
-              <label>规则压缩冷却（轮）
-                <input id="set-compact-cooldown" type="number" min="0" max="20" step="1">
               </label>
             </div>
           </div>
@@ -893,7 +802,7 @@
                 <option value="http">HTTP</option>
               </select>
               <input id="mcp-add-cmd" type="text" placeholder="stdio：启动命令（如 python D:\path\server.py）；HTTP：服务地址" />
-              <button id="mcp-add-btn" class="pf-add">添加</button>
+              <button id="mcp-add-btn" class="ccp-row-btn">添加</button>
             </div>
           </div>
           <div class="gen-section">
@@ -911,11 +820,11 @@
             <div class="tip-inline" style="margin:0 0 10px">当前支持 Claude Code 格式的插件安装；输入框输入 / 可触发插件命令。独立 MCP 服务在「MCP」分区管理。</div>
             <div class="ccp-install-row">
               <input id="ccp-install-src" type="text" placeholder="插件目录 / .zip / git 或 zip URL（Claude Code 格式）" />
-              <button id="ccp-install-btn" class="pf-add">安装</button>
+              <button id="ccp-install-btn" class="ccp-row-btn">安装</button>
             </div>
             <div class="ccp-install-row">
               <input id="ccp-market-src" type="text" placeholder="市场 git URL（如 https://github.com/anthropics/claude-plugins-official）" />
-              <button id="ccp-market-btn" class="pf-add">添加市场</button>
+              <button id="ccp-market-btn" class="ccp-row-btn">添加市场</button>
             </div>
             <div id="ccp-market-panel"></div>
           </div>
@@ -1223,7 +1132,6 @@
 <script src="/app-ctxmenu.js"></script>
 <script src="/app-ccplugins.js"></script>
 <script src="/app-mcp.js"></script>
-<script src="/app-market.js"></script>
 <script src="/app-settings.js"></script>
 <script src="/app-wizard.js"></script>
 <script src="/app.js"></script>

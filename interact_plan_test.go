@@ -98,7 +98,7 @@ func TestResolvePersistedPlanApprove(t *testing.T) {
 		t.Fatalf("落库失败: %v", err)
 	}
 	a := newPlanTestApp(t, st)
-	a.runners["s1"] = &sessionRun{} // 会话正在跑：投递走排队，不在这里真起执行体
+	a.runners["s1"] = &sessionRun{} // 会话正在跑：投递走插话（AI 发话一律插话），不在这里真起执行体
 
 	if err := a.resolveQuestion("q-2", "__approve__"); err != nil {
 		t.Fatalf("批准应成功: %v", err)
@@ -114,10 +114,10 @@ func TestResolvePersistedPlanApprove(t *testing.T) {
 		t.Fatal("批准后会话应退出计划模式（并落库）")
 	}
 	q := a.pendingOf("s1")
-	if len(q.Queue) != 1 {
-		t.Fatalf("应投递 1 条通知进队列，实际 %d 条", len(q.Queue))
+	if len(q.Steer) != 1 {
+		t.Fatalf("应插话投递 1 条通知，实际 %d 条", len(q.Steer))
 	}
-	pm := q.Queue[0]
+	pm := q.Steer[0]
 	if pm.Kind != kindReport || !strings.Contains(pm.Content, "计划已批准") {
 		t.Fatalf("批准的投递内容不对: kind=%q content=%q", pm.Kind, pm.Content)
 	}
@@ -144,8 +144,8 @@ func TestResolvePersistedPlanReject(t *testing.T) {
 		t.Fatal("修改后会话应留在计划模式")
 	}
 	q := a.pendingOf("s1")
-	if len(q.Queue) != 1 || !strings.Contains(q.Queue[0].Content, "第二步换个做法") {
-		t.Fatalf("修改应把用户反馈投给会话，实际 %+v", q.Queue)
+	if len(q.Steer) != 1 || !strings.Contains(q.Steer[0].Content, "第二步换个做法") {
+		t.Fatalf("修改应把用户反馈插话投给会话，实际 %+v", q.Steer)
 	}
 }
 

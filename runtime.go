@@ -34,6 +34,8 @@ type sessionRun struct {
 	stopped  bool   // 是否由用户显式停止
 	killed   bool   // 是否已被停止看门狗强制终结（执行体迟到醒来后据此跳过终态交代）
 	cleanEnd bool   // 本轮是否正常收尾（没出错、没被停止）：收口时据此决定要不要兜底续发队列
+
+	modelAbort *modelAbortEntry // 模型调用进行中的步级打断句柄（插话立即打断用）。只在主循环调模型的窗口内非 nil——工具执行段为 nil，插话此刻到达就不打断、照旧等下一步调用模型前注入
 }
 
 // PendingMsg 是执行中的一条待生效用户消息：插话（下一步调用模型前注入）
@@ -326,6 +328,61 @@ func (a *App) clearStreamKill(id string) {
 	a.streamKillMu.Unlock()
 }
 
+// modelAbortEntry 是一次模型调用的打断句柄：beginModelStream 创建、模型调用
+// 结束时经 end() 按身份注销。为什么带身份：强停收口与新轮开跑之间存在竞态
+// 窗口，迟到醒来的旧循环不能误清注册表里已属于新一轮的句柄。
+type modelAbortEntry struct {
+	r      *sessionRun
+	cancel context.CancelFunc
+}
+
+// beginModelStream 登记该会话当前模型调用的步级取消器（RunAgent 每次调模型前
+// 注册、调用结束注销）。插话到达时 kickModelStream 用它掐断当前模型流，让
+// 插话立即生效——而不是等模型把这轮思考/正文全部吐完。cancel 独立于 run.ctx：
+// 只取消本步的模型调用，主循环继续（带着插话重组上下文重调）；用户停止仍走
+// run.ctx 取消，两者不混。会话不在执行注册表里（直接调 RunAgent 的测试等
+// 场景）时返回 nil，kick 静默无效、插话照旧走下一步注入。
+func (a *App) beginModelStream(id string, cancel context.CancelFunc) *modelAbortEntry {
+	r := a.runOf(id)
+	if r == nil {
+		return nil
+	}
+	e := &modelAbortEntry{r: r, cancel: cancel}
+	r.mu.Lock()
+	r.modelAbort = e
+	r.mu.Unlock()
+	return e
+}
+
+// end 注销本次注册（模型调用结束、即将进入工具执行段时调用）。注册表里的
+// 句柄必须还是自己（见 modelAbortEntry 的身份说明）才清。
+func (e *modelAbortEntry) end() {
+	if e == nil {
+		return
+	}
+	e.r.mu.Lock()
+	if e.r.modelAbort == e {
+		e.r.modelAbort = nil
+	}
+	e.r.mu.Unlock()
+}
+
+// kickModelStream 打断该会话正在进行的模型调用（若有）：插话入队后调用。
+// 不在模型调用中（工具执行段 / 会话空闲 / 已收口）就是空操作——插话留在
+// 队列里，主循环下一步调用模型前照旧注入，与原有行为一致。
+func (a *App) kickModelStream(id string) {
+	r := a.runOf(id)
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	e := r.modelAbort
+	r.mu.Unlock()
+	if e != nil {
+		e.cancel()
+	}
+}
+
 // killSessionStreams 强制断开该会话在跑的模型流连接。ctx 取消本应让 HTTP 流
 // 中断（请求挂在 run.ctx 上），这里是硬终结的第二重保险：万一某条流不响应
 // 取消，直接关闭响应体，读流立刻以错误返回。
@@ -427,6 +484,9 @@ func (a *App) broadcast(ev Event) {
 // pushPending 记下一条待生效消息：mode=steer 插话（下一步调用模型前注入），
 // 其他按排队（本轮结束后作为独立一轮发送）。kind/origin 决定它落库后的身份
 // （空 = chat，即用户自己发的；数字助理派发注入的传 report/task）。
+// steer 入队后顺手 kick 当前模型调用：模型正在思考/吐正文就立即掐断，主循环
+// 下一步带着插话重组重调（工具执行段 kick 无效，照旧等下一步注入）——所有
+// 插话入口（用户 interject、排队坞提前、AI 派发投递）在此统一生效。
 func (a *App) pushPending(sessionID, mode, content, kind, origin string) *PendingMsg {
 	pm := &PendingMsg{ID: newID(), Content: content, CreatedAt: now(), Kind: kind, Origin: origin}
 	a.pendMu.Lock()
@@ -436,6 +496,9 @@ func (a *App) pushPending(sessionID, mode, content, kind, origin string) *Pendin
 		a.pendingQueue[sessionID] = append(a.pendingQueue[sessionID], pm)
 	}
 	a.pendMu.Unlock()
+	if mode == "steer" {
+		a.kickModelStream(sessionID)
+	}
 	a.broadcastPending(sessionID)
 	return pm
 }
@@ -494,9 +557,10 @@ func (a *App) deliverToSessionNoKick(m *SessionMeta, content, kind, origin strin
 }
 
 // subQueueNote 组织「目标会话正在执行，派发需求已插话」时回给模型的文案：
-// 插话在对方下一次调用模型前注入生效——立刻就能被看到。
+// 模型调用中插话会立即打断其当前输出、下一步就带着这句话重调；工具执行中
+// 则等下一步调用模型前注入——两种情况对方都立刻能看到。
 func subQueueNote(sub *SessionMeta, note string) string {
-	return fmt.Sprintf("已插话：目标会话正在执行，这句话会在它下一次调用模型前注入生效——对方立刻就能看到（会话 %s「%s」）。%s本工具立即返回，不要等待；"+
+	return fmt.Sprintf("已插话：目标会话正在执行——若它正在调用模型（思考/输出中），当前输出会立即被打断、下一步就带着这句话重新调模型；若在执行工具，则等它下一步调用模型前注入。两种情况对方立刻都能看到（会话 %s「%s」）。%s本工具立即返回，不要等待；"+
 		"被派发的会话完成后系统会自动收到压缩摘要并触发你处理回报。现在可以先回用户一句「已经安排」。",
 		sub.ID, sub.Title, note)
 }
@@ -626,6 +690,9 @@ func (a *App) updatePending(sessionID, msgID, action string) bool {
 	a.pendMu.Unlock()
 	if found {
 		a.broadcastPending(sessionID)
+	}
+	if moved != nil {
+		a.kickModelStream(sessionID) // 提前为插话：与直接插话同款——模型调用中立见生效
 	}
 	return found
 }

@@ -150,7 +150,7 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 			if !a.askAlertDue(q.ID) {
 				return
 			}
-			a.fireAskAlert(q)
+			a.fireAskAlert(q.ID, "", q.SessionID, q.SessionTitle, q.Question, a.Cfg.askAlertText())
 		})
 	}
 	defer func() {
@@ -245,21 +245,16 @@ func (a *App) holdQuestion(id string) {
 // 跑测试时不真响）。
 var askAlertBeep = systemBeep
 
-// fireAskAlert 到点执行一次久等提醒，三件事依次做：
-//  1. 把提醒顶到用户眼前——提醒浮窗是应用内 UI，软件在后台/最小化时用户根本
-//     看不见（全屏变蓝也白变）：最小化→还原、收进托盘→显示、在后台→抢前台，
-//     被系统前台锁拦下时退化为任务栏闪烁 + 托盘通知（alertfront_windows.go）；
-//  2. 叮一声（MessageBeep，不走语音组件）；
-//  3. 广播 ask_alert：前端全屏变色 + 15 秒倒计时，倒计时结束才朗读。
-//
-// 拆成方法是为了可测：断言「触发时确实去唤起了窗口 + 响了 + 广播了」，
-// 不必真等 4 分钟、也不动用户的窗口。
-func (a *App) fireAskAlert(q *UserQuestion) {
+// fireAskAlert 发一次久等提醒到点动作（唤起窗口 + 叮声 + 广播 ask_alert）。
+// 提问 / 计划审批 / 越权审批共用同一套机制与同一个设置项（设置·常规·询问提醒）：
+// questionID / approvalID 二选一填（前端按它把对应卡片与提醒层联动收起），
+// sessionTitle/summary 进浮窗文案，output 是朗读文案。
+func (a *App) fireAskAlert(questionID, approvalID, sessionID, sessionTitle, summary, output string) {
 	alertFrontHook("坚祥数字助理 · 有个请求在等你处理",
-		alertFrontText(q.SessionTitle, q.Question))
+		alertFrontText(sessionTitle, summary))
 	askAlertBeep()
-	a.broadcast(Event{Type: "ask_alert", QuestionID: q.ID, SessionID: q.SessionID,
-		Title: q.SessionTitle, Summary: q.Question, Output: a.Cfg.askAlertText()})
+	a.broadcast(Event{Type: "ask_alert", QuestionID: questionID, ApprovalID: approvalID,
+		SessionID: sessionID, Title: sessionTitle, Summary: summary, Output: output})
 }
 
 // askAlertDue 询问提醒（久等声光提醒）到点那一刻是否还该响：这条请求还在等、
@@ -379,7 +374,7 @@ func askUserQuestionTool() Tool {
 		Spec: toolSpec("ask_user_question", "向用户提出一个需要其决定的问题并等待回答。用于：方案二选一、确认破坏性操作、缺失的关键信息。可带 2-6 个选项（用户也可自行输入），有推荐方案就写进选项。不要用提问代替能自己查到的事实。timeout_sec 分档见系统提示词「提问的分寸」；界面显示倒计时，用户悬停/触碰卡片可停表转不限时，到点未答视为放行——按你的默认方案继续执行。",
 			objSchema(map[string]any{
 				"question":    strProp("问题本身，一句话说清楚要用户决定什么"),
-				"options":     strProp("可选：以换行分隔的 2-6 个选项，每个一行，推荐方案放第一个"),
+				"options":     arrayProp("可选：2-6 个选项的字符串数组，每项一个选项，如 [\"选项A\",\"选项B\",\"选项C\"]；推荐方案放第一个", strProp("选项文本，一句话说清这个选项")),
 				"allow_free":  boolProp("是否允许用户自由输入（默认 true）"),
 				"timeout_sec": intProp("可选：等待秒数。非必要提问 30；一般缺省 300；无推荐方案或必须确认传 0=不限时。到点未答视为放行，按默认方案继续"),
 			}, "question")),
@@ -390,7 +385,7 @@ func askUserQuestionTool() Tool {
 func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	var p struct {
 		Question   string          `json:"question"`
-		Options    json.RawMessage `json:"options"` // schema 声明为字符串，但数组也是合理给法：两种都收
+		Options    json.RawMessage `json:"options"` // schema 声明为字符串数组；其他格式（如换行分隔的字符串、对象数组）直接报错，让模型按提示重发
 		AllowFree  *bool           `json:"allow_free"`
 		TimeoutSec *int            `json:"timeout_sec"` // 指针区分「没传」（默认 300）与「显式传 0」（不限时）
 	}
@@ -413,13 +408,8 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	options := []string{}
 	if len(p.Options) > 0 {
 		var arr []string
-		var one string
-		switch {
-		case json.Unmarshal(p.Options, &arr) == nil:
-		case json.Unmarshal(p.Options, &one) == nil:
-			arr = strings.Split(one, "\n")
-		default:
-			return "", fmt.Errorf("options 应为字符串数组或换行分隔的字符串")
+		if err := json.Unmarshal(p.Options, &arr); err != nil {
+			return "", fmt.Errorf("options 必须是字符串数组（每项一个选项），如 [\"选项A\",\"选项B\",\"选项C\"]；推荐方案放第一个，不要传换行分隔的字符串或对象数组")
 		}
 		for _, o := range arr {
 			if s := strings.TrimSpace(o); s != "" {
