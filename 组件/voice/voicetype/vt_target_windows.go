@@ -42,11 +42,7 @@ type vtTarget struct {
 	FocusClass  string
 	HasCaret    bool
 	Uia         vtUiaInfo
-	When        string // "录音开始" / "录音结束"（只进日志）
-
-	// MenuRecovered 结束时焦点被前台程序的菜单抢走了（按了 Alt 没吞键的典型症状），
-	// 判定退回录音开始时的现场；注入前要先按 Esc 把菜单收掉再粘。
-	MenuRecovered bool
+	When        string // "录音结束" / "注入前"（只进日志）
 }
 
 // vtGate 判定结论，同时记录「是哪一层给出的」——出问题只看日志就能定位。

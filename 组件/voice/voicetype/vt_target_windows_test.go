@@ -105,6 +105,12 @@ func TestGatePure(t *testing.T) {
 			want: vtGateNoSignal,
 		},
 		{
+			name: "UIA 焦点落在菜单上（按键被吃成菜单）→ 只复制，不注入不按键",
+			tgt: vtTarget{Hwnd: 1, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe",
+				Uia: vtUiaInfo{OK: true, ControlType: uiaCtMenu, Enabled: true}},
+			want: vtGateMenuActive,
+		},
+		{
 			name: "微信 4.x（Qt 自绘、UIA 无信号）→ 进程名兜底注入",
 			tgt:  vtTarget{Hwnd: 1, Pid: 999999, WindowClass: "Qt51514QWindowIcon", ProcName: "Weixin.exe"},
 			want: vtGateProcessAllowlist,
@@ -138,82 +144,43 @@ func TestGateEditableMatrix(t *testing.T) {
 	}
 }
 
-// ---------- 纯逻辑：注入前现场合成（vtFinishTarget） ----------
+// ---------- 纯逻辑：注入前现场选择（vtPickTarget） ----------
 
-// TestFinishTargetPure 钉住判定时机与回退规则。2026-11-05 的 bug 就出在这里：
-// 同一窗口"沿用起始结论"，录音开始时在输入框、结束时焦点移到网页正文，
-// 仍判可输入注入，Ctrl+V 落空还显示"已输入"。
-func TestFinishTargetPure(t *testing.T) {
-	const wA, wB = uintptr(0x1111), uintptr(0x2222)
+// TestPickTargetPure 钉住"判定用哪份现场"：注入前一刻的优先；悬浮窗抢到
+// 前台/没有前台才用录音结束时的兜底现场。
+func TestPickTargetPure(t *testing.T) {
+	const wA = uintptr(0x1111)
 	self := uint32(os.Getpid())
-	// start：窗口 A 的输入框（录音开始采集，带 UIA）
-	start := vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe",
-		Uia: vtUiaInfo{OK: true, ControlType: uiaCtEdit, Enabled: true, KeyboardFocusable: true,
-			HasValuePattern: true, ValueReadOnly: false}}
-	// 同一窗口、焦点移到网页正文（Document 只读）——注入前一刻的真实现场
-	nowBody := vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe",
-		Uia: vtUiaInfo{OK: true, ControlType: uiaCtDocument, Enabled: true, KeyboardFocusable: true,
-			HasValuePattern: true, ValueReadOnly: true}}
+	end := vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe", HasCaret: true}
 	cases := []struct {
-		name      string
-		start     vtTarget
-		end       vtTarget
-		now       vtTarget
-		wantGate  vtGate
-		wantMenuR bool
+		name     string
+		end      vtTarget
+		now      vtTarget
+		wantHwnd uintptr
 	}{
 		{
-			name:     "开始输入框、注入前焦点已移到正文 → 只复制（本次 bug）",
-			start:    start,
-			end:      vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe"},
-			now:      nowBody,
-			wantGate: vtGateUiaReadOnly,
-		},
-		{
-			name:     "录音开始不在输入框、注入前点进了输入框 → 注入（反向变化）",
-			start:    nowBody,
-			end:      vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe"},
-			now:      start,
-			wantGate: vtGateUiaEditable,
-		},
-		{
-			name:      "同一窗口、注入前焦点被菜单抢走 → 退回录音开始现场 + Esc",
-			start:     start,
-			end:       vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe"},
-			now:       vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe", Uia: vtUiaInfo{OK: true, ControlType: uiaCtMenu, Enabled: true}},
-			wantGate:  vtGateUiaEditable,
-			wantMenuR: true,
-		},
-		{
-			name:     "识别期间切到别的窗口输入框 → 以注入前窗口为准",
-			start:    start,
-			end:      vtTarget{Hwnd: wB, Pid: 999998, WindowClass: "Notepad", ProcName: "notepad.exe", FocusClass: "Edit"},
-			now:      vtTarget{Hwnd: wB, Pid: 999998, WindowClass: "Notepad", ProcName: "notepad.exe", FocusClass: "Edit"},
-			wantGate: vtGateNativeClass,
+			name:     "注入前是外部窗口 → 用注入前的现场",
+			end:      end,
+			now:      vtTarget{Hwnd: 0x2222, Pid: 999998, WindowClass: "Notepad", ProcName: "notepad.exe", FocusClass: "Edit"},
+			wantHwnd: 0x2222,
 		},
 		{
 			name:     "注入前悬浮窗抢到前台 → 用录音结束时的外部现场",
-			start:    start,
-			end:      vtTarget{Hwnd: wA, Pid: 999999, WindowClass: "Chrome_WidgetWin_1", ProcName: "msedge.exe", HasCaret: true},
+			end:      end,
 			now:      vtTarget{Hwnd: 0x3333, Pid: self, WindowClass: "webview", ProcName: "voicetype_go.exe"},
-			wantGate: vtGateCaret,
+			wantHwnd: wA,
 		},
 		{
-			name:     "注入前与结束时都拿不到外部现场 → 退回录音开始现场",
-			start:    start,
-			end:      vtTarget{Hwnd: 0x3333, Pid: self, WindowClass: "webview", ProcName: "voicetype_go.exe"},
+			name:     "注入前没有前台窗口 → 用录音结束时的外部现场",
+			end:      end,
 			now:      vtTarget{},
-			wantGate: vtGateUiaEditable,
+			wantHwnd: wA,
 		},
 	}
 	for _, c := range cases {
-		tgt := vtFinishTarget(c.start, c.end, c.now)
-		g := vtEditabilityGate(tgt)
-		if g != c.wantGate {
-			t.Errorf("%s：判定=%s 期望=%s", c.name, g, c.wantGate)
-		}
-		if tgt.MenuRecovered != c.wantMenuR {
-			t.Errorf("%s：MenuRecovered=%v 期望=%v", c.name, tgt.MenuRecovered, c.wantMenuR)
+		got := vtPickTarget(c.end, c.now)
+		if got.Hwnd != c.wantHwnd {
+			t.Errorf("%s：现场窗口=%#x 期望=%#x", c.name, got.Hwnd, c.wantHwnd)
 		}
 	}
 }

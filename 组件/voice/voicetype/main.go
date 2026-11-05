@@ -463,35 +463,32 @@ func vtStreamShow(sessGen int32, text string) {
 	})
 }
 
-// vtFinishTarget 决定拿哪份现场做判定（识别完成、注入前一刻调用）：
-//   start = 录音开始（焦点被菜单抢走时的回退现场）；end = 录音结束（悬浮窗
-//   显示前采集的外部现场，识别期间悬浮窗抢到前台时靠它兜底）；now = 注入前
-//   一刻（识别刚完成）。以 now 为准——识别要几百毫秒到数秒，录音开始时在
-//   输入框、此刻可能已经不在（点了正文/切了焦点），只有"准备要输入的此刻"
-//   的现场才代表 Ctrl+V 真正落点；now 前台是我们自己（悬浮窗抢到前台）或
-//   没有前台 → 用 end，end 也没有 → 用 start。
-// 唯一回退例外：同一窗口、录音开始时在输入框、此刻焦点被菜单抢走（Alt 漏给
-// 前台的典型症状）→ 退回 start 并标记 MenuRecovered：注入前先按 Esc 把菜单
-// 收掉、焦点还给输入框（菜单是假象，用户实际还在输入框）。
-func vtFinishTarget(start, end, now vtTarget) vtTarget {
-	cur := now
-	if cur.Hwnd == 0 || cur.Pid == uint32(os.Getpid()) {
-		cur = end
-		if cur.Hwnd == 0 || cur.Pid == uint32(os.Getpid()) {
-			cur = start
-		}
+// vtPickTarget 选判定用的现场：以注入前一刻采集的 now 为准；now 拿不到
+// 外部前台（悬浮窗抢到前台/没有前台）→ 用录音结束时（悬浮窗显示前采集的）
+// 外部现场 end 兜底。
+func vtPickTarget(end, now vtTarget) vtTarget {
+	if now.Hwnd != 0 && now.Pid != uint32(os.Getpid()) {
+		return now
 	}
-	if cur.Hwnd == start.Hwnd && start.Hwnd != 0 && vtGateIsMenu(vtEditabilityGate(cur)) {
-		ret := start
-		ret.MenuRecovered = true
-		vtLog("焦点被菜单抢走（录音开始=输入框，此刻=菜单）：以录音开始现场判定，注入前先 Esc 收菜单")
-		return ret
-	}
-	return cur
+	return end
 }
 
-// vtGateIsMenu 焦点是不是菜单/菜单栏/菜单项（"按键被前台吃成菜单"的特征）。
-func vtGateIsMenu(g vtGate) bool { return g == vtGateMenuActive }
+// vtDeliverAfterAsr 识别完成后的完整收尾：准备输入 → 检测此刻焦点 →
+// 在输入框就注入、不在（含焦点落在菜单上）就只进剪贴板。
+//
+// 检测时机 = 准备要输入的此刻：识别要几百毫秒到数秒，录音开始/结束时焦点
+// 都可能已变（历史 bug：同一窗口沿用录音开始的结论注入，Ctrl+V 落空还显示
+// "已输入"）。绝不替用户按任何多余的键——焦点不在输入框就老老实实只复制。
+func vtDeliverAfterAsr(gen int32, text string, end vtTarget) {
+	now := vtCaptureTarget(true, "注入前")
+	tgt := vtPickTarget(end, now)
+	gate := vtEditabilityGate(tgt)
+	vtLog("目标判定: gate=%s 可输入=%v | %s",
+		gate, gate.editable(), tgt.describe())
+	vtDeliver(gen, text, gate)
+	time.Sleep(700 * time.Millisecond)
+	vtOverlayHideIf(gen)
+}
 
 // vtFinishSession 一段完整录音会话的收尾：检测 → 识别 → 注入/剪贴板。
 //
@@ -542,36 +539,18 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 		}
 		return
 	}
-	// 判定时机：识别完了、准备要输入的此刻才判定。识别要几百毫秒到数秒，
-	// 录音开始/结束时焦点都可能已变（历史 bug：开始时在输入框就沿用开始
-	// 的结论注入，结束时焦点早移到正文，Ctrl+V 落空还显示"已输入"）。
-	// 识别完成的瞬间焦点可能还在变（用户刚点完别处没停稳），先等一小会儿
-	// 让它稳定，再采集现场下结论。
-	time.Sleep(200 * time.Millisecond)
-	now := vtCaptureTarget(true, "注入前")
-	tgt := vtFinishTarget(sess.target, end, now)
-	gate := vtEditabilityGate(tgt)
-	vtLog("目标判定: gate=%s 可输入=%v | %s",
-		gate, gate.editable(), tgt.describe())
-	vtDeliver(gen, text, tgt, gate)
-	time.Sleep(700 * time.Millisecond)
-	vtOverlayHideIf(gen)
+	// 判定与输出收拢在 vtDeliverAfterAsr：识别完的此刻检测焦点、立刻分发，
+	// 不加任何人为延时（代码自身的耗时就是全部延迟）。
+	vtDeliverAfterAsr(gen, text, end)
 }
 
 // vtDeliver 输出一段文本：判定为可输入 → 剪贴板+Ctrl+V 注入；否则只进剪贴板。
 //
 // 两条路径都先把文本写进剪贴板——注入失败（误判、目标程序吞掉按键）时用户
 // 手上至少还有可粘贴的内容，这是最差情况的兜底。
-func vtDeliver(gen int32, text string, tgt vtTarget, gate vtGate) {
+func vtDeliver(gen int32, text string, gate vtGate) {
 	editable := gate.editable()
 	if editable {
-		// 焦点曾被菜单抢走（Alt 漏给前台的老毛病）：先 Esc 收起菜单、把焦点还给
-		// 输入框，否则 Ctrl+V 会落在菜单上（SendInput 仍报成功，形成假成功）。
-		if tgt.MenuRecovered {
-			vtSendKeyTap(0x1B) // VK_ESCAPE
-			time.Sleep(80 * time.Millisecond)
-			vtLog("注入前已按 Esc 收起菜单（焦点被菜单抢走的兜底）")
-		}
 		// 注入路径：临时占用剪贴板 → Ctrl+V → 恢复原剪贴板
 		orig, had := vtClipboardGetText()
 		wrote := vtClipboardSetText(text)
@@ -622,9 +601,6 @@ func vtDeliver(gen int32, text string, tgt vtTarget, gate vtGate) {
 //
 // 两条路径都先把文本写进剪贴板——注入失败（误判、目标程序吞掉按键）时用户
 // 手上至少还有可粘贴的内容，这是最差情况的兜底。
-// （旧签名 vtDeliver(text, gate) 已被 vtDeliver(gen, text, tgt, gate) 取代：
-//  注入前要按需 Esc 收菜单，状态更新也要带代数。）
-
 // vtStartSession 开始一轮录音。
 //
 // 立刻自增代数：这是"上一轮的提示/气泡不许再管这一轮"的唯一开关，也是连按
@@ -642,8 +618,8 @@ func vtStartSession(reason string) {
 		return
 	}
 	cap.gen = gen
-	// 目标现场在显示悬浮窗**之前**采集：此刻前台一定还是用户想说话的那个窗口
-	cap.target = vtCaptureTarget(true, "录音开始")
+	// 这里不做任何目标现场采集/判定：判定在识别完成后、注入前一刻
+	// （vtDeliverAfterAsr），开麦只管开麦。
 	vtMidMu.Lock()
 	vtMidTexts, vtMidFailed = nil, false
 	vtMidMu.Unlock()
@@ -998,15 +974,13 @@ func vtTriggerLoop() {
 				text = "语音输入法自测文本"
 			}
 			t := vtCaptureTarget(true, "自测")
-			// 与正式流程同一个判定合成：start/end/now 三份现场同一时刻，
-			// 走 vtFinishTarget 而不是直接 vtEditabilityGate，口径才不会漂移。
-			tgt := vtFinishTarget(t, t, t)
-			g := vtEditabilityGate(tgt)
+			// 与正式流程同一个判定口径：此刻现场 → vtEditabilityGate → vtDeliver。
+			g := vtEditabilityGate(t)
 			gen := vtSessionGen.Add(1)
-			vtLog("自测判定: gate=%s 可输入=%v | %s", g, g.editable(), tgt.describe())
+			vtLog("自测判定: gate=%s 可输入=%v | %s", g, g.editable(), t.describe())
 			vtOverlayShow()
 			go func() {
-				vtDeliver(gen, text, tgt, g)
+				vtDeliver(gen, text, g)
 				time.Sleep(700 * time.Millisecond)
 				vtOverlayHideIf(gen)
 			}()

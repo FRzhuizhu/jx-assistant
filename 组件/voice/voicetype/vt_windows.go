@@ -1134,8 +1134,7 @@ type vtCapture struct {
 	loopDone chan struct{}
 	pcm      []byte // 全量 PCM（loop 结束后只读）
 
-	target vtTarget // 录音开始时采集的目标现场（结束时前台若变成自己，用它兜底）
-	gen    int32    // 本轮的会话代数（悬浮窗异步回调据此判"是否已过期"）
+	gen int32 // 本轮的会话代数（悬浮窗异步回调据此判"是否已过期"）
 
 	// ---- 实时切段器（伪流式）：能量门限状态机，切点=静音中点 ----
 	segStart  int // 当前段起始字节（含 0.2s 前置余量），-1=积累中无段
