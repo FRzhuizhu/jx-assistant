@@ -52,8 +52,8 @@ type App struct {
 
 	mu              sync.Mutex
 	sessLocks       map[string]*sync.Mutex
-	compactMu       sync.Mutex             // 规则自动压缩冷却状态锁（context.go）
-	compactAttempts map[string]compactMark // 会话id → 规则压缩冷却标记（上次尝试轮序号/审计去重轮）
+	compactMu       sync.Mutex              // 规则自动压缩的 token 用量基线锁（context.go）
+	compactUsage    map[string]*compactUsageMark // 会话id → 最近 usage 与压缩基线（间隔制 token 模式的触发依据，context.go）
 	runMu           sync.Mutex
 	runners         map[string]*sessionRun // 正在执行的会话（含后台派发）
 	permMu          sync.Mutex
@@ -1256,9 +1256,9 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"maxSteps":         a.Cfg.MaxSteps,
 		"compactMode":      a.Cfg.CompactMode,
 		"keepChars":        a.Cfg.KeepChars,
-		"compactRulePct":   a.Cfg.CompactRulePct,
+		"compactInterval":  a.Cfg.CompactInterval,
+		"compactUnit":      a.Cfg.CompactUnit,
 		"compactLlmPct":    a.Cfg.CompactLlmPct,
-		"compactCooldown":  a.Cfg.CompactCooldown,
 		"snapshotEnabled":  a.snapshotsEnabled(),
 		"snapshotDays":     a.Cfg.SnapshotDays,
 		"compactThreshold": a.Cfg.CompactThreshold,
@@ -1304,9 +1304,9 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			Mode      string `json:"mode"`
 			KeepChars *int   `json:"keepChars"`
 			Threshold float64 `json:"threshold"` // 旧字段（0.8/0.9）：兼容旧页面提交仍接受，新逻辑不读
-			RulePct   *int   `json:"rulePct"`   // 规则自动压缩阈值（0-100，0=关闭）
-			LlmPct    *int   `json:"llmPct"`    // 模型自动压缩阈值（0-100，0=关闭）
-			Cooldown  *int   `json:"cooldown"`  // 规则压缩冷却（轮，0=不冷却）
+			Interval  *int   `json:"interval"`   // 规则自动压缩间隔（0=关闭）
+			Unit      string `json:"unit"`       // 间隔计量单位：chars | tokens
+			LlmPct    *int   `json:"llmPct"`     // 模型自动压缩阈值（0-100，0=关闭）
 		} `json:"compact"`
 		AccentColor *string `json:"accentColor"` // 主题色（#rrggbb）：设置页换点缀色时同步写进来
 		AskAlert    *struct {
@@ -1544,18 +1544,18 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			return v
 		}
-		if body.Compact.RulePct != nil {
-			a.Cfg.CompactRulePct = clampPct(*body.Compact.RulePct)
-		}
-		if body.Compact.LlmPct != nil {
-			a.Cfg.CompactLlmPct = clampPct(*body.Compact.LlmPct)
-		}
-		if body.Compact.Cooldown != nil {
-			v := *body.Compact.Cooldown
+		if body.Compact.Interval != nil {
+			v := *body.Compact.Interval
 			if v < 0 {
 				v = 0
 			}
-			a.Cfg.CompactCooldown = v
+			a.Cfg.CompactInterval = v
+		}
+		if body.Compact.Unit == "chars" || body.Compact.Unit == "tokens" {
+			a.Cfg.CompactUnit = body.Compact.Unit
+		}
+		if body.Compact.LlmPct != nil {
+			a.Cfg.CompactLlmPct = clampPct(*body.Compact.LlmPct)
 		}
 	}
 	// 询问提醒三键合并（只传变的键）：afterSec 钳 30-600；text 去空白，空串
