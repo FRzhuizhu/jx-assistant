@@ -80,27 +80,34 @@ if ($组件 -ne "") {
     if (-not $ver) { throw "组件 $id 的 manifest.json 没有 version" }
     $zipName = "$id-$ver.zip"
     Write-Host "== 打包组件块 $id v$ver"
-    # 组件目录里可能混着开发机的运行时残留（边跑边写的产物）：先复制到临时
-    # 目录、按 打包\组件运行时排除.txt 剔除属于本组件的行再压，源目录不动
-    # （被运行中实例占用的文件也照常出包）。清单相对仓库根、/ 分隔、# 注释。
+    # 组件目录里可能混着开发机的运行时残留（边跑边写的产物，webview2 profile
+    # 还被运行中的实例锁着，先复制后删会在 Copy-Item 上卡死）：复制到临时
+    # 目录时就按 打包\组件运行时排除.txt 跳过属于本组件的行，再压临时目录，
+    # 源目录不动。清单相对仓库根、/ 分隔、# 注释；robocopy /XD /XF 传完整
+    # 路径精确排除（纯名会误伤任意层级同名项）。
     $clean = Join-Path $env:TEMP ("jx-comp-" + $id)
     if (Test-Path $clean) { Remove-Item $clean -Recurse -Force }
-    Copy-Item $dir $clean -Recurse -Force
     $rtList = Join-Path $root "打包\组件运行时排除.txt"
+    $rx = "^组件/" + [regex]::Escape($id) + "/"
+    $xd = @(); $xf = @(); $dropped = @()
     if (Test-Path $rtList) {
-      $rx = "^组件/" + [regex]::Escape($id) + "/"
-      $dropped = @()
       Get-Content $rtList -Encoding UTF8 | ForEach-Object {
         $rel = $_.Trim()
         if ($rel -eq "" -or $rel.StartsWith("#")) { return }
         if ($rel -notmatch $rx) { return }
-        $tail = $rel -replace $rx, ""
-        $p = Join-Path $clean ($tail -replace "/", "\")
-        if (Test-Path $p) { Remove-Item $p -Recurse -Force; $dropped += $tail }
+        $src = Join-Path $root ($rel -replace "/", "\")
+        if (-not (Test-Path $src)) { return }
+        if ((Get-Item $src).PSIsContainer) { $xd += $src } else { $xf += $src }
+        $dropped += ($rel -replace $rx, "")
       }
-      if ($dropped.Count -gt 0) {
-        Write-Host ("== 已剔除组件运行时残留：{0}" -f ($dropped -join '、'))
-      }
+    }
+    $rcArgs = @($dir, $clean, "/E", "/R:0", "/W:0", "/NFL", "/NDL", "/NJH", "/NJS")
+    if ($xd.Count -gt 0) { $rcArgs += "/XD"; $rcArgs += $xd }
+    if ($xf.Count -gt 0) { $rcArgs += "/XF"; $rcArgs += $xf }
+    robocopy @rcArgs
+    if ($LASTEXITCODE -ge 8) { throw "复制组件 $id 失败（robocopy 退出码 $LASTEXITCODE；可能是清单外的新运行时残留被锁，把它加进 组件运行时排除.txt）" }
+    if ($dropped.Count -gt 0) {
+      Write-Host ("== 已剔除组件运行时残留：{0}" -f ($dropped -join '、'))
     }
     Compress-Archive -Path (Join-Path $clean "*") -DestinationPath (Join-Path $outDir $zipName) -CompressionLevel Optimal
     Remove-Item $clean -Recurse -Force

@@ -139,23 +139,34 @@ $compCount = (Get-ChildItem $compDir -Directory | Where-Object {
   Test-Path (Join-Path $_.FullName "manifest.json")
 }).Count
 if ($compCount -eq 0) { throw "组件目录里没有任何带 manifest.json 的组件，拒绝出包" }
-Copy-Item $compDir (Join-Path $stage "组件") -Recurse -Force
 # 组件运行时残留（开发机上边跑边写的产物，如独立语音输入法的录音留档与
-# 浏览器 profile）：绝不进发行包。按 打包\组件运行时排除.txt（相对仓库根、
-# / 分隔、# 注释）逐行剔除——stage 是副本无文件锁，源目录被运行中的实例
-# 占用也不影响出包。
+# 浏览器 profile）：绝不进发行包，且复制阶段就要跳过——webview2 profile 被
+# 运行中的实例锁着，先复制后删除会在 Copy-Item 上卡死。清单见
+# 打包\组件运行时排除.txt（相对仓库根、/ 分隔、# 注释）；robocopy 的
+# /XD /XF 传完整路径可精确排除（纯目录名会误伤任意层级同名项）。
 $rtList = Join-Path $packDir "组件运行时排除.txt"
+$rtSkip = @()
 if (Test-Path $rtList) {
-  $dropped = @()
-  Get-Content $rtList -Encoding UTF8 | ForEach-Object {
+  $rtSkip = Get-Content $rtList -Encoding UTF8 | ForEach-Object {
     $rel = $_.Trim()
     if ($rel -eq "" -or $rel.StartsWith("#")) { return }
-    $p = Join-Path $stage ($rel -replace "/", "\")
-    if (Test-Path $p) { Remove-Item $p -Recurse -Force; $dropped += $rel }
+    $rel
   }
-  if ($dropped.Count -gt 0) {
-    Write-Host ("== 已剔除组件运行时残留：{0}" -f ($dropped -join '、'))
-  }
+}
+$stageComp = Join-Path $stage "组件"
+$xd = @(); $xf = @()
+foreach ($rel in $rtSkip) {
+  $src = Join-Path $root ($rel -replace "/", "\")
+  if (-not (Test-Path $src)) { continue }
+  if ((Get-Item $src).PSIsContainer) { $xd += $src } else { $xf += $src }
+}
+$rcArgs = @($compDir, $stageComp, "/E", "/R:0", "/W:0", "/NFL", "/NDL", "/NJH", "/NJS")
+if ($xd.Count -gt 0) { $rcArgs += "/XD"; $rcArgs += $xd }
+if ($xf.Count -gt 0) { $rcArgs += "/XF"; $rcArgs += $xf }
+robocopy @rcArgs
+if ($LASTEXITCODE -ge 8) { throw "复制组件目录失败（robocopy 退出码 $LASTEXITCODE；可能是清单外的新运行时残留被锁，把它加进 组件运行时排除.txt）" }
+if ($rtSkip.Count -gt 0) {
+  Write-Host ("== 组件复制排除清单：{0}" -f ($rtSkip -join '、'))
 }
 Write-Host "== 内置组件 $compCount 个已暂存"
 
