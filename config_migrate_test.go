@@ -15,13 +15,13 @@ func TestMigrateLegacyPlainURL(t *testing.T) {
 		want  string
 		moved bool
 	}{
-		{"http://192.0.2.210:PORT/announce", "https://example.com:PORT/announce", true},
-		{"http://example.com:PORT/market/manifest.json", "https://example.com:PORT/market/manifest.json", true},
-		{"http://jxaizz.cn:PORT", "https://example.com:PORT", true},
-		{"http://nas.example.org:PORT", "https://example.com:PORT", true},
+		{"http://192.0.2.210:2227/announce", "https://example.com:PORT/announce", true},
+		{"http://example.com:2227/market/manifest.json", "https://example.com:PORT/market/manifest.json", true},
+		{"http://jxaizz.cn:2227", "https://example.com:PORT", true},
+		{"http://nas.example.org:2227", "https://example.com:PORT", true},
 		{"http://192.0.2.210:3000/v1", "https://example.com:PORT/v1", true}, // new-api 明文直连的历史下发
 		// 不动：https（Gitea 默认源）、非自家地址（用户的 Ollama/第三方明文）、空、非 URL
-		{"https://example.com:PORT/api/v1/repos/x/y/releases/latest", "https://example.com:PORT/api/v1/repos/x/y/releases/latest", false},
+		{"https://example.com:3000/api/v1/repos/x/y/releases/latest", "https://example.com:3000/api/v1/repos/x/y/releases/latest", false},
 		{"http://192.168.1.5:11434/v1", "http://192.168.1.5:11434/v1", false},
 		{"http://api.example.com/v1", "http://api.example.com/v1", false},
 		{"", "", false},
@@ -41,9 +41,9 @@ func TestLoadConfigMigratesPlainSelfURLs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	old := `{
-  "wizardServer": "http://192.0.2.210:PORT",
-  "marketURL": "http://192.0.2.210:PORT/market/manifest.json",
-  "updateURL": "http://example.com:PORT/updates/latest",
+  "wizardServer": "http://192.0.2.210:2227",
+  "marketURL": "http://192.0.2.210:2227/market/manifest.json",
+  "updateURL": "http://example.com:2227/updates/latest",
   "providers": [
     {"id": "company-internal", "name": "公司·内部通道", "baseURL": "http://192.0.2.210:3000/v1", "apiKey": "sk-x",
      "models": [{"id": "glm-5.3"}]},
