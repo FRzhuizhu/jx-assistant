@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,7 +51,7 @@ const (
 // 的交界处（全折时缀在尾部），告知模型上方是压缩视图、动作行里的编号就是
 // 数据库 seq、未列出编号的段落是已删除的思考块。文案是常量——同一段历史的
 // 组装逐字节稳定，前缀缓存不受扰动。
-const foldBoundaryNote = "（以上为压缩后的历史：保留用户输入与模型结论原文；工具调用简化为动作行，方括号里的编号是数据库 seq，可用 read_session_messages(seq=N) 取回该条完整原文（含参数与结果）；凡未列出编号的段落均为已删除的思考块，不留条目。）"
+const foldBoundaryNote = "（以上为压缩后的历史：保留用户输入与模型结论原文；工具调用简化为动作行，方括号里的编号是数据库 seq，可用 read_session_messages(seq=N) 取回该行完整原文（参数与结果在相邻行）；凡未列出编号的段落均为已删除的思考块，不留条目。）"
 
 // compactNotePrefix 是每次规则压缩完成时落库的「压缩区结束+账本」report 行
 // 前缀，用于识别历史账本行以推算压缩次数。
@@ -848,12 +849,13 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 		}
 	}
 	// 先一级折范围内的新轮：折到了就返回，不动任何旧折叠行
+	res := buildToolResIndex(raw)
 	folded, from := 0, int64(0)
 	for _, r := range rounds {
 		if r.startSeq <= ruleSeq || r.endSeq > endSeq {
 			continue
 		}
-		a.compactRound(sess.ID, r, raw, buildToolResIndex(raw))
+		a.compactRound(sess.ID, r, raw, res)
 		if folded == 0 {
 			from = r.startSeq
 		}
@@ -889,6 +891,8 @@ func (a *App) foldRounds(sess *SessionMeta, raw []*StoredMessage, rounds []round
 	}
 	if upgraded > 0 {
 		a.auditWrite(sess, map[string]any{"type": "compact", "upgraded": upgraded, "from": from, "to": endSeq})
+		// 二级升级同样大幅改写了上下文：token 基线等下一个 usage 刷新
+		a.markCompactBase(sess.ID)
 		a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 		// 二级升级不改变快照行的可见性（已 omit 的仍 omit），但若此前从未
 		// 重发过（跨进程重启等边缘态），这里兜底再查一次，幂等
@@ -989,6 +993,7 @@ func (a *App) appendCompactNote(sess *SessionMeta, raw []*StoredMessage, from, t
 		Message:   TextMessage("user", strings.TrimRight(b.String(), "\n")),
 		SessionID: sess.ID,
 		Kind:      "report",
+		CreatedAt: now(),
 	})
 }
 
@@ -1075,8 +1080,12 @@ func clipKeepRunes(s string, head, tail int, note string) string {
 	return string(r[:head]) + "（中间已裁 " + strconv.Itoa(cut) + " 字" + note + "）" + string(r[len(r)-tail:])
 }
 
-// firstLineOf 取文本首行并按上限截断。
+// firstLineOf 取文本首行并按上限截断（limit≤0 视为 0，返回空——防调用方
+// 传 0 导致切片下溢 panic）。
 func firstLineOf(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
@@ -1231,9 +1240,45 @@ func writeArgBlock(seq int64, args string) string {
 		" 字" + note + "）\n" + string(r[len(r)-argKeepTail:]) + "\n"
 }
 
+// stripImageEnvelopes 把工具结果文本里的图片信封行（attachment.go 的
+// `<image attachment="…" … path="…"/>`）替换为卸载标注：图片本体不进折叠
+// 视图（信息价值由看图后的正文结论承载），标注保留附件号与源文件路径作
+// 回看通道。信封在结果文本的头部（mcpImagesEnvelope 约定拼在最前），替换
+// 后的一行自然成为该结果的保留首行。
+var imgEnvAttRe = regexp.MustCompile(`attachment="([^"]*)"`)
+var imgEnvPathRe = regexp.MustCompile(`path="([^"]*)"`)
+
+func stripImageEnvelopes(text string, seq int64) string {
+	if !strings.Contains(text, "<image attachment=") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if !strings.HasPrefix(t, "<image attachment=") || !strings.HasSuffix(t, "/>") {
+			continue
+		}
+		note := "（图片已卸载 · 附件 " + firstSegment(imgEnvAttRe, t)
+		if p := firstSegment(imgEnvPathRe, t); p != "" {
+			note += " · 源文件 " + p + " · 重看：read_image " + p
+		}
+		note += "，或 read_session_messages(seq=" + strconv.FormatInt(seq, 10) + ")）"
+		lines[i] = note
+	}
+	return strings.Join(lines, "\n")
+}
+
+// firstSegment 取正则第一个捕获组（无匹配返回空）。
+func firstSegment(re *regexp.Regexp, s string) string {
+	if m := re.FindStringSubmatch(s); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
 // toolResultCompact 按工具分派结果行的折叠视图；返回 compactOmit 表示整行省略。
 func toolResultCompact(info toolResInfo, m *StoredMessage) string {
-	text := strings.TrimSpace(info.text)
+	text := strings.TrimSpace(stripImageEnvelopes(info.text, m.Seq))
 	switch info.name {
 	case "run_command", "run_python":
 		if text == "" {

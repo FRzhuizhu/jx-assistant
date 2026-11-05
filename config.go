@@ -417,6 +417,14 @@ func LoadConfig(path string) (*Config, error) {
 			if cfg.CompactMode == "off" {
 				cfg.CompactInterval = 0
 			}
+			// 旧配置显式 compactRulePct:0 = 用户明确关闭规则通道（0=不启用是
+			// 旧字段的既定语义）：迁移后语义延续为间隔 0，不因换机制被重新打开
+			if rawRule, ok := compactKeys["compactRulePct"]; ok {
+				var oldRule int
+				if json.Unmarshal(rawRule, &oldRule) == nil && oldRule == 0 {
+					cfg.CompactInterval = 0
+				}
+			}
 			compactMigrated = true
 		}
 		_, hasUnit := compactKeys["compactUnit"]

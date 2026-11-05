@@ -720,6 +720,12 @@ func TestConfigCompactIntervalMigration(t *testing.T) {
 	if cfg.CompactInterval != 50000 || cfg.CompactUnit != "tokens" || cfg.CompactLlmPct != 0 {
 		t.Fatalf("显式新键应原样保留, got %d/%s/%d", cfg.CompactInterval, cfg.CompactUnit, cfg.CompactLlmPct)
 	}
+	// 旧配置显式 compactRulePct:0 = 用户明确关闭规则通道：语义延续为间隔 0，
+	// 不因机制切换被重新打开
+	cfg = run(`{"compactMode":"llm","compactRulePct":0,"compactLlmPct":80}`)
+	if cfg.CompactInterval != 0 {
+		t.Fatalf("旧 rulePct=0 应迁移为 interval=0（规则通道保持关闭）, got %d", cfg.CompactInterval)
+	}
 	cfg = run(`{"compactMode":"rule","compactInterval":50000,"compactUnit":"bogus"}`)
 	if cfg.CompactUnit != "chars" {
 		t.Fatalf("非法单位应回落 chars, got %q", cfg.CompactUnit)
@@ -1139,5 +1145,68 @@ func TestCompactResendsFullEnvSnapshot(t *testing.T) {
 	}
 	if joined := joinCtx(); !strings.Contains(joined, full) {
 		t.Fatal("摘要压缩后组装输出也应包含完整环境快照")
+	}
+}
+
+// 输出三段式、结果分派与图片信封卸载的单元测试（逐分支直接覆盖）。
+func TestClipOutLinesAndToolResultCompact(t *testing.T) {
+	mk := func(n int) string { // 行01…行n（两位零填充避免子串误命中）
+		lines := make([]string, n)
+		for i := 1; i <= n; i++ {
+			lines[i-1] = fmt.Sprintf("行%02d", i)
+		}
+		return strings.Join(lines, "\n")
+	}
+	// 成功：头 2 +（中间已裁 12 行）+ 尾 6；中间行（行07）不可见
+	out := clipOutLines(mk(20), false, 7)
+	if !strings.Contains(out, "行01") || !strings.Contains(out, "行20") || !strings.Contains(out, "中间已裁 12 行") {
+		t.Fatalf("三段式头部/尾部/标注不符: %q", out)
+	}
+	if strings.Contains(out, "行07") {
+		t.Fatalf("中间行应被裁掉: %q", out)
+	}
+	// 失败（exit status）：尾 10 → 中间只裁 8 行，且错误行保留在尾部
+	out = clipOutLines(mk(20)+"\nexit status 1", true, 7)
+	if !strings.Contains(out, "中间已裁 9 行") || !strings.Contains(out, "exit status 1") {
+		t.Fatalf("失败输出应留尾10行含错误: %q", out)
+	}
+	// 单行巨块（无换行）：行内裁切 150+50，不再原样透传
+	out = clipOutLines(strings.Repeat("巨", 5000), false, 7)
+	if !strings.Contains(out, "本行已裁") || strings.Contains(out, strings.Repeat("巨", 400)) {
+		t.Fatalf("单行超长应行内裁切: %q", clipPreview(out))
+	}
+	// 短输出原样
+	if got := clipOutLines("ok\nPASS", false, 7); got != "ok\nPASS" {
+		t.Fatalf("短输出应原样: %q", got)
+	}
+
+	row := func() *StoredMessage { return &StoredMessage{Message: Message{Role: "tool", Content: ""}, Seq: 7} }
+	// grep 零命中必留（"不存在"的证据）
+	if got := toolResultCompact(toolResInfo{name: "grep", text: ""}, row()); got != "→ 无命中" {
+		t.Fatalf("grep 零命中应保留, got %q", got)
+	}
+	// 可再生类省略
+	if got := toolResultCompact(toolResInfo{name: "read", text: "文件全文…"}, row()); got != compactOmit {
+		t.Fatalf("read 结果应 omit, got %q", got)
+	}
+	// edit 成败一句话
+	if got := toolResultCompact(toolResInfo{name: "edit", text: "已编辑 a.go（1 处替换成功）"}, row()); got != "编辑成功" {
+		t.Fatalf("edit 成功应为四字结论, got %q", got)
+	}
+	if got := toolResultCompact(toolResInfo{name: "edit", text: "工具执行失败: old_string 未匹配"}, row()); !strings.HasPrefix(got, "失败：") {
+		t.Fatalf("edit 失败应保留原因, got %q", got)
+	}
+	// 图片信封 → 卸载标注（附件号+源文件路径+回看通道），信封本体不残留
+	env := `<image attachment="att/abc123.png" mediaType="image/png" width="1280" height="800" bytes="123456" path="tmp/shot.png" />`
+	got := toolResultCompact(toolResInfo{name: "read_image", text: env + "\n图片已展示给用户"}, row())
+	if !strings.Contains(got, "图片已卸载") || !strings.Contains(got, "att/abc123.png") || !strings.Contains(got, "tmp/shot.png") {
+		t.Fatalf("信封应替换为卸载标注: %q", got)
+	}
+	if strings.Contains(got, "<image attachment=") {
+		t.Fatalf("信封本体不应残留: %q", got)
+	}
+	// firstLineOf 零上限防护（防切片下溢 panic）
+	if got := firstLineOf("abc", 0); got != "" {
+		t.Fatalf("limit 0 应返回空, got %q", got)
 	}
 }

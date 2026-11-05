@@ -159,9 +159,9 @@ async function openSettings(pane) {
   renderProvCards();
   selRefs.compactMode.set(c.compactMode === 'llm' ? 'llm' : 'rule');
   $('set-keepchars').value = c.keepChars || 100000; // 10 万字 ≈ 7.5 万 token
-  $('set-compact-rulepct').value = c.compactRulePct != null ? c.compactRulePct : 90;
+  $('set-compact-interval').value = c.compactInterval != null ? Math.round(c.compactInterval / 1000) : 400;
+  selRefs.compactUnit.set(c.compactUnit === 'tokens' ? 'tokens' : 'chars');
   $('set-compact-llmpct').value = c.compactLlmPct != null ? c.compactLlmPct : 80;
-  $('set-compact-cooldown').value = c.compactCooldown != null ? c.compactCooldown : 2;
   // 常规页：文件备份（服务端配置，改动即时保存）
   $('set-snapshot-on').checked = c.snapshotEnabled !== false;
   syncSnapshotState(c.snapshotEnabled !== false);
@@ -1075,15 +1075,16 @@ async function saveSettings() {
   // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
   // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
   if (!(await saveProviderDrafts())) return;
-  // 压缩阈值留空/非法输入按 0 提交（0=不启用该路）；超出 0-100 的值钳到边界
+  // 压缩阈值留空/非法输入按 0 提交（0=不启用该路）；超出 0-100 的值钳到边界；
+  // 间隔以 K 为单位输入（服务端存原值），×1000 提交，0=关闭规则自动压缩
   const clampPct = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0));
   const body = {
     compact: {
       mode: selRefs.compactMode.get(),
       keepChars: parseInt($('set-keepchars').value, 10) || 100000,
-      rulePct: clampPct($('set-compact-rulepct').value),
+      interval: Math.max(0, Math.round((parseFloat($('set-compact-interval').value) || 0) * 1000)),
+      unit: selRefs.compactUnit.get() || 'chars',
       llmPct: clampPct($('set-compact-llmpct').value),
-      cooldown: Math.max(0, parseInt($('set-compact-cooldown').value, 10) || 0),
     },
   };
   try {
@@ -1935,6 +1936,10 @@ makeSelect('sel-midrun', 'midrun', [
 makeSelect('sel-compact-mode', 'compactMode', [
   { v: 'llm', label: '模型摘要（默认）' },
   { v: 'rule', label: '规则折叠' },
+], null);
+makeSelect('sel-compact-unit', 'compactUnit', [
+  { v: 'chars', label: '字数（默认，模型无关）' },
+  { v: 'tokens', label: 'token（模型返回的实际用量）' },
 ], null);
 
 /* ---------- 技能管理（/api/skills：自带只读展示，用户可加/开关/删） ---------- */

@@ -796,7 +796,7 @@
         <div class="set-pane" id="set-pane-context">
           <h3>对话历史与压缩</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留、可随时查回，压缩只影响发给模型的内容。两条自动压缩阈值各自独立、可填 0–100 的任意值，填 0 或留空＝不启用该路：默认以模型摘要为主，估算达模型阈值（默认 80%）即生成摘要；规则阈值（默认 90%）是更晚的零成本折叠——达规则线的先折叠、折完仍达模型线再摘要；保留字数预算内的最近完整轮不受压缩影响。规则压缩带按轮冷却（默认 2 轮）：一轮内只尝试一次、整轮结束时再判断一次，压不动也不会反复空转。折叠保留用户输入与正文、工具调用名与参数，丢弃思考过程、工具结果与环境快照；摘要则把较早历史整理成一份结构化摘要。</div>
+            <div class="tip-inline" style="margin:0 0 10px">原始历史永久保留、可随时查回，压缩只影响发给模型的内容。规则自动压缩按<b>间隔</b>触发：自上次压缩后新增未压缩内容达到间隔（默认 40 万）就做一次零成本规则折叠，压缩后增量归零、天然不会反复触发；填 0 或留空＝关闭规则自动压缩。模型阈值（默认 80%，对上下文窗口的百分比）仍是最后防线：折叠后估算仍达线才生成模型摘要。间隔与保留字数共用同一计量单位（字数或 token；token 用模型返回的实际用量差值，不估算）。折叠保留用户输入与正文原文、工具调用简化为带编号的动作行（编号即数据库序号，可一步查回原文），写入类参数默认原样保留；丢弃思考过程与环境快照，图片卸载为标注行。</div>
             <div class="compact-row">
               <label>手动压缩按钮的默认行为
                 <div id="sel-compact-mode"></div>
@@ -804,14 +804,14 @@
               <label>保留字数（自动压缩）
                 <input id="set-keepchars" type="number" min="10000" step="5000">
               </label>
-              <label>规则自动压缩阈值（%）
-                <input id="set-compact-rulepct" type="number" min="0" max="100" step="5">
+              <label>规则压缩间隔（K，0＝关闭）
+                <input id="set-compact-interval" type="number" min="0" step="50">
+              </label>
+              <label>间隔计量单位
+                <div id="sel-compact-unit"></div>
               </label>
               <label>模型自动压缩阈值（%）
                 <input id="set-compact-llmpct" type="number" min="0" max="100" step="5">
-              </label>
-              <label>规则压缩冷却（轮）
-                <input id="set-compact-cooldown" type="number" min="0" max="20" step="1">
               </label>
             </div>
           </div>
