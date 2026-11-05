@@ -68,7 +68,8 @@ Source: "stage\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; 地址、部署命令）会跟着装到客户机器上。口径与静默更新块一致（发布静默更新.ps1 白名单）。
 Source: "stage\技能\*"; DestDir: "{app}\技能"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "user\*,user"
 ; 内置组件必须随包（打包清单纪律 ③）：危险命令护栏 / 待办与定时任务 / Git 面板 /
-; 语音（朗读与听写）。程序按 {app}\组件\*/manifest.json 发现组件，装不进就没有
+; 语音（朗读与听写）/ 企业技能包市场（skill-market）/ 小程序平台（sites-platform）。
+; 程序按 {app}\组件\*/manifest.json 发现组件，装不进就没有
 ; 默认组件（危险命令护栏会一并失效）；打包脚本已强校验 stage\组件 存在且非空。
 Source: "stage\组件\*"; DestDir: "{app}\组件"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; MD 查看器（装完即有）：单文件 exe 全自包含，随包只带 exe + 使用说明；

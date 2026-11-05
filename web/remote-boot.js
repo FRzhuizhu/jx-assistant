@@ -754,7 +754,7 @@
      家侧，本地拼装 blob 装进 iframe，并在文档内注入 hook，把平台页自己的
      fetch/XMLHttpRequest/window.open 接回 parent 的隧道 fetch——与企业技能
      市场同一条通路（网关零改动，密文端到端模型不变）。iframe 常驻只代载一次
-     （app-market.js 的 renderSitesFrame 分流到这里）。 */
+     （sites-platform 组件的 renderSitesFrame 分流到这里）。 */
   var SITES_HOOK = '(' + function () {
     var PRE = ['/api/', '/s/', '/sites'];
     function hit(p) { for (var i = 0; i < PRE.length; i++) if (p.indexOf(PRE[i]) === 0) return true; return false; }

@@ -1407,15 +1407,8 @@ $('btn-remote-pk-new').onclick = async () => {
 // 搜索服务：同一套「改动即存」；留空 = 跟随市场同源。非法地址由后端 400 拦下
 // （searchURL 不合法），这里 alert 出原因并回滚为服务端值
 bindRemoteInput('set-search-url', 'searchURL');
-// 网页托管平台（小程序平台）：与应用内「小程序平台」入口同一去处——市场视图的
-// 内嵌 tab（本端代理 /sites），不再跳系统浏览器直面服务端自签证书
-$('btn-open-sites').onclick = () => {
-  if (typeof openSitesPlatform === 'function') { openSitesPlatform(); return; }
-  const raw = ($('set-market-url').value || '').trim();
-  const m = raw.match(/^(https?:\/\/[^\/]+)/i);
-  if (!m) { alert('先在上方「企业技能包 / 工作流 / 小程序平台地址」里填服务器地址（如 https://example.com:PORT），托管平台与市场在同一台服务端。'); return; }
-  jxOpenPage(m[1] + '/sites');
-};
+// 网页托管平台（小程序平台）：已随小程序平台组件化迁入 sites-platform 组件的
+// 设置区（设置 · 内置组件），此处不再绑定；后端 /sites 代理照旧。
 bindRemoteInput('set-registry-url', 'registryURL');
 bindRemoteInput('set-update-url', 'updateURL');
 // 更新方式：auto=分块静默（默认）/manual=仅提醒手动整包安装；改动即存

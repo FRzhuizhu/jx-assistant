@@ -19,10 +19,13 @@
 
 ### B. 宿主半边组件——存量「套皮」形态（不再新增，仅存量维护）
 
-**todo-scheduler、git-panel、dangerous-cmd-guard** 属于这类：后端是主程序的
-内置功能（根目录 todo.go / gitpanel.go / perm.go 里的完整实现，深度耦合
-Store/会话/事件总线），组件目录里只有皮肤（client 三件套），开关只控制
-UI 显隐与端点 404。
+**todo-scheduler、git-panel、dangerous-cmd-guard、skill-market、sites-platform**
+属于这类：后端是主程序的内置功能（根目录 todo.go / gitpanel.go / perm.go /
+market.go / sitesproxy.go 里的完整实现，深度耦合 Store/会话/事件总线），组件
+目录里只有皮肤（client 三件套），开关只控制 UI 显隐——后端接口保留但入口
+消失（skill-market 与 sites-platform 是开源前按用户要求从本体抽出来的：当年
+赶工直接做进本体，抽组件时后端 /api/market 与 /sites 代理保留在主程序，
+入口、页面与设置区随组件开关出现/消失）。
 
 - 历史原因：写的时候桥还不存在，且它们与主程序状态耦合太深，**现在也认定
   不可拆**——把状态访问全部 IPC 化的代价大于收益，维持现状
