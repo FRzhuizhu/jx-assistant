@@ -718,12 +718,12 @@ func (a *App) envPrompt(sess *SessionMeta) string {
 			b.WriteString(block + "\n")
 		}
 	}
-	// 企业技能市场（marketURL 来自服务端下发/设置页「网络」分区的同一个值）：
+	// 企业技能包 / 工作流（marketURL 来自服务端下发/设置页「网络」分区的同一个值）：
 	// 一句话告知地址与自签证书注意点即可——命令行带 -k 就能拉到 JSON 清单，
 	// 不展开接口与装卸细节。未配置不注入；行落在快照尾部，升级后存量会话以
 	// 纯新增差分送达，不触发全量重发。
 	if a.Cfg.MarketURL != "" {
-		b.WriteString("- 企业技能市场：" + a.Cfg.MarketURL + "（自签 HTTPS，命令行访问需带 -k）\n")
+		b.WriteString("- 企业技能包 / 工作流：" + a.Cfg.MarketURL + "（自签 HTTPS，命令行访问需带 -k）\n")
 	}
 	return b.String()
 }
