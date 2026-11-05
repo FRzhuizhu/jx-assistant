@@ -545,6 +545,9 @@ func vtFinishSession(gen int32, sess *vtCapture) {
 	// 判定时机：识别完了、准备要输入的此刻才判定。识别要几百毫秒到数秒，
 	// 录音开始/结束时焦点都可能已变（历史 bug：开始时在输入框就沿用开始
 	// 的结论注入，结束时焦点早移到正文，Ctrl+V 落空还显示"已输入"）。
+	// 识别完成的瞬间焦点可能还在变（用户刚点完别处没停稳），先等一小会儿
+	// 让它稳定，再采集现场下结论。
+	time.Sleep(200 * time.Millisecond)
 	now := vtCaptureTarget(true, "注入前")
 	tgt := vtFinishTarget(sess.target, end, now)
 	gate := vtEditabilityGate(tgt)
