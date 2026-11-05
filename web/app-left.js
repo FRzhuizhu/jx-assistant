@@ -56,6 +56,25 @@ $('btn-feedback').addEventListener('keydown', (e) => {
 });
 
 
+/* ---------- 侧栏视图存量迁移（20261105.sidebar-view-time）：按工作区 → 时间线 ----------
+ * 老版本侧栏默认「按工作区分组」，动过排序菜单的浏览器会把整份设置（含
+ * group:'ws'）存进 localStorage；新版默认已改时间线，但存量旧值不会自己变——
+ * 升级到本版后首次加载时统一转成时间线。账本 jx.mig 记账后永不再跑：转换后
+ * 用户再手选「按工作区」是新的决定，不被覆盖；新装机没有 jx.view，无事可做
+ * 只记账。id 与语义对齐 Go 侧 migrations.go 的版本化一次性迁移——jx.view 是
+ * 各浏览器各自的存储，Go 账本（data/migrations.json）物理上够不着，故账本落
+ * 浏览器本地。 */
+(function () {
+  const ID = '20261105.sidebar-view-time';
+  let done = lsGet('jx.mig', {});
+  if (!done || typeof done !== 'object' || Array.isArray(done)) done = {}; // 账本损坏从零重建（转换本身幂等）
+  if (done[ID]) return;
+  const v = lsGet('jx.view', null);
+  if (v && typeof v === 'object' && v.group === 'ws') { v.group = 'time'; lsSet('jx.view', v); }
+  done[ID] = 1;
+  lsSet('jx.mig', done);
+})();
+
 // 侧栏视图设置：分组方式（time=时间线 ws=按工作区 flat=单列表）与排序方式；默认时间线，手动选过则 localStorage 覆盖
 const viewCfg = Object.assign({ group: 'time', sort: 'updated' }, lsGet('jx.view', {}));
 const wsCollapsed = lsGet('jx.wscol', {});   // 工作区分组折叠状态
