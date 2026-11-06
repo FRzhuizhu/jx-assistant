@@ -88,6 +88,23 @@ func TestSteerInterruptsModelStream(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("模型流迟迟未建立")
 	}
+	// 再等客户端**真正收到**那半截正文：网关 flush 与客户端读到之间是异步的，
+	// 此前只看 firstFlushing 就插话，打断偶尔落在正文入缓冲之前 → 半截为空、
+	// 按产品行为（一个字没出就不造空半截）不落库，测试随机红。partial 是流式
+	// 正文落进 sessionRun 的唯一源头，等它含正文才是「输出进行中」的可靠信号。
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		run.mu.Lock()
+		got := strings.Contains(run.partial, "半截正文")
+		run.mu.Unlock()
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("客户端迟迟没收到半截正文（partial 一直为空）")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	a.pushPending(m.ID, "steer", "插话：先停下，改听这句", "", "")
 
 	select { // 等执行体收尾
