@@ -21,7 +21,7 @@
   let mkTab = 'skill';      // 当前 tab：skill | component | plugin | mcp
   let mkLoading = false;    // 清单在途（防抖动重复渲染）
   let mkAutoTimer = 0;      // 市场页开着时的 60s 静默复查
-  let btnEl = null, viewEl = null, modalEl = null; // 本组件注入的三个节点
+  let btnEl = null, btnEntry = null, viewEl = null, modalEl = null; // 本组件注入的节点（btnEntry＝插槽条目句柄）
   const docKeys = [];       // document keydown 监听（dispose 逐个解绑）
 
   /* ---------- 小工具（$ / esc 自带，api / confirmCenter / openSettings 用主程序全局） ---------- */
@@ -32,33 +32,19 @@
   ));
   const addDocKey = (fn) => { document.addEventListener('keydown', fn); docKeys.push(fn); };
 
-  /* 挂载点内组件按钮按 data-order 稳定排序：组件注入先后由资产加载竞速决定
-   * （不可依赖），同挂载点的组件按钮以 data-order 约定相对位置——排的是
-   * 「同为组件的兄弟」，不锚定内置按钮（AGENT.md 挂载规矩）。 */
-  function sortMounts(grid) {
-    [...grid.children]
-      .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
-      .forEach((el) => grid.appendChild(el));
-  }
-
   /* ---------- DOM 注入（HTML 原样来自原 index.html，id/class 不变） ---------- */
 
   function injectDOM() {
-    // 侧栏入口：往组件入口格 #foot-apps（回收站上方的分区挂载点）末尾 append
-    // （组件挂载规矩：不锚定其他按钮的 DOM 位置）
-    const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
-    if (grid) {
-      btnEl = document.createElement('button');
-      btnEl.id = 'btn-market';
-      btnEl.className = 'foot-btn';
-      btnEl.dataset.order = '10'; // 挂载点内组件按钮的稳定排序（见下方 sortMounts）
-      btnEl.title = '企业技能包 / 工作流：安装/更新 技能、组件与插件';
-      btnEl.innerHTML =
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>' +
-        '<span class="foot-btn-label">企业技能包 / 工作流</span>';
-      grid.appendChild(btnEl);
-      sortMounts(grid);
-    }
+    // 侧栏入口：向底部插槽申请一个条目（order 2，排在回收站 1 之上；组件注入
+    // 先后由资产加载竞速决定，位置只认插槽的序号排序）。骨架、排序、电脑竖排 /
+    // 手机三列网格全归插槽——见 app-core.js 的 JX.slot 与 AGENT.md「界面插槽」
+    btnEntry = (window.JX && JX.slot) ? JX.slot('sidebar.foot').add({
+      key: 'skill-market', id: 'btn-market', order: 2, owner: '组件 skill-market',
+      title: '企业技能包 / 工作流：安装/更新 技能、组件与插件',
+      label: '企业技能包 / 工作流',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>',
+    }) : null;
+    if (btnEntry) btnEl = btnEntry.el;
     // 市场视图：#main 顶栏之后（与原 index.html 同位；.hidden 全局类控制显隐）
     const main = $('main');
     const topbar = $('topbar');
@@ -750,7 +736,7 @@
     docKeys.forEach((fn) => document.removeEventListener('keydown', fn));
     docKeys.length = 0;
     document.body.classList.remove('mk-4col'); // 挂在 body 上的全局类一并撤（组件不留痕）
-    if (btnEl) { btnEl.remove(); btnEl = null; }
+    if (btnEntry) { btnEntry.remove(); btnEntry = null; btnEl = null; }
     if (viewEl) { viewEl.remove(); viewEl = null; }
     if (modalEl) { modalEl.remove(); modalEl = null; }
     delete window.marketOpen;

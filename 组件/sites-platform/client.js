@@ -16,7 +16,7 @@
 
   const ID = 'sites-platform';
 
-  let btnEl = null, viewEl = null;   // 本组件注入的两个节点
+  let btnEl = null, btnEntry = null, viewEl = null; // 本组件注入的节点（btnEntry＝插槽条目句柄）
   const docKeys = [];                // document keydown 监听（dispose 逐个解绑）
 
   const $ = (id) => document.getElementById(id);
@@ -25,25 +25,17 @@
   /* ---------- DOM 注入（HTML 原样来自原 index.html） ---------- */
 
   function injectDOM() {
-    // 侧栏入口：往组件入口格 #foot-apps（回收站上方的分区挂载点）末尾 append
-    // （组件挂载规矩：不锚定其他按钮）
-    const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
-    if (grid) {
-      btnEl = document.createElement('button');
-      btnEl.id = 'btn-sites';
-      btnEl.className = 'foot-btn';
-      btnEl.dataset.order = '20'; // 挂载点内组件按钮的稳定排序（约定见 skill-market 的 sortMounts）
-      btnEl.title = '企业小程序平台：发布与管理小程序、数据文件、二维码';
-      btnEl.innerHTML =
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>' +
-        '小程序平台';
-      grid.appendChild(btnEl);
-      // 挂载点内组件按钮按 data-order 稳定排序（资产加载竞速决定不了注入先后；
-      // 排的是同为组件的兄弟，不锚定内置按钮——AGENT.md 挂载规矩）
-      [...grid.children]
-        .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
-        .forEach((el) => grid.appendChild(el));
-    }
+    // 侧栏入口：向底部插槽申请一个条目（order 3，排在回收站 1、企业技能包 2 之上）。
+    // 骨架、排序、电脑竖排 / 手机三列网格全归插槽——见 app-core.js 的 JX.slot 与
+    // AGENT.md「界面插槽」。标签交给插槽包成 .foot-btn-label（裸文本节点拿不到
+    // 手机端"最多两行、超出裁断"的规则，会被挤成竖排）
+    btnEntry = (window.JX && JX.slot) ? JX.slot('sidebar.foot').add({
+      key: 'sites-platform', id: 'btn-sites', order: 3, owner: '组件 sites-platform',
+      title: '企业小程序平台：发布与管理小程序、数据文件、二维码',
+      label: '小程序平台',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>',
+    }) : null;
+    if (btnEntry) btnEl = btnEntry.el;
     // 平台视图：#main 顶栏之后（与市场视图平级的主区整页；.hidden 全局类控制显隐）
     const main = $('main');
     const topbar = $('topbar');
@@ -201,7 +193,7 @@
     docKeys.forEach((fn) => document.removeEventListener('keydown', fn));
     docKeys.length = 0;
     window.removeEventListener('cx:change', onCxChange);
-    if (btnEl) { btnEl.remove(); btnEl = null; }
+    if (btnEntry) { btnEntry.remove(); btnEntry = null; btnEl = null; }
     if (viewEl) { viewEl.remove(); viewEl = null; }
     delete window.sitesViewOpen;
     delete window.closeSites;

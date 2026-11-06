@@ -142,6 +142,99 @@ const JX = {
     }
   },
 };
+
+/* ---------- 界面插槽（标准定位格式）：组件只「申请一个格子」，排版归插槽 ----------
+   规矩：组件不拼条目 DOM、不写条目的布局样式，只交「图标 + 名字 + 序号 + 点击」。
+   骨架、排序、以及同一份条目在电脑/手机两套形态下的排版都归插槽（CSS 在
+   style.css 的插槽段，形态由插槽按屏幕决定，组件两套都不用管）。
+   第一个插槽 sidebar.foot ＝ 左侧栏底部入口格：
+   · 序号 order 小的排在最下面（紧贴设置行），大的往上叠；同序号先注册的更靠下。
+     实现＝DOM 按 order 降序排——桌面竖排从上往下读就是序号大的在上，手机三列
+     网格行优先铺格，序号小的自然落最后一行；
+   · 内置「回收站」是第一位使用者（order 1，app-left.js 注册），组件从 2 起往上叠。
+   加新插槽＝在 SLOT_HOSTS 里登记容器与条目类名 + 在 style.css 写它的两套形态。 */
+const SLOT_HOSTS = {
+  'sidebar.foot': {
+    host: () => $('foot-apps') || document.querySelector('.sidebar-foot .foot-grid'),
+    itemClass: 'foot-btn',
+    labelClass: 'foot-btn-label',
+  },
+};
+const slotReg = {};   // 插槽名 -> Map(条目 key -> {def, el, seq})
+let slotSeq = 0;      // 全局注册序号：同 order 时先注册的排更下（DOM 更靠后）
+
+// 插槽排序（唯一实现，组件不再各写一份）：order 降序 → 注册序号降序
+function slotSort(host) {
+  [...host.children].sort((a, b) => {
+    const oa = parseFloat(a.dataset.order || '50');
+    const ob = parseFloat(b.dataset.order || '50');
+    if (oa !== ob) return ob - oa;
+    return parseFloat(b.dataset.slotSeq || '0') - parseFloat(a.dataset.slotSeq || '0');
+  }).forEach((el) => host.appendChild(el));
+}
+
+JX.slot = function (name) {
+  const def0 = SLOT_HOSTS[name];
+  if (!def0) throw new Error('未知界面插槽：' + name);
+  const reg = slotReg[name] || (slotReg[name] = new Map());
+  return {
+    /* add：申请一个条目 → {el, setActive(on), remove()}。
+       图标传内联 svg 字符串，标签是纯文本（插槽自己包成 .foot-btn-label——
+       裸文本节点拿不到"最多两行、超出裁断"的规则）；owner 只用于自检展示。
+       同 key 重挂会先撤旧的（组件热开关/热重载会走到这条路）。 */
+    add(def) {
+      const host = def0.host();
+      if (!host) return null; // 容器缺席（异常加载序）：静默跳过，不炸组件
+      const key = String(def.key);
+      if (reg.has(key)) reg.get(key).el.remove();
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = def0.itemClass;
+      if (def.id) btn.id = def.id;
+      if (def.title) btn.title = def.title;
+      btn.dataset.order = String(def.order == null ? 50 : def.order);
+      const seq = ++slotSeq;
+      btn.dataset.slotSeq = String(seq);
+      btn.innerHTML = (def.icon || '') + '<span class="' + def0.labelClass + '"></span>';
+      btn.querySelector('.' + def0.labelClass).textContent = def.label || '';
+      if (typeof def.onClick === 'function') btn.onclick = def.onClick;
+      host.appendChild(btn);
+      slotSort(host);
+      reg.set(key, { def, el: btn, seq });
+      return {
+        el: btn,
+        setActive(on) { btn.classList.toggle('active', !!on); },
+        remove() {
+          btn.remove();
+          const cur = reg.get(key);
+          if (cur && cur.el === btn) reg.delete(key);
+        },
+      };
+    },
+    /* list：插槽现状，按显示顺序（序号小的在前＝更靠下）列出 */
+    list() {
+      return [...reg.entries()]
+        .map(([key, v]) => ({
+          key,
+          order: parseFloat(v.el.dataset.order),
+          seq: v.seq,
+          label: v.el.querySelector('.' + def0.labelClass).textContent,
+          owner: v.def.owner || '',
+          active: v.el.classList.contains('active'),
+        }))
+        .sort((a, b) => a.order - b.order || a.seq - b.seq);
+    },
+  };
+};
+
+/* 自检：控制台敲 JX.slots() 看"每个插槽里有哪些条目、谁注册的、序号多少"
+   （排查"界面上看着在那儿、背后是谁注册的"用） */
+JX.slots = function () {
+  const out = {};
+  Object.keys(slotReg).forEach((name) => { out[name] = JX.slot(name).list(); });
+  return out;
+};
+
 window.JX = JX;
 
 const state = {

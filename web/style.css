@@ -301,24 +301,32 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
   display: flex; flex-direction: column; gap: 3px;
   padding: 4px 10px 12px;
 }
-/* 底部按钮格（组件入口格 #foot-apps / 内置格 .foot-grid）：桌面 display:contents
-   完全透明，按钮仍是 .sidebar-foot 的直接行；手机端窄屏媒体查询里整个
-   .sidebar-foot 切三栏网格（两个格容器都透明，market/sites/回收站同吃一行三格）。
-   组件往底部加按钮 append 进 #foot-apps（回收站上方）即可，不锚定兄弟按钮
-   （契约见 index.html 同名注释） */
+/* ---------- 界面插槽：左侧栏底部入口格（JX.slot('sidebar.foot')） ----------
+   「标准定位格式」之一。组件只交「图标 + 名字 + 序号 + 点击」
+   （JX.slot('sidebar.foot').add({key,label,icon,order,title,onClick})），
+   条目骨架、排序、两套形态的排版全归插槽，组件一行布局 CSS 都不写。
+   · 电脑：本条 .sidebar-foot 竖排，每个条目整行（下面的 .foot-btn 规则）；
+   · 手机：窄屏媒体查询里整条切三列均分网格（3 个一行，4~6 个自动两行）；
+   · 序号 order 小的在最下面（紧贴设置行），大的往上叠——排序在 app-core.js 的
+     插槽实现里做（DOM 按序号降序，桌面从上往下读就是大的在上）；内置「回收站」
+     是第一位使用者（order 1），组件从 2 起往上叠。
+   .foot-grid 桌面/手机都 display:contents：容器自己不参与排版，条目直接参与
+   .sidebar-foot 的行/网格——所以两套形态的规则只写在这一个地方。 */
 .foot-grid { display: contents; }
 /* 连接状态胶囊：嵌在设置行右侧、紧跟反馈胶囊（行内居中由 flex 的 align-items:center
    保证；右对齐交给 .foot-feedback 的 margin-left:auto 这一个锚点） */
 .foot-btn .pill { margin-left: 0; flex: none; }
-/* 底部整行按钮（回收站/设置）：无边框，悬停/选中整行落一层胶囊底（仿参考站） */
+/* 插槽条目 / 设置行（.foot-btn）：无边框，悬停/选中整行落一层胶囊底（仿参考站）。
+   手机上同一批 .foot-btn 变三栏网格里的格子（尺寸与标签行数见窄屏媒体查询） */
 .foot-btn {
   display: flex; align-items: center; gap: 8px;
   width: 100%; height: 42px; padding: 0 10px;
   background: none; border: none; border-radius: 12px;
   color: var(--text); font-size: 14px; cursor: pointer; text-align: left;
 }
-/* 按钮文字（市场入口过渡期长名「企业技能包 / 工作流」）：桌面整名放得下；
-   窄屏三栏格照旧截断（省略号），不换行撑破 42px 按钮高 */
+/* 条目标签（.foot-btn-label）：电脑单行、放不下出省略号；手机上最多两行、
+   超出直接裁掉（见窄屏媒体查询）。条目里的文字一律装在这个 span 里——
+   裸文本节点拿不到行数/裁断规则，会在三栏格里自由换行把格子挤变形 */
 .foot-btn-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .foot-btn svg { color: var(--text-2); }
 .foot-btn:hover { background: var(--hover); }
@@ -3087,11 +3095,30 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  /* 底部框架：设置行不变；组件入口（#foot-apps 格）/回收站（.foot-grid 格）的
-     按钮同吃一个三栏网格——网格上移到 .sidebar-foot，两个格容器保持
-     display:contents（桌面侧同款），设置行 grid-column 整行独占最底 */
-  .sidebar-foot { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+  /* 底部入口格（插槽 sidebar.foot）：设置行不变；条目（组件入口 + 内置回收站）
+     同吃一个三列网格——网格在 .sidebar-foot 上，格容器保持 display:contents，
+     设置行 grid-column 整行独占最底。
+     三列用 minmax(0, 1fr) 而不是 1fr：1fr 的实际下限是 auto，即每个格子的
+     min-content，「企业技能包 / 工作流」这种长名会把第一列撑开、后两列被挤成
+     竖排（2026-11-06 用户报的现象）。minmax(0,…) 去掉内容下限＝真正三格均分、
+     宽度不可调；再靠条目 min-width:0 + 固定格高 + 标签最多两行截断收住内容。
+     条目多了自动换行：3 个一行，4~6 个自动两行（序号小的排下一行，见插槽排序） */
+  .sidebar-foot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
   #btn-settings { grid-column: 1 / -1; }
+  .sidebar-foot .foot-btn {
+    min-width: 0; width: 100%; height: var(--foot-cell-h, 46px);
+    padding: 4px 8px; gap: 6px; align-items: center; overflow: hidden;
+  }
+  /* 标签最多两行，多出来的直接裁掉（不用省略号、也不换行撑破格子）。
+     断行按「词/空格」走（keep-all）：中文长名在空格处断开——
+     「企业技能包 / 工作流」断成「企业技能包」＋「/ 工作流」两行，
+     而不是从中间任意一个字切成「企业技能包 / 工」＋「作流」；
+     单个词长到一行放不下时再由 overflow-wrap 兜底任意断 */
+  .sidebar-foot .foot-btn-label {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    white-space: normal; word-break: keep-all; overflow-wrap: anywhere; overflow: hidden;
+    font-size: 11.5px; line-height: 1.25;
+  }
 
   /* 输入工具栏（用户敲定的排布）：左组（加号+权限）恒为标准形状不参与收缩，
      权限右侧留 8px 固定间距（与其他按钮间距一致）后紧跟右组；右组是整体

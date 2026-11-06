@@ -61,27 +61,22 @@
     </div>
     <div id="session-list"></div>
 
-    <!-- 底部框架：设置行独占最后一行；其上是按钮格 .foot-grid——桌面
-         display:contents 完全透明（按钮就是 sidebar-foot 的普通行，观感与
-         从前一致），手机端切成三栏网格。分区挂载点：组件入口一律 append 进
-         #foot-apps（回收站上方——内置格 .foot-grid 之前），不锚定任何兄弟
-         按钮；手机端两个格容器同吃 sidebar-foot 的三栏网格（见 style.css），
-         设置行恒在最底独占整行。 -->
+    <!-- 底部框架＝界面插槽 sidebar.foot（实现见 app-core.js 的 JX.slot，两套形态
+         见 style.css 的插槽段）：条目一律经
+         JX.slot('sidebar.foot').add({key,label,icon,order,title,onClick}) 注册——
+         内置「回收站」是第一位使用者（order 1，在 app-left.js 注册），组件从 2
+         起往上叠；序号小的排下面（紧贴设置行），大的往上。
+         电脑＝竖排整行；手机＝三列均分网格（3 个一行，4~6 个自动两行、格高固定、
+         标签最多两行超出裁掉）——形态与尺寸全归插槽，条目自己不写布局。
+         #foot-apps 是插槽容器（display:contents，本身不参与排版）；设置行不是
+         格子，恒在最底独占整行（手机端 grid-column:1/-1）。 -->
     <div class="sidebar-foot">
-      <!-- 组件入口格（skill-market / sites-platform 等由组件 append 注入） -->
       <div class="foot-grid" id="foot-apps"></div>
-      <!-- 内置格：回收站 -->
-      <div class="foot-grid">
-      <button id="btn-recycle" class="foot-btn" title="回收站">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
-        回收站
-      </button>
-      </div>
       <!-- 连接状态胶囊/反馈胶囊/手机图标都嵌在设置行右侧（同一行的中间对齐，
            行内右对齐的锚点是 .foot-feedback 的 margin-left:auto） -->
       <button id="btn-settings" class="foot-btn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
-        设置
+        <span class="foot-btn-label">设置</span>
         <!-- 反馈胶囊：紧挨手机图标左侧，点击直达设置面板的「问题反馈」页
              （不冒泡到外层设置按钮，见 app-left.js；用 role=button 避免按钮套按钮） -->
         <!-- 更新胶囊：反馈胶囊左侧，仅在有更新时出现——新版本可用（available）

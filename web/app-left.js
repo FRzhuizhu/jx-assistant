@@ -1053,7 +1053,18 @@ $('btn-new-assistant').onclick = () => {
   setFace('thinking', 1600); // 进入时压眼扫视
   openAssistant();
 };
-$('btn-recycle').onclick = () => setBinView(!binView);
+/* ---------- 底部插槽的第一位使用者：内置「回收站」 ----------
+   条目本身（骨架、排序、电脑竖排/手机三列网格、标签行数）全归插槽，这里只交
+   图标、名字、序号与点击。序号 1 ＝ 最下面（紧贴设置行），组件入口（企业技能包 /
+   工作流 2、小程序平台 3 …）从 2 起往上叠——契约见 app-core.js 的 JX.slot 与
+   AGENT.md「界面插槽」。id 保持 btn-recycle：回收站视图的选中红边与
+   setBinView 都按它取（见 style.css 的 body.bin-mode 段）。 */
+JX.slot('sidebar.foot').add({
+  key: 'recycle', id: 'btn-recycle', order: 1, owner: '内置',
+  label: '回收站', title: '回收站',
+  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>',
+  onClick: () => setBinView(!binView),
+});
 
 /* ---------- 左上角入口按钮：图标 hover 随机轻扭（三个按钮共用一套） ----------
    鼠标进入任一入口按钮（新工作任务 / 数字助理主对话 / 待办与定时任务）时，图标朝随机
