@@ -35,7 +35,27 @@
       label: '小程序平台',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>',
     }) : null;
-    if (btnEntry) btnEl = btnEntry.el;
+    if (btnEntry) {
+      btnEl = btnEntry.el;
+    } else {
+      // 旧 engine 没有插槽（组件块先于 engine 静默换装生效的窗口期）：退回旧版
+      // 直接注入 #foot-apps，入口不因时序消失（2026-11-06 客户事故的症状）。
+      const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
+      if (grid) {
+        btnEl = document.createElement('button');
+        btnEl.id = 'btn-sites';
+        btnEl.className = 'foot-btn';
+        btnEl.dataset.order = '20';
+        btnEl.title = '企业小程序平台：发布与管理小程序、数据文件、二维码';
+        btnEl.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>' +
+          '小程序平台';
+        grid.appendChild(btnEl);
+        [...grid.children]
+          .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
+          .forEach((el) => grid.appendChild(el));
+      }
+    }
     // 平台视图：#main 顶栏之后（与市场视图平级的主区整页；.hidden 全局类控制显隐）
     const main = $('main');
     const topbar = $('topbar');
@@ -194,6 +214,7 @@
     docKeys.length = 0;
     window.removeEventListener('cx:change', onCxChange);
     if (btnEntry) { btnEntry.remove(); btnEntry = null; btnEl = null; }
+    else if (btnEl) { btnEl.remove(); btnEl = null; } // 旧 engine 的 DOM 注入 fallback
     if (viewEl) { viewEl.remove(); viewEl = null; }
     delete window.sitesViewOpen;
     delete window.closeSites;

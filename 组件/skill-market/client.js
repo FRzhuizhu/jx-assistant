@@ -44,7 +44,28 @@
       label: '企业技能包 / 工作流',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>',
     }) : null;
-    if (btnEntry) btnEl = btnEntry.el;
+    if (btnEntry) {
+      btnEl = btnEntry.el;
+    } else {
+      // 旧 engine 没有插槽（组件块先于 engine 静默换装生效的窗口期：用户还没
+      // 重启）：退回旧版直接注入 #foot-apps，侧栏入口不因时序消失——那正是
+      // 2026-11-06 客户事故的症状。重启到新 engine 后插槽可用，自动改走插槽。
+      const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
+      if (grid) {
+        btnEl = document.createElement('button');
+        btnEl.id = 'btn-market';
+        btnEl.className = 'foot-btn';
+        btnEl.dataset.order = '10';
+        btnEl.title = '企业技能包 / 工作流：安装/更新 技能、组件与插件';
+        btnEl.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>' +
+          '<span class="foot-btn-label">企业技能包 / 工作流</span>';
+        grid.appendChild(btnEl);
+        [...grid.children]
+          .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
+          .forEach((el) => grid.appendChild(el));
+      }
+    }
     // 市场视图：#main 顶栏之后（与原 index.html 同位；.hidden 全局类控制显隐）
     const main = $('main');
     const topbar = $('topbar');
@@ -737,6 +758,7 @@
     docKeys.length = 0;
     document.body.classList.remove('mk-4col'); // 挂在 body 上的全局类一并撤（组件不留痕）
     if (btnEntry) { btnEntry.remove(); btnEntry = null; btnEl = null; }
+    else if (btnEl) { btnEl.remove(); btnEl = null; } // 旧 engine 的 DOM 注入 fallback
     if (viewEl) { viewEl.remove(); viewEl = null; }
     if (modalEl) { modalEl.remove(); modalEl = null; }
     delete window.marketOpen;
