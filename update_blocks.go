@@ -394,16 +394,22 @@ func (a *App) syncPendingToState() {
 	updateMu.Unlock()
 }
 
-// planComponentBlocks 算需要静默更新的组件块（id 升序）：只含本机已装且版本
-// 落后的；没装的跳过（静默更新不新增组件，新增走市场页手动装）。
+// planComponentBlocks 算需要静默更新的组件块（id 升序）。两类都要：
+//   - 本机已装且版本落后的：升级（本地比清单新则不动，用户手动装的更新版不回退）；
+//   - 本机没有的：补装。清单带块＝发布版本应持有该组件——与安装包 stage\组件
+//     整目录随包装回是同一语义。2026-11-06 客户事故的教训：内置功能组件化后
+//     （skill-market / sites-platform 的入口全靠组件注入），老客户升级 engine
+//     却拿不到新组件目录，入口随升级消失、连市场入口也没了（想再装组件得先有
+//     市场入口，死锁）。想彻底不要某组件用**开关关闭**——关掉不丢数据、记账
+//     保持关、补装也不会把开关打开；手动删目录只在两次组件发版之间有效
+//     （发新版清单带块就会装回，与安装包升级同款行为）。
 func (a *App) planComponentBlocks(blocks map[string]updateBlock) []string {
 	ids := make([]string, 0, len(blocks))
 	for id, b := range blocks {
-		m, ok := a.Components.Manifest(id)
-		if !ok {
-			continue
+		if b.Version == "" {
+			continue // 防呆：没版本的块不碰
 		}
-		if b.Version == "" || versionCompare(b.Version, m.Version) <= 0 {
+		if m, ok := a.Components.Manifest(id); ok && versionCompare(b.Version, m.Version) <= 0 {
 			continue // 本地已是清单版本或更新
 		}
 		ids = append(ids, id)
