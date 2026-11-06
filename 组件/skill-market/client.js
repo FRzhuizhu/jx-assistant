@@ -22,6 +22,7 @@
   let mkLoading = false;    // 清单在途（防抖动重复渲染）
   let mkAutoTimer = 0;      // 市场页开着时的 60s 静默复查
   let btnEl = null, btnEntry = null, viewEl = null, modalEl = null; // 本组件注入的节点（btnEntry＝插槽条目句柄）
+  let legacyHost = false;  // 老前端硬编码形态（组件化之前的产品）：按钮/视图是 index.html 硬编码的，本组件整体让位
   const docKeys = [];       // document keydown 监听（dispose 逐个解绑）
 
   /* ---------- 小工具（$ / esc 自带，api / confirmCenter / openSettings 用主程序全局） ---------- */
@@ -48,23 +49,29 @@
       btnEl = btnEntry.el;
     } else {
       // 旧 engine 没有插槽（组件块先于 engine 静默换装生效的窗口期：用户还没
-      // 重启）：退回旧版直接注入 #foot-apps，侧栏入口不因时序消失——那正是
-      // 2026-11-06 客户事故的症状。重启到新 engine 后插槽可用，自动改走插槽。
-      const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
-      if (grid) {
-        btnEl = document.createElement('button');
-        btnEl.id = 'btn-market';
-        btnEl.className = 'foot-btn';
-        btnEl.dataset.order = '10';
-        btnEl.title = '企业技能包 / 工作流：安装/更新 技能、组件与插件';
-        btnEl.innerHTML =
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>' +
-          '<span class="foot-btn-label">企业技能包 / 工作流</span>';
-        grid.appendChild(btnEl);
-        [...grid.children]
-          .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
-          .forEach((el) => grid.appendChild(el));
-      }
+      // 重启）。先辨形态（与 sites-platform 同一套，细节见它那边注释）：
+      // · 老前端硬编码形态——index.html 自带 btn-market 与 #market-view，再注入
+      //   就是重复条目（id 撞车、入口翻倍），整体让位，重启到新 engine 自动归位；
+      // · 中间形态（有 #foot-apps、无插槽）——退回旧版直接注入，入口不因时序
+      //   消失（2026-11-06 客户事故的症状）。重注入先清自己上次的按钮；容器
+      //   认准 #foot-apps，不兜底 .foot-grid（那是硬编码按钮的家）。
+      if (document.getElementById('btn-market')) { legacyHost = true; return; }
+      const grid = document.getElementById('foot-apps');
+      if (!grid) return;
+      grid.querySelector('[data-cx-mount="' + ID + '"]')?.remove();
+      btnEl = document.createElement('button');
+      btnEl.id = 'btn-market';
+      btnEl.dataset.cxMount = ID;
+      btnEl.className = 'foot-btn';
+      btnEl.dataset.order = '10';
+      btnEl.title = '企业技能包 / 工作流：安装/更新 技能、组件与插件';
+      btnEl.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1.2 12a1.5 1.5 0 0 1-1.5 1.4H7.7A1.5 1.5 0 0 1 6.2 19z"/><path d="M8.5 10V6a3.5 3.5 0 0 1 7 0v4"/></svg>' +
+        '<span class="foot-btn-label">企业技能包 / 工作流</span>';
+      grid.appendChild(btnEl);
+      [...grid.children]
+        .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
+        .forEach((el) => grid.appendChild(el));
     }
     // 市场视图：#main 顶栏之后（与原 index.html 同位；.hidden 全局类控制显隐）
     const main = $('main');
@@ -740,6 +747,7 @@
 
   function init() {
     injectDOM();
+    if (legacyHost) return; // 让位形态：老前端的按钮/视图/window 接口全在场，本组件不注入不覆盖
     bindMarket();
     updateMarketCols();
     window.addEventListener('resize', onResize);
@@ -751,6 +759,7 @@
   }
 
   function dispose() {
+    if (legacyHost) { legacyHost = false; return; } // 让位形态什么都没装，无可撤
     if (marketOpen()) closeMarket(); // 市场正开着：先还回对话区
     stopMarketAuto();
     window.removeEventListener('resize', onResize);

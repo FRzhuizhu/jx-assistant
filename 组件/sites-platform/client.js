@@ -17,6 +17,7 @@
   const ID = 'sites-platform';
 
   let btnEl = null, btnEntry = null, viewEl = null; // 本组件注入的节点（btnEntry＝插槽条目句柄）
+  let legacyHost = false;    // 老前端硬编码形态（组件化之前的产品）：按钮/视图是 index.html 硬编码的，本组件整体让位
   const docKeys = [];                // document keydown 监听（dispose 逐个解绑）
 
   const $ = (id) => document.getElementById(id);
@@ -38,23 +39,33 @@
     if (btnEntry) {
       btnEl = btnEntry.el;
     } else {
-      // 旧 engine 没有插槽（组件块先于 engine 静默换装生效的窗口期）：退回旧版
-      // 直接注入 #foot-apps，入口不因时序消失（2026-11-06 客户事故的症状）。
-      const grid = document.getElementById('foot-apps') || document.querySelector('.sidebar-foot .foot-grid');
-      if (grid) {
-        btnEl = document.createElement('button');
-        btnEl.id = 'btn-sites';
-        btnEl.className = 'foot-btn';
-        btnEl.dataset.order = '20';
-        btnEl.title = '企业小程序平台：发布与管理小程序、数据文件、二维码';
-        btnEl.innerHTML =
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>' +
-          '小程序平台';
-        grid.appendChild(btnEl);
-        [...grid.children]
-          .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
-          .forEach((el) => grid.appendChild(el));
-      }
+      // 旧 engine 没有插槽（组件块先于 engine 静默换装生效的窗口期）。先辨形态：
+      // · 老前端硬编码形态（组件化之前的产品）——index.html 里自带 btn-sites 与
+      //   #sites-view，老前端逻辑完整在场。再注入任何东西都是重复（按钮/视图
+      //   id 全撞车、入口翻倍，2026-11-06 窗口期底部入口串成"乱码"就是重复
+      //   条目在窄格里被挤成竖排的字）——整体让位，重启到新 engine 自动归位。
+      if (document.getElementById('btn-sites')) { legacyHost = true; return; }
+      // · 中间形态（有 #foot-apps 挂载点、还没插槽）：退回旧版直接注入，入口
+      //   不因时序消失（2026-11-06 客户事故的症状）。重注入先清自己上次的
+      //   按钮（热重载/静默换装重放同一脚本不落双份）；容器认准 #foot-apps，
+      //   不再兜底 .foot-grid——那会命中硬编码按钮的容器（让位形态之外也可能
+      //   存在更老的骨架），把按钮塞进别人家的格子里。
+      const grid = document.getElementById('foot-apps');
+      if (!grid) return;
+      grid.querySelector('[data-cx-mount="' + ID + '"]')?.remove();
+      btnEl = document.createElement('button');
+      btnEl.id = 'btn-sites';
+      btnEl.dataset.cxMount = ID;
+      btnEl.className = 'foot-btn';
+      btnEl.dataset.order = '20';
+      btnEl.title = '企业小程序平台：发布与管理小程序、数据文件、二维码';
+      btnEl.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/><path d="M8 4V2M16 4V2"/><path d="M7 13h4M7 16h7"/></svg>' +
+        '<span class="foot-btn-label">小程序平台</span>';
+      grid.appendChild(btnEl);
+      [...grid.children]
+        .sort((a, b) => (parseFloat(a.dataset.order || 50) - parseFloat(b.dataset.order || 50)))
+        .forEach((el) => grid.appendChild(el));
     }
     // 平台视图：#main 顶栏之后（与市场视图平级的主区整页；.hidden 全局类控制显隐）
     const main = $('main');
@@ -187,6 +198,7 @@
 
   function init() {
     injectDOM();
+    if (legacyHost) return; // 让位形态：老前端的按钮/视图/window 接口全在场，本组件不注入不覆盖
     if (btnEl) btnEl.onclick = () => { // 与企业技能包 / 工作流同款 toggle：开着再点关闭，关着点开
       if (sitesViewOpen()) { closeSites(); return; }
       openSitesPlatform();
@@ -209,6 +221,7 @@
   }
 
   function dispose() {
+    if (legacyHost) { legacyHost = false; return; } // 让位形态什么都没装，无可撤
     if (sitesViewOpen()) closeSites(); // 平台正开着：先还回对话区
     docKeys.forEach((fn) => document.removeEventListener('keydown', fn));
     docKeys.length = 0;
