@@ -1576,7 +1576,21 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   「恢复自动命名」按它显隐，组件关掉即不出）；改名落库广播 `title` 事件，
   前端侧栏/顶栏实时跟进（组件改名常在流结束数秒后晚到，不广播的话当面永远
   看不见）；轻量消息读取走
-  `GET /api/sessions/{id}/messages`）。
+  `GET /api/sessions/{id}/messages`）、`user-memory`（用户记忆——用户称呼、
+  身份与喜好、AI 助理名字与身份的长期记忆 + AI 对话气泡颜色。全部内容存
+  一个 md 文档 `data/user-memory.md`（组件自管，可手工编辑）；宿主半边在
+  `usermemory.go`。**注入走环境提示词**（envPrompt 的 userMemoryEnvBlock：
+  组件开启且任一字段有内容才出现，变化经快照差分送达全部会话，关闭即整块
+  消失——不进系统提示词、不进工具定义）。**权限分级**：普通任务对话拿专用
+  工具 `user_memory`（查询全部字段 + 只更新「用户身份与喜好」记忆段，其余
+  字段只读——称呼与 AI 名字/身份是用户的自我设定；挂全部执行模式，aux/
+  assistant 不挂）；数字经理（assistant 模式）的环境快照里告知**整个记忆文件
+  可读可改**——call_api 调 `GET/POST /api/user-memory`（按字段保存，未给出
+  的字段保持不变；文件在助手数据目录内、受保护路径拦文件工具，接口是唯一
+  通道）。各文本字段 1000 字硬截断（rune 计，后端权威）。设置页独立选项卡
+  （设置 → 用户记忆）由组件 client.js 注册；气泡颜色是纯前端设置：
+  `--ai-bubble` CSS 变量注入 `<html>`（`web/style.css` 的 `.msg.user.ai`
+  气泡引用，缺省回退主题灰），保存后即时生效、组件卸载即还原）。
 
 ## 插件与插件兼容层
 

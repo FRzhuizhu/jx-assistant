@@ -124,6 +124,10 @@ func (a *App) toolsFor(mode string) []Tool {
 	// （沙箱内远程 git 全灭，git_sync 是修改工作区档下唯一的远程通道，
 	// 见 gittools.go 文件头）。组件关掉时为空。
 	gits := a.gitTools()
+	// 用户记忆工具（组件 user-memory）：各执行模式可用——普通任务对话的
+	// 「弱通道」（查询全部字段 + 只更新记忆段）；aux 只读不挂，assistant
+	// 走 call_api 整文件通道（环境提示词里有说明），也不挂。组件关掉时为空。
+	mems := a.userMemoryTools()
 	var tools []Tool
 	if mode == "assistant" {
 		// 数字助理总控只有「派发工作任务」这一条派发路径：dispatch_sub（派子对话）
@@ -163,7 +167,7 @@ func (a *App) toolsFor(mode string) []Tool {
 			// 任务会话专注实操（需要时由总控代调）。
 			askUserQuestionTool(), requestPermissionTool(), enterPlanModeTool(), exitPlanModeTool(), updateGoalTool(), progressWriteTool(),
 			jobOutputTool(), jobListTool(), jobKillTool(),
-		}, skillCreate...), append(append(append(append(append(todos, gits...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), deviceTools()...), history...)...)
+		}, skillCreate...), append(append(append(append(append(append(todos, gits...), mems...), append(a.pluginAndMCPTools(), panelScreenshotTool())...), browserTools()...), deviceTools()...), history...)...)
 	}
 	return append(tools, readUserSkillTool())
 }

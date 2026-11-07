@@ -581,8 +581,10 @@ body.sb-collapsed #sidebar { width: 0; min-width: 0; border-right-width: 0; }
    且不分会话/视图——主对话、工作任务会话、右栏子对话一致）。 */
 .msg.user.ai { align-items: flex-start; }
 .msg.user.ai .bubble {
-  background: var(--chip);
-  --fold-bg: var(--chip);                 /* 折叠渐隐终点 = 气泡自身底色 */
+  /* 背景可被「用户记忆」组件改色：--ai-bubble 由组件 client.js 按设置注入
+     （缺省不设 = 跟随主题灰），见 组件/user-memory/client.js。 */
+  background: var(--ai-bubble, var(--chip));
+  --fold-bg: var(--ai-bubble, var(--chip));       /* 折叠渐隐终点 = 气泡自身底色 */
   border-radius: 14px 14px 14px 4px;      /* 尾巴朝左下 */
 }
 /* aiuser 正文按 Markdown 渲染（2026-11-05 拍板方向 A，JS 给气泡挂 .md 类）：
