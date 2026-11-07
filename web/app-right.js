@@ -435,7 +435,8 @@ async function openSubSession(id) {
   const brief = (state.sessions || []).find((s) => s.id === id);
   if (brief && (!subState.cur || subState.cur.id !== id)) optimisticSwitch(subView, brief);
   try {
-    const data = await api('/api/sessions/' + id);
+    // 分批口径与主对话同款：只取最近一批（超长子对话整包同样卡），上翻预取接管更早的
+    const data = await api('/api/sessions/' + id + '?tail=' + LOAD_BATCH);
     if (tok !== navTok.sub) return; // 已被更新的导航取代：晚到的旧响应不落地
     subState._loading = false; // 数据落地：退出加载态（必须在 renderMessages 之前）
     // 迟到的旧快照（见 app-chat.js 的 snapshotStale，同会话才可比）：右栏已被
@@ -450,6 +451,10 @@ async function openSubSession(id) {
     flushSubDraft();
     subState.cur = data.meta;
     subState.msgs = data.messages || [];
+    // 分批记账：本窗之上的未加载条数与基础窗基线、批栈清零（主对话同款）
+    subState.older = data.older ? { count: data.older.count || 0, base: data.older.base } : undefined;
+    subState._baseWinBase = data.older && data.older.base;
+    subState._batches = [];
     // 打开即视为已读（与主对话 openSession 同款）：清红点与完成绿点，下拉清单数据同步
     delete dotDone[id];
     if (subState.cur.unread) {
@@ -471,6 +476,7 @@ async function openSubSession(id) {
     subState.streamThinking = '';
     subRenderHeader();
     renderMessages(subState.msgs, subView, { jump: true });
+    renderLoadOlderBar(subView); // 分批顶条（右栏同款）
     renderQueueDock(subView);
     syncComposer(subView); // 右栏那套输入区控件跟着这个子对话刷新（权限/模型/模式/上下文圆环）
     syncComposerPad(subView); // 悬浮输入区：重算子对话消息列的垫高与按钮锚点

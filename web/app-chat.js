@@ -48,6 +48,10 @@ function detachComposerToWrap() {
 function resetEmpty() {
   detachComposerToWrap();
   state._pfxSid = null; // 回到首页：消息区的增量渲染缓存失效
+  state._batches = []; // 分批窗口一并作废（顶条收起，重开会话时重设）
+  state.older = undefined;
+  cancelReleaseOlder(mainView);
+  renderLoadOlderBar(mainView);
   $('msg-col').innerHTML =
     '<div class="home">' +
       '<div class="hero">' +
@@ -174,6 +178,10 @@ function optimisticSwitch(view, brief) {
   st.streamText = '';
   st.streamThinking = '';
   st._pfxSid = null;
+  st._batches = []; // 分批窗口随会话作废（顶条与 older 由 loadSessionInto 重设）
+  st.older = undefined;
+  cancelReleaseOlder(view);
+  renderLoadOlderBar(view);
   st._loading = true; // renderMessages / reloadMessages 见此标记让路，别冲掉加载态
   applySessionChrome(view);
   showChatLoading(view);
@@ -284,8 +292,188 @@ function snapshotStale(view, sid, incoming) {
   return (inc[inc.length - 1].seq || 0) < (cur[cur.length - 1].seq || 0);
 }
 
+/* ---------- 分批加载（超长对话）：初始只取最近一批，上翻再取更早批次 ----------
+   口径：每批 1000 条；视口上方已加载不足 500 条即预取下一批（给远程/手机网络
+   留提前量，衔接无感）。DOM 只在头部前插（已渲染节点永不重建——分批的核心
+   收益），配合 content-visibility 离屏跳过布局；回到底部 60 秒不上翻即释放
+   上方批次（DOM 与内存回到基础窗，下次上翻按同一机制重新加载，展开记忆还在） */
+const LOAD_BATCH = 1000;
+const LOAD_BUFFER = 500;
+const RELEASE_OLDER_MS = 60000;
+
+// seq→已加载索引：滚动预取判定要知道「视口顶附近的消息离已加载窗口顶还有几条」
+function buildSeqIndex(view) {
+  const st = view.state;
+  st._seqIdx = new Map();
+  (st.msgs || []).forEach((m, i) => { if (m.seq != null) st._seqIdx.set(m.seq, i); });
+}
+
+// older.base（服务端）→ groupTurns 的分组基线（与子对话继承段同一接力机制）：
+// 批次头部的 prompt 变更行据此显示「变更行」而非「首见完整交代」。envBoundary
+// 不在这里带：摘要行会混入分组输入，覆盖边界由 sumAt 扫描自动推进到位
+function olderBaseOf(b) {
+  if (!b) return null;
+  return {
+    sawPrompt: true,
+    lastSys: b.sys || '',
+    lastToolsJson: b.tools ? JSON.stringify(b.tools) : '',
+    lastTools: b.tools || null,
+  };
+}
+
+// 顶条（#load-older）：剩余提示 / 加载中转圈 / 到底隐藏。点击立即取上一批
+// （onclick 挂在 setupScrollTuck，条本身常驻 DOM、只换内容）
+function renderLoadOlderBar(view) {
+  const bar = viewEl(view, 'load-older');
+  if (!bar) return;
+  const st = view.state;
+  if (st._loadingOlder) {
+    bar.classList.remove('hidden');
+    bar.classList.add('loading');
+    bar.innerHTML = '<span class="cl-spin"></span>正在加载更早消息…';
+    return;
+  }
+  bar.classList.remove('loading');
+  if (!st.older || !(st.older.count > 0)) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  bar.textContent = '上面还有 ' + st.older.count + ' 条更早消息，上翻自动加载';
+}
+
+// 取上一批更早消息并前插渲染：网络只拉这一批（before_seq 从当前窗口首条向前），
+// 已渲染的旧节点一个不动，视口按新增高度补差（用户停在原处不跳）。批次含
+// inherit 标记行（已到会话最开头）时走一次全量渲染——继承段要折成「来自主
+// 对话」块、已加载头部的克隆历史行要折进去，头部必须重建（只发生在翻到头，
+// 此时消息已接近全量，一次性成本与旧版打开全量相当）。返回是否成功落地
+// （jumpToMessage 据此决定是否继续补齐到目标消息）。
+async function loadOlder(view) {
+  view = view || mainView;
+  const st = view.state;
+  if (!st.cur || !st.older || !(st.older.count > 0) || st._loadingOlder) return false;
+  if (st._loading || !st.msgs || !st.msgs.length) return false; // 整包在途：由加载方收口
+  const sid = st.cur.id;
+  const firstSeq = st.msgs[0].seq; // 慢网落地校验：窗口可能已被重开/重置
+  st._loadingOlder = true;
+  cancelReleaseOlder(view); // 上翻即取消「到顶释放」计时
+  renderLoadOlderBar(view);
+  try {
+    const d = await api('/api/sessions/' + sid + '?before_seq=' + firstSeq + '&limit=' + LOAD_BATCH);
+    if (!st.cur || st.cur.id !== sid || !st.msgs.length || st.msgs[0].seq !== firstSeq) return false;
+    const batch = d.messages || [];
+    if (!batch.length) { st.older = { count: 0, base: st.older.base }; return false; }
+    const older = d.older ? { count: d.older.count || 0, base: d.older.base } : { count: 0 };
+    if (batch[0].kind === 'inherit') {
+      st.msgs = batch.concat(st.msgs);
+      st.older = older;
+      st._batches = []; // 全量重排：批记账作废（renderMessages 重建分支同样清）
+      renderMessages(st.msgs, view);
+      buildSeqIndex(view);
+      return true;
+    }
+    // 普通批次：分组输入 = 新批 + 已加载的摘要/压缩账本行（这两类 builder 不产
+    // 条目、只按 coversUpTo/覆盖区间归位——卡片与账本挂到新批内的真实发生位置，
+    // 落库在末尾的行不会丢归位）。基线取当前 older.base（该批之前的状态）
+    const relisted = st.msgs.filter((m) => displayKindOf(m) === 'summary' || isCompactNoteRow(m));
+    const input = batch.concat(relisted);
+    const resultOf = {};
+    for (const m of input) { if (m.role === 'tool' && m.tool_call_id) resultOf[m.tool_call_id] = m; }
+    reportedSubs = scanReported(batch.concat(st.msgs)); // 子任务卡完成态按全量已加载口径
+    const turns = groupTurns(input, resultOf, olderBaseOf(st.older.base));
+    const frag = document.createDocumentFragment();
+    turns.forEach((turn, ti) => {
+      appendTurn(frag, turn, sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti), view, false);
+    });
+    st.msgs = batch.concat(st.msgs);
+    const nodes = frag.childNodes.length;
+    const h0 = view.scroll.scrollHeight;
+    view._renderTs = Date.now(); // 渲染钳位豁免窗口（同 renderMessages：补差与补测余波不当用户滚动）
+    view.col.insertBefore(frag, view.col.firstChild);
+    const dh = view.scroll.scrollHeight - h0;
+    if (dh > 0) view.scroll.scrollTop += dh; // 头部增高：视口补回原内容，纹丝不动
+    st.older = older;
+    st._pfxLen = (st._pfxLen || 0) + batch.length; // 前缀复用记账：分界内容未变，索引整体平移
+    st._pfxNodes = (st._pfxNodes || 0) + nodes;
+    (st._batches || (st._batches = [])).unshift({ msgCount: batch.length, nodeCount: nodes });
+    buildSeqIndex(view);
+    scheduleFolds();
+    maybeLoadOlder(view); // 批到齐后缓冲仍不足（视口贴着窗顶）则继续取
+    return true;
+  } catch (e) {
+    return false; // 取不到就保持现状（顶条还在，可再点/再滚）
+  } finally {
+    st._loadingOlder = false;
+    renderLoadOlderBar(view);
+  }
+}
+
+// 滚动预取判定（rAF 节流）：视口顶附近的消息离已加载窗口顶不足 LOAD_BUFFER
+// 条 → 取上一批。视口顶条目身份靠回合碎片自带的 data-seq / data-key（回合键
+// sid:seq），再经 seq 索引换算条数——按「条」而非「像素」判缓冲，消息高矮
+// 不均时也稳定。
+const loadOlderRAF = {};
+function maybeLoadOlder(view) {
+  view = view || mainView;
+  if (loadOlderRAF[view.key]) return;
+  loadOlderRAF[view.key] = requestAnimationFrame(() => {
+    loadOlderRAF[view.key] = 0;
+    const st = view.state;
+    if (!st.cur || !st.older || !(st.older.count > 0) || st._loadingOlder || st._loading) return;
+    const vr = view.scroll.getBoundingClientRect();
+    let el = document.elementFromPoint(vr.left + vr.width / 2, vr.top + 80);
+    if (!el || !view.col.contains(el)) return;
+    while (el && el.parentElement !== view.col) el = el.parentElement;
+    if (!el || el.parentElement !== view.col) return;
+    let seq = el.dataset ? el.dataset.seq : '';
+    if (!seq && el.dataset && el.dataset.key) seq = el.dataset.key.split(':')[1];
+    if (!seq || seq.startsWith('head')) return; // 截断头回合（无用户消息）不做锚
+    const idx = st._seqIdx && st._seqIdx.get(+seq);
+    if (idx == null || idx >= LOAD_BUFFER) return;
+    loadOlder(view);
+  });
+}
+
+// 「到顶释放」：回到底部（贴底跟随）后 60 秒不再上翻，就把上方已加载批次放
+// 掉——超长会话翻过几批后 DOM 重新上万节点，日常底部阅读用不到；下次上翻按
+// 同一机制重新加载（展开记忆在，重建后形态一致）
+function armReleaseOlder(view) {
+  view = view || mainView;
+  const st = view.state;
+  if (!st._batches || !st._batches.length || st._relTimer) return;
+  st._relTimer = setTimeout(() => releaseOlder(view), RELEASE_OLDER_MS);
+}
+function cancelReleaseOlder(view) {
+  view = view || mainView;
+  clearTimeout(view.state._relTimer);
+  view.state._relTimer = 0;
+}
+function releaseOlder(view) {
+  const st = view.state;
+  st._relTimer = 0;
+  if (!st._batches || !st._batches.length || st._loadingOlder || st._loading) return;
+  if (view._pinned) return; // 钉住阅读（哪怕停在底部附近）不释放
+  const sc = view.scroll;
+  if (sc.scrollHeight - sc.scrollTop - sc.clientHeight > FOLLOW_RESUME) return; // 不在底部
+  let msgCount = 0, nodeCount = 0;
+  st._batches.forEach((b) => { msgCount += b.msgCount; nodeCount += b.nodeCount; });
+  st._batches = [];
+  const h0 = sc.scrollHeight;
+  view._renderTs = Date.now();
+  let rm = nodeCount;
+  while (rm > 0 && view.col.firstChild) { view.col.removeChild(view.col.firstChild); rm--; }
+  const dh = h0 - sc.scrollHeight;
+  if (dh > 0) sc.scrollTop = Math.max(0, sc.scrollTop - dh); // 头部收走：视口补回原内容
+  st.msgs = st.msgs.slice(msgCount);
+  st._pfxLen = Math.max(0, st._pfxLen - msgCount);
+  st._pfxNodes = Math.max(0, st._pfxNodes - nodeCount);
+  st.older = { count: ((st.older && st.older.count) || 0) + msgCount, base: st._baseWinBase };
+  buildSeqIndex(view);
+  renderLoadOlderBar(view);
+}
+
 async function loadSessionInto(id, tok) {
-  const data = await api('/api/sessions/' + id);
+  // 分批加载：只取最近 LOAD_BATCH 条（超长对话整包要几 MB，打开即卡）；上方
+  // 剩余的 older 信息由顶条与上翻预取接管。旧后端不认 tail 参数（返回全量且
+  // 无 older 字段）→ 安全降级为现状
+  const data = await api('/api/sessions/' + id + '?tail=' + LOAD_BATCH);
   // 已被更新的导航（切换/回首页）取代：晚到的旧响应不落地，否则会把界面顶回旧会话
   if (tok !== navTok.main) return;
   state._loading = false; // 数据落地：退出加载态（必须在 renderMessages 之前）
@@ -303,6 +491,10 @@ async function loadSessionInto(id, tok) {
   flushMainDraft();
   state.cur = data.meta;
   state.msgs = data.messages || [];
+  // 分批记账：本窗之上的未加载条数与基础窗基线（释放批次时恢复到它）、批栈清零
+  state.older = data.older ? { count: data.older.count || 0, base: data.older.base } : undefined;
+  state._baseWinBase = data.older && data.older.base;
+  state._batches = [];
   state.pendingSteer = (data.pending && data.pending.steer) || [];
   state.pendingQueue = (data.pending && data.pending.queue) || [];
   state.queuePaused = !!(data.pending && data.pending.paused);
@@ -327,6 +519,7 @@ async function loadSessionInto(id, tok) {
   maybeAutoOpenPlan();
   renderMessages(state.msgs, mainView, { jump: true });
   renderQueueDock(mainView);
+  renderLoadOlderBar(mainView); // 分批顶条：有余量则提示「上面还有 N 条」
   // 打开即视为已读：清红点与绿点
   delete dotDone[id];
   if (state.cur && state.cur.unread) {
@@ -2714,6 +2907,7 @@ function renderMessages(msgs, view, opts) {
     // （#home-composer），这里绝不能拿 emptyHTML 顶掉它——销毁问候区等于销毁 #input
     if (!st.cur) return;
     st._pfxSid = null;
+    renderLoadOlderBar(view); // 空态没有「更早」可言：顶条收起
     box.innerHTML = view.emptyHTML;
     // 首条消息已发出、还没回显：空态（首页问候）下面也立显「发送中」占位
     const ps0 = pendingSendOf(st, msgs, (st.cur && st.cur.id) || '');
@@ -2739,6 +2933,8 @@ function renderMessages(msgs, view, opts) {
     Object.keys(turnOpen).forEach((k) => { if (k.lastIndexOf(pfx, 0) === 0) delete turnOpen[k]; });
     Array.from(foldOpenMem.keys()).forEach((k) => { if (k.lastIndexOf(pfx, 0) === 0) foldOpenMem.delete(k); });
     Array.from(procOpenMem.keys()).forEach((k) => { if (k.lastIndexOf(pfx, 0) === 0) procOpenMem.delete(k); });
+    st._batches = []; // 全新加载：分批窗口重置（loadSessionInto 已设好新 older）
+    cancelReleaseOlder(view);
   }
   anchorSave(view); // 任何重建（前缀全量重建/尾部重建）之前锚定视口（仅钉住阅读时生效）
   // 子对话开头的继承段（后端克隆父对话时写入的标记行 + N 条历史）：
@@ -2772,6 +2968,7 @@ function renderMessages(msgs, view, opts) {
     st._pfxLen = k;
     st._pfxSeq = msgs[k - 1] ? msgs[k - 1].seq : 0;
     st._pfxNodes = box.children.length;
+    st._batches = []; // 前缀重建（编辑重发/切回）：批记账对应的旧节点已不存在
   }
   // 尾部每次全量重建：最后一回合（流式中走尾部窗口）+ 待生效插话。
   // 渲染前记时间戳：移除尾部的瞬间内容变矮，浏览器会把 scrollTop 钳到临时
@@ -2849,6 +3046,7 @@ function renderMessages(msgs, view, opts) {
   followScroll(view, jump);
   anchorRestore(view); // 钉住阅读时按锚点补差（followScroll 在钉住态不写 scrollTop，不会互相覆盖）
   scheduleFolds(); // 气泡折叠：渲染完按实际高度重算（主对话与右栏子对话列都算）
+  buildSeqIndex(view); // seq→索引：滚动预取判定用（msgs 变化的主路径都走这里刷新）
 }
 
 /* ---------- 回合过程区：一条渲染路径，两套可见策略 ---------- */
@@ -4989,6 +5187,10 @@ function handleEvent(ev, view) {
       if (ev.seq) ev.message.seq = ev.seq;
       if (ev.kind) ev.message.kind = ev.kind; // 行类型：与存储 kind 一致（契约见《消息类型规范.md》）
       if (ev.origin) ev.message.origin = ev.origin;
+      // 新回合开始（用户消息回显）：关注点回到尾部，顺手放掉上方已加载批次
+      // （贴底跟随态才生效，钉住阅读不动）。赶在下一条 push 触发前缀判定之前：
+      // 释放后索引同步平移，渲染仍走尾部重建快路径，批记账不会作废
+      if (ev.message && ev.message.role === 'user') releaseOlder(view);
       view.state.msgs.push(ev.message);
       renderMessages(view.state.msgs, view);
       break;
@@ -6029,11 +6231,23 @@ async function reloadMessages(view) {
   if (view.state._loading) return; // 会话正在整包加载：由 loadSessionInto 收口，不并发重取
   const nav = navTok[view.key]; // 导航令牌：慢网下响应可能晚于切走/回首页，落地前必须复验
   try {
-    const d = await api('/api/sessions/' + view.state.cur.id);
+    // 分批口径：只重取基础窗（tail），已上翻加载的头部原样保留——attached 事件
+    // 刷新不再把整段历史反复拉回（这正是主对话被事件轰炸时最大的流量来源）
+    const d = await api('/api/sessions/' + view.state.cur.id + '?tail=' + LOAD_BATCH);
     // 已被更新的导航取代：晚到的旧会话数据不落地——否则 state.cur 被旧 meta 复活、
     // 界面被旧消息顶回旧会话，正是远程访问时「切过去又被跳回来」的根源
     if (nav !== navTok[view.key]) return;
     if (snapshotStale(view, view.state.cur.id, d.messages)) return; // 迟到的旧快照：界面已被流式帧推进，不回退
+    const head = (d.messages && d.messages.length)
+      ? view.state.msgs.filter((m) => m.seq < d.messages[0].seq) : [];
+    if (head.length) {
+      d.messages = head.concat(d.messages);
+      if (d.older) d.older = { count: Math.max(0, (d.older.count || 0) - head.length), base: d.older.base };
+    } else if (d.older) {
+      view.state._baseWinBase = d.older.base; // 基础窗边界前移（无上翻历史）：释放基线跟到最新
+    }
+    view.state.older = d.older ? { count: d.older.count || 0, base: d.older.base } : undefined;
+    renderLoadOlderBar(view);
     view.state.cur = d.meta;
     view.state.msgs = d.messages || [];
     view.state.pendingSteer = (d.pending && d.pending.steer) || [];
@@ -8271,6 +8485,8 @@ function setupScrollTuck() {
   for (const view of [mainView, subView]) {
     setupAttachDrop(view); // 附件区：粘贴图片与拖拽投放（两个视图各挂一套）
     setupInputMarks(view); // 标记胶囊：背衬层渲染与光标原子策略（两个视图各挂一套）
+    const lob = viewEl(view, 'load-older');
+    if (lob) lob.onclick = () => loadOlder(view); // 顶条点击：立即取上一批
     let lastY = view.scroll.scrollTop;
     // 跟随钉住的手势入口：滚轮上翻/触摸上滑立即钉住（无论离底多近——否则
     // 一步滚轮增量会被下一次跟随吃掉）；拖滚动条/键盘翻页由下方 scroll 兜底。
@@ -8310,6 +8526,11 @@ function setupScrollTuck() {
       const synthetic = ts - (view._renderTs || 0) < 350 || ts < (view._progUntil || 0);
       if (!synthetic && dist > FOLLOW_PIN_DIST) { view._pinned = true; view._pinTs = ts; }
       else if (!synthetic && dist < FOLLOW_RESUME && ts - (view._pinTs || 0) > PIN_GUARD_MS) view._pinned = false;
+      // 分批加载：上翻接近已加载窗口顶即预取上一批（缓冲 500 条）；贴底跟随时
+      // 武装「到顶释放」计时（60 秒不上翻就把上方批次放掉），一旦离底立刻取消
+      maybeLoadOlder(view);
+      if (dist > FOLLOW_PIN_DIST) cancelReleaseOlder(view);
+      else if (!view._pinned && dist < FOLLOW_RESUME) armReleaseOlder(view);
       // 回到底部按钮：滚离底部出现，靠近底部消失（滞回）
       const was = !!view._jumpShow;
       const now = was ? dist > JUMP_HIDE : dist > JUMP_SHOW;

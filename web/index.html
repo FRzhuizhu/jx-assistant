@@ -113,7 +113,7 @@
     <!-- 市场视图、小程序平台视图均已组件化（组件/skill-market/ 与
          组件/sites-platform/，视图 DOM 由组件注入 #main）。 -->
     <div id="progress-panel" class="hidden"></div>
-    <div id="messages"><div class="msg-col" id="msg-col"></div></div>
+    <div id="messages"><div id="load-older" class="load-older hidden"></div><div class="msg-col" id="msg-col"></div></div>
 
     <div id="composer-wrap" class="composer-wrap">
       <div id="hint" class="composer-hint"></div>
@@ -234,7 +234,7 @@
           <span class="sub-dd-status" id="sub-dd-status"></span>
         </div>
         <div class="sub-chat">
-          <div id="sub-messages"><div class="msg-col" id="sub-msg-col"></div></div>
+          <div id="sub-messages"><div id="sub-load-older" class="load-older hidden"></div><div class="msg-col" id="sub-msg-col"></div></div>
           <div class="sub-composer-wrap composer-wrap">
             <div id="sub-hint" class="composer-hint"></div>
             <div id="sub-queue-dock" class="queue-dock hidden" data-queue-dock></div>

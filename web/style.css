@@ -1853,6 +1853,21 @@ body.rp-open .w-handle { display: none; }
 }
 .chat-loading .cl-retry:hover { border-color: var(--accent); color: var(--accent); }
 
+/* 分批加载顶条（超长对话）：初始只加载最近一批，上方未加载的历史在此提示
+   （上翻自动预取，点击立即取）；加载中显示转圈。贴消息列顶部、不占常驻空间 */
+.load-older {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 0 6px; color: var(--text-3); font-size: .88em; cursor: pointer;
+  user-select: none;
+}
+.load-older:hover { color: var(--accent); }
+.load-older .cl-spin {
+  flex: none; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: st-spin .9s linear infinite;
+}
+.load-older.loading { cursor: default; color: var(--text-3); }
+
 /* ---------- 居中弹窗（.modal）：层级一律走 :root 的 --z-* 阶梯 ---------- */
 /* 默认业务弹窗带（--z-dialog）：一切弹窗永远在一切页面（--z-page 及以下）之上 */
 .modal {
