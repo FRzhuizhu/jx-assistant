@@ -277,6 +277,141 @@ func TestAltUpNeverStuck(t *testing.T) {
 	}
 }
 
+// TestMouseSideKeyNames 鼠标侧键按枚区分：XBUTTON1/2 → mouse-side-1/-2，
+// 配 `mouse-side` 两枚都算（旧配置），配具体一枚时另一枚不算。
+// 这条钉的是"侧键1/侧键2 不分家"的老问题——两枚折叠成一个键名时，
+// 想让侧键 2 留给浏览器前进键是做不到的。
+func TestMouseSideKeyNames(t *testing.T) {
+	if got := vtMouseKeyName(1); got != "mouse-side-1" {
+		t.Errorf("vtMouseKeyName(1)=%q 期望 mouse-side-1", got)
+	}
+	if got := vtMouseKeyName(2); got != "mouse-side-2" {
+		t.Errorf("vtMouseKeyName(2)=%q 期望 mouse-side-2", got)
+	}
+	if got := vtMouseKeyName(0); got != "" {
+		t.Errorf("vtMouseKeyName(0)=%q 期望空（非侧键事件）", got)
+	}
+	// 键名匹配：mouse-side 泛匹配两枚；具体键名只认自己
+	cases := []struct {
+		cfg, actual string
+		want        bool
+	}{
+		{"mouse-side", "mouse-side-1", true},
+		{"mouse-side", "mouse-side-2", true},
+		{"mouse-side-1", "mouse-side-1", true},
+		{"mouse-side-1", "mouse-side-2", false},
+		{"mouse-side-2", "mouse-side-1", false},
+		{"mouse-side", "ralt", false},
+		{"alt", "mouse-side-1", false},
+	}
+	for _, c := range cases {
+		if got := vtKeyMatches(c.cfg, c.actual); got != c.want {
+			t.Errorf("vtKeyMatches(%q,%q)=%v 期望 %v", c.cfg, c.actual, got, c.want)
+		}
+	}
+}
+
+// TestMouseInHotkeysBySide 吞键/接管按枚命中：
+//   · 配 mouse-side（旧写法）→ 两枚都接管（旧行为不回归）；
+//   · 配 mouse-side-1      → 只有侧键 1 接管，侧键 2 完全放行（留给原生前进键）；
+//   · main/sub 任一槽命中都算。
+func TestMouseInHotkeysBySide(t *testing.T) {
+	hk := vtHotkeysCfg{Main: []string{"mouse-side"}}
+	if !vtMouseInHotkeys(hk, "mouse-side-1") || !vtMouseInHotkeys(hk, "mouse-side-2") {
+		t.Fatal("配 mouse-side 时两枚侧键都应接管（旧行为）")
+	}
+	hk = vtHotkeysCfg{Main: []string{"mouse-side-1"}}
+	if !vtMouseInHotkeys(hk, "mouse-side-1") {
+		t.Fatal("侧键 1 应接管")
+	}
+	if vtMouseInHotkeys(hk, "mouse-side-2") {
+		t.Fatal("只配侧键 1 时，侧键 2 不该被接管——否则前进键被吞、原生功能丢失")
+	}
+	hk = vtHotkeysCfg{Main: []string{"ralt"}, Sub: []string{"mouse-side-2"}}
+	if !vtMouseInHotkeys(hk, "mouse-side-2") {
+		t.Fatal("sub 槽绑的侧键 2 也应接管")
+	}
+	if vtMouseInHotkeys(hk, "mouse-side-1") {
+		t.Fatal("sub 绑侧键 2 时侧键 1 不该被接管")
+	}
+	if vtMouseInHotkeys(vtHotkeysCfg{Main: []string{"ralt"}}, "mouse-side-1") {
+		t.Fatal("没绑侧键时任何一枚都不接管")
+	}
+}
+
+// TestMouseSideComboEdges 组合评估用具体侧键名：绑 mouse-side 时按侧键 1 触发、
+// 松开结束；两枚同时按住时松开一枚不算结束（另一枚还按着）；绑具体一枚时另一枚
+// 按下不触发。等价于钩子回调里 vtHeld + vtEvalCombos 的路径（回调本身依赖
+// syscall/消息循环，这里钉纯逻辑）。
+func TestMouseSideComboEdges(t *testing.T) {
+	vtResetHotkeyState()
+	vtHKMu.Lock()
+	vtHK.Main = []string{"mouse-side"}
+	vtHKMu.Unlock()
+
+	vtHeld["mouse-side-1"] = true
+	vtEvalCombos("mouse-side-1", 0)
+	ev := expectHotkeyEvent(t, true, 0, "mouse-side-1")
+	_ = ev
+
+	// 两枚同按：松开 1（2 还按着）不应产生"松开"边沿
+	vtHeld["mouse-side-2"] = true
+	vtEvalCombos("mouse-side-2", 0)
+	drainHotkeyEvents()
+	delete(vtHeld, "mouse-side-1")
+	vtEvalCombos("mouse-side-1", 0)
+	select {
+	case e := <-vtHKEvents:
+		t.Fatalf("另一枚侧键还按着，不该发松开边沿，却收到 %+v", e)
+	default:
+	}
+	// 最后一枚松开 → 结束
+	delete(vtHeld, "mouse-side-2")
+	vtEvalCombos("mouse-side-2", 0)
+	expectHotkeyEvent(t, false, 0, "mouse-side-2")
+
+	// 只绑侧键 1：按侧键 2 不触发
+	vtResetHotkeyState()
+	vtHKMu.Lock()
+	vtHK.Main = []string{"mouse-side-1"}
+	vtHKMu.Unlock()
+	vtHeld["mouse-side-2"] = true
+	vtEvalCombos("mouse-side-2", 0)
+	select {
+	case e := <-vtHKEvents:
+		t.Fatalf("未绑定的侧键 2 不该触发，却收到 %+v", e)
+	default:
+	}
+	vtHeld["mouse-side-1"] = true
+	vtEvalCombos("mouse-side-1", 0)
+	expectHotkeyEvent(t, true, 0, "mouse-side-1")
+}
+
+// expectHotkeyEvent 从事件通道取一个边沿并校验，取不到即失败。
+func expectHotkeyEvent(t *testing.T, down bool, slot int, name string) vtHotkeyEvent {
+	t.Helper()
+	select {
+	case e := <-vtHKEvents:
+		if e.Down != down || e.Slot != slot || e.Name != name {
+			t.Fatalf("事件不匹配：得到 %+v，期望 down=%v slot=%d name=%s", e, down, slot, name)
+		}
+		return e
+	default:
+		t.Fatalf("期望事件 down=%v slot=%d name=%s 没有到达", down, slot, name)
+		return vtHotkeyEvent{}
+	}
+}
+
+func drainHotkeyEvents() {
+	for {
+		select {
+		case <-vtHKEvents:
+		default:
+			return
+		}
+	}
+}
+
 // TestArmVKRecordsExactSide 钩子里的"这一轮按的是哪一侧"必须记真实 vk。
 //
 // 这条钉的是用户实测的"左 Alt 卡住"：组合键介入会在钩子回调里**立刻**按 vtArmVK

@@ -425,6 +425,8 @@ func vtKeyName(vk uint32) string {
 
 // vtKeyMatches 配置键名 vs 实际按下的键名：`alt`/`ctrl`/`shift`/`meta` 匹配左右任一侧，
 // 配了 `ralt` 这类具体一侧的就只匹配那一侧。旧配置（`["alt"]`）保持能用。
+// 鼠标侧键同理：`mouse-side` 两枚都算（旧写法），`mouse-side-1`/`mouse-side-2`
+// 只认对应那一枚（XBUTTON1=侧键1·后退位 / XBUTTON2=侧键2·前进位）。
 func vtKeyMatches(configured, actual string) bool {
 	if configured == actual {
 		return true
@@ -438,6 +440,8 @@ func vtKeyMatches(configured, actual string) bool {
 		return actual == "lshift" || actual == "rshift"
 	case "meta":
 		return actual == "lmeta" || actual == "rmeta"
+	case "mouse-side":
+		return actual == "mouse-side-1" || actual == "mouse-side-2"
 	}
 	return false
 }
@@ -461,7 +465,7 @@ func vtIsAltName(name string) bool {
 var vtModifierVKs = []uint32{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}
 
 var (
-	vtHeld     = map[string]bool{} // 当前物理按住的键名（左右分开；鼠标侧键为 "mouse-side"）
+	vtHeld     = map[string]bool{} // 当前物理按住的键名（左右分开；鼠标侧键为 "mouse-side-1"/"mouse-side-2"）
 	vtConsumed = map[string]bool{} // 已被我们吞掉 down 的键名 → 配对 up 也要吞
 	vtComboOn  [2]bool             // main/sub 组合的匹配态（边沿检测）
 )
@@ -590,8 +594,8 @@ func vtReconcileHeld() {
 		}
 	}
 	for name, on := range vtHeld {
-		if !on || name == "mouse-side" {
-			continue
+		if !on || strings.HasPrefix(name, "mouse-side") {
+			continue // 鼠标侧键没有 vk，不在物理键自愈的范围（鼠标钩子自己记账）
 		}
 		// 被我们吞住的键不能拿 GetAsyncKeyState 作依据：吞掉的键事件不进输入队列，
 		// 物理状态在系统眼里就是"没按下"，照这个自愈会把热键键位误清掉。
@@ -930,8 +934,10 @@ func vtKbdCallback() uintptr {
 	return vtKbdCb
 }
 
-// 鼠标侧键：WH_MOUSE_LL 只认 XBUTTON1/2（前后两枚侧键都算 mouse-side）。
-// 绑了侧键时 down/up 都吞——否则每次说话都等于给浏览器一次"后退"导航。
+// 鼠标侧键：WH_MOUSE_LL 只认 XBUTTON1/2，分别映射成 mouse-side-1 / mouse-side-2
+// （配置写 `mouse-side` 则两枚都算，旧配置不变；只配某一枚时，另一枚完全放行，
+// 保留它原生的后退/前进功能）。绑了侧键的那枚 down/up 都吞——否则每次说话
+// 都等于给浏览器一次"后退"导航；没绑的那枚不吞不记，前台行为分毫不差。
 func vtMouseCallback() uintptr {
 	if vtMouseCb == 0 {
 		vtMouseCb = syscall.NewCallback(func(nCode int32, wParam uintptr, lParam unsafe.Pointer) uintptr {
@@ -948,19 +954,17 @@ func vtMouseCallback() uintptr {
 						r, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, uintptr(lParam))
 						return r
 					}
-					xb := m.MouseData >> 16 // 高字=XBUTTON 编号
-					if xb == 1 || xb == 2 {
+					if name := vtMouseKeyName(m.MouseData >> 16); name != "" {
 						down := wParam == wmXButtonDown
-						consume := false
-						if hk := vtHotkeys(); vtMouseInHotkeys(hk) && !vtHookHostForeground.Load() {
-							consume = true
-						}
-						if down && !vtHeld["mouse-side"] {
-							vtHeld["mouse-side"] = true
-							vtEvalCombos("mouse-side", 0)
-						} else if !down && vtHeld["mouse-side"] {
-							delete(vtHeld, "mouse-side")
-							vtEvalCombos("mouse-side", 0)
+						// 只接管热键绑到**这一枚**侧键的情形：绑 mouse-side（两枚都算）
+						// 时两枚都吞（与旧行为一致）；只绑 mouse-side-1 时侧键 2 整条放行。
+						consume := vtMouseInHotkeys(vtHotkeys(), name)
+						if down && !vtHeld[name] {
+							vtHeld[name] = true
+							vtEvalCombos(name, 0)
+						} else if !down && vtHeld[name] {
+							delete(vtHeld, name)
+							vtEvalCombos(name, 0)
 						}
 						if consume {
 							return 1
@@ -975,11 +979,23 @@ func vtMouseCallback() uintptr {
 	return vtMouseCb
 }
 
-// vtMouseInHotkeys 有热键绑在鼠标侧键上吗。
-func vtMouseInHotkeys(hk vtHotkeysCfg) bool {
+// vtMouseKeyName XBUTTON 编号（MouseData 高字）→ 键名；1=侧键1（后退位）2=侧键2（前进位）。
+func vtMouseKeyName(xb uint32) string {
+	switch xb {
+	case 1:
+		return "mouse-side-1"
+	case 2:
+		return "mouse-side-2"
+	}
+	return ""
+}
+
+// vtMouseInHotkeys 这枚侧键（mouse-side-1 / mouse-side-2）有没有热键绑在它上面：
+// 配了 `mouse-side` 的两枚都算；配了具体一枚的只算那一枚。
+func vtMouseInHotkeys(hk vtHotkeysCfg, name string) bool {
 	for _, arr := range [2][]string{hk.Main, hk.Sub} {
 		for _, k := range arr {
-			if k == "mouse-side" {
+			if vtKeyMatches(k, name) {
 				return true
 			}
 		}

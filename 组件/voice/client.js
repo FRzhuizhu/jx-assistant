@@ -91,6 +91,7 @@
        可触发——有侧键的用侧键，没有的自然用 Alt。
      · 用户自定义（设置页录制）：单组合，元素为 'ctrl'|'alt'|'shift'|'meta' |
        单个字母/数字 | 'f1'..'f12' | 'space' | 'mouse-side'（侧键，前后两枚都算）
+       | 'mouse-side-1'（侧键1·后退位）| 'mouse-side-2'（侧键2·前进位）
        | 'mouse-left' | 'mouse-right'。
      · 清空（设置页「清空」按钮）：存空数组＝停用快捷键（只点按钮听写）。
      · 独按修饰键（如默认副键 Alt）：按住期间又按了别的键（用户在按 Alt+X
@@ -102,8 +103,18 @@
 
   const KEY_NAMES = {
     ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', meta: 'Win', space: '空格',
-    'mouse-side': '鼠标侧键', 'mouse-left': '鼠标左键', 'mouse-right': '鼠标右键',
+    'mouse-side': '鼠标侧键', 'mouse-side-1': '鼠标侧键1', 'mouse-side-2': '鼠标侧键2',
+    'mouse-left': '鼠标左键', 'mouse-right': '鼠标右键',
   };
+
+  // 配置键名 vs 实际按下的键名：'mouse-side' 两枚侧键都算（旧配置不变），
+  // 配了具体某一枚（mouse-side-1=后退位 / mouse-side-2=前进位）就只认那一枚——
+  // 与独立输入法（voicetype 的 vtKeyMatches）同一套语义。
+  function keyMatches(cfg, actual) {
+    if (cfg === actual) return true;
+    if (cfg === 'mouse-side') return actual === 'mouse-side-1' || actual === 'mouse-side-2';
+    return false;
+  }
 
   function isModKey(k) { return k === 'ctrl' || k === 'alt' || k === 'shift' || k === 'meta'; }
 
@@ -158,7 +169,9 @@
     return null; // 其他键不收（避免录出系统级/生僻组合）
   }
   function normMouse(e) {
-    return { 0: 'mouse-left', 2: 'mouse-right', 3: 'mouse-side', 4: 'mouse-side' }[e.button] || null;
+    // button 3=XBUTTON1（侧键1·后退位）4=XBUTTON2（侧键2·前进位），分开记名；
+    // 配置里写 'mouse-side' 的经 keyMatches 两枚都算
+    return { 0: 'mouse-left', 2: 'mouse-right', 3: 'mouse-side-1', 4: 'mouse-side-2' }[e.button] || null;
   }
   function isEditable(t) {
     return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable));
@@ -237,9 +250,14 @@
 
   function altHeld(alt) { // 一个备选组合是否被完整按住
     for (const k of alt) {
-      if (!heldKey.has(k) && !heldMouse.has(k)) return false;
+      if (!heldKey.has(k) && !heldMouse.has(k) && !heldMouseKeyMatches(k)) return false;
     }
     return true;
+  }
+  // 配置键名（可能是泛指的 'mouse-side'）是否被当前按着的具体侧键满足
+  function heldMouseKeyMatches(k) {
+    for (const m of heldMouse) if (keyMatches(k, m)) return true;
+    return false;
   }
 
   // 独按修饰键状态（如默认备选里的 Alt）：按住期间按了别的键就解除，
@@ -279,7 +297,8 @@
         // 光标移出窗口松手、WebView2 不派发 window blur 等都会造成）会把之后任何一次
         // 普通鼠标点击都补成"组合成立"→ 点「上传文件」却开了听写。详见
         // 语音误触发排查（点上传文件启动听写）2026-10-10.md。
-        if (key && !alt.includes(key)) continue;
+        // 归属判定用 keyMatches：配 'mouse-side' 时侧键 1/2 都算该组合的成员。
+        if (key && !alt.some((k) => keyMatches(k, key))) continue;
         if (mode === 'hold') {
           if (holdSession) return;
           const c0 = activeVoiceCtl(); if (c0 && c0.active()) return;
@@ -394,8 +413,9 @@
       if (!active || (window.HK && HK.isRecording())) return;
       const m = normMouse(e);
       if (!m) return;
-      // 侧键在快捷键里时拦掉默认的后退/前进导航
-      if (shortcutAlternatives().some((a) => a.includes(m))) e.preventDefault();
+      // 侧键在快捷键里时拦掉默认的后退/前进导航（配 'mouse-side' 时两枚都拦，
+      // 只配某一枚时另一枚放行——原生前进/后退照常）
+      if (shortcutAlternatives().some((a) => a.some((k) => keyMatches(k, m)))) e.preventDefault();
       if (armedSolo && m !== armedSolo.key) cancelSolo();
       heldMouse.add(m);
       shortcutFire('press', m);
@@ -1589,7 +1609,9 @@
       subWrap.appendChild(resetBtn);
       row('副快捷键', subWrap);
       note('主＝鼠标侧键（前后两枚都算）、副＝Alt 键，两个框各自点击即可**独立录制**'
-        + '自定义组合（键盘单键/组合键、鼠标左右键同按；不支持单独的左键或右键；'
+        + '自定义组合（键盘单键/组合键、鼠标左右键同按、单个鼠标侧键——录制时按下'
+        + '某一枚侧键即记为「鼠标侧键1」（后退位）或「鼠标侧键2」（前进位），'
+        + '只认那一枚，另一枚留给浏览器前进/后退；不支持单独的左键或右键；'
         + '框内 ✕ 停用该槽）。「恢复默认」＝主侧键、副 Alt。**注意：独立语音悬浮窗'
         + '只接管右 Alt 与右 Ctrl**——左 Alt、左 Ctrl 留给系统与其它程序（菜单栏、'
         + 'Alt+Tab、Ctrl+组合键都不受影响），所以想用键盘触发听写请按**右边那枚**。'
