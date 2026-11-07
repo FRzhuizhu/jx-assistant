@@ -3256,6 +3256,11 @@ function handleGlobalEvent(ev) {
       // 久等未答的声光提醒（叮声后端已响）：全屏闪烁 + 朗读，点击跳去作答
       showAskAlert(ev);
       break;
+    case 'ask_alert_dismiss':
+      // 桌面全屏蒙层（后端的第二处提醒）被点掉了：主窗口这层一起收——
+      // 两处提醒任意点一处、两边同退（另一半边见 hideAskAlert 里的 POST）
+      hideAskAlert();
+      break;
     case 'children':
       // 本会话有子进程起/停：刷新进度面板底部的「运行中的程序」
       loadProgress();
@@ -3879,11 +3884,21 @@ function speakAskAlert(gen) {
 
 // hideAskAlert 关闭提醒层并清干净定时器与音频（点击/Esc/问题解决共用）：
 // 关掉之后在途的朗读请求一律作废（代次 +1）——15 秒内取消就不会出声。
+// 层真的可见时还会通知后端把**桌面全屏蒙层**（同一次提醒的第二处）一起关掉
+//（qid 匹配当前轮才关：上一轮迟到的请求不许把刚弹出的新一轮蒙层误关）。
 function hideAskAlert() {
   const ov = $('ask-alert');
+  const wasVisible = ov && !ov.classList.contains('hidden');
+  const closingQid = askAlertQid;
   if (ov) {
     ov.classList.add('hidden');
     ov.classList.remove('solid'); // 关掉即恢复原界面（下次重新从淡压暗慢慢渐变）
+  }
+  if (wasVisible) {
+    fetch('/api/alert/screen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ qid: closingQid }),
+    }).catch(() => { /* 老版本后端没这个接口：主窗口层照常收；全屏蒙层点一下即关 */ });
   }
   askAlertGen++; // 同时作废还没跑到的「加 .solid」那一帧（rAF 里比对代次）
   if (askAlertSettleTimer) { clearTimeout(askAlertSettleTimer); askAlertSettleTimer = 0; }

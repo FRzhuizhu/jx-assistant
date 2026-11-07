@@ -245,13 +245,30 @@ func (a *App) holdQuestion(id string) {
 // 跑测试时不真响）。
 var askAlertBeep = systemBeep
 
-// fireAskAlert 发一次久等提醒到点动作（唤起窗口 + 叮声 + 广播 ask_alert）。
+// alertScreenHook 久等提醒的「桌面全屏蒙层」入口（平台实现 alertfull_windows.go；
+// 测试里换桩，不在 CI 里真弹窗口）。qid=questionId/approvalId，关闭请求按它
+// 防串轮；onDismiss=用户点击蒙层时的回调（广播 ask_alert_dismiss，让前端把
+// 主窗口的提醒层一起收起——两处提醒点任意一处、两边同退）。
+var alertScreenHook = alertScreenShow
+
+// fireAskAlert 发一次久等提醒到点动作（唤起窗口 + 全屏蒙层 + 叮声 + 广播 ask_alert）。
 // 提问 / 计划审批 / 越权审批共用同一套机制与同一个设置项（设置·常规·询问提醒）：
 // questionID / approvalID 二选一填（前端按它把对应卡片与提醒层联动收起），
 // sessionTitle/summary 进浮窗文案，output 是朗读文案。
+// 前端两处出：主窗口内的提醒层（SSE 的 ask_alert）与桌面全屏蒙层（本函数直接
+// 盖屏，主窗口被埋住/在别的虚拟桌面也看得见）；任意一处被点掉，另一处同退
+//（前端收层 → POST /api/alert/screen；蒙层被点 → 广播 ask_alert_dismiss）。
 func (a *App) fireAskAlert(questionID, approvalID, sessionID, sessionTitle, summary, output string) {
 	alertFrontHook("坚祥数字助理 · 有个请求在等你处理",
 		alertFrontText(sessionTitle, summary))
+	qid := questionID
+	if qid == "" {
+		qid = approvalID
+	}
+	alertScreenHook("坚祥数字助理 · 有个请求在等你处理",
+		alertFrontText(sessionTitle, summary), qid, func() {
+			a.broadcast(Event{Type: "ask_alert_dismiss"})
+		})
 	askAlertBeep()
 	a.broadcast(Event{Type: "ask_alert", QuestionID: questionID, ApprovalID: approvalID,
 		SessionID: sessionID, Title: sessionTitle, Summary: summary, Output: output})

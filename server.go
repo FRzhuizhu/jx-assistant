@@ -339,6 +339,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	// 把主窗口顶到用户眼前（提醒触发时后端已直接调用同一实现；这个入口给
 	// 前端/自测用，flashOnly=true 只走任务栏闪烁 + 托盘通知那条兜底路径）
 	mux.HandleFunc("POST /api/desktop/front", a.handleDesktopFront)
+	mux.HandleFunc("POST /api/alert/screen", a.handleAlertScreenHide)
 	mux.HandleFunc("GET /api/pick-folder", a.handlePickFolder)
 	mux.HandleFunc("GET /api/pick-file", a.handlePickFile)
 	a.apiRoute(mux, "POST /api/sessions/{id}/fork", a.handleFork, apiMeta{Summary: "从某条消息分支新会话", Params: "seq=分支点", Perm: permWorkspace})
