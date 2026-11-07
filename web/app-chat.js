@@ -120,7 +120,8 @@ function goHomeNewTask() {
   $('input').focus();
 }
 
-async function openSession(id) {
+async function openSession(id, opts) {
+  const stay = !!(opts && opts.stay); // 停留本页的就地翻新：保视口/展开记忆/分批窗口
   narrowClosePanels(); // 窄屏：在左栏浮层里选中会话即收起浮层
   // 市场像一张对话页：打开任何对话即关掉它——两个视图均已组件化，接口不在场即跳过
   if (typeof marketOpen === 'function' && marketOpen() && typeof closeMarket === 'function') closeMarket();
@@ -145,7 +146,7 @@ async function openSession(id) {
   // 放在乐观切换之后：各视图的就位逻辑以 state.cur 为准，此刻它已是目标对话
   if (oldSid !== id) rpRestoreSession(id);
   try {
-    await loadSessionInto(id, tok);
+    await loadSessionInto(id, tok, { stay: stay });
   } catch (e) {
     // 加载失败：留在目标会话的壳里，给原因与「重试」，绝不静默退回旧会话
     if (tok === navTok.main) showChatLoadError(mainView, e.message, () => {
@@ -469,7 +470,10 @@ function releaseOlder(view) {
   renderLoadOlderBar(view);
 }
 
-async function loadSessionInto(id, tok) {
+async function loadSessionInto(id, tok, opts) {
+  // stay＝停留本页的就地翻新（事件驱动 refreshCurrent）：同会话时保留已上翻
+  // 加载的分批窗口与阅读状态；跨会话/首次打开照旧走全新加载
+  const stay = !!(opts && opts.stay) && !!state.cur && state.cur.id === id;
   // 分批加载：只取最近 LOAD_BATCH 条（超长对话整包要几 MB，打开即卡）；上方
   // 剩余的 older 信息由顶条与上翻预取接管。旧后端不认 tail 参数（返回全量且
   // 无 older 字段）→ 安全降级为现状
@@ -489,12 +493,23 @@ async function loadSessionInto(id, tok) {
   // 落盘必须在 cur 改写之前（见 optimisticSwitch 的注释）：列表里查不到 brief 时
   // 不走乐观切换，cur 此刻还是上一个对话——先把它输入框里的字落到它自己的草稿键
   flushMainDraft();
+  // stay 的分批合并：与 reloadMessages 同款——只重取基础窗，已上翻加载的头部
+  // （seq 小于新窗首条）原样保留，older 扣掉已加载部分
+  if (stay && state.msgs && state.msgs.length && data.messages && data.messages.length) {
+    const head = state.msgs.filter((m) => m.seq < data.messages[0].seq);
+    if (head.length) {
+      data.messages = head.concat(data.messages);
+      if (data.older) data.older = { count: Math.max(0, (data.older.count || 0) - head.length), base: data.older.base };
+    }
+  }
   state.cur = data.meta;
   state.msgs = data.messages || [];
   // 分批记账：本窗之上的未加载条数与基础窗基线（释放批次时恢复到它）、批栈清零
   state.older = data.older ? { count: data.older.count || 0, base: data.older.base } : undefined;
-  state._baseWinBase = data.older && data.older.base;
-  state._batches = [];
+  if (!stay || !state._batches || !state._batches.length) {
+    state._baseWinBase = data.older && data.older.base; // 全新加载/没有已加载批：基础窗跟新
+    state._batches = stay ? (state._batches || []) : [];
+  }
   state.pendingSteer = (data.pending && data.pending.steer) || [];
   state.pendingQueue = (data.pending && data.pending.queue) || [];
   state.queuePaused = !!(data.pending && data.pending.paused);
@@ -517,7 +532,9 @@ async function loadSessionInto(id, tok) {
   // 统一走那里）；这里只剩「本对话来了没自动开过的待审批计划」这一件事——
   // 它在恢复之后跑，必要时把右栏翻到计划视图（比恢复优先：审批等不起）
   maybeAutoOpenPlan();
-  renderMessages(state.msgs, mainView, { jump: true });
+  // stay（事件就地翻新）不 jump：钉住阅读、展开记忆与视口全保留；全新打开
+  // 照旧 jump 到底并清记忆
+  renderMessages(state.msgs, mainView, stay ? null : { jump: true });
   renderQueueDock(mainView);
   renderLoadOlderBar(mainView); // 分批顶条：有余量则提示「上面还有 N 条」
   // 打开即视为已读：清红点与绿点
@@ -3261,7 +3278,9 @@ const navTok = { main: 0, sub: 0 };
 
 function refreshCurrent() {
   if (navBusy.main) return; // 正在切换：别插队
-  if (state.cur && !state.streaming) openSession(state.cur.id);
+  // 事件驱动的就地翻新走 stay：保留视口（钉住阅读不被拽到底）、展开记忆与
+  // 已上翻加载的分批窗口（旧路径 jump 全重置——子对话回报一多阅读就被打断）
+  if (state.cur && !state.streaming) openSession(state.cur.id, { stay: true });
 }
 
 // 事件驱动的整包重取节流（见《前端渲染性能分析-主对话卡顿.md》）：子对话回报/

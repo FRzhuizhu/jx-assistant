@@ -253,6 +253,11 @@ async function jumpToMessage(sessionId, seq) {
   if (!state.cur || state.cur.id !== sessionId) {
     await openSession(sessionId);
   }
+  // 分批加载：命中可能落在未加载的更早批次——先一批批补齐到覆盖它（或到头）
+  let guard = 0;
+  while (state.older && state.older.count > 0 && !document.querySelector('[data-seq="' + seq + '"]')) {
+    if (!(await loadOlder(mainView)) || ++guard > 20) break; // 失败/到头/保险上限即停
+  }
   // 用 setTimeout 而非 rAF：页面在后台时 rAF 会被暂停，定位就丢了
   setTimeout(() => {
     const el = document.querySelector('[data-seq="' + seq + '"]');
