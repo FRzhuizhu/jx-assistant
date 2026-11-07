@@ -39,6 +39,7 @@ type App struct {
 	Plugins          *PluginRegistry      // DSH 插件兼容层实现（adapters.go：插件兼容层/ + adapter_*.go）
 	Layers           *PluginLayerRegistry // 插件兼容层注册表：主体发现的全部插件体系（pluginlayers.go）
 	Components       *ComponentRegistry
+	SessionCX        *sessionCXRegistry   // 会话级组件/插件开关覆盖（sessioncx.go：优先于全局开关，按会话存）
 	CCPlugins        *CCPluginRegistry   // Claude Code 插件兼容层实现（ccplugin*.go）
 	MCPServers       *MCPServersRegistry // 独立 MCP 服务器注册表（mcpservers*.go）：用户直连 MCP 服务
 	Todos            *todoScheduler      // 待办与定时任务：组件 组件/todo-scheduler 的宿主半边（todo.go）
@@ -166,6 +167,8 @@ func NewApp(cfg *Config, cfgPath, webDir string) (*App, error) {
 		permNotes: map[string]string{},
 		questions: map[string]*UserQuestion{}, jobs: map[string]*jobRun{},
 		remotes: map[string]*remoteClient{}}
+	// 会话级组件/插件覆盖（sessioncx.go）：从各会话的附属数据载入
+	a.SessionCX = loadSessionCX(store)
 	a.Ctx = &ContextEngine{app: a} // 上下文引擎：所有会话经它组装与记事件
 	// Claude Code 插件兼容层：加载已安装插件，后台连接 MCP 服务器、装载 mods
 	// （失败记日志不阻断）
@@ -559,6 +562,15 @@ func (a *App) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"layers": []LayerInfo{}, "plugins": []LayerPlugin{}})
 		return
 	}
+	// ?s=<会话id>：该会话的生效视图（会话覆盖优先于全局开关）+ sessionCustom 标记
+	if sid := strings.TrimSpace(r.URL.Query().Get("s")); sid != "" {
+		writeJSON(w, 200, map[string]any{
+			"layers":        a.Layers.Infos(),
+			"plugins":       a.cxoPluginList(sid),
+			"sessionCustom": a.SessionCX.custom(sid),
+		})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"layers": a.Layers.Infos(), "plugins": a.Layers.AllPlugins()})
 }
 
@@ -567,6 +579,7 @@ func (a *App) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 		Layer   string `json:"layer"` // 来源体系（层 id；缺省=全部层里按 id 唯一匹配）
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
+		Session string `json:"session"` // 会话id：带它＝只改本会话的覆盖，全局开关不动
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 		writeErr(w, 400, "需要 id 与 enabled")
@@ -574,6 +587,23 @@ func (a *App) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.Layers == nil {
 		writeErr(w, 500, "插件兼容层未初始化")
+		return
+	}
+	// 会话级覆盖：写入前先按同款规则定位插件（不存在＝404），再落覆盖记录
+	if sid := strings.TrimSpace(body.Session); sid != "" {
+		if _, err := a.Store.Get(sid); err != nil {
+			writeErr(w, 404, "会话不存在")
+			return
+		}
+		if !a.pluginGlobalKnown(body.Layer, body.ID) {
+			writeErr(w, 404, errPluginNotFound.Error())
+			return
+		}
+		a.cxoSetPlugin(sid, body.Layer, body.ID, body.Enabled)
+		writeJSON(w, 200, map[string]any{
+			"ok": 1, "plugins": a.cxoPluginList(sid),
+			"sessionCustom": a.SessionCX.custom(sid),
+		})
 		return
 	}
 	if err := a.Layers.SetEnabled(body.Layer, body.ID, body.Enabled); err != nil {
@@ -2179,6 +2209,7 @@ func (a *App) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	a.SessionCX.forget(id) // 会话没了：它的组件/插件覆盖记录一并摘除
 	// 上传登记与待执行交付一并清掉：用户删会话即放弃这些（done/failed 的
 	// 历史作业行留着无妨，量小且可追溯）
 	_ = a.Store.DeleteUploadsForSession(id)

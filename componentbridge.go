@@ -432,7 +432,9 @@ func (a *App) handleComponentBridge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, ok := a.Components.Manifest(compID)
-	if !ok || !a.Components.IsEnabled(compID) {
+	// 生效口径：全局开着，或还有任何会话显式要它（按对话开关）——桥请求不带
+	// 会话（组件脚本只认自己的端点）；会话关掉的对话里组件 UI 已热卸载，不会来。
+	if !ok || !a.cxoComponentLive(compID) {
 		http.NotFound(w, r)
 		return
 	}

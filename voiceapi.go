@@ -264,8 +264,10 @@ func speechXMLEscape(s string) string {
 // ---------- HTTP 处理器 ----------
 
 // voiceOn 组件开关自查（组件关掉时语音端点一并消失，口径同 todo/git 面板）。
+// 生效口径含会话级覆盖：某会话把全局关着的语音打开时，端点要能服务
+// （请求不带会话，按「全局或任一会话要它」放行；关掉的对话里按钮已热卸载）。
 func (a *App) voiceOn(w http.ResponseWriter) bool {
-	if a.Components == nil || !a.Components.IsEnabled(voiceComponentID) {
+	if a.Components == nil || !a.cxoComponentLive(voiceComponentID) {
 		writeErr(w, 404, "组件已停用或不存在")
 		return false
 	}

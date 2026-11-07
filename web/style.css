@@ -1920,6 +1920,12 @@ body.rp-open .w-handle { display: none; }
   font-size: 11px; color: var(--amber); border: 1px solid currentColor;
   border-radius: 999px; padding: 0 8px; line-height: 17px;
 }
+/* 「已覆盖」徽标：本对话把该项拨离了全局开关（按对话组件/插件浮窗）；
+   组件页里可点击＝拨回全局值恢复跟随 */
+.plugin-row .pr-ovr {
+  font-size: 11px; color: var(--accent); border: 1px solid currentColor;
+  border-radius: 999px; padding: 0 8px; line-height: 17px; cursor: default;
+}
 .plugin-row p { margin: 3px 0 0; font-size: 12px; color: var(--text-3); }
 .plugin-row .pr-note { flex-basis: 100%; font-size: 11px; color: var(--green, #2ea043); min-height: 0; }
 /* 苹果式开关：轨道 42×25、白圆钮带投影，选中滑向右侧并染强调色 */

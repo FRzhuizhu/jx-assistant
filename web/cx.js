@@ -37,19 +37,39 @@
     _doc: document,   // 归属文档：换页后要重新初始化（见上方守卫）
     _ok: false,       // 清单是否至少成功拉到过一次（成功拉空也置位，不空转重试）
     _booting: false,  // 一轮清单拉取正在进行（可见/网络/隧道/pageshow 可能同时触发）
-    _list: [],        // /api/components 的清单
+    _list: [],        // /api/components 的清单（带会话查询时＝该会话的生效视图）
     _active: {},      // id -> { dispose }（已 init 的组件）
     _gen: {},         // id -> 代数（防快速反复开关的旧请求串台）
     _failed: {},      // id -> 上次失败时间戳（组件没起来过，等退避后重放）
     _sections: [],    // {id, title, mount}：组件设置区（设置页「内置组件」渲染）
+    _session: '',     // 当前会话id（''＝无会话，按全局开关装配；随 session:open 切换）
+    _listGen: 0,      // 清单拉取代数（切会话与 boot 并发时，旧的晚到响应作废）
+    sessionCustom: false, // 当前会话是否定制过组件/插件生效集（加号菜单的 ✓）
+
+    // 清单地址：带当前会话 → 该会话的生效视图（会话覆盖优先于全局开关）
+    _listURL() {
+      return '/api/components' + (this._session ? '?s=' + encodeURIComponent(this._session) : '');
+    },
+
+    // 会话切换（含回首页＝空串）：记录会话并拉新清单对账——本会话关掉的组件
+    // 热卸载、本会话额外打开的热注入，与设置页热开关同一条注入/卸载路径。
+    setSession(id) {
+      id = id || '';
+      if (this._session === id) return;
+      this._session = id;
+      if (!id) this.sessionCustom = false;
+      this.refresh();
+    },
 
     async boot(tryN) {
       if (this._booting) return; // 同一时刻只跑一轮：pageshow/可见/网络恢复常一起到
       this._booting = true;
       tryN = tryN || 0;
       let data = null;
+      const gen = ++this._listGen;
+      const url = this._listURL();
       try {
-        const res = await fetch('/api/components');
+        const res = await fetch(url);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         data = await res.json();
       } catch (e) {
@@ -57,6 +77,7 @@
         // 时这一拉会失败——过去一次失败就整个页面生命周期没有组件（按钮全不见、
         // 页面其余功能却正常，2026-10-21 手机端实测反馈）。这里退避重试，并在
         // 页面可见/网络恢复/隧道就绪时自愈（见下方监听）。
+        if (gen !== this._listGen) { this._booting = false; return; } // 切会话已另起一轮
         console.warn('[CX] 清单读取失败（第 ' + (tryN + 1) + ' 次）', e);
         cxDiag('boot 清单读取失败 #' + (tryN + 1) + ' ' + (e && e.message || e));
         this._booting = false;
@@ -64,11 +85,10 @@
         return;
       }
       this._booting = false;
+      if (gen !== this._listGen) return; // 等待期间切了会话：setSession 的 refresh 接管
       this._ok = true;
-      this._list = (data && data.components) || [];
-      for (const c of this._list) {
-        if (c.enabled) this._inject(c);
-      }
+      this._applyList((data && data.components) || []);
+      this.sessionCustom = !!(data && data.sessionCustom);
     },
 
     /** 清单没拉到就退避重试（1.5s→20s，最多 5 轮）；拉到过一次就停，不空转 */
@@ -143,6 +163,8 @@
       const gen = (this._gen[c.id] = (this._gen[c.id] || 0) + 1);
       this._removeTags(c.id);
       const base = '/api/components/' + c.id + '/';
+      // 资产带上当前会话：会话把全局关着的组件打开时，资产按会话生效集放行
+      const sessQ = this._session ? '&s=' + encodeURIComponent(this._session) : '';
       // 抓取失败登记一次（供 heal 的 _replayFailed 重放）：组件不是页面的一部分，
       // 这一轮抓不到它就等于整页生命周期都没有它——主体不会因此缺席，组件会，
       // 于是表现为「只剩主体功能」。只登记自己这一代的那次失败。
@@ -153,7 +175,7 @@
         cxDiag(c.id + ' ' + what + ' 加载失败 ' + (e && e.message || e));
       };
       if (c.hasCss) {
-        this._fetchText(base + 'client.css?t=' + gen)
+        this._fetchText(base + 'client.css?t=' + gen + sessQ)
           .then((css) => {
             if (this._gen[c.id] !== gen || this._doc !== document) return;
             const style = document.createElement('style');
@@ -164,7 +186,7 @@
           .catch((e) => miss('css ', e));
       }
       if (c.hasJs) {
-        this._fetchText(base + 'client.js?t=' + gen)
+        this._fetchText(base + 'client.js?t=' + gen + sessQ)
           .then((code) => {
             if (this._gen[c.id] !== gen || this._doc !== document) return;
             delete this._failed[c.id]; // 起来了：以后不再重放它
@@ -197,19 +219,27 @@
       }
     },
 
-    // 设置页开关：POST 状态 + 前端即时加载/卸载
-    async toggle(id, on) {
+    // 设置页开关：POST 状态 + 前端即时加载/卸载。带 session＝会话级覆盖
+    // （本对话开关浮窗用：只写该会话的覆盖记录，全局开关不动），前端路径不变。
+    async toggle(id, on, session) {
+      const body = { id, enabled: on };
+      if (session) body.session = session;
       const res = await fetch('/api/components', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, enabled: on }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || res.statusText);
       }
+      const d = await res.json().catch(() => ({}));
+      if (session && d) this.sessionCustom = !!d.sessionCustom;
       const c = this._manifest(id);
-      if (c) c.enabled = !!on; // 清单跟着更新：兜底提示与组件互查看的就是它
+      if (c) { // 清单跟着更新：兜底提示与组件互查看的就是它
+        c.enabled = !!on;
+        c.override = session ? on !== c.globalEnabled : false;
+      }
       delete this._failed[id]; // 开关一次就作废旧的重放登记：关掉的不许被重放复活
       if (on) {
         this._inject(c);
@@ -230,19 +260,24 @@
       return { hot: false };
     },
 
-    // 重拉清单并对账（市场安装/卸载组件后由 skill-market 组件调用）：
-    // 新出现且启用的组件立即注入、消失的组件热卸载，全程不刷新页面。
+    // 重拉清单并对账（市场安装/卸载组件后由 skill-market 组件调用；切会话时
+    // 由 setSession 调用）：新出现且启用的组件立即注入、消失或不再启用的组件
+    // 热卸载，全程不刷新页面。对账看两个维度——清单成员（装/卸）与生效开关
+    // （会话切换带来的开/关），后者是会话级覆盖的装配路径。
     async refresh() {
+      const gen = ++this._listGen;
       let fresh;
       try {
-        const res = await fetch('/api/components');
+        const res = await fetch(this._listURL());
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        fresh = data.components || [];
+        fresh = (data && data.components) || [];
+        if (gen === this._listGen) this.sessionCustom = !!(data && data.sessionCustom);
       } catch (e) {
         console.warn('[CX] 清单刷新失败', e);
         return;
       }
+      if (gen !== this._listGen) return; // 已被更新的拉取顶掉：晚到的丢弃
       // 瞬时空清单（远程中继抖动 / 服务端正扫目录）不等于「组件全被删了」——
       // 照单全收会把所有组件 dispose 掉且再也没有补回的机会（按钮消失的另一种来路），
       // 这里当作异常跳过本轮对账（2026-10-21）。
@@ -251,22 +286,38 @@
         cxDiag('refresh 返回空清单，跳过对账');
         return;
       }
-      const oldIds = new Set(this._list.map((c) => c.id));
-      const newIds = new Set(fresh.map((c) => c.id));
-      for (const id of oldIds) {
-        if (newIds.has(id)) continue;
-        const rec = this._active[id];
-        if (rec && typeof rec.dispose === 'function') {
-          try { rec.dispose(); } catch (e) { console.warn('[CX] 组件 ' + id + ' dispose 失败', e); }
-        }
-        delete this._active[id];
-        this._removeTags(id);
+      this._applyList(fresh);
+    },
+
+    // 清单对账（refresh/boot 收口处）：把页面装配到 fresh 描述的状态。
+    // 两个维度都看：清单成员（市场装/卸）与生效开关（会话切换带来的开/关，
+    // 后者是会话级覆盖的装配路径），卸载/注入与设置页热开关同一条路。
+    _applyList(fresh) {
+      const prev = new Map(this._list.map((c) => [c.id, c]));
+      const next = new Map(fresh.map((c) => [c.id, c]));
+      // 卸载：清单里消失的，或本会话不再启用的
+      for (const [id, was] of prev) {
+        const now = next.get(id);
+        if (now && now.enabled) continue;
+        if (was.enabled || this._active[id]) this._deactivate(id);
       }
       this._list = fresh;
+      // 注入：启用的组件里还没起来的（新装、本会话新启用、此前抓取失败）
       for (const c of fresh) {
-        if (c.enabled && !oldIds.has(c.id)) this._inject(c);
+        if (c.enabled && !this._active[c.id]) this._inject(c);
       }
-      this._signal(); // 增删都会影响设置页「内置组件」清单与组件设置区
+      this._signal(); // 增删/启停都会影响设置页「内置组件」清单与组件设置区
+    },
+
+    // 热卸载一个组件（对账与开关共用）：dispose + 摘标签 + 清登记
+    _deactivate(id) {
+      const rec = this._active[id];
+      if (rec && typeof rec.dispose === 'function') {
+        try { rec.dispose(); } catch (e) { console.warn('[CX] 组件 ' + id + ' dispose 失败', e); }
+      }
+      delete this._active[id];
+      delete this._failed[id];
+      this._removeTags(id);
     },
 
     // 组件交出（或更新）自己的设置区；通常在 init 里调用。
@@ -303,6 +354,14 @@
     document.addEventListener('DOMContentLoaded', () => CX.boot());
   } else {
     CX.boot();
+  }
+
+  // 会话切换（app-chat.js 的 session:open：主对话区每成功打开一个会话）→
+  // 按新会话的生效集装配（会话覆盖优先于全局开关）；回首页时由 app-chat.js
+  // 直接调 CX.setSession('') 回到全局集。cx.js 在全部 app 脚本之后加载，
+  // JX 事件总线此刻已就位。
+  if (window.JX && JX.on) {
+    JX.on('session:open', (s) => { if (s && s.id) CX.setSession(s.id); });
   }
 
   // 自愈：手机端页面常在后台被系统重建（WebView 渲染进程回收/换页），那一刻中继

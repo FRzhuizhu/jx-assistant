@@ -424,22 +424,37 @@ JX.on('hotkeys:change', () => {
 
 /* ---------- 插件清单与分区（统一插件页：/api/plugins 带 layers + JX 注册的分区） ---------- */
 
-// 各体系行的富渲染器（按层 id 注册，app-ccplugins.js 等提供）；缺省通用行
+// 各体系行的富渲染器（按层 id 注册，app-ccplugins.js 等提供）；缺省通用行。
+// opts.session（会话id）＝按对话开关浮窗的会话模式：总开关写会话级覆盖而不是全局。
 const pluginRowRenderers = { claude: ccpPluginRow };
 
-function pluginRowFor(p) {
-  return (pluginRowRenderers[p.layer] || simplePluginRow)(p);
+function pluginRowFor(p, opts) {
+  return (pluginRowRenderers[p.layer] || simplePluginRow)(p, opts);
+}
+
+// 插件行/组件行通用的「已覆盖」徽标：按 overridden 显示或摘除（点击恢复跟随全局）
+function syncPluginOverrideBadge(row, overridden) {
+  let ovr = row.querySelector('.pr-ovr');
+  if (!overridden) { if (ovr) ovr.remove(); return; }
+  if (ovr) return;
+  ovr = document.createElement('span');
+  ovr.className = 'pr-ovr';
+  ovr.title = '本对话覆盖了全局开关';
+  ovr.textContent = '已覆盖';
+  const line = row.querySelector('.pr-line');
+  if (line) line.appendChild(ovr);
 }
 
 // 通用行（DSH 等纯扫描体系）：未适配原件灰显、开关禁用
-function simplePluginRow(p) {
+function simplePluginRow(p, opts) {
   const row = document.createElement('div');
   row.className = 'plugin-row' + (p.adapted === false ? ' unadapted' : '');
   const info = document.createElement('div');
   info.className = 'pr-info';
   info.innerHTML =
     `<div class="pr-line"><b>${esc(p.name)}</b><span class="pr-ver">${esc(p.version || '')}</span>` +
-    (p.adapted === false ? '<span class="pr-badge">未适配</span>' : '') + '</div>' +
+    (p.adapted === false ? '<span class="pr-badge">未适配</span>' : '') +
+    (p.override ? '<span class="pr-ovr" title="本对话覆盖了全局开关（点击恢复跟随全局）">已覆盖</span>' : '') + '</div>' +
     `<p>${esc(p.description || '')}</p>`;
   const tg = document.createElement('label');
   tg.className = 'pr-toggle';
@@ -450,8 +465,18 @@ function simplePluginRow(p) {
   cb.onchange = async () => {
     cb.disabled = true;
     try {
-      await api('/api/plugins', { method: 'POST', body: JSON.stringify({ layer: p.layer, id: p.id, enabled: cb.checked }) });
-      row.querySelector('.pr-note').textContent = '已更新；界面部分刷新页面后生效';
+      const body = { layer: p.layer, id: p.id, enabled: cb.checked };
+      if (opts && opts.session) body.session = opts.session;
+      const r = await api('/api/plugins', { method: 'POST', body: JSON.stringify(body) });
+      // 会话模式：把定制标记带回来（加号菜单的 ✓ 读它）
+      if (opts && opts.session && window.CX && r && typeof r.sessionCustom !== 'undefined') {
+        CX.sessionCustom = !!r.sessionCustom;
+      }
+      row.querySelector('.pr-note').textContent = opts && opts.session
+        ? (cb.checked ? '本对话已启用（其他对话不受影响）' : '本对话已停用（其他对话不受影响）')
+        : '已更新；界面部分刷新页面后生效';
+      // 覆盖徽标跟实际状态对齐：与全局一致＝已恢复跟随（徽标摘掉）
+      if (opts && opts.session) syncPluginOverrideBadge(row, cb.checked !== p.globalEnabled);
     } catch (e) {
       alert('切换失败：' + e.message);
       cb.checked = !cb.checked;
@@ -495,14 +520,14 @@ async function renderPluginList() {
   }
 }
 
-function pluginLayerSection(L, group) {
+function pluginLayerSection(L, group, opts) {
   const sec = document.createElement('div');
   sec.className = 'gen-section';
   const h = document.createElement('h4');
   h.innerHTML = `${esc(L.name)} <span class="sec-sub">${group.length ? group.length + ' 个' : '暂无'}</span>`;
   sec.appendChild(h);
   if (group.length) {
-    for (const p of group) sec.appendChild(pluginRowFor(p));
+    for (const p of group) sec.appendChild(pluginRowFor(p, opts));
   } else {
     const empty = document.createElement('div');
     empty.className = 'pr-note';

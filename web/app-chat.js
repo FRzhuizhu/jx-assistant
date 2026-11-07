@@ -104,6 +104,9 @@ function goHomeNewTask() {
   state._loading = false; // 在途加载态一并作废（回首页是同步完成的导航）
   rememberLastSession(''); // 明确回首页：下次打开从首页开始，不再恢复上次的对话
   state.cur = null;
+  // 回首页＝没有会话上下文：组件装配回到全局开关集（session:open 不会来，
+  // 这里显式重置；CX 不在场（老引擎壳）时跳过）
+  if (window.CX && CX.setSession) CX.setSession('');
   loadProgress();
   state.msgs = [];
   resetEmpty();
@@ -7496,6 +7499,15 @@ function syncPlusChecks(view) {
   $('pm-plan-check').textContent = s.planMode ? '✓' : '';
   $('pm-goal-check').textContent = s.goalMode ? '✓' : '';
   $('pm-remote-check').textContent = remote ? '✓' : '';
+  // 「本对话的组件与插件」只属于主对话区且要有当前会话（子对话区与首页不显示：
+  // 组件装配跟主会话走，从子对话区改它反而说不清改的是谁）
+  const cxItem = $('pm-cxsession');
+  if (cxItem) {
+    const hasSession = view === mainView && !!cur;
+    cxItem.classList.toggle('hidden', !hasSession);
+    $('pm-cxsession-check').textContent =
+      hasSession && window.CX && CX.sessionCustom ? '✓' : '';
+  }
 }
 
 function openPlusMenu(view) {
@@ -8391,6 +8403,13 @@ for (const v of [mainView, subView]) {
 $('pm-export').onclick = () => doExport('md');
 $('pm-export-json').onclick = () => doExport('json');
 $('pm-remote').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', viewEl(popView, 'btn-plus')); };
+// 本对话的组件与插件：会话级覆盖浮窗（app-cxsession.js）。从加号菜单进，
+// 先收掉弹层再开浮窗（modal 与 popover 互不打架）
+$('pm-cxsession').onclick = () => {
+  if (!(popView === mainView && state.cur)) return; // 只在主对话区且有会话时可见
+  closePopovers();
+  openCXSessionUI();
+};
 $('remote-badge').onclick = () => { remoteFormPrefill(); openPopover('remote-pop', $('remote-badge')); };
 $('rm-auth').addEventListener('change', syncRemoteFormVis);
 $('rm-test').onclick = testRemote;

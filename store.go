@@ -861,6 +861,9 @@ func (s *Store) Delete(id string) error {
 		return err
 	}
 	_, _ = s.db.Exec(`DELETE FROM meta WHERE k=?`, "laststop:"+id) // 顺带清掉异常中断标记
+	// 会话附属数据（sessdata:<键>:<会话id>：待审批计划/标题钉住/组件插件覆盖…）
+	// 一并清掉——会话没了这些就是死数据（此前只清 laststop，sessdata 一直漏）。
+	_, _ = s.db.Exec(`DELETE FROM meta WHERE k LIKE 'sessdata:%:' || ?`, id)
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
 	return err
 }

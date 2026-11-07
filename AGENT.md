@@ -1442,6 +1442,23 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   资产 `GET /api/components/{id}/{file}`（仅启用时提供）。资产挂 `/api/` 下且
   `web/cx.js` 统一用 fetch 拿文本注入（不插相对 src 标签）——远程中继模式下
   `/api/` 前缀被 remote-boot 的 fetch 劫持自动走隧道，组件在远程同样可用。
+- **按对话的组件/插件开关（会话级覆盖，2026-11-07）**：每个对话可以有自己的
+  生效集，**优先于全局开关、全局开关不动**——别的对话关的这里可以开、开的
+  这里可以关。入口在对话输入区加号菜单「本对话的组件与插件」：设置页同款
+  浮窗（`#cxsession`，复用 settings-card/set-nav/set-pane 全套类），一级页只有
+  「组件」「插件」，组件注册的独立设置页（如语音）排在它们之后。后端
+  `sessioncx.go`：覆盖存会话附属数据（`sessdata:cx-overrides:<会话id>`，
+  随会话删除清理；只记显式覆盖，拨回与全局一致即删记录）；`GET/POST
+  /api/components、/api/plugins` 带 `session`（或查询参数 `?s=`）即会话视图/会话
+  写入，响应带 `globalEnabled/override/sessionCustom`。前端 `cx.js` 记当前会话
+  （`session:open` → `CX.setSession`，回首页置空），清单与资产 URL 带 `?s=`，
+  `CX.toggle(id,on,session)` 与全局热开关同一条注入/卸载路径，切会话经
+  `refresh()` 对账热装配。worker 进程与语音端点的存活口径是「全局开着或还有
+  任何会话显式要它」（`cxoComponentLive`，请求不带会话——会话关掉的对话里组件
+  UI 已热卸载，不会来请求）；CC 插件的斜杠命令按会话生效集过滤
+  （`/api/cc-plugins/commands?s=` 与展开路径）。**模型工具目录仍按全局开关装配**
+  （toolsFor 不认会话；git_sync/todo 工具在会话里关掉组件后仍在目录里，调用时
+  按全局口径执行——完整会话化待 toolsFor 接收会话时再收口）。
 - **内置组件与用户组件的本质区别**（2026-11-06 客户事故的规范沉淀）：内置
   组件随热更新**必自动装上与更新**——清单带块即补装/升级（update_blocks.go
   planComponentBlocks，保证在场，不受「本机未装跳过」类保守规则拦截），
@@ -1576,21 +1593,26 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   「恢复自动命名」按它显隐，组件关掉即不出）；改名落库广播 `title` 事件，
   前端侧栏/顶栏实时跟进（组件改名常在流结束数秒后晚到，不广播的话当面永远
   看不见）；轻量消息读取走
-  `GET /api/sessions/{id}/messages`）、`user-memory`（用户记忆——用户称呼、
-  身份与喜好、AI 助理名字与身份的长期记忆 + AI 对话气泡颜色。全部内容存
-  一个 md 文档 `data/user-memory.md`（组件自管，可手工编辑）；宿主半边在
-  `usermemory.go`。**注入走环境提示词**（envPrompt 的 userMemoryEnvBlock：
-  组件开启且任一字段有内容才出现，变化经快照差分送达全部会话，关闭即整块
-  消失——不进系统提示词、不进工具定义）。**权限分级**：普通任务对话拿专用
-  工具 `user_memory`（查询全部字段 + 只更新「用户身份与喜好」记忆段，其余
-  字段只读——称呼与 AI 名字/身份是用户的自我设定；挂全部执行模式，aux/
-  assistant 不挂）；数字经理（assistant 模式）的环境快照里告知**整个记忆文件
-  可读可改**——call_api 调 `GET/POST /api/user-memory`（按字段保存，未给出
-  的字段保持不变；文件在助手数据目录内、受保护路径拦文件工具，接口是唯一
-  通道）。各文本字段 1000 字硬截断（rune 计，后端权威）。设置页独立选项卡
-  （设置 → 用户记忆）由组件 client.js 注册；气泡颜色是纯前端设置：
-  `--ai-bubble` CSS 变量注入 `<html>`（`web/style.css` 的 `.msg.user.ai`
-  气泡引用，缺省回退主题灰），保存后即时生效、组件卸载即还原）。
+  `GET /api/sessions/{id}/messages`）、`user-memory`（**AI 记忆与拟人化**——
+  用户称呼、身份与喜好、AI 助理名字与身份的长期记忆 + AI 对话气泡颜色。
+  全部内容存一个 md 文档 `data/user-memory.md`（组件自管，可手工编辑，
+  **完整保存不截断**）；宿主半边在 `usermemory.go`。**注入走环境提示词**
+  （envPrompt 的 userMemoryEnvBlock：组件开启且任一字段有内容才出现，变化经
+  快照差分送达全部会话，关闭即整块消失——不进系统提示词、不进工具定义；
+  注入侧对超长字段截断到 1000 字加尾注，防手工编辑的超长内容撑爆快照）。
+  **权限分级**：普通任务对话拿专用工具 `user_memory`（查询全部字段 + 只更新
+  「用户身份与喜好」记忆段，其余字段只读——称呼与 AI 名字/身份是用户的自我
+  设定；挂全部执行模式，aux/assistant 不挂）；数字经理（assistant 模式）的
+  环境快照里告知**整个记忆文件可读可改**——call_api 调
+  `GET/POST /api/user-memory`（按字段保存，未给出的字段保持不变；文件在助手
+  数据目录内、受保护路径拦文件工具，接口是唯一通道）。**长度约束在写入入口**
+  （1000 字/字段，rune 计）：设置页前端超长红字告知、按截断版提交（浏览器
+  保留完整草稿，不回填）；模型侧（工具与 call_api POST）超长整单报错、
+  不写入。设置页独立选项卡（设置 → AI 记忆与拟人化）由组件 client.js 注册；
+  气泡颜色是纯前端设置：`--ai-bubble` CSS 变量注入 `<html>`
+  （`web/style.css` 的 `.msg.user.ai` 气泡引用，缺省回退主题灰），保存后即时
+  生效、组件卸载即还原。组件发现走启动扫描——已运行实例要重启（或经热更新
+  组件块，应用后 Rescan 热生效）才会出现在清单里，之后开关即点即生效）。
 
 ## 插件与插件兼容层
 

@@ -58,6 +58,9 @@ type ComponentManifest struct {
 }
 
 // ComponentStatus 是设置页展示的一条组件记录。
+// Enabled＝调用方视角的生效值；带会话查清单时（?s=<会话id>）为「会话覆盖
+// 优先于全局」的结果，GlobalEnabled 恒为全局开关值、Override 标记该会话
+// 是否显式覆盖过（按对话开关浮窗据此显示覆盖徽标）。
 type ComponentStatus struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -66,6 +69,8 @@ type ComponentStatus struct {
 	Enabled     bool   `json:"enabled"`
 	HasJS       bool   `json:"hasJs"`
 	HasCSS      bool   `json:"hasCss"`
+	GlobalEnabled bool `json:"globalEnabled,omitempty"`
+	Override    bool   `json:"override,omitempty"`
 }
 
 // ComponentRegistry 持有扫描结果与开关状态；全部方法并发安全。
@@ -240,6 +245,16 @@ func (r *ComponentRegistry) Rescan() { r.rescan() }
 // ---------- HTTP 处理器 ----------
 
 func (a *App) handleListComponents(w http.ResponseWriter, r *http.Request) {
+	// ?s=<会话id>：返回该会话的生效视图（会话覆盖优先于全局开关），并带
+	// sessionCustom 标记（本会话是否定制过）——前端 cx.js 与按对话开关浮窗用。
+	sid := strings.TrimSpace(r.URL.Query().Get("s"))
+	if sid != "" {
+		writeJSON(w, 200, map[string]any{
+			"components":    a.cxoComponentList(sid),
+			"sessionCustom": a.SessionCX.custom(sid),
+		})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"components": a.Components.List()})
 }
 
@@ -247,17 +262,48 @@ func (a *App) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
+		Session string `json:"session"` // 会话id：带它＝只改本会话的覆盖，全局开关不动
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 		writeErr(w, 400, "需要 id 与 enabled")
+		return
+	}
+	if _, ok := a.Components.Manifest(body.ID); !ok {
+		writeErr(w, 404, "组件不存在")
+		return
+	}
+	// 会话级覆盖：优先于全局开关，全局开关本身不动；worker 进程只在
+	// 「全局关了且再没有任何会话要它」时才收（别的地方还在用）。
+	if sid := strings.TrimSpace(body.Session); sid != "" {
+		if _, err := a.Store.Get(sid); err != nil {
+			writeErr(w, 404, "会话不存在")
+			return
+		}
+		g := a.Components.IsEnabled(body.ID)
+		a.cxoSetComponent(sid, body.ID, body.Enabled)
+		if g && !a.cxoComponentLive(body.ID) {
+			a.Bridge.KillComponent(body.ID)
+		}
+		// 语音组件：本会话把它打开而全局没开时，独立语音输入法立即跟上
+		// （幂等；全局开过它本就在跑）。用户点了开就该能用，不等懒启。
+		if body.ID == voiceComponentID && body.Enabled && !g {
+			go a.spawnVoiceType()
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok": 1, "components": a.cxoComponentList(sid),
+			"sessionCustom": a.SessionCX.custom(sid),
+		})
 		return
 	}
 	if err := a.Components.SetEnabled(body.ID, body.Enabled); err != nil {
 		writeErr(w, 404, "组件不存在")
 		return
 	}
-	// 组件关闭即杀它声明的全部 worker 进程（热卸载做真；重开会懒启复活）
-	a.Bridge.KillComponent(body.ID)
+	// 组件关闭即杀它声明的全部 worker 进程（热卸载做真；重开会懒启复活）。
+	// 全局关了但还有会话显式要它时不杀——那几个对话的组件仍在工作。
+	if !body.Enabled && !a.cxoComponentLive(body.ID) {
+		a.Bridge.KillComponent(body.ID)
+	}
 	// 语音组件：关闭时连独立语音输入法一起收掉（见 Bridge.onKill）；
 	// 重新启用时立刻把它拉回来（懒启对"进程"没意义——用户点了开就该能用）。
 	if body.ID == voiceComponentID && body.Enabled {
@@ -269,6 +315,7 @@ func (a *App) handleSetComponent(w http.ResponseWriter, r *http.Request) {
 // handleComponentAsset 提供组件的浏览器半边资产（仅平级文件，防目录穿越）。
 // 路径 /api/components/{id}/{file}：挂 /api/ 下让远程中继白名单天然覆盖
 // （前端经 fetch 拿文本注入，本地直连、远程走隧道，同一条加载路径）。
+// ?s=<会话id> 时按会话生效集放行（会话把全局关着的组件打开，资产要能拿到）。
 func (a *App) handleComponentAsset(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/components/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -281,7 +328,11 @@ func (a *App) handleComponentAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, ok := a.Components.Manifest(id); !ok || !a.Components.IsEnabled(id) {
+	enabled := a.Components.IsEnabled(id)
+	if sid := strings.TrimSpace(r.URL.Query().Get("s")); sid != "" {
+		enabled = a.cxoComponentEnabled(sid, id)
+	}
+	if _, ok := a.Components.Manifest(id); !ok || !enabled {
 		http.NotFound(w, r)
 		return
 	}
