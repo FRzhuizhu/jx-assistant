@@ -309,16 +309,17 @@ function buildSeqIndex(view) {
   (st.msgs || []).forEach((m, i) => { if (m.seq != null) st._seqIdx.set(m.seq, i); });
 }
 
-// older.base（服务端）→ groupTurns 的分组基线（与子对话继承段同一接力机制）：
-// 批次头部的 prompt 变更行据此显示「变更行」而非「首见完整交代」。envBoundary
-// 不在这里带：摘要行会混入分组输入，覆盖边界由 sumAt 扫描自动推进到位
-function olderBaseOf(b) {
-  if (!b) return null;
+// older（服务端 {count,sys,tools,envBoundary}）→ groupTurns 的分组基线（与
+// 子对话继承段同一接力机制）：批次头部的 prompt 变更行据此显示「变更行」而
+// 非「首见完整交代」。envBoundary 不在这里带：摘要行会混入分组输入，覆盖
+// 边界由 sumAt 扫描自动推进到位
+function olderBaseOf(o) {
+  if (!o || (!o.sys && !o.tools)) return null;
   return {
     sawPrompt: true,
-    lastSys: b.sys || '',
-    lastToolsJson: b.tools ? JSON.stringify(b.tools) : '',
-    lastTools: b.tools || null,
+    lastSys: o.sys || '',
+    lastToolsJson: o.tools ? JSON.stringify(o.tools) : '',
+    lastTools: o.tools || null,
   };
 }
 
@@ -360,8 +361,8 @@ async function loadOlder(view) {
     const d = await api('/api/sessions/' + sid + '?before_seq=' + firstSeq + '&limit=' + LOAD_BATCH);
     if (!st.cur || st.cur.id !== sid || !st.msgs.length || st.msgs[0].seq !== firstSeq) return false;
     const batch = d.messages || [];
-    if (!batch.length) { st.older = { count: 0, base: st.older.base }; return false; }
-    const older = d.older ? { count: d.older.count || 0, base: d.older.base } : { count: 0 };
+    if (!batch.length) { st.older = { ...st.older, count: 0 }; return false; }
+    const older = d.older ? { ...d.older, count: d.older.count || 0 } : { count: 0 };
     if (batch[0].kind === 'inherit') {
       st.msgs = batch.concat(st.msgs);
       st.older = older;
@@ -378,18 +379,32 @@ async function loadOlder(view) {
     const resultOf = {};
     for (const m of input) { if (m.role === 'tool' && m.tool_call_id) resultOf[m.tool_call_id] = m; }
     reportedSubs = scanReported(batch.concat(st.msgs)); // 子任务卡完成态按全量已加载口径
-    const turns = groupTurns(input, resultOf, olderBaseOf(st.older.base));
+    const turns = groupTurns(input, resultOf, olderBaseOf(st.older));
     const frag = document.createDocumentFragment();
     turns.forEach((turn, ti) => {
       appendTurn(frag, turn, sid + ':' + (turn.userMsg ? turn.userMsg.seq : 'head' + ti), view, false);
     });
     st.msgs = batch.concat(st.msgs);
     const nodes = frag.childNodes.length;
-    const h0 = view.scroll.scrollHeight;
+    // 视口补偿：按锚元素 rect 差精确归位——scrollHeight 在 content-visibility
+    // 下是估算值（离屏内容按 200px/条占位），+= dh 会累积偏差；程序写 scrollTop
+    // 还会抑制原生滚动锚定。锚＝视口中线命中的消息列直接子元素（与 anchorSave
+    // 同法，但不用它的 250ms 活动守卫：上翻触发加载时用户往往刚滚过，不补就跳）
+    let anchorEl = null, anchorTop = 0;
+    if (view._pinned) {
+      const vr = view.scroll.getBoundingClientRect();
+      let el = document.elementFromPoint(vr.left + vr.width / 2, vr.top + vr.height / 2);
+      if (el && view.col.contains(el)) {
+        while (el && el.parentElement !== view.col) el = el.parentElement;
+        if (el && el.parentElement === view.col) { anchorEl = el; anchorTop = el.getBoundingClientRect().top; }
+      }
+    }
     view._renderTs = Date.now(); // 渲染钳位豁免窗口（同 renderMessages：补差与补测余波不当用户滚动）
     view.col.insertBefore(frag, view.col.firstChild);
-    const dh = view.scroll.scrollHeight - h0;
-    if (dh > 0) view.scroll.scrollTop += dh; // 头部增高：视口补回原内容，纹丝不动
+    if (anchorEl) {
+      const dy = anchorEl.getBoundingClientRect().top - anchorTop;
+      if (dy) view.scroll.scrollTop += dy; // 锚元素被内容增长推下多少就补多少，纹丝不动
+    }
     st.older = older;
     st._pfxLen = (st._pfxLen || 0) + batch.length; // 前缀复用记账：分界内容未变，索引整体平移
     st._pfxNodes = (st._pfxNodes || 0) + nodes;
@@ -419,7 +434,10 @@ function maybeLoadOlder(view) {
     const st = view.state;
     if (!st.cur || !st.older || !(st.older.count > 0) || st._loadingOlder || st._loading) return;
     const vr = view.scroll.getBoundingClientRect();
-    let el = document.elementFromPoint(vr.left + vr.width / 2, vr.top + 80);
+    // 采样点取视口上 1/4 线（顶部可能被更新横幅/其他浮层盖住，elementFromPoint
+    // 会命中浮层；1/4 线平时落在消息列里，语义＝「视口上部那条消息距窗口顶
+    // 不足 500 条即预取」，与像素阈值相比按条计数不受消息高矮影响）
+    let el = document.elementFromPoint(vr.left + vr.width / 2, vr.top + Math.max(60, vr.height * 0.25));
     if (!el || !view.col.contains(el)) return;
     while (el && el.parentElement !== view.col) el = el.parentElement;
     if (!el || el.parentElement !== view.col) return;
@@ -457,15 +475,19 @@ function releaseOlder(view) {
   st._batches.forEach((b) => { msgCount += b.msgCount; nodeCount += b.nodeCount; });
   st._batches = [];
   const h0 = sc.scrollHeight;
+  const wasBottom = h0 - sc.scrollTop - sc.clientHeight <= FOLLOW_RESUME; // 释放只在贴底态发生
   view._renderTs = Date.now();
   let rm = nodeCount;
   while (rm > 0 && view.col.firstChild) { view.col.removeChild(view.col.firstChild); rm--; }
-  const dh = h0 - sc.scrollHeight;
-  if (dh > 0) sc.scrollTop = Math.max(0, sc.scrollTop - dh); // 头部收走：视口补回原内容
+  // content-visibility 的 scrollHeight 是估算值，按 dh 补差会留缺口；贴底态
+  // 释放后直接贴新底（触发条件本就要求贴底，else 只是防御）
+  if (wasBottom) sc.scrollTop = sc.scrollHeight;
+  else if (h0 - sc.scrollHeight > 0) sc.scrollTop = Math.max(0, sc.scrollTop - (h0 - sc.scrollHeight));
   st.msgs = st.msgs.slice(msgCount);
   st._pfxLen = Math.max(0, st._pfxLen - msgCount);
   st._pfxNodes = Math.max(0, st._pfxNodes - nodeCount);
-  st.older = { count: ((st.older && st.older.count) || 0) + msgCount, base: st._baseWinBase };
+  // 未加载条数加回释放的批次；基线恢复为基础窗的（这些消息下次上翻重新加载）
+  st.older = { count: ((st.older && st.older.count) || 0) + msgCount, ...(st._baseWinBase || {}) };
   buildSeqIndex(view);
   renderLoadOlderBar(view);
 }
@@ -499,15 +521,16 @@ async function loadSessionInto(id, tok, opts) {
     const head = state.msgs.filter((m) => m.seq < data.messages[0].seq);
     if (head.length) {
       data.messages = head.concat(data.messages);
-      if (data.older) data.older = { count: Math.max(0, (data.older.count || 0) - head.length), base: data.older.base };
+      if (data.older) data.older = { ...data.older, count: Math.max(0, (data.older.count || 0) - head.length) };
     }
   }
   state.cur = data.meta;
   state.msgs = data.messages || [];
-  // 分批记账：本窗之上的未加载条数与基础窗基线（释放批次时恢复到它）、批栈清零
-  state.older = data.older ? { count: data.older.count || 0, base: data.older.base } : undefined;
+  // 分批记账：本窗之上的未加载条数与基线（释放批次时恢复到它）、批栈清零
+  state.older = data.older ? { ...data.older, count: data.older.count || 0 } : undefined;
   if (!stay || !state._batches || !state._batches.length) {
-    state._baseWinBase = data.older && data.older.base; // 全新加载/没有已加载批：基础窗跟新
+    // 全新加载/没有已加载批：基础窗跟新（释放批次时恢复到它的基线）
+    state._baseWinBase = data.older ? { sys: data.older.sys, tools: data.older.tools } : undefined;
     state._batches = stay ? (state._batches || []) : [];
   }
   state.pendingSteer = (data.pending && data.pending.steer) || [];
@@ -6261,11 +6284,11 @@ async function reloadMessages(view) {
       ? view.state.msgs.filter((m) => m.seq < d.messages[0].seq) : [];
     if (head.length) {
       d.messages = head.concat(d.messages);
-      if (d.older) d.older = { count: Math.max(0, (d.older.count || 0) - head.length), base: d.older.base };
+      if (d.older) d.older = { ...d.older, count: Math.max(0, (d.older.count || 0) - head.length) };
     } else if (d.older) {
-      view.state._baseWinBase = d.older.base; // 基础窗边界前移（无上翻历史）：释放基线跟到最新
+      view.state._baseWinBase = { sys: d.older.sys, tools: d.older.tools }; // 基础窗边界前移（无上翻历史）：释放基线跟到最新
     }
-    view.state.older = d.older ? { count: d.older.count || 0, base: d.older.base } : undefined;
+    view.state.older = d.older ? { ...d.older, count: d.older.count || 0 } : undefined;
     renderLoadOlderBar(view);
     view.state.cur = d.meta;
     view.state.msgs = d.messages || [];
