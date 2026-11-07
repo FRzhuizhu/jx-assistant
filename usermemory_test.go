@@ -2,7 +2,8 @@ package main
 
 // 用户记忆组件（usermemory.go）的自检测试：
 //   - md 文档解析/渲染往返（含手工编辑容错）
-//   - 1000 字截断（rune 计，中文/emoji 友好）
+//   - 长度策略（用户拍板）：存储不截断（md 存全文）、模型侧入口（POST/工具）
+//     超长整单报错不写入、注入侧对超长字段截断防快照膨胀
 //   - 组件开关：envPrompt 注入生效/关闭即移除、工具挂载/卸载
 //   - 专用工具只动「用户身份与喜好」记忆段（称呼/AI 名字/身份不被改）
 //   - 经理整文件通道：GET/POST /api/user-memory 在 call_api 目录里、
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 // newUserMemoryTestApp 建带临时库的 App，并挂上真实组件清单（把仓库里的
@@ -64,21 +66,56 @@ func TestUserMemoryDocRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUserMemoryTruncate(t *testing.T) {
+func TestUserMemoryLengthPolicy(t *testing.T) {
 	a := newUserMemoryTestApp(t)
+
+	// 存储层不截断（用户拍板：md 文件存完整内容；约束在写入入口把关）
 	long := strings.Repeat("记", 1200) + "🚀尾"
-	saved, err := a.saveUserMemory(UserMemoryData{Memory: long, AIName: strings.Repeat("名", 1500)})
+	saved, err := a.saveUserMemory(UserMemoryData{Memory: long})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len([]rune(saved.Memory)); n != 1000 {
-		t.Fatalf("记忆段应截到 1000 字（rune），实际 %d", n)
+	if saved.Memory != long || a.loadUserMemory().Memory != long {
+		t.Fatal("saveUserMemory 不应截断（存储完整内容）")
 	}
-	if n := len([]rune(saved.AIName)); n != 1000 {
-		t.Fatalf("AI 名字应截到 1000 字（rune），实际 %d", n)
+
+	// 注入侧截断：超长字段进环境快照时截到 1000 字加尾注（快照不膨胀）
+	env := a.envPrompt(&SessionMeta{Mode: "task", Permission: permWorkspace, Workspace: a.Cfg.Workspace})
+	if !strings.Contains(env, "超长，已截断") {
+		t.Fatalf("超长字段的注入行应带截断尾注:\n%s", env)
 	}
-	if back := a.loadUserMemory(); back != saved {
-		t.Fatalf("落盘后回读不一致: %+v vs %+v", back, saved)
+	for _, ln := range strings.Split(env, "\n") {
+		if strings.HasPrefix(ln, "- 用户身份与喜好：") && utf8.RuneCountInString(ln) > userMemoryFieldLimit+40 {
+			t.Fatalf("注入行应截到 1000 字+尾注以内，实际 %d 字", utf8.RuneCountInString(ln))
+		}
+	}
+
+	// 写入入口（模型侧）超长整单报错：call_api 的 POST
+	w := httptest.NewRecorder()
+	a.handleUserMemorySet(w, httptest.NewRequest(http.MethodPost, "/api/user-memory",
+		strings.NewReader(`{"userMemory":"`+strings.Repeat("忆", 1100)+`"}`)))
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "上限") {
+		t.Fatalf("POST 超长应 400 并说明上限: %d %s", w.Code, w.Body.String())
+	}
+	if n := len([]rune(a.loadUserMemory().Memory)); n != len([]rune(long)) {
+		t.Fatalf("POST 超长报错后不应写入（应保持原值），实际 %d 字", n)
+	}
+
+	// 写入入口（工具）超长报错不写入
+	tool := a.userMemoryTool()
+	tk := &toolContext{ctx: t.Context(), app: a, sess: &SessionMeta{Mode: "task"}}
+	if _, err := tool.Run(tk, json.RawMessage(`{"memory":"`+strings.Repeat("忆", 1001)+`"}`)); err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("工具超长应报错: %v", err)
+	}
+	if a.loadUserMemory().Memory != long {
+		t.Fatal("工具超长报错后不应写入")
+	}
+	// 合长（≤1000）写入正常
+	if _, err := tool.Run(tk, json.RawMessage(`{"memory":"新记忆"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if a.loadUserMemory().Memory != "新记忆" {
+		t.Fatal("合长写入应成功")
 	}
 }
 
@@ -173,17 +210,12 @@ func TestUserMemoryToolOnlyMemorySegment(t *testing.T) {
 		t.Fatalf("专用工具不得改动记忆段以外的字段: %+v", d)
 	}
 
-	// 超长内容经工具写入也被截断
-	long := strings.Repeat("忆", 1100)
-	out, err = tool.Run(tk, json.RawMessage(`{"memory":"`+long+`"}`))
-	if err != nil {
-		t.Fatal(err)
+	// 超长内容经工具写入：整单报错不写入（长度约束在入口，见 TestUserMemoryLengthPolicy）
+	if _, err := tool.Run(tk, json.RawMessage(`{"memory":"`+strings.Repeat("忆", 1100)+`"}`)); err == nil {
+		t.Fatal("工具写入超长内容应报错（不静默截断）")
 	}
-	if !strings.Contains(out, "截断") {
-		t.Fatalf("超长写入应提示截断: %s", out)
-	}
-	if n := len([]rune(a.loadUserMemory().Memory)); n != 1000 {
-		t.Fatalf("工具写入应截到 1000 字，实际 %d", n)
+	if a.loadUserMemory().Memory != "新记忆：喜欢表格汇报" {
+		t.Fatalf("超长报错后记忆段应保持原值: %+v", a.loadUserMemory())
 	}
 
 	// 组件中途关闭：工具调用时报错指路（目录在本轮开轮定型，调用时再核）

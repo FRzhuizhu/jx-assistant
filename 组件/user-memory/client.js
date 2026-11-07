@@ -1,16 +1,19 @@
-// 组件 user-memory「用户记忆」的浏览器半边：
-//   - 设置 → 用户记忆 独立设置页（CX.registerSettings pane）：AI 对话气泡
-//     颜色选择 + 用户称呼 / 用户身份与喜好 / AI 助理名字 / AI 助理身份
-//     （各上限 1000 字，后端保存时再硬截断一道）；
+// 组件 user-memory「AI 记忆与拟人化」的浏览器半边：
+//   - 设置 → AI 记忆与拟人化 独立设置页（CX.registerSettings pane）：AI 对话
+//     气泡颜色选择 + 用户称呼 / 用户身份与喜好 / AI 助理名字 / AI 助理身份；
+//   - 长度约束（1000 字/字段）在前端把关：输入超长红字告知，保存按截断版
+//     提交（保存成功但提示被截断；浏览器里保留完整草稿不动——存不下的
+//     部分下次打开设置页时看到的是已存的截断版）；
 //   - 气泡颜色是本地生效的前端设置：读记忆文档里的 bubbleColor，往
 //     <html> 注入 CSS 变量 --ai-bubble（web/style.css 的 .msg.user.ai 气泡
 //     引用它，缺省回退主题灰）。保存后即时应用，组件卸载即还原默认灰。
 // 数据全部走主程序的 GET/POST /api/user-memory（usermemory.go，同一份
-// md 文档，数字经理经 call_api 也走它）。
+// md 文档，数字经理经 call_api 也走它；服务端对超长字段整单报错——前端
+// 提交前已截断，正常不会触发）。
 (function () {
   'use strict';
 
-  var LIMIT = 1000; // 与后端 userMemoryFieldLimit 一致；前端先限一道，后端权威
+  var LIMIT = 1000; // 与后端 userMemoryFieldLimit 一致
   var CSS_VAR = '--ai-bubble';
 
   // 预设色板（浅色系与亮色主题搭；暗色主题下自定义色自担对比度）；空串=默认灰
@@ -84,17 +87,6 @@
       g.textContent = title;
       el.appendChild(g);
     };
-    var row = function (label, ctrl) {
-      var r = document.createElement('div');
-      r.className = 'sp-row';
-      var b = document.createElement('span');
-      b.className = 'sp-label';
-      b.textContent = label;
-      r.appendChild(b);
-      r.appendChild(ctrl);
-      el.appendChild(r);
-      return r;
-    };
 
     var state = { userName: '', userMemory: '', aiName: '', aiIdentity: '', bubbleColor: '' };
 
@@ -138,7 +130,7 @@
 
     // ---- 记忆文本字段 ----
     group('用户与 AI 的长期设定');
-    note('这些内容会注入每个对话的环境提示词：AI 据此称呼你、自称与定位。各栏上限 1000 字，超出的部分保存时自动截断。任务对话中 AI 可用 user_memory 工具更新「用户身份与喜好」一栏；数字经理可读写整个记忆文件。');
+    note('这些内容会注入每个对话的环境提示词：AI 据此称呼你、自称与定位。各栏上限 1000 字：超出的部分保存时按前 1000 字入库（这里会提示被截断，输入框保留你的完整草稿）；AI 写入超长会直接报错。任务对话中 AI 可用 user_memory 工具更新「用户身份与喜好」一栏；数字经理可读写整个记忆文件。');
 
     function textField(label, key, multiLine) {
       var box = document.createElement('div');
@@ -159,14 +151,23 @@
         ta.style.cssText = 'width:100%;';
       }
       ta.className = 'sp-text';
-      ta.maxLength = 2000; // 输入层的宽松上限（代理对会占 2）；权威截断在后端 rune 计
       ta.addEventListener('input', function () { updCount(); });
       box.appendChild(ta);
       var cnt = document.createElement('span');
       cnt.className = 'sp-note';
       cnt.style.cssText = 'display:block;text-align:right;';
       box.appendChild(cnt);
-      var updCount = function () { cnt.textContent = runeLen(ta.value) + ' / ' + LIMIT; };
+      var updCount = function () {
+        var n = runeLen(ta.value);
+        cnt.textContent = n + ' / ' + LIMIT;
+        // 超长红字：告知保存口径（截断入库），草稿原样保留
+        if (n > LIMIT) {
+          cnt.textContent = n + ' / ' + LIMIT + '（超出 ' + (n - LIMIT) + ' 字：保存时只保留前 ' + LIMIT + ' 字）';
+          cnt.style.color = 'var(--danger)';
+        } else {
+          cnt.style.color = '';
+        }
+      };
       updCount();
       el.appendChild(box);
       fields[key] = { el: ta, cnt: cnt, upd: updCount };
@@ -203,25 +204,41 @@
     save.onclick = function () {
       save.disabled = true;
       status.textContent = '保存中…';
-      saveMemory({
-        userName: clamp(fields.userName.el.value),
-        userMemory: clamp(fields.userMemory.el.value),
-        aiName: clamp(fields.aiName.el.value),
-        aiIdentity: clamp(fields.aiIdentity.el.value),
+      status.style.color = '';
+      // 前端把关长度：超长按截断版提交（服务端对超长整单报错，不截断存储）
+      var body = {
+        userName: fields.userName.el.value,
+        userMemory: fields.userMemory.el.value,
+        aiName: fields.aiName.el.value,
+        aiIdentity: fields.aiIdentity.el.value,
         bubbleColor: state.bubbleColor,
-      }).then(function (d) {
-        fill(d);
+      };
+      var clipped = [];
+      Object.keys(body).forEach(function (k) {
+        if (typeof body[k] === 'string' && runeLen(body[k]) > LIMIT) {
+          clipped.push(k);
+          body[k] = clamp(body[k]);
+        }
+      });
+      saveMemory(body).then(function (d) {
         setColor(d.bubbleColor); // 立即应用于对话区气泡
-        status.textContent = '已保存，下一轮对话起对全部会话生效';
+        if (clipped.length) {
+          status.style.color = 'var(--danger)';
+          status.textContent = '已保存（' + clipped.length + ' 个字段超出 1000 字，已按前 1000 字入库；完整草稿仍在本页输入框里）';
+        } else {
+          status.textContent = '已保存，下一轮对话起对全部会话生效';
+        }
+        // 刻意不回填：输入框保留用户完整草稿（下次打开设置页看到的才是已存版本）
       }).catch(function (e) {
+        status.style.color = 'var(--danger)';
         status.textContent = '保存失败：' + (e && e.message ? e.message : e);
       }).then(function () {
         save.disabled = false;
-        setTimeout(function () { if (status.isConnected) status.textContent = ''; }, 4000);
+        setTimeout(function () { if (status.isConnected) { status.textContent = ''; status.style.color = ''; } }, 6000);
       });
     };
 
-    // 用已保存的数据回填（保存后也用它刷新——后端截断结果以它为准）
+    // 用已保存的数据回填（仅初始加载；保存后不回填——保留完整草稿）
     function fill(d) {
       state.bubbleColor = d.bubbleColor || '';
       fields.userName.el.value = d.userName || '';
@@ -253,9 +270,9 @@
 
       CX.registerSettings({
         id: 'user-memory',
-        title: '用户记忆',
+        title: 'AI 记忆与拟人化',
         pane: {
-          label: '用户记忆',
+          label: 'AI 记忆与拟人化',
           icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><path d="M12 12v0"/></svg>',
         },
         mount: mountSettings,
