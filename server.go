@@ -383,8 +383,18 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/experts", a.handleUpsertExpert)
 	mux.HandleFunc("POST /api/experts/delete", a.handleDeleteExpert)
 	a.apiRoute(mux, "POST /api/sessions/{id}/remote", a.handleSetSessionRemote, apiMeta{Summary: "设置/解除 SSH 远程工作区", Params: "remote 配置或 clear=true", Perm: permWorkspace})
-	mux.HandleFunc("GET /api/plugins", a.handleListPlugins)
-	mux.HandleFunc("POST /api/plugins", a.handleSetPlugin)
+	// 插件兼容层统一清单与总开关（pluginlayers.go 的各层注册）：与组件同口径
+	// 开放给 call_api（?s= / session 的会话级覆盖一并可用）。
+	a.apiRoute(mux, "GET /api/plugins", a.handleListPlugins, apiMeta{
+		Summary: "插件清单（各兼容层的插件 + 层信息）；带 s=会话id 返回该会话的生效视图",
+		Params:  "s 可选（会话id＝会话级生效视图）",
+		Perm:    permReadOnly,
+	})
+	a.apiRoute(mux, "POST /api/plugins", a.handleSetPlugin, apiMeta{
+		Summary: "开关插件（带 session＝只改该会话的覆盖，全局开关不动）",
+		Params:  "id、enabled；layer 可选（层 id，缺省按 id 在全部层里唯一匹配）、session 可选（会话id＝会话级覆盖）",
+		Perm:    permWorkspace,
+	})
 	mux.Handle("GET /_plugins/", http.HandlerFunc(a.handlePluginAsset))
 	// Claude Code 插件兼容层（ccplugin*.go）：安装/开关/市场/命令清单
 	mux.HandleFunc("GET /api/cc-plugins", a.handleListCCPlugins)
@@ -402,8 +412,24 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/mcp/upload", a.handleUploadMCPServers)
 	mux.HandleFunc("GET /api/mcp/catalog", a.handleMCPCatalog)
 	mux.HandleFunc("POST /api/mcp/catalog/install", a.handleMCPCatalogInstall)
-	mux.HandleFunc("GET /api/components", a.handleListComponents)
-	mux.HandleFunc("POST /api/components", a.handleSetComponent)
+	// 组件两档（内置 组件/ 与用户 组件/user/）同一套接口：清单、开关（含会话级
+	// 覆盖 ?s= / session）、用户组件卸载。开放给 call_api 让数字经理能查能开关。
+	a.apiRoute(mux, "GET /api/components", a.handleListComponents, apiMeta{
+		Summary: "组件清单（内置组件 + 用户组件，builtin 标记归属）；带 s=会话id 返回该会话的生效视图",
+		Params:  "s 可选（会话id＝会话级生效视图）",
+		Perm:    permReadOnly,
+	})
+	a.apiRoute(mux, "POST /api/components", a.handleSetComponent, apiMeta{
+		Summary: "开关组件（带 session＝只改该会话的覆盖，全局开关不动）",
+		Params:  "id、enabled；可选 session（会话id＝会话级覆盖）",
+		Perm:    permWorkspace,
+	})
+	a.apiRoute(mux, "POST /api/components/delete", a.handleDeleteComponent, apiMeta{
+		Summary: "卸载一个用户组件（组件/user/<id> 目录删除；内置组件拒绝，只能关开关）",
+		Params:  "id",
+		Perm:    permWorkspace,
+		Danger:  "删除用户组件目录与设置，不可恢复（重装需走市场或手动放回组件/user/）",
+	})
 	// 组件浏览器半边资产挂在 /api/ 下（而非独立 /_components/ 前缀）：前端 cx.js
 	// 统一用 fetch 拿资产，远程模式下 /api/ 前缀经 remote-boot 的 fetch 劫持自动
 	// 走中继隧道——旧 /_components/ 标签相对网关 origin 解析必 404，远程组件全体消失

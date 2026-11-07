@@ -323,7 +323,14 @@
     const foot = card.querySelector('.mk-card-foot');
 
     const typeLabel = { skill: '技能', component: '组件', plugin: '插件', mcp: 'MCP 连接器' }[mkTab];
-    if (e.installed) {
+    if (e.builtin) {
+      // 内置组件（随包分发）：市场不给安装/卸载——它随程序静默更新升级，
+      // 要停用去 设置 → 组件 关开关。这里只提示归属，避免用户点到报错。
+      const st = document.createElement('span');
+      st.className = 'mk-installed';
+      st.textContent = '内置（随程序更新）';
+      foot.appendChild(st);
+    } else if (e.installed) {
       const st = document.createElement('span');
       st.className = 'mk-installed';
       st.textContent = e.update ? `已装 v${e.installedVersion || '?'}（有新版）` : `已安装 v${e.installedVersion || e.version}`;
@@ -695,7 +702,7 @@
   function onResize() { updateMarketCols(); }
 
   /* ---------- 设置区（设置 · 网络访问页的 #net-market-cfg 挂载段） ----------
-     组件开关归「内置组件」页，参数归网络访问页（与其他网络配置放一起）。
+     组件开关归「组件」页，参数归网络访问页（与其他网络配置放一起）。
      init 填充、dispose 清空并隐藏；回显 + 改动即存（单字段 PATCH /api/config，
      失败回滚为服务端值——与设置页 bindRemoteInput 同一套契约）。 */
 

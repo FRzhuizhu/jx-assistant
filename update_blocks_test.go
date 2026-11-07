@@ -132,6 +132,23 @@ func TestPlanComponentBlocks(t *testing.T) {
 	if got := d.planComponentBlocks(map[string]updateBlock{"voice": {Version: "2.0"}}); len(got) != 0 {
 		t.Fatalf("本地更新时不应回退: %v", got)
 	}
+	// 本机那份是**用户组件**（组件/user/）：不进内置热更新——版本与去留归用户，
+	// 清单里即使有同名块也不覆盖它
+	root := t.TempDir()
+	writeComp(t, root, "keep", "keep", "1.0")
+	reg := InitComponents(root, filepath.Join(t.TempDir(), "components.json"))
+	writeComp(t, filepath.Join(root, userComponentsSubdir), "plug", "plug", "0.1")
+	reg.Rescan()
+	if reg.IsBuiltin("plug") {
+		t.Fatal("组件/user/ 下的应识别为用户组件")
+	}
+	e := &App{Components: reg}
+	if got := e.planComponentBlocks(map[string]updateBlock{"plug": {Version: "9.0"}}); len(got) != 0 {
+		t.Fatalf("用户组件不应参与内置热更新: %v", got)
+	}
+	if got := e.planComponentBlocks(map[string]updateBlock{"keep": {Version: "2.0"}}); len(got) != 1 {
+		t.Fatalf("内置组件落后时仍应热更新: %v", got)
+	}
 }
 
 // 状态记账往返：EnginePending/Argv/Applied 落盘再读回。

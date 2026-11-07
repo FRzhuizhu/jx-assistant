@@ -265,16 +265,23 @@ async function loadAboutShell() {
   };
 }
 
-/* ---------- 组件清单（/api/components + CX 运行时热开关） ---------- */
+/* ---------- 组件清单（/api/components + CX 运行时热开关）
+   两档归属同一页分两区（与「技能」页同款排版）：
+   - 内置组件：随包分发、不可删除，只有开关；升级随程序静默更新；
+   - 用户组件：市场/发行渠道单个安装到 组件/user/，可开关、可删除。 ---------- */
 
 async function renderComponentList() {
-  const box = $('component-list');
-  if (!box) return;
-  box.innerHTML = '加载中…';
+  const bBox = $('component-builtin-list');
+  const uBox = $('component-user-list');
+  if (!bBox || !uBox) return;
+  bBox.innerHTML = '加载中…';
+  uBox.innerHTML = '';
   let list = [];
-  try { list = (await api('/api/components')).components || []; } catch (e) { box.textContent = '组件清单读取失败：' + e.message; return; }
-  box.innerHTML = '';
+  try { list = (await api('/api/components')).components || []; } catch (e) { bBox.textContent = '组件清单读取失败：' + e.message; return; }
+  bBox.innerHTML = '';
+
   for (const c of list) {
+    const builtin = !!c.builtin;
     const row = document.createElement('div');
     row.className = 'plugin-row';
     const info = document.createElement('div');
@@ -282,6 +289,7 @@ async function renderComponentList() {
     info.innerHTML =
       `<div class="pr-line"><b>${esc(c.name)}</b><span class="pr-ver">${esc(c.version || '')}</span></div>` +
       `<p>${esc(c.description || '')}</p>`;
+    row.appendChild(info);
     const tg = document.createElement('label');
     tg.className = 'pr-toggle';
     const cb = document.createElement('input');
@@ -302,14 +310,31 @@ async function renderComponentList() {
     };
     tg.appendChild(cb);
     tg.appendChild(document.createElement('span'));
-    row.appendChild(info);
     row.appendChild(tg);
+    if (!builtin) { // 用户组件才有删除入口（内置的随包分发，只可开关）
+      const del = document.createElement('button');
+      del.className = 'skill-del';
+      del.title = '删除该组件';
+      del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+      del.onclick = async () => {
+        if (!(await confirmCenter('删除组件「' + (c.name || c.id) + '」？组件目录（组件/user/' + c.id + '）将被一并移除。', false, true))) return;
+        try {
+          await api('/api/components/delete', { method: 'POST', body: JSON.stringify({ id: c.id }) });
+          await CX.refresh(); // 已装载的立即热卸载
+          renderComponentList();
+        } catch (e) { alert('删除失败：' + e.message); }
+      };
+      row.appendChild(del);
+    }
     const note = document.createElement('div');
     note.className = 'pr-note';
     row.appendChild(note);
-    box.appendChild(row);
+    (builtin ? bBox : uBox).appendChild(row);
   }
-  if (!list.length) box.innerHTML = '<div class="pr-note">组件/ 下没有发现组件</div>';
+  if (!list.some((c) => c.builtin)) bBox.innerHTML = '<div class="pr-note">没有发现内置组件（组件/ 下无 manifest.json）</div>';
+  if (!list.some((c) => !c.builtin)) {
+    uBox.innerHTML = '<div class="skill-empty">还没有用户组件。在市场里一键安装，或把组件目录放进 组件/user/ 即装即用。</div>';
+  }
   mountComponentSections(); // 组件自己的设置区（组件经 CX.registerSettings 交出）
 }
 
@@ -335,7 +360,7 @@ function mountComponentSections() {
 
 /* ---------- 组件设置页（CX.registerSettings 且带 pane 字段的组件 → 独立分区页）
    组件在注册时声明 pane:{label, icon}，设置页左侧一级菜单出现专属入口（插在
-   「内置组件」之后）、右侧出现专属分区页；组件停用/卸载时导航项与页面一并撤掉，
+   「组件」之后）、右侧出现专属分区页；组件停用/卸载时导航项与页面一并撤掉，
    正停在该页时退回默认页。导航状态机（setNav/renderNav/navGoto）按 data-pane
    寻址，动态项与静态项同一条路径，窄屏翻页/返回手势天然兼容。 */
 function syncComponentPanePresence() {
@@ -365,7 +390,7 @@ function syncComponentPanePresence() {
     navBtn.dataset.cxPane = d.id;
     navBtn.innerHTML = (d.pane.icon || '') + esc(d.pane.label);
     navBtn.onclick = () => navGoto(paneName);
-    // 插在「内置组件」之后；没有该入口（页面结构变动）就退到「关于」之前
+    // 插在「组件」之后；没有该入口（页面结构变动）就退到「关于」之前
     const anchor = nav.querySelector('.set-nav-item[data-pane="components"]') ||
       nav.querySelector('.set-nav-item[data-pane="about"]');
     if (anchor && anchor.nextSibling) nav.insertBefore(navBtn, anchor.nextSibling);
@@ -1453,7 +1478,7 @@ $('btn-remote-pk-new').onclick = async () => {
 // （searchURL 不合法），这里 alert 出原因并回滚为服务端值
 bindRemoteInput('set-search-url', 'searchURL');
 // 网页托管平台（小程序平台）：已随小程序平台组件化迁入 sites-platform 组件的
-// 设置区（设置 · 内置组件），此处不再绑定；后端 /sites 代理照旧。
+// 设置区（设置 · 组件），此处不再绑定；后端 /sites 代理照旧。
 bindRemoteInput('set-registry-url', 'registryURL');
 bindRemoteInput('set-update-url', 'updateURL');
 // 更新方式：auto=分块静默（默认）/manual=仅提醒手动整包安装；改动即存
@@ -2322,7 +2347,7 @@ function buildExpertCard(e) {
   const card = document.createElement('div');
   card.className = 'prov-card' + (open ? ' open' : '') + (e.enabled ? '' : ' off');
 
-  // 折叠头：名称+描述（与「内置组件」行同款排版）+ 元信息 + 开关 + 编辑；
+  // 折叠头：名称+描述（与「组件」行同款排版）+ 元信息 + 开关 + 编辑；
   // 点名称区展开，开关不冒泡
   const head = document.createElement('div');
   head.className = 'pv-head';

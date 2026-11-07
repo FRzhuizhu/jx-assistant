@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,7 +16,24 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
+
+// 组件分两档归属（用户定调），走同一个注册表、同一个组件桥、同一个设置页：
+//   - 内置组件：组件/<id>/，随包分发、**不可删除只可开关**、随静默更新的
+//     组件分块热更新（update_blocks.go）；
+//   - 用户组件：组件/user/<id>/，市场或手动安装、可开关可删除、**不进打包、
+//     不上 git、不热更新**（更新走市场重装）。
+// 与技能同一套约定（技能/user/ 放用户技能），打包与静默更新的脚本侧同步
+// 排除 user 目录。
+const userComponentsSubdir = "user"
+
+// componentEntry 是一条已发现组件：清单 + 本体目录 + 归属。
+type componentEntry struct {
+	Manifest ComponentManifest
+	Dir      string
+	BuiltIn  bool
+}
 
 // ComponentWorkerDef 是组件自包含后端的声明（manifest 顶层 "workers" 数组项）：
 // 主程序的组件桥（componentbridge.go）按声明拉起子进程并把端点桥到它的
@@ -61,12 +79,15 @@ type ComponentManifest struct {
 // Enabled＝调用方视角的生效值；带会话查清单时（?s=<会话id>）为「会话覆盖
 // 优先于全局」的结果，GlobalEnabled 恒为全局开关值、Override 标记该会话
 // 是否显式覆盖过（按对话开关浮窗据此显示覆盖徽标）。
+// BuiltIn 标记归属：设置页据此分「内置组件 / 用户组件」两区，内置区不给
+// 删除入口（只有开关）。
 type ComponentStatus struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	Description string `json:"description"`
 	Enabled     bool   `json:"enabled"`
+	BuiltIn     bool   `json:"builtin"`
 	HasJS       bool   `json:"hasJs"`
 	HasCSS      bool   `json:"hasCss"`
 	GlobalEnabled bool `json:"globalEnabled,omitempty"`
@@ -76,34 +97,47 @@ type ComponentStatus struct {
 // ComponentRegistry 持有扫描结果与开关状态；全部方法并发安全。
 type ComponentRegistry struct {
 	mu        sync.Mutex
-	dir       string // 组件/
+	dir       string // 内置组件根：组件/
 	statePath string // data/components.json
-	items     map[string]ComponentManifest
+	items     map[string]componentEntry
 	enabled   map[string]bool
+	scanMu    sync.Mutex // 扫描串行化（清单接口会按需重扫，市场装完显式 Rescan）
+	lastScan  time.Time
 }
 
-// InitComponents 扫描 组件/ 目录并读开关状态；目录不存在按空处理，绝不阻断启动。
+// InitComponents 扫描 组件/（内置）与 组件/user/（用户）并读开关状态；目录
+// 不存在按空处理，绝不阻断启动。
 func InitComponents(dir, statePath string) *ComponentRegistry {
-	r := &ComponentRegistry{dir: dir, statePath: statePath, items: map[string]ComponentManifest{}, enabled: map[string]bool{}}
+	r := &ComponentRegistry{dir: dir, statePath: statePath, items: map[string]componentEntry{}, enabled: map[string]bool{}}
 	r.rescan()
 	return r
 }
 
 func (r *ComponentRegistry) rescan() {
-	items := map[string]ComponentManifest{}
-	if entries, err := os.ReadDir(r.dir); err == nil {
+	items := map[string]componentEntry{}
+	// 两档归属同一个命名空间（组件 id 即菜单键）：内置先扫、用户后扫，
+	// 同名即忽略用户那份——内置组件由程序持有，用户侧不能顶替它。
+	scanRoot := func(root string, builtIn bool) {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return
+		}
 		for _, e := range entries {
 			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			name := e.Name()
-			data, err := os.ReadFile(filepath.Join(r.dir, name, "manifest.json"))
+			if builtIn && name == userComponentsSubdir {
+				continue // 用户组件区单独扫
+			}
+			cdir := filepath.Join(root, name)
+			data, err := os.ReadFile(filepath.Join(cdir, "manifest.json"))
 			if err != nil {
 				continue
 			}
 			var m ComponentManifest
 			if err := json.Unmarshal(data, &m); err != nil {
-				log.Printf("[组件] %s/manifest.json 解析失败，已跳过: %v", name, err)
+				log.Printf("[组件] %s/manifest.json 解析失败，已跳过: %v", cdir, err)
 				continue
 			}
 			if m.ID == "" {
@@ -112,9 +146,15 @@ func (r *ComponentRegistry) rescan() {
 			if m.Name == "" {
 				m.Name = name
 			}
-			items[m.ID] = m
+			if prev, ok := items[m.ID]; ok {
+				log.Printf("[组件] %s 与已发现的 %s（%s）同名，已忽略；内置优先", cdir, m.ID, prev.Dir)
+				continue
+			}
+			items[m.ID] = componentEntry{Manifest: m, Dir: cdir, BuiltIn: builtIn}
 		}
 	}
+	scanRoot(r.dir, true)
+	scanRoot(filepath.Join(r.dir, userComponentsSubdir), false)
 	enabled := map[string]bool{}
 	if data, err := os.ReadFile(r.statePath); err == nil {
 		_ = json.Unmarshal(data, &enabled) // 损坏按空处理（全部缺省启用）
@@ -132,6 +172,7 @@ func (r *ComponentRegistry) rescan() {
 	}
 	r.mu.Lock()
 	r.items, r.enabled = items, enabled
+	r.lastScan = time.Now()
 	r.mu.Unlock()
 	if pruned {
 		if data, err := json.MarshalIndent(enabled, "", "  "); err == nil {
@@ -139,6 +180,23 @@ func (r *ComponentRegistry) rescan() {
 			_ = os.WriteFile(r.statePath, data, 0644)
 		}
 	}
+}
+
+// maybeRescan 按需重扫（GET /api/components 调用）。发现机制的缺口修复：
+// 原先只在进程启动那一刻扫一次，而桌面版是单实例常驻（再双击只是把窗口
+// 拉到前面），手工放进 组件/ 的组件、或市场装完但没 Rescan 的组件，不重启
+// 服务就永远看不见——用户「重启后仍不见 user-memory」就是这么来的。
+// 节流 2 秒：组件目录很小，重扫只是几次目录读，但不必每个请求都来一遍。
+func (r *ComponentRegistry) maybeRescan() {
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
+	r.mu.Lock()
+	fresh := time.Since(r.lastScan) < 2*time.Second
+	r.mu.Unlock()
+	if fresh {
+		return
+	}
+	r.rescan()
 }
 
 func (r *ComponentRegistry) IsEnabled(id string) bool {
@@ -177,7 +235,7 @@ func (r *ComponentRegistry) HookSubscribers(event string) []HookSub {
 		if !r.isEnabledLocked(id) {
 			continue
 		}
-		for _, def := range r.items[id].Workers {
+		for _, def := range r.items[id].Manifest.Workers {
 			for _, h := range def.Hooks {
 				if h == event {
 					out = append(out, HookSub{CompID: id, Def: def})
@@ -192,11 +250,35 @@ func (r *ComponentRegistry) HookSubscribers(event string) []HookSub {
 func (r *ComponentRegistry) Manifest(id string) (ComponentManifest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	m, ok := r.items[id]
-	return m, ok
+	e, ok := r.items[id]
+	return e.Manifest, ok
 }
 
-// List 按名字排序返回全部组件。
+// CompDir 返回某个组件本体的绝对可用目录（内置=组件/<id>，用户=组件/user/<id>）。
+// 组件桥拉起 worker 时把 cwd 与相对脚本路径锚在这里。
+func (r *ComponentRegistry) CompDir(id string) (string, bool) {
+	r.mu.Lock()
+	e, ok := r.items[id]
+	r.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	dir := e.Dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return dir, true
+}
+
+// IsBuiltin 判断组件归属：内置＝随包分发（不可删除、随静默更新热更新）。
+func (r *ComponentRegistry) IsBuiltin(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.items[id]
+	return ok && e.BuiltIn
+}
+
+// List 按 id 排序返回全部组件（内置与用户同列，BuiltIn 供设置页分区）。
 func (r *ComponentRegistry) List() []ComponentStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -207,12 +289,13 @@ func (r *ComponentRegistry) List() []ComponentStatus {
 	sort.Strings(ids)
 	out := []ComponentStatus{}
 	for _, id := range ids {
-		m := r.items[id]
+		e := r.items[id]
 		on, rec := r.enabled[id]
 		out = append(out, ComponentStatus{
-			ID: id, Name: m.Name, Version: m.Version, Description: m.Description,
+			ID: id, Name: e.Manifest.Name, Version: e.Manifest.Version, Description: e.Manifest.Description,
 			Enabled: !rec || on,
-			HasJS:   m.Client.JS != "", HasCSS: m.Client.CSS != "",
+			BuiltIn: e.BuiltIn,
+			HasJS:   e.Manifest.Client.JS != "", HasCSS: e.Manifest.Client.CSS != "",
 		})
 	}
 	return out
@@ -236,15 +319,57 @@ func (r *ComponentRegistry) SetEnabled(id string, on bool) error {
 	return os.WriteFile(r.statePath, data, 0644)
 }
 
-// Dir 返回组件目录（资产服务用）。
-func (r *ComponentRegistry) Dir() string { return r.dir }
+// Remove 卸载一个**用户组件**（删目录 + 清开关态 + 重扫）；内置组件拒绝删除
+// ——它们随包分发、只可开关（调用方负责先杀 worker）。
+func (r *ComponentRegistry) Remove(id string) error {
+	r.mu.Lock()
+	e, ok := r.items[id]
+	r.mu.Unlock()
+	if !ok {
+		return os.ErrNotExist
+	}
+	if e.BuiltIn {
+		return fmt.Errorf("内置组件（随包分发）不可删除，不需要时关掉开关即可")
+	}
+	if err := os.RemoveAll(e.Dir); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	delete(r.items, id)
+	delete(r.enabled, id)
+	state := map[string]bool{}
+	for k, v := range r.enabled {
+		state[k] = v
+	}
+	r.mu.Unlock()
+	if data, err := json.MarshalIndent(state, "", "  "); err == nil {
+		_ = os.MkdirAll(filepath.Dir(r.statePath), 0755)
+		_ = os.WriteFile(r.statePath, data, 0644)
+	}
+	r.Rescan()
+	return nil
+}
+
+// BuiltinDir 返回内置组件根目录（组件/）：资产兜底、静默更新分块落位用。
+func (r *ComponentRegistry) BuiltinDir() string { return r.dir }
+
+// UserDir 返回用户组件安装区（组件/user/）：市场安装、手动放入都落这里，
+// 不进打包、不上 git、不参与静默热更新。
+func (r *ComponentRegistry) UserDir() string { return filepath.Join(r.dir, userComponentsSubdir) }
 
 // Rescan 重扫组件目录（市场安装/卸载后调用：新组件即时装载、删除的组件即时效）。
-func (r *ComponentRegistry) Rescan() { r.rescan() }
+func (r *ComponentRegistry) Rescan() {
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
+	r.rescan()
+}
 
 // ---------- HTTP 处理器 ----------
 
 func (a *App) handleListComponents(w http.ResponseWriter, r *http.Request) {
+	// 先按需重扫：组件目录是可以在运行中增删的（手工放入 / 市场装卸），
+	// 单实例常驻的桌面版不该靠重启服务才能看见新组件。
+	a.Components.maybeRescan()
 	// ?s=<会话id>：返回该会话的生效视图（会话覆盖优先于全局开关），并带
 	// sessionCustom 标记（本会话是否定制过）——前端 cx.js 与按对话开关浮窗用。
 	sid := strings.TrimSpace(r.URL.Query().Get("s"))
@@ -336,6 +461,42 @@ func (a *App) handleComponentAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	dir, ok := a.Components.CompDir(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeFile(w, r, filepath.Join(a.Components.Dir(), id, file))
+	http.ServeFile(w, r, filepath.Join(dir, file))
+}
+
+// handleDeleteComponent 卸载一个用户组件（POST /api/components/delete）。
+// 内置组件不在这里：它们随包分发、只可开关，删除入口对内置区一律拒绝。
+func (a *App) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+		writeErr(w, 400, "需要 id")
+		return
+	}
+	id := strings.TrimSpace(body.ID)
+	if _, ok := a.Components.Manifest(id); !ok {
+		writeErr(w, 404, "组件不存在")
+		return
+	}
+	if a.Components.IsBuiltin(id) {
+		writeErr(w, 400, "内置组件随包分发、不可删除；不需要时关掉开关即可")
+		return
+	}
+	// 先杀 worker：exe 形态占着目录时 RemoveAll 会失败；py 形态会继续用旧代码服务
+	if a.Bridge != nil {
+		a.Bridge.KillComponent(id)
+	}
+	if err := a.Components.Remove(id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	a.removeMarketRec("component", id) // 市场记账一并清掉，市场里不再显示「已安装」
+	writeJSON(w, 200, map[string]any{"ok": 1, "components": a.Components.List()})
 }

@@ -452,7 +452,7 @@
         </button>
         <button class="set-nav-item" data-pane="components">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-          内置组件
+          组件
         </button>
         <button class="set-nav-item" data-pane="skills">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 5.9L20 10l-4.4 4.4L16.8 21 12 18l-4.8 3 1.2-6.6L4 10l5.6-2.1z"/></svg>
@@ -648,7 +648,7 @@
           </div>
           <!-- 企业技能包/工作流 与 小程序平台 的网络配置挂载点：由组件注入内容
                （组件/skill-market/、组件/sites-platform/），组件不在场（关闭/摘除）时
-               容器保持空置隐藏——开关归「内置组件」页，参数归本页。 -->
+               容器保持空置隐藏——开关归「组件」页，参数归本页。 -->
           <div class="gen-section hidden" id="net-market-cfg"></div>
           <div class="gen-section hidden" id="net-sites-cfg"></div>
           <div class="gen-section">
@@ -778,13 +778,20 @@
           </div>
         </div>
         <div class="set-pane" id="set-pane-components">
-          <h3>内置组件</h3>
+          <h3>组件</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">来自 组件/ 的原生外围扩展；开关即时生效，无需刷新</div>
-            <div id="component-list"></div>
-            <!-- 组件自己的设置区（组件经 CX.registerSettings 交出，关掉组件即消失） -->
-            <div id="component-sections"></div>
+            <div class="tip-inline" style="margin:0 0 10px">组件 = 本栈原生的外围扩展（前后端自包含，走同一个组件桥）。开关即时热生效，无需刷新页面，也无需重启服务。</div>
           </div>
+          <div class="gen-section">
+            <h4>内置组件 <span class="sec-sub">随包分发，不可删除；可开关，随程序更新升级</span></h4>
+            <div id="component-builtin-list"></div>
+          </div>
+          <div class="gen-section">
+            <h4>用户组件 <span class="sec-sub">可开关、可删除；市场/发行渠道单个安装</span></h4>
+            <div id="component-user-list"></div>
+          </div>
+          <!-- 组件自己的设置区（组件经 CX.registerSettings 交出，关掉组件即消失） -->
+          <div id="component-sections"></div>
         </div>
         <div class="set-pane" id="set-pane-skills">
           <h3>技能</h3>
@@ -935,7 +942,7 @@
         <div class="set-pane active" id="cxs-pane-cxs-components">
           <h3>本对话的组件</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">只影响<b>本对话</b>的生效集：关掉的这里可以开、开着的这里可以关（即时热生效）；全局开关在 设置 → 内置组件，不受这里影响。与全局一致的项自动恢复「跟随全局」。</div>
+            <div class="tip-inline" style="margin:0 0 10px">只影响<b>本对话</b>的生效集：关掉的这里可以开、开着的这里可以关（即时热生效）；全局开关在 设置 → 组件，不受这里影响。与全局一致的项自动恢复「跟随全局」。</div>
             <div id="cxs-component-list"></div>
             <!-- 组件自己的设置区（组件经 CX.registerSettings 交出，非独立页形态） -->
             <div id="cxs-component-sections"></div>
@@ -975,7 +982,7 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg>
     目标模式<span class="pop-check" id="pm-goal-check"></span>
   </button>
-  <button class="pop-item" id="pm-cxsession" title="只影响本对话的组件/插件生效集（会话级覆盖，全局开关不动）；全局开关在 设置 → 内置组件 / 插件">
+  <button class="pop-item" id="pm-cxsession" title="只影响本对话的组件/插件生效集（会话级覆盖，全局开关不动）；全局开关在 设置 → 组件 / 插件">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><path d="M14 6.5h7M14 10h4"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 14v7M3 17.5h7"/><path d="M14 14l3 3 4-4"/></svg>
     本对话的组件与插件<span class="pop-check" id="pm-cxsession-check"></span>
   </button>

@@ -71,6 +71,9 @@ Remove-Item $work -Recurse -Force
 $compArgs = @()
 if ($组件 -ne "") {
   foreach ($id in ($组件 -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })) {
+    # 用户组件区（组件/user）不随包、不热更新：它是用户自己从市场/发行渠道装的，
+    # 版本与去留归用户——发了组件块也不该覆盖它（update_blocks 也会跳过）。
+    if ($id -eq "user") { throw "组件/user 是用户组件区，不参与热更新；要发的是具体组件 id（组件\<id>）" }
     $dir = Join-Path $root "组件\$id"
     $manifest = Join-Path $dir "manifest.json"
     if (-not (Test-Path $manifest)) { throw "组件 $id 没有 manifest.json：$manifest" }

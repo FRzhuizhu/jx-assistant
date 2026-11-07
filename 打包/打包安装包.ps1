@@ -160,6 +160,10 @@ foreach ($rel in $rtSkip) {
   if (-not (Test-Path $src)) { continue }
   if ((Get-Item $src).PSIsContainer) { $xd += $src } else { $xf += $src }
 }
+# 用户组件区（组件/user/）绝不进包：那是用户自己装的东西（市场/发行渠道单个
+# 安装），与用户技能 技能/user 同款——不进打包、不上 git、不参与静默更新。
+$userCompDir = Join-Path $compDir "user"
+if (Test-Path $userCompDir) { $xd += $userCompDir }
 $rcArgs = @($compDir, $stageComp, "/E", "/R:0", "/W:0", "/NFL", "/NDL", "/NJH", "/NJS")
 if ($xd.Count -gt 0) { $rcArgs += "/XD"; $rcArgs += $xd }
 if ($xf.Count -gt 0) { $rcArgs += "/XF"; $rcArgs += $xf }
@@ -246,7 +250,10 @@ Get-ChildItem (Join-Path $stage "技能") -Directory | Where-Object {
   $cleanLines.Add('Type: filesandordirs; Name: "{app}\技能\' + $_.Name + '"')
 }
 if (Test-Path (Join-Path $stage "组件")) {
-  Get-ChildItem (Join-Path $stage "组件") -Directory | ForEach-Object {
+  # 只清随包发的内置组件；用户组件区（组件\user）与用户技能一样天然保留
+  Get-ChildItem (Join-Path $stage "组件") -Directory | Where-Object {
+    $_.Name -ne "user"
+  } | ForEach-Object {
     $cleanLines.Add('Type: filesandordirs; Name: "{app}\组件\' + $_.Name + '"')
   }
 }

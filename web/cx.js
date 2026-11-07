@@ -11,7 +11,7 @@
  * 全程不需要刷新页面、不需要重启服务。
  *
  * 组件设置区：组件在 init 里调 CX.registerSettings({id, title, mount}) 把自己的
- * 设置区交给 CX 保管；设置页（「内置组件」页）按 CX.settingsSections() 渲染，
+ * 设置区交给 CX 保管；设置页（「组件」页）按 CX.settingsSections() 渲染，
  * 组件激活状态一变（注册/注销/热开关）CX 就派发 window 事件 cx:change，设置页
  * 收到后重挂——于是关掉组件时它那段设置连同按钮一起消失。 */
 
@@ -41,7 +41,7 @@
     _active: {},      // id -> { dispose }（已 init 的组件）
     _gen: {},         // id -> 代数（防快速反复开关的旧请求串台）
     _failed: {},      // id -> 上次失败时间戳（组件没起来过，等退避后重放）
-    _sections: [],    // {id, title, mount}：组件设置区（设置页「内置组件」渲染）
+    _sections: [],    // {id, title, mount}：组件设置区（设置页「组件」渲染）
     _session: '',     // 当前会话id（''＝无会话，按全局开关装配；随 session:open 切换）
     _listGen: 0,      // 清单拉取代数（切会话与 boot 并发时，旧的晚到响应作废）
     sessionCustom: false, // 当前会话是否定制过组件/插件生效集（加号菜单的 ✓）
@@ -306,7 +306,7 @@
       for (const c of fresh) {
         if (c.enabled && !this._active[c.id]) this._inject(c);
       }
-      this._signal(); // 增删/启停都会影响设置页「内置组件」清单与组件设置区
+      this._signal(); // 增删/启停都会影响设置页「组件」清单与组件设置区
     },
 
     // 热卸载一个组件（对账与开关共用）：dispose + 摘标签 + 清登记

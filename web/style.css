@@ -2972,7 +2972,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
 .session-item .s-time.wait { color: var(--amber); font-weight: 600; }
 :root[data-theme='dark'] .session-item .s-time.wait { color: #e8a33d; }
 
-/* 技能面板：行样式复用「内置组件/插件」的 plugin-row + pr-toggle，仅补本页专属组件 */
+/* 技能面板：行样式复用「组件/插件」的 plugin-row + pr-toggle，仅补本页专属组件 */
 /* 分组标题的弱化后缀（自带技能 · 常开 等） */
 .sec-sub { font-size: 11px; font-weight: 400; color: var(--text-3); margin-left: 6px; }
 /* 自带技能的「常开」徽章：与插件页 pr-badge 同款胶囊，中性灰 */
@@ -2996,7 +2996,7 @@ body.bin-mode #wst-view, body.bin-mode #wst-add { display: none; } /* 回收站�
   font-size: 12px; color: var(--text-3); text-align: center;
 }
 
-/* 子对话专家面板：卡片行排版与「内置组件」的 plugin-row 完全同款
+/* 子对话专家面板：卡片行排版与「组件」的 plugin-row 完全同款
    （名称 13px 粗、描述 12px 灰、元信息 11px），仅容器换成可展开卡片 */
 .ex-head-info { flex: 1; min-width: 0; cursor: pointer; }
 .ex-head-info .pr-line { display: flex; align-items: center; gap: 8px; }

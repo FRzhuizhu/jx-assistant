@@ -244,8 +244,23 @@ func TestMarketComponentLifecycle(t *testing.T) {
 	if _, ok := a.Components.Manifest("mk-comp"); !ok {
 		t.Fatal("组件安装后应被识别")
 	}
+	// 两档归属：市场装的是**用户组件**，落在 组件/user/<id>/（不进打包、不热更新）
+	if a.Components.IsBuiltin("mk-comp") {
+		t.Fatal("市场安装的组件不应被当成内置组件")
+	}
+	if want := filepath.Join(a.Components.UserDir(), "mk-comp"); !dirExists(want) {
+		t.Fatalf("市场组件应装进用户组件区 %s", want)
+	}
 	if !a.Components.IsEnabled("mk-comp") {
 		t.Fatal("市场组件缺省应启用")
+	}
+	// 同名内置组件不允许被市场覆盖（内置随包分发、随程序静默更新升级）
+	writeComp(t, a.Components.BuiltinDir(), "voice", "语音（内置）", "1.0.0")
+	a.Components.Rescan()
+	srcForVoice := t.TempDir()
+	writeComp(t, srcForVoice, "voice", "语音（市场版）", "9.9.9")
+	if _, err := a.installMarketComponent(marketEntryIn{ID: "voice", Version: "9.9.9"}, filepath.Join(srcForVoice, "voice")); err == nil {
+		t.Fatal("同名内置组件应拒绝市场安装")
 	}
 	// 内置组件无记账：市场卸载应拒绝（防误删随程序发的组件）
 	code, resp = callHandler(t, a.handleMarketUninstall, "POST", "/api/market/uninstall", `{"type":"component","id":"mk-comp2"}`)

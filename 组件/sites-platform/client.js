@@ -133,7 +133,7 @@
      极简：一个「打开托管平台」入口。与市场组件共用同一台服务器地址（config
      的 marketURL）：skill-market 在场时地址归它的配置段（同在网络访问页上方），
      这里只留入口；它不在场（关闭/摘除）时这里顶上地址字段，平台仍可独立配置
-     使用。市场组件热开关时经 cx:change 联动重挂。组件开关归「内置组件」页。 */
+     使用。市场组件热开关时经 cx:change 联动重挂。组件开关归「组件」页。 */
 
   async function renderNetCfg() {
     const host = document.getElementById('net-sites-cfg');

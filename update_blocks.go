@@ -409,6 +409,12 @@ func (a *App) planComponentBlocks(blocks map[string]updateBlock) []string {
 		if b.Version == "" {
 			continue // 防呆：没版本的块不碰
 		}
+		// 用户组件（组件/user/）不参与热更新：它由用户从市场/发行渠道自己
+		// 装、自己卸，版本归用户；清单里的同名条目即使有块也不去覆盖它。
+		if _, ok := a.Components.Manifest(id); ok && !a.Components.IsBuiltin(id) {
+			log.Printf("[更新] 组件 %s 在本机是用户组件（组件/user/），不参与内置热更新", id)
+			continue
+		}
 		if m, ok := a.Components.Manifest(id); ok && versionCompare(b.Version, m.Version) <= 0 {
 			continue // 本地已是清单版本或更新
 		}
@@ -466,7 +472,7 @@ func (a *App) applyComponentBlocks(blocks map[string]updateBlock, rel releaseInf
 // applyComponentBlock 下载组件 zip → 校验 → 解压找根 → 杀 worker → 整目录替换
 // → Rescan。
 func (a *App) applyComponentBlock(id string, b updateBlock, rel releaseInfo, sourceURL string) error {
-	if strings.ContainsAny(id, `\/:*?"<>|`) || id == "." || id == ".." {
+	if strings.ContainsAny(id, `\/:*?"<>|`) || id == "." || id == ".." || id == userComponentsSubdir {
 		return fmt.Errorf("组件 id 不能当目录名: %s", id)
 	}
 	url := findReleaseAssetURL(rel.Assets, b.File, sourceURL)
@@ -501,7 +507,7 @@ func (a *App) applyComponentBlock(id string, b updateBlock, rel releaseInfo, sou
 	if a.Bridge != nil {
 		a.Bridge.KillComponent(id)
 	}
-	dst := filepath.Join(a.Components.Dir(), id)
+	dst := filepath.Join(a.Components.BuiltinDir(), id)
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
