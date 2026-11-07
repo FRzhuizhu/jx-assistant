@@ -199,7 +199,7 @@ async function openSettings(pane) {
   selRefs.midrun.set(lsGet('jx.midrun', 'queue'));
   renderPluginList();
   mountPluginSections();
-  renderComponentList();
+  renderComponentList(true); // 打开设置页＝组件清单唯一的重扫时机（见 renderComponentList）
   mountComponentPanes(); // 声明了 pane 的组件（如语音）的独立设置页
   renderHotkeysPane(); // 快捷键总表（含组件经 JX.registerHotkey 登记的条目）
   renderSkillsPanel();
@@ -270,14 +270,18 @@ async function loadAboutShell() {
    - 内置组件：随包分发、不可删除，只有开关；升级随程序静默更新；
    - 用户组件：市场/发行渠道单个安装到 组件/user/，可开关、可删除。 ---------- */
 
-async function renderComponentList() {
+async function renderComponentList(rescan) {
   const bBox = $('component-builtin-list');
   const uBox = $('component-user-list');
   if (!bBox || !uBox) return;
   bBox.innerHTML = '加载中…';
   uBox.innerHTML = '';
   let list = [];
-  try { list = (await api('/api/components')).components || []; } catch (e) { bBox.textContent = '组件清单读取失败：' + e.message; return; }
+  // 重扫时机只有一个：打开设置页（组件页）那一次——平时清单接口是纯读，
+  // 不扫目录；这里带 rescan=1 让服务端重扫 组件/ 与 组件/user/，运行中新放进
+  // 或删掉的组件打开设置页即见（桌面版单实例常驻，重开窗口≠重启服务）。
+  const url = rescan ? '/api/components?rescan=1' : '/api/components';
+  try { list = (await api(url)).components || []; } catch (e) { bBox.textContent = '组件清单读取失败：' + e.message; return; }
   bBox.innerHTML = '';
 
   for (const c of list) {

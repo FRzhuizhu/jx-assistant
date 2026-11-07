@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // 组件分两档归属（用户定调），走同一个注册表、同一个组件桥、同一个设置页：
@@ -101,12 +100,17 @@ type ComponentRegistry struct {
 	statePath string // data/components.json
 	items     map[string]componentEntry
 	enabled   map[string]bool
-	scanMu    sync.Mutex // 扫描串行化（清单接口会按需重扫，市场装完显式 Rescan）
-	lastScan  time.Time
+	scanMu    sync.Mutex // 扫描串行化（设置页显式重扫与市场装卸的 Rescan 可能并发）
 }
 
 // InitComponents 扫描 组件/（内置）与 组件/user/（用户）并读开关状态；目录
 // 不存在按空处理，绝不阻断启动。
+//
+// 发现时机（用户定调）：**平时不自动重扫**，清单接口是纯读；重扫只挂在「打开
+// 设置页 → 组件页」这一次——前端带 rescan=1 让服务端 Rescan 一遍。这样运行中
+// 放进/删掉的组件目录打开设置页即见（不必重启服务：桌面版单实例常驻，重开
+// 窗口≠重启服务，正是 user-memory 曾「重启后仍不见」的根因），而平时零扫描
+// 开销。市场装卸与静默更新组件块应用后另有显式 Rescan。
 func InitComponents(dir, statePath string) *ComponentRegistry {
 	r := &ComponentRegistry{dir: dir, statePath: statePath, items: map[string]componentEntry{}, enabled: map[string]bool{}}
 	r.rescan()
@@ -172,7 +176,6 @@ func (r *ComponentRegistry) rescan() {
 	}
 	r.mu.Lock()
 	r.items, r.enabled = items, enabled
-	r.lastScan = time.Now()
 	r.mu.Unlock()
 	if pruned {
 		if data, err := json.MarshalIndent(enabled, "", "  "); err == nil {
@@ -182,23 +185,7 @@ func (r *ComponentRegistry) rescan() {
 	}
 }
 
-// maybeRescan 按需重扫（GET /api/components 调用）。发现机制的缺口修复：
-// 原先只在进程启动那一刻扫一次，而桌面版是单实例常驻（再双击只是把窗口
-// 拉到前面），手工放进 组件/ 的组件、或市场装完但没 Rescan 的组件，不重启
-// 服务就永远看不见——用户「重启后仍不见 user-memory」就是这么来的。
-// 节流 2 秒：组件目录很小，重扫只是几次目录读，但不必每个请求都来一遍。
-func (r *ComponentRegistry) maybeRescan() {
-	r.scanMu.Lock()
-	defer r.scanMu.Unlock()
-	r.mu.Lock()
-	fresh := time.Since(r.lastScan) < 2*time.Second
-	r.mu.Unlock()
-	if fresh {
-		return
-	}
-	r.rescan()
-}
-
+// IsEnabled 组件的全局生效值（未记录=缺省启用）。
 func (r *ComponentRegistry) IsEnabled(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -367,9 +354,12 @@ func (r *ComponentRegistry) Rescan() {
 // ---------- HTTP 处理器 ----------
 
 func (a *App) handleListComponents(w http.ResponseWriter, r *http.Request) {
-	// 先按需重扫：组件目录是可以在运行中增删的（手工放入 / 市场装卸），
-	// 单实例常驻的桌面版不该靠重启服务才能看见新组件。
-	a.Components.maybeRescan()
+	// 纯读清单；重扫只在显式要求时做——前端打开设置页的「组件」页时带
+	// rescan=1 触发一次（组件目录可以在运行中增删，单实例常驻不该靠重启服务
+	// 才看见新组件；但平时不扫，零开销）。
+	if q := r.URL.Query().Get("rescan"); q == "1" || q == "true" {
+		a.Components.Rescan()
+	}
 	// ?s=<会话id>：返回该会话的生效视图（会话覆盖优先于全局开关），并带
 	// sessionCustom 标记（本会话是否定制过）——前端 cx.js 与按对话开关浮窗用。
 	sid := strings.TrimSpace(r.URL.Query().Get("s"))

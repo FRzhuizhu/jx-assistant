@@ -7,14 +7,13 @@ package main
 //     靠读时按默认启用解释（!rec || on）；老客户升级拿到补装的新内置组件
 //     目录 → rescan → 无记录 → 默认开；显式关过的保持关。
 //  2. 两档归属（内置 组件/<id> 与用户 组件/user/<id>）：同一注册表、同一套
-//     开关与资产；内置不可删除、用户可删除；同名时内置优先；清单入口按需
-//     重扫（不重启服务也能看见新放进去的组件目录）。
+//     开关与资产；内置不可删除、用户可删除；同名时内置优先；发现时机只在
+//     「打开设置页」那一次显式重扫（平时清单纯读，零扫描开销）。
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // 场景：老客户升级链——本机从未有过该组件（无目录、无记录），静默更新补装
@@ -134,10 +133,10 @@ func TestComponentIDCollisionBuiltinWins(t *testing.T) {
 	}
 }
 
-// 发现机制缺口：进程启动后新放进来的组件目录（手工/market 以外的渠道），
-// 清单接口按需重扫即能看见——不必重启服务（桌面版单实例常驻，重启窗口
-// 不等于重启服务）。节流窗口内的请求不重复扫。
-func TestComponentsMaybeRescanPicksUpNewDir(t *testing.T) {
+// 发现时机（用户定调）：平时不自动扫——清单接口纯读；只有打开设置页时前端带
+// rescan=1 显式触发一次重扫。运行中新放进去的组件目录因此「打开设置页即见」，
+// 而平时的清单读取不产生任何目录扫描开销。
+func TestComponentsListRescanOnDemand(t *testing.T) {
 	root := t.TempDir()
 	state := filepath.Join(t.TempDir(), "components.json")
 	r := InitComponents(root, state)
@@ -145,24 +144,42 @@ func TestComponentsMaybeRescanPicksUpNewDir(t *testing.T) {
 		t.Fatal("初始应为空")
 	}
 	writeComp(t, root, "user-memory", "AI 记忆与拟人化", "1.1.0")
-	// 把上一轮扫描时间推到节流窗口之外（模拟「启动早已扫过」的常驻进程）
-	r.mu.Lock()
-	r.lastScan = time.Time{}
-	r.mu.Unlock()
-	r.maybeRescan() // 首次调用在扫描窗口外，立即重扫
+	r.List() // 纯读：不扫目录
+	if _, ok := r.Manifest("user-memory"); ok {
+		t.Fatal("清单读取不应触发扫描（平时零扫描开销）")
+	}
+	r.Rescan() // 设置页那次显式重扫
 	if _, ok := r.Manifest("user-memory"); !ok {
-		t.Fatal("运行中新放入的组件目录应被按需重扫发现")
+		t.Fatal("显式重扫后应发现运行中新放入的组件")
 	}
-	// 节流：紧接着再放一个，2 秒内不该被扫到
-	writeComp(t, root, "late-one", "迟到组件", "0.1.0")
-	r.maybeRescan()
-	if _, ok := r.Manifest("late-one"); ok {
-		t.Fatal("节流窗口内不应重复扫描")
+}
+
+// 接口层：GET /api/components 纯读、带 rescan=1 才重扫（前端打开设置页的入口）。
+func TestListComponentsRescanParam(t *testing.T) {
+	a, _, _ := newSessionCXTestApp(t)
+	// 服务跑着的时候放进一个新组件目录（模拟手工放入 / 市场以外的渠道）
+	writeComp(t, a.Components.BuiltinDir(), "late-comp", "迟到组件", "0.1.0")
+
+	code, resp := callHandler(t, a.handleListComponents, "GET", "/api/components", "")
+	if code != 200 {
+		t.Fatalf("清单读取失败: %d %v", code, resp)
 	}
-	// 过了窗口即可见
-	time.Sleep(2100 * time.Millisecond)
-	r.maybeRescan()
-	if _, ok := r.Manifest("late-one"); !ok {
-		t.Fatal("节流窗口过后应扫到新目录")
+	for _, c := range resp["components"].([]any) {
+		if c.(map[string]any)["id"] == "late-comp" {
+			t.Fatal("纯读清单不应顺手扫目录（重扫只挂在打开设置页）")
+		}
+	}
+	code, resp = callHandler(t, a.handleListComponents, "GET", "/api/components?rescan=1", "")
+	if code != 200 {
+		t.Fatalf("重扫清单失败: %d %v", code, resp)
+	}
+	found := false
+	for _, c := range resp["components"].([]any) {
+		if c.(map[string]any)["id"] == "late-comp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("带 rescan=1 时应发现新组件（打开设置页即见）")
 	}
 }

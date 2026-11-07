@@ -416,7 +416,7 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	// 覆盖 ?s= / session）、用户组件卸载。开放给 call_api 让数字经理能查能开关。
 	a.apiRoute(mux, "GET /api/components", a.handleListComponents, apiMeta{
 		Summary: "组件清单（内置组件 + 用户组件，builtin 标记归属）；带 s=会话id 返回该会话的生效视图",
-		Params:  "s 可选（会话id＝会话级生效视图）",
+		Params:  "s 可选（会话id＝会话级生效视图）；rescan=1 可选（先重扫组件目录：平时清单是纯读，重扫只挂在打开设置页）",
 		Perm:    permReadOnly,
 	})
 	a.apiRoute(mux, "POST /api/components", a.handleSetComponent, apiMeta{
@@ -1907,6 +1907,78 @@ func trimMessagesForUI(msgs []*StoredMessage) {
 	}
 }
 
+// olderInfo 是分批加载时「切点之前还有多少没下发」+ 前端 groupTurns 的接力
+// 基线：sys/tools 取切点前最后一条有效 prompt 快照（已被 trim 掏成 {} 的空壳
+// 跳过——它的基线本就是更早那条）——窗口内首条真变更的 prompt 据此显示
+// 「变更行」而非「首见」形态；envBoundary 是压缩摘要覆盖边界（模型已看不到
+// 的 env 快照，前端同样不显示，与切点无关、按全量取最大值）。
+type olderInfo struct {
+	Count       int             `json:"count"`
+	Sys         string          `json:"sys,omitempty"`
+	Tools       json.RawMessage `json:"tools,omitempty"`
+	EnvBoundary int64           `json:"envBoundary,omitempty"`
+}
+
+// isTurnStartMsg 判断某行是否回合起点（真实用户发言 / AI 发出的用户消息），
+// 口径与前端 lastTurnStart 一致。旧库残留的注入通知曾是 kind 空的 user 行，
+// 只能按正文前缀识别（规范 §5）——【 开头或 <goal_round> 的按通知处理，
+// 不作为回合边界。
+func isTurnStartMsg(m *StoredMessage) bool {
+	if m.Role != "user" {
+		return false
+	}
+	if m.Kind == "aiuser" {
+		return true
+	}
+	if m.Kind != "" && m.Kind != "chat" {
+		return false
+	}
+	txt := m.Text()
+	return !strings.HasPrefix(txt, "【") && !strings.HasPrefix(txt, "<goal_round>")
+}
+
+// sliceMsgWindow 在全量消息（已 trim、已并入摘要行）上切出 [lo,hi) 的分批加载
+// 窗口：lo 先按条数定，再**向前**对齐到回合起点（窗口扩大到含完整回合——若向
+// 右缩，起点之前的残段会被后续批次的对齐再次跳过，永远不被渲染）；切点停在
+// inherit 标记行之后时把标记行并入本批（继承段与其克隆历史不拆开）。
+func sliceMsgWindow(msgs []*StoredMessage, lo, hi int) ([]*StoredMessage, olderInfo) {
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > len(msgs) {
+		hi = len(msgs)
+	}
+	if hi <= lo {
+		return nil, olderInfo{Count: len(msgs)}
+	}
+	for i := lo; i >= 0; i-- {
+		if isTurnStartMsg(msgs[i]) {
+			lo = i
+			break
+		}
+	}
+	if lo == 1 && msgs[0].Kind == "inherit" {
+		lo = 0
+	}
+	info := olderInfo{Count: lo}
+	for i := 0; i < lo; i++ {
+		if msgs[i].Kind != kindPrompt || msgs[i].Text() == "{}" {
+			continue
+		}
+		var b promptBrief
+		if json.Unmarshal([]byte(msgs[i].Text()), &b) == nil {
+			info.Sys = b.Sys
+			info.Tools = append(json.RawMessage(nil), b.Tools...) // 自持副本（同 trim 的习惯）
+		}
+	}
+	for _, m := range msgs {
+		if m.Kind == "summary" && m.CoversUpTo > info.EnvBoundary {
+			info.EnvBoundary = m.CoversUpTo
+		}
+	}
+	return msgs[lo:hi], info
+}
+
 func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	m := a.sessionFromPath(w, r)
 	if m == nil {
@@ -1926,6 +1998,22 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(msgs, func(i, j int) bool { return msgs[i].Seq < msgs[j].Seq })
 	}
 	trimMessagesForUI(msgs) // 下发瘦身：库内原样，只削响应副本（见函数注释）
+	// 分批加载（超长对话）：不带参数 = 全量下发（旧调用方零影响）。带 tail /
+	// before_seq 时切出最近一批（回合对齐，见 sliceMsgWindow），older 携带切点前
+	// 剩余条数与分组基线——前端据 older 显示「上面还有 N 条」并按需再取上一批
+	var olderPtr *olderInfo
+	if n, terr := strconv.Atoi(r.URL.Query().Get("tail")); terr == nil && n > 0 {
+		win, info := sliceMsgWindow(msgs, len(msgs)-n, len(msgs))
+		msgs, olderPtr = win, &info
+	} else if bs, berr := strconv.ParseInt(r.URL.Query().Get("before_seq"), 10, 64); berr == nil && bs > 0 {
+		lim := 0
+		if v, lerr := strconv.Atoi(r.URL.Query().Get("limit")); lerr == nil && v > 0 {
+			lim = v
+		}
+		hi := sort.Search(len(msgs), func(i int) bool { return msgs[i].Seq >= bs })
+		win, info := sliceMsgWindow(msgs, hi-lim, hi)
+		msgs, olderPtr = win, &info
+	}
 	// running 与 pending 以内存运行时为准：刷新页面后据此自动接上执行流、
 	// 恢复「已插话/已排队」的显示，不依赖刷新前的页面状态
 	cps, err := a.Store.CheckpointsAfter(m.ID, 0) // seq 从 1 起，>0 即全部
@@ -1944,13 +2032,17 @@ func (a *App) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	// meta 一并带上钉住标记：title_worker 的预检读 meta.titlePinned——此前只有
 	// 顶层字段，预检永远落空，钉住会话每个节奏轮都白调一次模型再吃 409
 	m.TitlePinned = a.titlePinned(m.ID)
-	writeJSON(w, 200, map[string]any{
+	resp := map[string]any{
 		"meta": m, "messages": msgs,
 		"running": a.IsRunning(m.ID), "pending": a.pendingOf(m.ID),
 		"checkpoints": cps, "deliveries": dvs,
 		"error":       a.runError(m.ID), // 最近一次失败原因（输入框上方报错条 + 重试）
 		"titlePinned": m.TitlePinned,    // 手动命名钉住：AI 自动标题（组件 session-title）停改
-	})
+	}
+	if olderPtr != nil {
+		resp["older"] = *olderPtr // 分批加载：上面未下发的条数 + 分组基线（无此字段 = 全量）
+	}
+	writeJSON(w, 200, resp)
 }
 
 // messageTextOf 把消息正文文本化（轻量列表用）：字符串直取；分块数组拼 text 块；

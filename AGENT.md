@@ -1451,12 +1451,13 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
     「内置组件 / 用户组件」两区（与「技能」页同款）；删除走
     `POST /api/components/delete`（对内置返回 400 指路关开关）。同名 id 时内置
     优先（用户那份被忽略并告警）。
-- **发现与开关**：清单接口 `GET /api/components` 按需重扫 `组件/*/` 与
-  `组件/user/*/` 的 `manifest.json`（2 秒节流；启动也扫一次，损坏即跳过告警）
-  ——手工放进/删掉组件目录、市场装卸完成后**刷新页面即见，不必重启服务**
-  （桌面版单实例常驻，重开窗口不等于重启服务，这正是 user-memory 曾经
-  「重启后仍不见」的原因）；开关状态存 `data/components.json`（缺省启用，
-  删目录即清记录）。接口 `GET/POST /api/components`（带 `?s=`/`session` 走会话
+- **发现与开关**：启动扫一次 `组件/*/` 与 `组件/user/*/` 的 `manifest.json`
+  （损坏即跳过告警），之后**平时完全不自动扫**——清单接口是纯读；重扫只挂在
+  「打开设置页 → 组件页」这一次（`GET /api/components?rescan=1`，前端开机渲染
+  清单时带；不需要刷新按钮）。所以手工放进/删掉的组件目录**打开设置页即见，
+  不必重启服务**（桌面版单实例常驻，重开窗口不等于重启服务，这正是 user-memory
+  曾经「重启后仍不见」的原因），平时零扫描开销。开关状态存
+  `data/components.json`（缺省启用，删目录即清记录）。接口 `GET/POST /api/components`（带 `?s=`/`session` 走会话
   级覆盖）、`POST /api/components/delete`（只删用户组件）、资产
   `GET /api/components/{id}/{file}`（仅启用时提供，按组件自身目录解析）。
   这两个接口与 `/api/plugins` 都登记进 call_api 可调目录（`apiMeta`），数字经理
@@ -1634,8 +1635,8 @@ worker 的 stdin/stdout 升级为带 id 的帧协议（req/event/decision/host/h
   不写入。设置页独立选项卡（设置 → AI 记忆与拟人化）由组件 client.js 注册；
   气泡颜色是纯前端设置：`--ai-bubble` CSS 变量注入 `<html>`
   （`web/style.css` 的 `.msg.user.ai` 气泡引用，缺省回退主题灰），保存后即时
-  生效、组件卸载即还原。组件发现：清单接口 `GET /api/components` 每次按需
-  重扫（2 秒节流），运行中放进/删掉组件目录刷新页面即见——不必重启服务；
+  生效、组件卸载即还原。组件发现：平时不扫，打开 设置 → 组件 时前端带
+  `rescan=1` 重扫一次，运行中放进/删掉组件目录打开设置页即见——不必重启服务；
   之后开关即点即生效）。
 
 ## 插件与插件兼容层
