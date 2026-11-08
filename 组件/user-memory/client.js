@@ -7,6 +7,10 @@
 //   - 气泡颜色是本地生效的前端设置：读记忆文档里的 bubbleColor，往
 //     <html> 注入 CSS 变量 --ai-bubble（web/style.css 的 .msg.user.ai 气泡
 //     引用它，缺省回退主题灰）。保存后即时应用，组件卸载即还原默认灰。
+// 设置页 UI 全部复用主站全局类，不依赖其它组件的样式（也不带 client.css）：
+// 色板=主题色那套（.acc-swatch/.cur），输入框=网络访问页那套
+// （.set-field/.sf-label/.pf-input），按钮 .mc-btn、说明 .sf-desc/.pf-note——
+// 深浅色主题随全站 CSS 变量自动协调。
 // 数据全部走主程序的 GET/POST /api/user-memory（usermemory.go，同一份
 // md 文档，数字经理经 call_api 也走它；服务端对超长字段整单报错——前端
 // 提交前已截断，正常不会触发）。
@@ -16,9 +20,12 @@
   var LIMIT = 1000; // 与后端 userMemoryFieldLimit 一致
   var CSS_VAR = '--ai-bubble';
 
-  // 预设色板（浅色系与亮色主题搭；暗色主题下自定义色自担对比度）；空串=默认灰
+  // 预设色板（浅色系与亮色主题搭；暗色主题下自定义色自担对比度）；空串=默认灰。
+  // 交互与 设置→常规→主题色 同一套色板组件（style.css 的 .acc-swatch 圆点 +
+  // .cur 选中描边 + 自定义取色器），仅色值清单不同：气泡色第一位是灰（跟随
+  // 主题），主题色板第一位是主题蓝。
   var PRESETS = [
-    { c: '', n: '默认灰' },
+    { c: '', n: '默认灰（跟随主题）' },
     { c: '#dbeafe', n: '浅蓝' },
     { c: '#e0f2fe', n: '浅青' },
     { c: '#dcfce7', n: '浅绿' },
@@ -74,18 +81,22 @@
   function mountSettings(el) {
     el.innerHTML = '';
 
+    // 说明行 / 分区：全站样式（网络访问页同款结构）
     var note = function (text) {
       var p = document.createElement('p');
-      p.className = 'sp-note';
+      p.className = 'sf-desc';
       p.textContent = text;
       el.appendChild(p);
       return p;
     };
     var group = function (title) {
       var g = document.createElement('div');
-      g.className = 'sp-group';
-      g.textContent = title;
+      g.className = 'gen-section';
+      var h = document.createElement('h4');
+      h.textContent = title;
+      g.appendChild(h);
       el.appendChild(g);
+      return g;
     };
 
     var state = { userName: '', userMemory: '', aiName: '', aiIdentity: '', bubbleColor: '' };
@@ -100,21 +111,25 @@
     preview.textContent = '小助理：这是 AI 消息气泡的颜色预览。';
     el.appendChild(preview);
 
-    // 色板 + 自定义取色器
+    // 色板 + 自定义取色器：与 设置→常规→主题色 同一套色板组件
+    // （.acc-swatch 圆点 + .cur 选中描边，style.css 全局类；容器布局照
+    // #accent-row 复刻——它是按 id 选择器写的，这里不占那个 id）
     var pickerBox = document.createElement('div');
-    pickerBox.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 10px;';
+    pickerBox.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:2px 0 4px;';
     var markSel = function () {
-      pickerBox.querySelectorAll('[data-cxp]').forEach(function (b) {
-        b.style.outline = (b.dataset.cxp === state.bubbleColor) ? '2px solid var(--accent)' : '1px solid var(--border)';
+      pickerBox.querySelectorAll('.acc-swatch').forEach(function (b) {
+        if (b.dataset.cxp === state.bubbleColor) b.classList.add('cur');
+        else b.classList.remove('cur');
       });
     };
     PRESETS.forEach(function (p) {
       var b = document.createElement('button');
       b.type = 'button';
+      b.className = 'acc-swatch';
       b.dataset.cxp = p.c;
       b.title = p.n;
       b.setAttribute('aria-label', '气泡颜色：' + p.n);
-      b.style.cssText = 'width:26px;height:26px;border-radius:8px;cursor:pointer;background:' + (p.c || 'var(--chip)') + ';';
+      b.style.background = p.c || 'var(--chip)';
       b.onclick = function () { setDraft({ bubbleColor: p.c }); };
       pickerBox.appendChild(b);
     });
@@ -122,40 +137,42 @@
     custom.type = 'color';
     custom.title = '自定义颜色';
     custom.value = /^#[0-9a-fA-F]{6}$/.test(state.bubbleColor) ? state.bubbleColor : '#dbeafe';
-    custom.style.cssText = 'width:34px;height:26px;padding:0;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer;';
+    // 取色器外观与主题色板那枚同款（#accent-row input[type=color] 的规则）
+    custom.style.cssText = 'width:24px;height:24px;border:1px solid var(--border);border-radius:6px;background:none;padding:0;cursor:pointer;';
     custom.oninput = function () { setDraft({ bubbleColor: custom.value }); };
     pickerBox.appendChild(custom);
     el.appendChild(pickerBox);
-    note('预设色板第一格「默认灰」= 跟随主题；色板外可用取色器自定义。');
+    note('色板第一格「默认灰」= 跟随主题；色板外可用取色器自定义。');
 
     // ---- 记忆文本字段 ----
     group('用户与 AI 的长期设定');
     note('这些内容会注入每个对话的环境提示词：AI 据此称呼你、自称与定位。各栏上限 1000 字：超出的部分保存时按前 1000 字入库（这里会提示被截断，输入框保留你的完整草稿）；AI 写入超长会直接报错。任务对话中 AI 可用 user_memory 工具更新「用户身份与喜好」一栏；数字经理可读写整个记忆文件。');
 
+    // 字段行：网络访问页同款（.set-field + .sf-label + .pf-input，圆角边框、
+    // 聚焦描边主题色，深浅色主题随全站变量自动协调）
     function textField(label, key, multiLine) {
       var box = document.createElement('div');
-      box.style.cssText = 'margin:8px 0 2px;';
+      box.className = 'set-field';
       var lab = document.createElement('div');
-      lab.className = 'sp-label';
-      lab.style.cssText = 'display:block;margin-bottom:4px;';
+      lab.className = 'sf-label';
       lab.textContent = label;
       box.appendChild(lab);
       var ta;
       if (multiLine) {
         ta = document.createElement('textarea');
         ta.rows = 4;
-        ta.style.cssText = 'width:100%;min-height:70px;resize:vertical;';
+        ta.style.cssText = 'resize:vertical;min-height:70px;line-height:1.6;font-family:inherit;';
       } else {
         ta = document.createElement('input');
         ta.type = 'text';
-        ta.style.cssText = 'width:100%;';
+        ta.autocomplete = 'off';
       }
-      ta.className = 'sp-text';
+      ta.className = 'pf-input';
       ta.addEventListener('input', function () { updCount(); });
       box.appendChild(ta);
-      var cnt = document.createElement('span');
-      cnt.className = 'sp-note';
-      cnt.style.cssText = 'display:block;text-align:right;';
+      var cnt = document.createElement('p');
+      cnt.className = 'sf-desc';
+      cnt.style.cssText = 'text-align:right;margin:4px 0 0;';
       box.appendChild(cnt);
       var updCount = function () {
         var n = runeLen(ta.value);
@@ -174,9 +191,9 @@
     }
 
     var fields = {};
-    textField('用户称呼（AI 怎么称呼你）', 'userName', false);
+    textField('用户称呼（想 AI 怎么称呼你？）', 'userName', false);
     textField('用户身份与喜好（记忆：身份、偏好、习惯、项目背景，AI 可在对话中更新这一栏）', 'userMemory', true);
-    textField('AI 助理名字（AI 的自称）', 'aiName', false);
+    textField('AI 助理名字（你想怎么称呼 AI）', 'aiName', false);
     textField('AI 助理身份（AI 的定位与人设）', 'aiIdentity', true);
 
     // ---- 草稿状态：色板与取色器即时改草稿值（预览同步），保存才落库 ----
@@ -193,10 +210,10 @@
     actions.style.cssText = 'display:flex;gap:10px;align-items:center;margin-top:12px;';
     var save = document.createElement('button');
     save.type = 'button';
-    save.className = 'sp-btn';
+    save.className = 'mc-btn';
     save.textContent = '保存';
     var status = document.createElement('span');
-    status.className = 'sp-note';
+    status.className = 'pf-note';
     actions.appendChild(save);
     actions.appendChild(status);
     el.appendChild(actions);
