@@ -132,6 +132,17 @@ func TestUserMemoryEnvPromptToggle(t *testing.T) {
 			t.Fatalf("组件开启时环境快照应含 %q:\n%s", want, env)
 		}
 	}
+	// 四行标签是用户拍板的最终措辞（第二人称视角，照抄不润色）——钉住防回归
+	for _, want := range []string{
+		"- 用户的名字：张总",
+		"- 用户身份与习惯、喜好：做制造业",
+		"- 你的名字（用户会用这个名字叫你，你也可以用这个名字自称）：小坚",
+		"- 用户定义的你的身份：工程助理",
+	} {
+		if !strings.Contains(env, want) {
+			t.Fatalf("环境快照记忆块的标签应逐字等于用户拍板措辞，缺 %q:\n%s", want, env)
+		}
+	}
 	if strings.Contains(a.systemPrompt(sess), "张总") {
 		t.Fatal("用户记忆不得进系统提示词（设计：只进环境提示词）")
 	}

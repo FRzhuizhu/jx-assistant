@@ -1,12 +1,14 @@
 // 组件 user-memory「AI 记忆与拟人化」的浏览器半边：
 //   - 设置 → AI 记忆与拟人化 独立设置页（CX.registerSettings pane）：AI 对话
 //     气泡颜色选择 + 用户称呼 / 用户身份与喜好 / AI 助理名字 / AI 助理身份；
-//   - 长度约束（1000 字/字段）在前端把关：输入超长红字告知，保存按截断版
-//     提交（保存成功但提示被截断；浏览器里保留完整草稿不动——存不下的
-//     部分下次打开设置页时看到的是已存的截断版）；
+//     **无自带保存按钮**——改动暂存在 DOM 草稿，随设置页右下角的全局「保存」
+//     统一落库（CX.registerSettings 的 save 钩子 → CX.saveSettingsSections，
+//     失败时设置窗不关、状态行亮错、完整草稿留在输入框就地修正）；
+//   - 长度约束（1000 字/字段）在前端把关：输入超长计数行红字预警，保存按
+//     截断版提交（服务端对超长整单报错，不截断存储）；
 //   - 气泡颜色是本地生效的前端设置：读记忆文档里的 bubbleColor，往
 //     <html> 注入 CSS 变量 --ai-bubble（web/style.css 的 .msg.user.ai 气泡
-//     引用它，缺省回退主题灰）。保存后即时应用，组件卸载即还原默认灰。
+//     引用它，缺省回退主题灰）。保存成功才应用，组件卸载即还原默认灰。
 // 设置页 UI 全部复用主站全局类，不依赖其它组件的样式（也不带 client.css）：
 // 色板=主题色那套（.acc-swatch/.cur），输入框=网络访问页那套
 // （.set-field/.sf-label/.pf-input），按钮 .mc-btn、说明 .sf-desc/.pf-note——
@@ -146,7 +148,7 @@
 
     // ---- 记忆文本字段 ----
     group('用户与 AI 的长期设定');
-    note('这些内容会注入每个对话的环境提示词：AI 据此称呼你、自称与定位。各栏上限 1000 字：超出的部分保存时按前 1000 字入库（这里会提示被截断，输入框保留你的完整草稿）；AI 写入超长会直接报错。任务对话中 AI 可用 user_memory 工具更新「用户身份与喜好」一栏；数字经理可读写整个记忆文件。');
+    note('这些内容会注入每个对话的环境提示词：AI 据此称呼你、自称与定位。各栏上限 1000 字：超出的部分保存时按前 1000 字入库（计数行会提示被截断，输入框保留你的完整草稿）；AI 写入超长会直接报错。改动随设置页底部的「保存」一并生效。任务对话中 AI 可用 user_memory 工具更新「用户身份与喜好」一栏；数字经理可读写整个记忆文件。');
 
     // 字段行：网络访问页同款（.set-field + .sf-label + .pf-input，圆角边框、
     // 聚焦描边主题色，深浅色主题随全站变量自动协调）
@@ -168,6 +170,7 @@
         ta.autocomplete = 'off';
       }
       ta.className = 'pf-input';
+      ta.dataset.umKey = key; // saveDraft 按 DOM 收集草稿的定位键（无按钮后落库走全局保存）
       ta.addEventListener('input', function () { updCount(); });
       box.appendChild(ta);
       var cnt = document.createElement('p');
@@ -205,55 +208,14 @@
         : 'var(--chip)';
     }
 
-    // ---- 保存 ----
-    var actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:10px;align-items:center;margin-top:12px;';
-    var save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'mc-btn';
-    save.textContent = '保存';
-    var status = document.createElement('span');
-    status.className = 'pf-note';
-    actions.appendChild(save);
-    actions.appendChild(status);
-    el.appendChild(actions);
-
-    save.onclick = function () {
-      save.disabled = true;
-      status.textContent = '保存中…';
-      status.style.color = '';
-      // 前端把关长度：超长按截断版提交（服务端对超长整单报错，不截断存储）
-      var body = {
-        userName: fields.userName.el.value,
-        userMemory: fields.userMemory.el.value,
-        aiName: fields.aiName.el.value,
-        aiIdentity: fields.aiIdentity.el.value,
-        bubbleColor: state.bubbleColor,
-      };
-      var clipped = [];
-      Object.keys(body).forEach(function (k) {
-        if (typeof body[k] === 'string' && runeLen(body[k]) > LIMIT) {
-          clipped.push(k);
-          body[k] = clamp(body[k]);
-        }
-      });
-      saveMemory(body).then(function (d) {
-        setColor(d.bubbleColor); // 立即应用于对话区气泡
-        if (clipped.length) {
-          status.style.color = 'var(--danger)';
-          status.textContent = '已保存（' + clipped.length + ' 个字段超出 1000 字，已按前 1000 字入库；完整草稿仍在本页输入框里）';
-        } else {
-          status.textContent = '已保存，下一轮对话起对全部会话生效';
-        }
-        // 刻意不回填：输入框保留用户完整草稿（下次打开设置页看到的才是已存版本）
-      }).catch(function (e) {
-        status.style.color = 'var(--danger)';
-        status.textContent = '保存失败：' + (e && e.message ? e.message : e);
-      }).then(function () {
-        save.disabled = false;
-        setTimeout(function () { if (status.isConnected) { status.textContent = ''; status.style.color = ''; } }, 6000);
-      });
-    };
+    // 状态行：无保存按钮（设置页右下角的全局「保存」统一落库）；这行只承载
+    // 读取/保存失败的错误提示——失败时全局不关窗，用户就地修正后可再点保存。
+    var status = document.createElement('p');
+    status.className = 'sf-desc';
+    status.style.cssText = 'margin:10px 0 0;';
+    status.dataset.umStatus = '';
+    el.appendChild(status);
+    el.dataset.umHost = '1'; // 供 saveDraft 按 DOM 定位（见 collectDraft）
 
     // 用已保存的数据回填（仅初始加载；保存后不回填——保留完整草稿）
     function fill(d) {
@@ -272,7 +234,58 @@
       if (!el.isConnected) return; // 设置页已收起：结果作废
       fill(d);
     }).catch(function (e) {
+      status.style.color = 'var(--danger)';
       status.textContent = '读取失败：' + (e && e.message ? e.message : e);
+    });
+  }
+
+  // collectDraft 从设置浮窗挂出的 DOM 收集草稿（保存按钮去掉后，落库走
+  // CX.registerSettings 的 save 钩子——全局「保存」时 CX.saveSettingsSections
+  // 调到这里；save 与 mount 不共享闭包，故按稳定 id 定位）。只认设置浮窗的
+  // #set-pane-component-user-memory——「本对话的组件与插件」浮窗没有全局保存，
+  // 那份挂载的草稿不会被收集（改动停留，无副作用）。
+  function collectDraft() {
+    var pane = document.querySelector('#set-pane-component-user-memory');
+    if (!pane) return null; // 设置页没挂（组件中途被关）：视为无事发生
+    var byKey = {};
+    pane.querySelectorAll('[data-um-key]').forEach(function (t) { byKey[t.dataset.umKey] = t.value; });
+    // 颜色草稿：选中色板的 data-cxp（空串=默认灰）；自定义色（无色板命中）
+    // 读取色器当前值
+    var cur = pane.querySelector('.acc-swatch.cur');
+    var picker = pane.querySelector('input[type=color]');
+    var color = cur ? cur.dataset.cxp : (picker ? picker.value : '');
+    var statusEl = pane.querySelector('[data-um-status]');
+    return { byKey: byKey, color: color, statusEl: statusEl, pane: pane };
+  }
+
+  // saveDraft 保存钩子：收集 DOM 草稿 → 前端把关长度（超长按前 1000 字提交，
+  // 输入框保留完整草稿）→ POST。成功返回 true（全局流程继续，关窗）；失败在
+  // 状态行亮错并返回 false（设置窗不关，修正后可再点保存）。
+  function saveDraft() {
+    var d = collectDraft();
+    if (!d) return Promise.resolve(true);
+    var body = {
+      userName: d.byKey.userName || '',
+      userMemory: d.byKey.userMemory || '',
+      aiName: d.byKey.aiName || '',
+      aiIdentity: d.byKey.aiIdentity || '',
+      bubbleColor: d.color || '',
+    };
+    Object.keys(body).forEach(function (k) {
+      if (typeof body[k] === 'string' && runeLen(body[k]) > LIMIT) {
+        body[k] = clamp(body[k]);
+      }
+    });
+    return saveMemory(body).then(function (saved) {
+      setColor(saved.bubbleColor); // 保存成功才把颜色应用到对话区气泡
+      if (d.statusEl) { d.statusEl.textContent = ''; d.statusEl.style.color = ''; }
+      return true;
+    }).catch(function (e) {
+      if (d.statusEl) {
+        d.statusEl.style.color = 'var(--danger)';
+        d.statusEl.textContent = '「AI 记忆与拟人化」保存失败：' + (e && e.message ? e.message : e);
+      }
+      return false;
     });
   }
 
@@ -293,6 +306,7 @@
           icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><path d="M12 12v0"/></svg>',
         },
         mount: mountSettings,
+        save: saveDraft, // 接入设置页右下角「保存」：改动暂存 DOM，全局保存统一落库
       });
     },
 

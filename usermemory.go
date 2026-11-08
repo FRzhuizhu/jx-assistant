@@ -188,18 +188,20 @@ func (a *App) userMemoryEnvBlock(sess *SessionMeta) string {
 		return ""
 	}
 	d := a.loadUserMemory()
+	// 四行措辞是用户拍板的最终版（第二人称视角），照抄不润色；冒号后的
+	// 括号说明随标签走。存储侧（md 段标题/字段名）是另一套稳定口径，不动。
 	var b strings.Builder
 	if v := envLine(d.UserName); v != "" {
-		b.WriteString("- 用户称呼：" + v + "\n")
+		b.WriteString("- 用户的名字：" + v + "\n")
 	}
 	if v := envLine(d.Memory); v != "" {
-		b.WriteString("- 用户身份与喜好：" + v + "\n")
+		b.WriteString("- 用户身份与习惯、喜好：" + v + "\n")
 	}
 	if v := envLine(d.AIName); v != "" {
-		b.WriteString("- AI 助理名字：" + v + "（回复中的自称用它）\n")
+		b.WriteString("- 你的名字（用户会用这个名字叫你，你也可以用这个名字自称）：" + v + "\n")
 	}
 	if v := envLine(d.AIIdentity); v != "" {
-		b.WriteString("- AI 助理身份：" + v + "\n")
+		b.WriteString("- 用户定义的你的身份：" + v + "\n")
 	}
 	if b.Len() == 0 {
 		return "" // 四个字段全空：整块不出现
@@ -210,7 +212,7 @@ func (a *App) userMemoryEnvBlock(sess *SessionMeta) string {
 	case "aux":
 		b.WriteString("- 记忆维护：以上内容由用户在 设置 → AI 记忆与拟人化 维护（本会话为只读答疑，没有修改工具）\n")
 	default:
-		b.WriteString("- 记忆维护：user_memory 工具可查询并更新「用户身份与喜好」段（了解到用户新的身份/偏好/习惯/项目背景时主动更新；整体替换式写入，先查再改；单次写入上限 1000 字，超长会报错，需精简后重试）；用户称呼与 AI 助理名字/身份由用户在 设置 → AI 记忆与拟人化 维护，不要改动\n")
+		b.WriteString("- 记忆维护：user_memory 工具可查询并更新「用户身份与喜好」段（对应上面「用户身份与习惯、喜好」一行；了解到用户新的身份/偏好/习惯/项目背景时主动更新；整体替换式写入，先查再改；单次写入上限 1000 字，超长会报错，需精简后重试）；用户的名字与你的名字/身份由用户在 设置 → AI 记忆与拟人化 维护，不要改动\n")
 	}
 	return "# 用户记忆（用户与助手的长期设定，全部会话生效）\n" + b.String()
 }
@@ -289,7 +291,7 @@ func (a *App) handleUserMemorySet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"ok": 1,
+		"ok":       1,
 		"userName": saved.UserName, "userMemory": saved.Memory,
 		"aiName": saved.AIName, "aiIdentity": saved.AIIdentity, "bubbleColor": saved.BubbleColor,
 		"path": filepath.ToSlash(a.userMemoryPath()),
@@ -310,7 +312,7 @@ func (a *App) userMemoryTools() []Tool {
 
 func (a *App) userMemoryTool() Tool {
 	return Tool{
-		Spec: toolSpec("user_memory", "查询/更新用户记忆（用户的身份、相关信息与喜好的长期记忆，全部会话共享、每轮注入环境提示词）。不带参数 = 查询当前全部字段；带 memory 参数 = 把「用户身份与喜好」记忆段整体替换为给定内容（先查询、在结果基础上改写，避免丢掉已有记忆；上限 1000 字，超长会报错、本次不写入，需精简后重试）。其余字段（用户称呼、AI 助理名字/身份）是用户的自我设定，本工具只读不写。当你在对话中了解到值得长期记住的用户信息（身份、偏好、习惯、项目背景等）时，主动调用本工具更新记忆。",
+		Spec: toolSpec("user_memory", "查询/更新用户记忆（用户的身份、相关信息与喜好的长期记忆，全部会话共享、每轮注入环境提示词）。不带参数 = 查询当前全部字段；带 memory 参数 = 把「用户身份与喜好」记忆段（注入为「用户身份与习惯、喜好」一行）整体替换为给定内容（先查询、在结果基础上改写，避免丢掉已有记忆；上限 1000 字，超长会报错、本次不写入，需精简后重试）。其余字段（用户的名字、你的名字与身份）是用户的自我设定，本工具只读不写。当你在对话中了解到值得长期记住的用户信息（身份、偏好、习惯、项目背景等）时，主动调用本工具更新记忆。",
 			objSchema(map[string]any{
 				"memory": strProp("新的「用户身份与喜好」记忆段全文（整体替换式写入，上限 1000 字）；不传 = 仅查询"),
 			})),

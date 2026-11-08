@@ -471,6 +471,10 @@
 
     // 组件交出（或更新）自己的设置区；通常在 init 里调用。
     // 设置区随组件激活状态显示：没激活的组件那段不会渲染出来。
+    // def 可带 save: async () => boolean——接入设置页底部「保存」的统一落库
+    // 流程（改动暂存在 mount 出的 DOM 里，全局保存时被 CX.saveSettingsSections
+    // 收集；返回 false 或抛错 = 保存失败，设置窗不关、用户就地修正）。
+    // 组件自己的设置区不该再放保存按钮（设置页右下角已有全局保存）。
     registerSettings(def) {
       if (!def || !def.id || typeof def.mount !== 'function') return;
       const i = this._sections.findIndex((s) => s.id === def.id);
@@ -487,6 +491,22 @@
     // 当前该渲染的组件设置区（只有激活中的组件；设置页照这个清单排）
     settingsSections() {
       return this._sections.filter((s) => this.isActive(s.id));
+    },
+
+    // 设置页底部「保存」的组件链：逐个调激活组件注册项的 save（若有），
+    // 全部成功才返回 true。任一失败即短路返回 false——saveSettings 不关窗。
+    // （「本对话的组件与插件」浮窗没有全局保存：那份挂载的改动停留在草稿。）
+    async saveSettingsSections() {
+      for (const s of this.settingsSections()) {
+        if (typeof s.save !== 'function') continue;
+        try {
+          if (!(await s.save())) return false;
+        } catch (e) {
+          console.error('[cx] 组件设置保存失败:', s.id, e);
+          return false;
+        }
+      }
+      return true;
     },
 
     // 激活状态/设置区有变 → 通知页面（设置页监听 cx:change 重挂组件设置区）

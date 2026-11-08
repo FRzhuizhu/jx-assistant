@@ -1128,9 +1128,11 @@ async function saveProviderDrafts() {
 }
 
 async function saveSettings() {
-  // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再写上下文页配置；
-  // 常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
+  // 底部通用「保存」＝先把当前二级页（模型页）的草稿改变落盘，再走组件设置区
+  // 的统一保存（CX.registerSettings 带 save 钩子的组件在此落库），最后写上下文页
+  // 配置；常规页偏好本来即时生效。任一环节出问题就不关窗口，让用户就地修正。
   if (!(await saveProviderDrafts())) return;
+  if (!(await CX.saveSettingsSections())) return; // 组件设置（如 AI 记忆与拟人化）
   // 间隔以 K 为单位输入（服务端存原值），×1000 提交，0=关闭规则自动压缩；
   // keepChars 的 0 是合法值（全压语义），不能用 || 兜底（会把 0 吞成默认值）
   const clampPct = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0));
