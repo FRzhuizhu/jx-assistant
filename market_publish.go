@@ -9,7 +9,10 @@
    multipart（type / file=zip / id / name / version / desc / tags），**身份取
    X-Jxai-User 请求头**（值=本机发布者姓名），服务端记 owner、判归属；同 id
    重发布只允许原发布者。下架端点 POST /api/market/unpublish {type,id} 同样
-   带头，归属校验在服务端做（客户端只发消息）。
+   带头，归属校验在服务端做（客户端只发消息）。服务端另有「用户名+设备名+IP」
+   三要素审计：这两个用户端点在 X-Jxai-User 之外还必须带 X-Jxai-Device 头
+   （值=本机稳定设备标识，见 marketDevice），缺设备头服务端 403——错误信息
+   已写明原因，客户端经下面的拒绝分支原样转达给用户。
 
    本端点（客户端本地服务）做四件事：
      1. 定位已装技能 技能/user/<id>/，现场打 zip（包根=SKILL.md 所在目录）；
@@ -45,6 +48,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -530,7 +534,27 @@ const (
 // owner 与下载明细、判「只能动自己发的」；没设发布者姓名时不带。
 const marketUserHeader = "X-Jxai-User"
 
+// marketDeviceHeader 设备标识头：与服务端 jxai-server 的 deviceHeader 同名。
+// 用户面发布/下架两个端点必带（三要素审计「用户名+设备名+IP」），缺头服务端
+// 直接 403；清单/下载等只读接口不受影响。值见 marketDevice。
+const marketDeviceHeader = "X-Jxai-Device"
+
 func (a *App) marketUser() string { return strings.TrimSpace(a.Cfg.PublisherName) }
+
+// marketDevice 本机稳定设备标识：复用远程接入设备号 RemoteAccess.MyID
+// （config.go 的 ensureRemoteIdentity 启动时生成并落盘，同一台机器恒定不变），
+// 让市场审计的「设备名」与手机远程入口 /a/<设备号> 同源。防御 MyID 被清空的
+// 极端情况：现场生成一个并立即回写，保证发布/下架永远带得上设备头。
+func (a *App) marketDevice() string {
+	if id := strings.TrimSpace(a.Cfg.RemoteAccess.MyID); id != "" {
+		return id
+	}
+	a.Cfg.RemoteAccess.MyID = genDeviceID()
+	if err := a.Cfg.Save(a.CfgPath); err != nil {
+		log.Printf("市场设备号生成后回写配置失败: %v", err)
+	}
+	return a.Cfg.RemoteAccess.MyID
+}
 
 // marketRequest 给市场请求补身份头（有发布者姓名才带）。
 func (a *App) marketRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
@@ -792,6 +816,7 @@ func (a *App) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set(marketUserHeader, user)
+	req.Header.Set(marketDeviceHeader, a.marketDevice())
 	resp, err := marketPublishClient.Do(req)
 	if err != nil {
 		writeErr(w, 502, "连接市场服务器失败: "+err.Error())
@@ -840,7 +865,8 @@ func (a *App) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
 
 // handleMarketUnpublish 下架一条自己发布的条目：客户端只发消息——归属校验
 // 与「挪进服务端回收站」都在服务端做（POST <origin>/api/market/unpublish，
-// 身份走 X-Jxai-User 头），客户端不再自判归属（那只是给按钮显隐用的 UX）。
+// 身份走 X-Jxai-User + X-Jxai-Device 头，同发布的审计口径），客户端不再自判
+// 归属（那只是给按钮显隐用的 UX）。
 func (a *App) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Type string `json:"type"`
@@ -873,6 +899,7 @@ func (a *App) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(marketUserHeader, user)
+	req.Header.Set(marketDeviceHeader, a.marketDevice())
 	resp, err := marketPublishClient.Do(req)
 	if err != nil {
 		writeErr(w, 502, "连接市场服务器失败: "+err.Error())

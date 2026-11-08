@@ -18,7 +18,8 @@ package main
 //   - 全部请求带 X-Jxai-User 头（值=发布者姓名，没设就不带）——服务端用它记
 //     下载/安装明细（market_events.jsonl）与条目归属 owner；
 //   - 发布/下架见 market_publish.go（用户端点 /api/market/publish、/api/market/unpublish，
-//     归属校验在服务端；下架=进服务端回收站）。
+//     这两个端点除 X-Jxai-User 外还带 X-Jxai-Device 设备头——服务端三要素审计
+//     「用户名+设备名+IP」，缺设备头 403；归属校验在服务端；下架=进服务端回收站）。
 
 import (
 	"bytes"

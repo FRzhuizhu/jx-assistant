@@ -24,6 +24,7 @@ type fakePublishMarket struct {
 	srv    *httptest.Server
 	fields map[string]string
 	user   string // 收到的 X-Jxai-User 头（身份=发布者姓名）
+	device string // 收到的 X-Jxai-Device 头（三要素审计的设备名）
 	file   string
 	zip    []byte
 	code   int
@@ -46,6 +47,7 @@ func newFakePublishMarket(t *testing.T) *fakePublishMarket {
 		}
 		fm.hits++
 		fm.user = r.Header.Get(marketUserHeader)
+		fm.device = r.Header.Get(marketDeviceHeader)
 		for _, k := range []string{"type", "id", "name", "version", "desc", "tags", "owner"} {
 			fm.fields[k] = r.FormValue(k)
 		}
@@ -72,7 +74,9 @@ func newFakePublishMarket(t *testing.T) *fakePublishMarket {
 
 func newPublishTestApp(t *testing.T, marketURL string) *App {
 	a := newMarketTestApp(t, marketURL)
-	a.Cfg.PublisherName = "张三" // 发布者姓名：身份头的来源
+	a.Cfg.PublisherName = "张三"                 // 发布者姓名：身份头的来源
+	a.Cfg.RemoteAccess.MyID = "jx-dev01"         // 远程接入设备号：设备头的来源
+	a.CfgPath = filepath.Join(t.TempDir(), "config.json")
 	return a
 }
 
@@ -201,6 +205,9 @@ func TestPublishInstalledSkill(t *testing.T) {
 	}
 	if fm.user != "张三" {
 		t.Fatalf("身份头应带发布者姓名，实得 %q", fm.user)
+	}
+	if fm.device != "jx-dev01" {
+		t.Fatalf("三要素审计应带 X-Jxai-Device 头（值=远程接入设备号），实得 %q", fm.device)
 	}
 	if fm.fields["owner"] != "" {
 		t.Fatalf("owner 不再走表单字段（身份在头里），实得 %q", fm.fields["owner"])
