@@ -160,9 +160,18 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		a.permMu.Lock()
 		delete(a.questions, q.ID)
 		a.permMu.Unlock()
-		// 计划仍在库里等审批（这一轮只是被停止/中断，不是用户批了或驳了）：
-		// 不发「已解决」——前端把卡收了就再没人挂出来；改为让会话刷新一次，
-		// 卡片原样留着等用户处置（用户之后批准/修改走 resolvePersistedPlan）。
+		// 停止连带取消待审批：本轮被停止（ctx 取消）时，无时限的待审批计划随
+		// 本轮作废（拒绝/撤销语义，不是批准）。不清的话它会一直挂在库里，
+		// /api/questions 兜底轮询还会把它重新挂出来——用户点完停止，审批卡
+		// 仍浮在界面上。作废后落到下面的统一收卡（question_resolved）。
+		if ctx.Err() != nil {
+			if pp, ok := a.Store.PendingPlanOf(sess.ID); ok && pp.ID == q.ID {
+				_ = a.Store.ClearPendingPlan(sess.ID)
+				log.Printf("[对话] 会话 %s 被停止，待审批计划 %s 一并作废", sess.ID, q.ID)
+			}
+		}
+		// 计划仍在库里等审批（用户已批/已驳，清库与收卡由 runExitPlanMode 的
+		// 回答分支负责）：这里不发「已解决」，只让会话刷新一次，卡片原样留着。
 		if pp, ok := a.Store.PendingPlanOf(sess.ID); ok && pp.ID == q.ID {
 			a.broadcast(Event{Type: "session_updated", SessionID: sess.ID})
 			return
@@ -450,6 +459,11 @@ func runAskUserQuestion(t *toolContext, args json.RawMessage) (string, error) {
 	uq := &UserQuestion{Kind: askKindAsk, Question: q, Options: options, AllowFree: allowFree, TimeoutSec: timeoutSec, NoTimeout: noTimeout}
 	ans, ok := t.app.requestUserAnswer(t.ctx, t.sess, uq)
 	if !ok {
+		if t.ctx.Err() != nil {
+			// 本轮被停止：提问随停止取消（没有答案），不是超时放行——AI 侧
+			// 不得把停止当成「按默认方案继续」。
+			return "（本轮被用户停止，提问已随停止取消——没有等到答案，不视为放行。）", nil
+		}
 		return "（用户未在时限内回答——视为放行：按你的默认方案继续执行，做完在汇报里说明这点。）", nil
 	}
 	ans = strings.TrimSpace(ans)
@@ -555,6 +569,9 @@ func runEnterPlanMode(t *toolContext, args json.RawMessage) (string, error) {
 	uq := &UserQuestion{Kind: askKindEnter, Question: truncateRunes(reason, 1000), AllowFree: true}
 	ans, ok := t.app.requestUserAnswer(t.ctx, t.sess, uq)
 	if !ok {
+		if t.ctx.Err() != nil {
+			return "（本轮被用户停止，进入计划模式的确认已随停止取消，会话维持原模式。）", nil
+		}
 		return "（用户未在时限内确认，会话维持原模式。可直接执行；仍觉得该先计划的话稍后再提。）", nil
 	}
 	ans = strings.TrimSpace(ans)
@@ -599,10 +616,10 @@ func runExitPlanMode(t *toolContext, args json.RawMessage) (string, error) {
 	uq := &UserQuestion{Kind: askKindPlan, Question: "请审批以下执行计划", Plan: truncateRunes(plan, 4000), AllowFree: true}
 	ans, ok := t.app.requestUserAnswer(t.ctx, t.sess, uq)
 	if !ok {
-		// 计划审批不设时限：走到这里只可能是本轮被停止/中断（ctx 取消）。计划仍在
-		// 库里等着——用户随时能在计划卡上批准或修改（那会走 resolvePersistedPlan
-		// 把决定落成一条通知并接续执行）。
-		return "（本轮在用户审批之前就结束了（被停止/中断）。这份计划仍然挂着等待审批：用户随时可以批准或修改，批准后按计划继续执行。）", nil
+		// 计划审批不设时限：走到这里只可能是本轮被停止/中断（ctx 取消）。待审批
+		// 计划已随停止一并作废（requestUserAnswer 的收尾清库并广播收卡）——不再
+		// 挂在界面上等用户处置；如仍要推进，重新提交一份计划等审批。
+		return "（本轮被用户停止，计划审批已随停止一并取消（作废，不是批准）。如仍需要按计划推进，请重新提交计划等待用户审批。）", nil
 	}
 	ans = strings.TrimSpace(ans)
 	if ans == "__approve__" {
