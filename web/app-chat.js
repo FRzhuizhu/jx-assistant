@@ -3400,7 +3400,7 @@ function handleGlobalEvent(ev) {
     case 'pending':
       // 插话/排队队列变化：只更新对应的那个视图（自己窗口的操作也会推回来，天然多端一致）
       if (state.cur && ev.sessionId === state.cur.id) applyPending(mainView, ev.pending);
-      if (subState.cur && ev.sessionId === subState.cur.id) applyPending(subView, ev.pending);
+      if (subState.cur && ev.sessionId === state.cur.id) applyPending(subView, ev.pending);
       break;
     case 'stopped':
       // 用户显式停止（runtime.go 终态广播）：不算「完成未查看」，只刷列表
@@ -5216,6 +5216,15 @@ function handleEvent(ev, view) {
       // 用户消息回显落地：「发送中」占位功成身退（助手/工具事件不会先于它到达）
       if (view.state.pendingSend && ev.message && ev.message.role === 'user') {
         view.state.pendingSend = null;
+      }
+      // 插话落库兜底：正式消息到达即摘掉同内容的虚线插话框。实框走本流
+      // （message 事件），虚框清理靠全局总线的 pending 广播——两条通道独立，
+      // 广播在断线重连窗口/订阅者跟不上被丢帧时，实框已现、虚框残留成双框
+      // （插话打断模型流的瞬间事件最密集，最易撞上）。按内容本地摘除，
+      // pending 广播正常到达时快照整体覆盖，两边不冲突。
+      if (ev.message && ev.message.role === 'user' && typeof ev.message.content === 'string'
+        && (view.state.pendingSteer || []).some((p) => p.content === ev.message.content)) {
+        view.state.pendingSteer = view.state.pendingSteer.filter((p) => p.content !== ev.message.content);
       }
       if (view.state.attached) {
         // 跟随别的连接发起的执行：以服务端为准整体重取，避免与已落库内容重复
