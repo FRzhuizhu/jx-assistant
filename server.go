@@ -430,6 +430,29 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 		Perm:    permWorkspace,
 		Danger:  "删除用户组件目录与设置，不可恢复（重装需走市场或手动放回组件/user/）",
 	})
+	// 会话级组件配置（合并层，见 sessioncx.go 文件头）：会话独立时组件的存储
+	// 读写落在会话覆盖上，读取按「会话覆盖 > 全局值」合并——组件零改动。
+	a.apiRoute(mux, "GET /api/components/cfg", a.handleComponentCfgGet, apiMeta{
+		Summary: "某会话的组件配置视图（总开关 + 每组件「会话独立/跟随全局」与覆盖值）",
+		Params:  "s=会话id（必填）",
+		Perm:    permReadOnly,
+	})
+	a.apiRoute(mux, "POST /api/components/cfg", a.handleComponentCfgSet, apiMeta{
+		Summary: "写/删一条会话级组件配置覆盖（组件需在该会话处于「会话独立」）",
+		Params:  "session、id、key、value（缺省或 null＝删这条，回落到全局值）",
+		Perm:    permWorkspace,
+	})
+	a.apiRoute(mux, "POST /api/components/cfg/mode", a.handleComponentCfgMode, apiMeta{
+		Summary: "切换某组件在该会话是「会话独立」还是「跟随全局」（跟随＝删它的会话覆盖）",
+		Params:  "session、id、on（true=会话独立 / false=跟随全局）",
+		Perm:    permWorkspace,
+	})
+	a.apiRoute(mux, "POST /api/components/cfg/scope", a.handleComponentCfgScope, apiMeta{
+		Summary: "会话级组件设置总开关（一键切全场）：开＝本对话独立，关＝清空覆盖回落全局",
+		Params:  "session、on",
+		Perm:    permWorkspace,
+		Danger:  "关掉会清空该会话的全部组件配置覆盖（回落全局值），不可恢复",
+	})
 	// 组件浏览器半边资产挂在 /api/ 下（而非独立 /_components/ 前缀）：前端 cx.js
 	// 统一用 fetch 拿资产，远程模式下 /api/ 前缀经 remote-boot 的 fetch 劫持自动
 	// 走中继隧道——旧 /_components/ 标签相对网关 origin 解析必 404，远程组件全体消失

@@ -1964,6 +1964,28 @@ body.rp-open .w-handle { display: none; }
 .pr-toggle input:checked + span::after { left: 19px; }
 .pr-toggle input:disabled + span { opacity: .4; cursor: not-allowed; }
 .pr-toggle input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 按对话浮窗：每行两个开关（上＝本对话启停，下＝该组件设置「会话独立/跟随全局」），
+   竖排 + 10px 说明字；两个开关等比缩一档（42×25 在两行里太占高度） */
+.pr-toggles {
+  display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; align-items: center;
+}
+.pr-toggles .cxs-tg { display: flex; align-items: center; gap: 6px; }
+.pr-toggles .cxs-tg em {
+  font-style: normal; font-size: 10.5px; line-height: 1; color: var(--text-3);
+  min-width: 22px; text-align: left;
+}
+.pr-toggles .pr-toggle span { width: 36px; height: 21px; }
+.pr-toggles .pr-toggle span::after { width: 17px; height: 17px; }
+.pr-toggles .pr-toggle input:checked + span::after { left: 17px; }
+/* 底部总开关行（本对话使用独立的组件设置）：左标题+说明，右开关 */
+.cxs-scope-row {
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px;
+}
+.cxs-scope-row .cxs-scope-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cxs-scope-row .cxs-scope-txt b { font-size: 13px; }
+.cxs-scope-row .cxs-scope-txt .tip { margin: 0; font-size: 11.5px; }
 .jx-section { margin-top: 4px; }
 #plugin-composer-controls { display: inline-flex; align-items: center; gap: 6px; }
 

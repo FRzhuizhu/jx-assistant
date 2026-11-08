@@ -942,7 +942,7 @@
         <div class="set-pane active" id="cxs-pane-cxs-components">
           <h3>本对话的组件</h3>
           <div class="prov-section">
-            <div class="tip-inline" style="margin:0 0 10px">只影响<b>本对话</b>的生效集：关掉的这里可以开、开着的这里可以关（即时热生效）；全局开关在 设置 → 组件，不受这里影响。与全局一致的项自动恢复「跟随全局」。</div>
+            <div class="tip-inline" style="margin:0 0 10px">每行两个开关：<b>上</b>＝本对话启用/停用该组件（即时热生效）；<b>下</b>＝该组件的设置「会话独立 / 跟随全局」（独立时的改动只影响本对话，切回跟随会删掉本对话那份记录）。全局开关与全局设置在 设置 → 组件，不受这里影响。</div>
             <div id="cxs-component-list"></div>
             <!-- 组件自己的设置区（组件经 CX.registerSettings 交出，非独立页形态） -->
             <div id="cxs-component-sections"></div>
@@ -960,7 +960,17 @@
       </div>
     </div>
     <div class="set-footer">
-      <p class="tip" style="margin:0">改动即时生效且只影响本对话；切到别的对话时按那个对话自己的生效集装配</p>
+      <div class="cxs-scope-row">
+        <div class="cxs-scope-txt">
+          <b>本对话使用独立的组件设置</b>
+          <span class="tip" id="cxs-scope-tip">跟随全局：每行的启停与设置都按 设置 → 组件 里的全局值</span>
+        </div>
+        <label class="pr-toggle" title="一键切全场：关＝每行的配置与启停都完全回归全局（会清空本对话的组件配置覆盖）">
+          <input type="checkbox" id="cxs-cfg-scope">
+          <span></span>
+        </label>
+      </div>
+      <p class="tip" style="margin:2px 0 0">改动即时生效且只影响本对话；切到别的对话时按那个对话自己的生效集与设置装配</p>
       <div class="modal-actions">
         <button id="cxs-close" class="accent">关 闭</button>
       </div>

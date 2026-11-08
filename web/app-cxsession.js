@@ -132,14 +132,19 @@ async function cxsRenderComponentList() {
   const sid = cxsSessionId();
   if (!sid) return;
   box.innerHTML = '加载中…';
-  let list = [];
+  let data;
   try {
-    list = (await api('/api/components?s=' + encodeURIComponent(sid))).components || [];
+    data = await api('/api/components?s=' + encodeURIComponent(sid));
   } catch (e) {
     box.textContent = '组件清单读取失败：' + e.message;
     return;
   }
+  const list = data.components || [];
+  // 配置视图（总开关 + 每行「会话独立/跟随全局」）随清单一起来，同步给运行时
+  const cfg = CX.applyCfg(data.cfg || { scope: false, components: {} });
+  cxsSyncScopeSwitch(cfg, sid);
   box.innerHTML = '';
+
   for (const c of list) {
     const row = document.createElement('div');
     row.className = 'plugin-row';
@@ -149,8 +154,19 @@ async function cxsRenderComponentList() {
       `<div class="pr-line"><b>${esc(c.name)}</b><span class="pr-ver">${esc(c.version || '')}</span>` +
       (c.override ? '<span class="pr-ovr" title="本对话覆盖了全局开关（点击恢复跟随全局）">已覆盖</span>' : '') + '</div>' +
       `<p>${esc(c.description || '')}</p>`;
+    row.appendChild(info);
+
+    // 每行两个开关：上＝本对话启用/停用（行级启停，独立生效）；
+    //               下＝该组件配置「会话独立 / 跟随全局」（总开关关着时不可拨）。
+    const col = document.createElement('div');
+    col.className = 'pr-toggles';
+    const cfe = (cfg.components || {})[c.id] || { on: !!cfg.scope, values: {} };
+
+    const upWrap = document.createElement('div');
+    upWrap.className = 'cxs-tg';
     const tg = document.createElement('label');
     tg.className = 'pr-toggle';
+    tg.title = '本对话启用/停用该组件（只影响本对话）';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!c.enabled; // 会话生效值（覆盖优先于全局）
@@ -175,6 +191,7 @@ async function cxsRenderComponentList() {
             ovr.title = '本对话覆盖了全局开关（点击恢复跟随全局）';
             ovr.textContent = '已覆盖';
             line.appendChild(ovr);
+            bindOvrReset(ovr, c, cb);
           }
         }
       } catch (e) {
@@ -186,24 +203,112 @@ async function cxsRenderComponentList() {
     };
     tg.appendChild(cb);
     tg.appendChild(document.createElement('span'));
-    row.appendChild(info);
-    row.appendChild(tg);
+    upWrap.appendChild(tg);
+    const capUp = document.createElement('em');
+    capUp.textContent = '启用';
+    upWrap.appendChild(capUp);
+    col.appendChild(upWrap);
+
+    const lowWrap = document.createElement('div');
+    lowWrap.className = 'cxs-tg';
+    const cfgTg = document.createElement('label');
+    cfgTg.className = 'pr-toggle';
+    cfgTg.title = cfg.scope
+      ? '该组件的设置：本对话独立保存 / 跟随全局（拨回跟随＝删掉本对话的这份记录）'
+      : '总开关当前是「跟随全局」：打开底部总开关后，每行才能切成会话独立';
+    const cfgCb = document.createElement('input');
+    cfgCb.type = 'checkbox';
+    cfgCb.checked = cfg.scope && cfe.on !== false;
+    cfgCb.disabled = !cfg.scope;
+    cfgCb.onchange = async () => {
+      cfgCb.disabled = true;
+      const note = row.querySelector('.pr-note');
+      try {
+        const r = await api('/api/components/cfg/mode', {
+          method: 'POST',
+          body: JSON.stringify({ session: sid, id: c.id, on: cfgCb.checked }),
+        });
+        // 视图换了就该组件的存储读写换通道：dispose + 重新 init 让它重读一遍
+        CX.applyCfg(r.cfg, [c.id]);
+        if (note) note.textContent = cfgCb.checked
+          ? '已切为「会话独立」：在本对话里改它的设置只影响本对话'
+          : '已切回「跟随全局」：本对话的这份配置记录已删除';
+        const cap = lowWrap.querySelector('em');
+        if (cap) cap.textContent = cfgCb.checked ? '独立' : '跟随';
+      } catch (e) {
+        alert('切换失败：' + e.message);
+        cfgCb.checked = !cfgCb.checked;
+      }
+      cfgCb.disabled = !CX._cfg.scope;
+      setTimeout(() => { if (note) note.textContent = ''; }, 4000);
+    };
+    cfgTg.appendChild(cfgCb);
+    cfgTg.appendChild(document.createElement('span'));
+    lowWrap.appendChild(cfgTg);
+    const capLow = document.createElement('em');
+    capLow.textContent = cfgCb.checked ? '独立' : '跟随';
+    lowWrap.appendChild(capLow);
+    col.appendChild(lowWrap);
+    row.appendChild(col);
+
     // 「已覆盖」徽标点击＝拨回全局值（恢复跟随全局；后端会删掉覆盖记录）
     const ovrBtn = info.querySelector('.pr-ovr');
-    if (ovrBtn) {
-      ovrBtn.style.cursor = 'pointer';
-      ovrBtn.onclick = async (ev) => {
-        ev.stopPropagation();
-        cb.checked = c.globalEnabled;
-        cb.dispatchEvent(new Event('change'));
-      };
-    }
+    if (ovrBtn) bindOvrReset(ovrBtn, c, cb);
     const note = document.createElement('div');
     note.className = 'pr-note';
     row.appendChild(note);
     box.appendChild(row);
   }
   if (!list.length) box.innerHTML = '<div class="pr-note">组件/ 下没有发现组件</div>';
+}
+
+// 「已覆盖」徽标＝一键拨回全局启停值（恢复跟随全局）
+function bindOvrReset(ovrBtn, c, cb) {
+  ovrBtn.style.cursor = 'pointer';
+  ovrBtn.onclick = async (ev) => {
+    ev.stopPropagation();
+    cb.checked = !!c.globalEnabled;
+    cb.dispatchEvent(new Event('change'));
+  };
+}
+
+/* ---------- 底部总开关：本对话使用独立的组件设置（一键切全场） ----------
+   开＝全场进入会话独立（每行下开关可用，缺省独立）；
+   关＝**整行完全回归全局**：每行的配置覆盖与启停覆盖一起清空，回到全局状态。
+   行级细粒度只在本总开关开着时才有意义（关掉后下开关禁用）。 */
+function cxsSyncScopeSwitch(cfg, sid) {
+  const cb = $('cxs-cfg-scope');
+  if (!cb) return;
+  cb.checked = !!(cfg && cfg.scope);
+  cb.disabled = false; // 上一次切换期间被禁用：同步完成即恢复可拨
+  const tip = $('cxs-scope-tip');
+  if (tip) {
+    tip.textContent = cb.checked
+      ? '本对话独立：每行下开关可选「会话独立 / 跟随全局」，独立项的设置只影响本对话'
+      : '跟随全局：每行的启停与设置都按 设置 → 组件 里的全局值';
+  }
+  if (!cb._bound) {
+    cb._bound = true;
+    cb.onchange = async () => {
+      const sid2 = cxsSessionId();
+      if (!sid2) { cb.checked = !cb.checked; return; }
+      cb.disabled = true;
+      try {
+        const r = await api('/api/components/cfg/scope', {
+          method: 'POST',
+          body: JSON.stringify({ session: sid2, on: cb.checked }),
+        });
+        // 全场换视角：所有已启用组件重读一遍存储；再把清单重渲染（启停可能回落到全局）
+        const ids = (CX._list || []).filter((c) => c.enabled).map((c) => c.id);
+        CX.applyCfg(r.cfg, ids);
+        cxsRenderComponentList();
+      } catch (e) {
+        alert('切换失败：' + e.message);
+        cb.checked = !cb.checked;
+        cb.disabled = false;
+      }
+    };
+  }
 }
 
 /* ---------- 插件页（会话生效清单；行渲染复用 app-settings.js 的体系分组） ---------- */

@@ -1,8 +1,20 @@
 package main
 
-// 会话级组件/插件开关覆盖：每个对话可以有自己的生效集，优先于全局开关；
-// 全局开关本身不动（设置页的开关仍归全部对话）。设计动机——语音、Git 面板
-// 这类组件不是每个对话都用得上，用户希望按对话开/关而不影响别的对话。
+// 会话级组件/插件开关覆盖 + 会话级组件配置合并层：每个对话可以有自己的
+// 生效集与组件配置，优先于全局；全局开关/全局配置本身不动（设置页仍归全部
+// 对话）。设计动机——语音、Git 面板这类组件不是每个对话都用得上；组件的偏好
+// 设置（如朗读音色、听写模型）也常要按对话分开。
+//
+// **会话级组件配置（定稿 2026-11-08）：统一「会话视角配置合并层」**
+//   - 覆盖从「组件开关（布尔）」扩成「任意配置项 KV」：Cfg[组件id][键]＝值；
+//   - 读取通道上按「会话覆盖 > 全局值」合并喂给组件（web/cx.js 拦组件自己的
+//     存储命名空间 cx:<组件id>:*，组件零改动——它读到的永远是该会话视角的值）；
+//   - 不搞 manifest 声明：不注入对话的设置会话化也无感知，机制自动覆盖全部
+//     组件的全部前端偏好；
+//   - 全局值仍在组件自己的存储里（独立不动），覆盖统一存会话附属数据；
+//   - 恢复语义：行级切回「跟随全局」＝删该组件的配置覆盖（Cfg[id] 整段消失）；
+//     总开关关掉＝**整行完全回归全局**（配置覆盖 Cfg/CfgFollow 与行级启停覆盖
+//     Components 一起清空）；行级上开关只管启停、下开关只管配置独立/跟随。
 //
 // 存储走会话附属数据（meta 表 sessdata:cx-overrides:<会话id>，随会话生命周期）：
 // 只记显式覆盖（会话里没有记录的键跟随全局）；把某键拨回与全局一致的值时，
@@ -22,6 +34,14 @@ const sessionOverridesKey = "cx-overrides"
 type SessionOverrides struct {
 	Components map[string]bool `json:"components,omitempty"` // 组件id → 生效值
 	Plugins    map[string]bool `json:"plugins,omitempty"`    // "层/插件id" → 生效值
+	// 会话级组件配置合并层（见文件头）：
+	//   CfgScope  浮窗底部总开关：本对话启用独立的组件设置；关＝一切回落全局
+	//   Cfg       组件id → 配置键 → 值（组件存储里的原始字符串，如 "\"zh\""）
+	//   CfgFollow 组件id → true＝该组件在本会话显式跟随全局
+	//             （缺省＝总开关开着时即会话独立：总开关就是「一键切全场」）
+	CfgScope  bool                         `json:"cfgScope,omitempty"`
+	Cfg       map[string]map[string]string `json:"cfg,omitempty"`
+	CfgFollow map[string]bool              `json:"cfgFollow,omitempty"`
 }
 
 // sessionCXRegistry 是全部会话覆盖的内存快照（写时同步落库）。
@@ -57,7 +77,7 @@ func parseSessionOverrides(raw string) *SessionOverrides {
 	if err := json.Unmarshal([]byte(raw), &o); err != nil {
 		return nil
 	}
-	if len(o.Components) == 0 && len(o.Plugins) == 0 {
+	if len(o.Components) == 0 && len(o.Plugins) == 0 && len(o.Cfg) == 0 && len(o.CfgFollow) == 0 && !o.CfgScope {
 		return nil
 	}
 	return &o
@@ -82,7 +102,7 @@ func (r *sessionCXRegistry) set(store *Store, sid string, mutate func(o *Session
 	cur := r.per[sid]
 	if cur == nil {
 		cur = &SessionOverrides{}
-	} else { // 副本：读侧拿到的旧引用不受影响
+	} else { // 副本：读侧拿到的旧引用不受影响（Cfg 两层都要拷）
 		cc, cp := map[string]bool{}, map[string]bool{}
 		for k, v := range cur.Components {
 			cc[k] = v
@@ -90,10 +110,22 @@ func (r *sessionCXRegistry) set(store *Store, sid string, mutate func(o *Session
 		for k, v := range cur.Plugins {
 			cp[k] = v
 		}
-		cur = &SessionOverrides{Components: cc, Plugins: cp}
+		cf := map[string]map[string]string{}
+		for id, kv := range cur.Cfg {
+			inner := map[string]string{}
+			for k, v := range kv {
+				inner[k] = v
+			}
+			cf[id] = inner
+		}
+		cfl := map[string]bool{}
+		for k, v := range cur.CfgFollow {
+			cfl[k] = v
+		}
+		cur = &SessionOverrides{Components: cc, Plugins: cp, CfgScope: cur.CfgScope, Cfg: cf, CfgFollow: cfl}
 	}
 	mutate(cur)
-	empty := len(cur.Components) == 0 && len(cur.Plugins) == 0
+	empty := len(cur.Components) == 0 && len(cur.Plugins) == 0 && len(cur.Cfg) == 0 && len(cur.CfgFollow) == 0 && !cur.CfgScope
 	if empty {
 		delete(r.per, sid)
 	} else {
@@ -112,7 +144,8 @@ func (r *sessionCXRegistry) set(store *Store, sid string, mutate func(o *Session
 // custom 报告某会话是否有任何覆盖记录（前端加号菜单的「已定制」标记）。
 func (r *sessionCXRegistry) custom(sid string) bool {
 	o := r.of(sid)
-	return o != nil && (len(o.Components) > 0 || len(o.Plugins) > 0)
+	return o != nil && (len(o.Components) > 0 || len(o.Plugins) > 0 ||
+		len(o.Cfg) > 0 || len(o.CfgFollow) > 0 || o.CfgScope)
 }
 
 // forget 会话删除时摘掉它的覆盖记录（库里的附属数据行由 Store 一并清）。
@@ -255,6 +288,106 @@ func (a *App) cxoComponentList(sid string) []ComponentStatus {
 		}
 	}
 	return list
+}
+
+// ---------- 会话级组件配置合并层（会话视角 > 全局值） ----------
+
+// cxoComponentCfgOn 该会话里某组件的配置是否「会话独立」：总开关开着、且没有
+// 显式标记跟随全局（缺省＝独立——总开关本身就是「一键切全场」）。
+func (a *App) cxoComponentCfgOn(sid, id string) bool {
+	o := a.SessionCX.of(sid)
+	return o != nil && o.CfgScope && !o.CfgFollow[id]
+}
+
+// cxoComponentCfgView 会话视角的组件配置视图（前端装配/浮窗渲染/接口返回用）：
+//
+//	{ "scope": 总开关, "components": { <组件id>: {"on": 是否会话独立, "values": {键:值}} } }
+//
+// values 是该组的会话覆盖；没被覆盖的键由前端向全局值回落（合并层在前端读取
+// 通道上完成，组件零改动）。
+func (a *App) cxoComponentCfgView(sid string) map[string]any {
+	comps := map[string]any{}
+	if a.Components == nil {
+		return map[string]any{"scope": false, "components": comps}
+	}
+	o := a.SessionCX.of(sid)
+	scope := o != nil && o.CfgScope
+	for _, c := range a.Components.List() {
+		vals := map[string]string{}
+		if scope {
+			for k, v := range o.Cfg[c.ID] {
+				vals[k] = v
+			}
+		}
+		on := scope && !o.CfgFollow[c.ID]
+		comps[c.ID] = map[string]any{"on": on, "values": vals}
+	}
+	return map[string]any{"scope": scope, "components": comps}
+}
+
+// cxoSetComponentCfgScope 总开关：开＝本对话启用独立组件设置（缺省每个组件都
+// 独立，初始覆盖为空＝值全部来自全局）；关＝**整行完全回归全局**——配置覆盖与
+// 启停覆盖一起清空（每行的配置跟随全局、启停开关也跟随全局，见浮窗交互口径）。
+func (a *App) cxoSetComponentCfgScope(sid string, on bool) {
+	a.SessionCX.set(a.Store, sid, func(o *SessionOverrides) {
+		if !on {
+			o.Cfg = nil
+			o.CfgFollow = nil
+			o.Components = nil // 行级启停覆盖一并撤销：整行回到全局状态
+		}
+		o.CfgScope = on
+	})
+}
+
+// cxoSetComponentCfgMode 单个组件「会话独立 / 跟随全局」：跟随全局＝删掉它的
+// 覆盖记录（恢复语义，文件不膨胀）。
+func (a *App) cxoSetComponentCfgMode(sid, id string, on bool) {
+	a.SessionCX.set(a.Store, sid, func(o *SessionOverrides) {
+		if on {
+			delete(o.CfgFollow, id)
+			return
+		}
+		delete(o.Cfg, id) // 删该组件的会话覆盖：跟随全局＝没有自己的记录
+		if o.CfgFollow == nil {
+			o.CfgFollow = map[string]bool{}
+		}
+		o.CfgFollow[id] = true
+	})
+}
+
+// cxoSetComponentCfgValue 写/删一条组件配置覆盖（键不存在＝删）。值＝组件存进
+// localStorage 的原始字符串；与全局一致时由前端负责改发删除（服务端不读组件
+// 的全局存储）。
+func (a *App) cxoSetComponentCfgValue(sid, id, key, value string) {
+	if key == "" {
+		return
+	}
+	a.SessionCX.set(a.Store, sid, func(o *SessionOverrides) {
+		if o.Cfg == nil {
+			o.Cfg = map[string]map[string]string{}
+		}
+		inner := o.Cfg[id]
+		if inner == nil {
+			inner = map[string]string{}
+		}
+		inner[key] = value
+		o.Cfg[id] = inner
+	})
+}
+
+// cxoDeleteComponentCfgValue 删一条覆盖（前端在「值与全局一致」或组件
+// removeItem 时调）：删空后整段（含组件节点）一并摘除。
+func (a *App) cxoDeleteComponentCfgValue(sid, id, key string) {
+	a.SessionCX.set(a.Store, sid, func(o *SessionOverrides) {
+		inner := o.Cfg[id]
+		if inner == nil {
+			return
+		}
+		delete(inner, key)
+		if len(inner) == 0 {
+			delete(o.Cfg, id)
+		}
+	})
 }
 
 // cxoPluginList 插件清单的会话生效视图（同 cxoComponentList）。

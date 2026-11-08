@@ -13,7 +13,13 @@
  * 组件设置区：组件在 init 里调 CX.registerSettings({id, title, mount}) 把自己的
  * 设置区交给 CX 保管；设置页（「组件」页）按 CX.settingsSections() 渲染，
  * 组件激活状态一变（注册/注销/热开关）CX 就派发 window 事件 cx:change，设置页
- * 收到后重挂——于是关掉组件时它那段设置连同按钮一起消失。 */
+ * 收到后重挂——于是关掉组件时它那段设置连同按钮一起消失。
+ *
+ * 会话级组件配置（合并层，2026-11-08 定稿）：本运行时拦组件自己的存储命名空间
+ * localStorage['cx:<组件id>:*']——当前会话「会话独立」时，读命中会话覆盖、
+ * 未覆盖的键回落全局值，写只落会话覆盖（与全局值相同即不记覆盖）。组件零改动，
+ * 它读到的永远是该会话视角的值；不注入对话的设置会话化也无感知（自动覆盖）。
+ * 覆盖记录存会话附属数据（sessioncx.go / sessioncxcfg.go），切会话时重新拉齐。 */
 
 (function () {
   // 同一 window 里文档被整页替换（配对页 gate 的 document.open/write 换页、离线缓存
@@ -43,6 +49,8 @@
     _failed: {},      // id -> 上次失败时间戳（组件没起来过，等退避后重放）
     _sections: [],    // {id, title, mount}：组件设置区（设置页「组件」渲染）
     _session: '',     // 当前会话id（''＝无会话，按全局开关装配；随 session:open 切换）
+    _cfg: { scope: false, components: {} }, // 本会话的组件配置视图（总开关+每组件覆盖）
+    _cfgSession: '',  // _cfg 属于哪个会话（切会话要整段重装配）
     _listGen: 0,      // 清单拉取代数（切会话与 boot 并发时，旧的晚到响应作废）
     sessionCustom: false, // 当前会话是否定制过组件/插件生效集（加号菜单的 ✓）
 
@@ -57,7 +65,10 @@
       id = id || '';
       if (this._session === id) return;
       this._session = id;
-      if (!id) this.sessionCustom = false;
+      if (!id) {
+        this.sessionCustom = false;
+        this._cfg = { scope: false, components: {} }; // 回首页：全局视角（也解掉旧会话的拦截）
+      }
       this.refresh();
     },
 
@@ -87,6 +98,7 @@
       this._booting = false;
       if (gen !== this._listGen) return; // 等待期间切了会话：setSession 的 refresh 接管
       this._ok = true;
+      this._setCfg(data && data.cfg); // 配置先就位：组件的 init 第一口读到的就是会话视角
       this._applyList((data && data.components) || []);
       this.sessionCustom = !!(data && data.sessionCustom);
     },
@@ -266,18 +278,27 @@
     // （会话切换带来的开/关），后者是会话级覆盖的装配路径。
     async refresh() {
       const gen = ++this._listGen;
+      const sessionChanged = this._cfgSession !== this._session;
       let fresh;
       try {
         const res = await fetch(this._listURL());
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         fresh = (data && data.components) || [];
-        if (gen === this._listGen) this.sessionCustom = !!(data && data.sessionCustom);
+        if (gen === this._listGen) {
+          this.sessionCustom = !!(data && data.sessionCustom);
+          this._setCfg(data && data.cfg); // 会话视角的组件配置（总开关 + 覆盖）
+        }
       } catch (e) {
         console.warn('[CX] 清单刷新失败', e);
         return;
       }
       if (gen !== this._listGen) return; // 已被更新的拉取顶掉：晚到的丢弃
+      // 切了会话：已装的组件带的是上个会话的配置，全部卸掉按新会话重装
+      // （_applyList 的「已在跑就不动」只适用于同一会话内的增删对账）
+      if (sessionChanged) {
+        for (const id of Object.keys(this._active)) this._deactivate(id);
+      }
       // 瞬时空清单（远程中继抖动 / 服务端正扫目录）不等于「组件全被删了」——
       // 照单全收会把所有组件 dispose 掉且再也没有补回的机会（按钮消失的另一种来路），
       // 这里当作异常跳过本轮对账（2026-10-21）。
@@ -307,6 +328,134 @@
         if (c.enabled && !this._active[c.id]) this._inject(c);
       }
       this._signal(); // 增删/启停都会影响设置页「组件」清单与组件设置区
+    },
+
+    /* ---------- 会话级组件配置（合并层） ---------- */
+
+    // 装上配置视图（boot/refresh 从 /api/components?s= 的 cfg 字段来）
+    _setCfg(cfg) {
+      const base = { scope: false, components: {} };
+      this._cfg = (cfg && cfg.components) ? cfg : base;
+      this._cfgSession = this._session;
+      return this._cfg;
+    },
+
+    // 外部换掉配置视图（浮窗改完 mode/scope 后拿接口回包调它），并可指定
+    // 需要「重读配置」的组件（dispose + 重新 init：组件自己重新读一遍存储）。
+    applyCfg(cfg, reloadIds) {
+      this._setCfg(cfg);
+      for (const id of (reloadIds || [])) this.reloadComponent(id);
+      this._signal(); // 浮窗/设置页按新视图重渲染
+      return this._cfg;
+    },
+
+    // 全局设置页开着时不走会话视角：那里的读写是「全局值」，与浮窗里的会话
+    // 视角分开（两块界面不会同时用，按可见性判定足够）。
+    _cfgBypassNow() {
+      try {
+        const el = document.getElementById('settings');
+        return !!(el && !el.classList.contains('hidden'));
+      } catch (e) { return false; }
+    },
+
+    // 某组件在本会话的配置覆盖（null＝跟随全局，读写真存储）。缺省＝独立：
+    // 总开关开着而又没显式标记「跟随全局」时即为会话独立（总开关即一键切全场）。
+    _cfgFor(id) {
+      const c = this._cfg;
+      if (!c || !c.scope) return null;
+      if (this._cfgBypassNow()) return null; // 全局设置页：写全局值
+      const e = (c.components || {})[id];
+      if (e && e.on === false) return null;
+      if (!e) { // 清单里还没有它的条目（组件刚装）：独立、无覆盖
+        this._cfg.components = this._cfg.components || {};
+        this._cfg.components[id] = { on: true, values: {} };
+        return this._cfg.components[id].values;
+      }
+      if (!e.values) e.values = {};
+      return e.values;
+    },
+
+    // 组件存储键 → 组件id（只认 cx:<组件id>:<键> 这一层命名空间）
+    _cxKeyComp(key) {
+      if (typeof key !== 'string' || key.slice(0, 3) !== 'cx:') return '';
+      const i = key.indexOf(':', 3);
+      return i > 3 ? key.slice(3, i) : '';
+    },
+
+    // 写一条会话覆盖（value=null 表示删；失败只告警——组件自己的内存态已经对了）
+    _cfgPost(id, key, value) {
+      if (!this._session) return;
+      try {
+        fetch('/api/components/cfg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: this._session, id, key, value }),
+        }).then((r) => { if (!r.ok) console.warn('[CX] 会话配置写入失败', r.status); })
+          .catch((e) => console.warn('[CX] 会话配置写入失败', e));
+      } catch (e) { /* 忽略：下一次读取仍按内存覆盖走 */ }
+    },
+
+    // 装读取通道：拦 localStorage 的 cx:<组件id>:* 三个动词（组件零改动）。
+    // 会话独立 → 命中会话覆盖、未覆盖的键回落全局值；写只落会话覆盖（与全局
+    // 值相同即不记，恢复语义「跟随全局」靠删记录实现）。跟随全局 → 原样透传。
+    _installCfgChannel() {
+      if (this._cfgChannel) return;
+      const self = this;
+      let ls = null;
+      try { ls = window.localStorage; } catch (e) { return; } // 隐私模式/被禁用
+      if (!ls || !ls.getItem) return;
+      const oGet = ls.getItem.bind(ls);
+      const oSet = ls.setItem.bind(ls);
+      const oRem = ls.removeItem.bind(ls);
+      this._cfgChannel = { get: oGet, set: oSet, remove: oRem };
+      ls.getItem = function (key) {
+        const comp = self._cxKeyComp(key);
+        if (comp) {
+          const vals = self._cfgFor(comp);
+          if (vals && Object.prototype.hasOwnProperty.call(vals, key)) return vals[key];
+        }
+        return oGet(key);
+      };
+      ls.setItem = function (key, val) {
+        const comp = self._cxKeyComp(key);
+        const vals = comp ? self._cfgFor(comp) : null;
+        const str = String(val);
+        if (!vals) { oSet(key, str); return; }
+        if (oGet(key) === str) { // 与全局值一致：不记覆盖（跟随全局的同一份值）
+          if (Object.prototype.hasOwnProperty.call(vals, key)) {
+            delete vals[key];
+            self._cfgPost(comp, key, null);
+          }
+          return;
+        }
+        vals[key] = str;
+        self._cfgPost(comp, key, str);
+      };
+      ls.removeItem = function (key) {
+        const comp = self._cxKeyComp(key);
+        const vals = comp ? self._cfgFor(comp) : null;
+        if (!vals) { oRem(key); return; }
+        // 会话独立时删键＝删掉会话覆盖，读取回落到全局值
+        if (Object.prototype.hasOwnProperty.call(vals, key)) {
+          delete vals[key];
+          self._cfgPost(comp, key, null);
+        }
+      };
+    },
+
+    // 重装一个组件（配置视图变了要让它重新读一遍存储）：dispose + 重新注入
+    reloadComponent(id) {
+      const c = this._manifest(id);
+      if (!c || !c.enabled) return false;
+      this._deactivate(id);
+      this._inject(c);
+      return true;
+    },
+
+    reloadAll() {
+      let n = 0;
+      for (const c of this._list) if (c.enabled && this.reloadComponent(c.id)) n++;
+      return n;
     },
 
     // 热卸载一个组件（对账与开关共用）：dispose + 摘标签 + 清登记
@@ -349,6 +498,7 @@
     isActive(id) { return !!this._active[id]; },
   };
 
+  CX._installCfgChannel(); // 先装读取通道：组件的第一口存储读就按会话视角走
   window.CX = CX;
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => CX.boot());

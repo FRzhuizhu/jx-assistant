@@ -132,3 +132,120 @@ func TestSessionCXPersistAndForget(t *testing.T) {
 		t.Fatal("forget 后不应再标记定制")
 	}
 }
+
+// 会话级组件配置合并层（定稿 2026-11-08）：会话独立时读写落会话覆盖、
+// 读取按「会话覆盖 > 全局值」合并；行级切回跟随＝删该组件记录；总开关关掉
+// ＝整行完全回归全局（配置覆盖与启停覆盖一起清空）。
+func TestSessionCXComponentCfg(t *testing.T) {
+	a, sidA, sidB := newSessionCXTestApp(t)
+
+	// 基线：总开关关着 → 没有组件是会话独立，视图里也没有覆盖值
+	v := a.cxoComponentCfgView(sidA)
+	if v["scope"].(bool) {
+		t.Fatal("基线总开关应为关")
+	}
+	if a.cxoComponentCfgOn(sidA, "voice") {
+		t.Fatal("总开关关着时不应有组件的配置会话独立")
+	}
+
+	// 打开总开关：缺省每个组件都独立（一键切全场）
+	a.cxoSetComponentCfgScope(sidA, true)
+	if !a.cxoComponentCfgOn(sidA, "voice") || !a.cxoComponentCfgOn(sidA, "git-panel") {
+		t.Fatal("总开关开着时组件缺省会话独立")
+	}
+	if a.cxoComponentCfgOn(sidB, "voice") {
+		t.Fatal("A 的总开关不该影响 B")
+	}
+
+	// 写一条覆盖：落 Cfg[组件id][键]，视图带出来
+	a.cxoSetComponentCfgValue(sidA, "voice", "cx:voice:rate", `1.5`)
+	vals := a.cxoComponentCfgView(sidA)["components"].(map[string]any)["voice"].(map[string]any)["values"].(map[string]string)
+	if vals["cx:voice:rate"] != `1.5` {
+		t.Fatalf("覆盖值应出现在视图里: %v", vals)
+	}
+	if !a.SessionCX.custom(sidA) {
+		t.Fatal("有配置覆盖应标记定制")
+	}
+
+	// 行级切回跟随全局＝删该组件记录（恢复语义）
+	a.cxoSetComponentCfgMode(sidA, "voice", false)
+	if a.cxoComponentCfgOn(sidA, "voice") {
+		t.Fatal("切回跟随全局后不该再是会话独立")
+	}
+	if o := a.SessionCX.of(sidA); o != nil && len(o.Cfg["voice"]) > 0 {
+		t.Fatalf("切回跟随全局应删掉该组件的覆盖记录: %v", o.Cfg)
+	}
+	if !a.cxoComponentCfgOn(sidA, "git-panel") {
+		t.Fatal("别的组件不该被行级切换波及")
+	}
+
+	// 总开关关掉＝整行完全回归全局：配置与启停覆盖一起清空
+	a.cxoSetComponentCfgValue(sidA, "git-panel", "cx:git-panel:branch", `"dev"`)
+	a.cxoSetComponent(sidA, "git-panel", true) // 启停也覆盖成与全局不同（全局关）
+	if !a.cxoComponentEnabled(sidA, "git-panel") {
+		t.Fatal("启停覆盖应生效")
+	}
+	a.cxoSetComponentCfgScope(sidA, false)
+	if o := a.SessionCX.of(sidA); o != nil && (o.CfgScope || len(o.Cfg) > 0 || len(o.Components) > 0) {
+		t.Fatalf("总开关关掉应清空配置与启停覆盖: %+v", o)
+	}
+	if a.cxoComponentEnabled(sidA, "git-panel") {
+		t.Fatal("总开关关掉后启停应回落到全局（全局关）")
+	}
+	if a.SessionCX.custom(sidA) {
+		t.Fatal("全清后不应再标记定制")
+	}
+
+	// 持久化：重启后覆盖仍在
+	a.cxoSetComponentCfgScope(sidA, true)
+	a.cxoSetComponentCfgValue(sidA, "voice", "cx:voice:rate", `2`)
+	r2 := loadSessionCX(a.Store)
+	o := r2.of(sidA)
+	if o == nil || !o.CfgScope || o.Cfg["voice"]["cx:voice:rate"] != `2` {
+		t.Fatalf("重启后会话配置覆盖应完整: %+v", o)
+	}
+}
+
+// 接口层：GET 视图 / POST 写键与删键 / mode 与 scope（含在「跟随全局」时拒写）。
+func TestSessionCXComponentCfgHTTP(t *testing.T) {
+	a, sidA, _ := newSessionCXTestApp(t)
+
+	code, resp := callHandler(t, a.handleComponentCfgGet, "GET", "/api/components/cfg?s="+sidA, "")
+	if code != 200 || resp["cfg"] == nil {
+		t.Fatalf("读视图失败: %d %v", code, resp)
+	}
+	// 总开关没开时写键应被拒（提示先切会话独立）
+	code, _ = callHandler(t, a.handleComponentCfgSet, "POST", "/api/components/cfg",
+		`{"session":"`+sidA+`","id":"voice","key":"cx:voice:x","value":"1"}`)
+	if code == 200 {
+		t.Fatal("跟随全局时不应允许写会话配置")
+	}
+	code, _ = callHandler(t, a.handleComponentCfgScope, "POST", "/api/components/cfg/scope",
+		`{"session":"`+sidA+`","on":true}`)
+	if code != 200 {
+		t.Fatalf("开总开关失败: %d", code)
+	}
+	code, resp = callHandler(t, a.handleComponentCfgSet, "POST", "/api/components/cfg",
+		`{"session":"`+sidA+`","id":"voice","key":"cx:voice:x","value":"1"}`)
+	if code != 200 {
+		t.Fatalf("写配置失败: %d %v", code, resp)
+	}
+	// value 缺省＝删这条（回落到全局值）
+	code, resp = callHandler(t, a.handleComponentCfgSet, "POST", "/api/components/cfg",
+		`{"session":"`+sidA+`","id":"voice","key":"cx:voice:x"}`)
+	if code != 200 {
+		t.Fatalf("删配置失败: %d %v", code, resp)
+	}
+	cv := a.cxoComponentCfgView(sidA)["components"].(map[string]any)["voice"].(map[string]any)
+	if len(cv["values"].(map[string]string)) != 0 {
+		t.Fatalf("删键后不应还有覆盖: %v", cv)
+	}
+	// 不存在的组件/会话一律 404
+	if code, _ := callHandler(t, a.handleComponentCfgSet, "POST", "/api/components/cfg",
+		`{"session":"`+sidA+`","id":"nope","key":"k","value":"v"}`); code != 404 {
+		t.Fatalf("未知组件应 404，实得 %d", code)
+	}
+	if code, _ := callHandler(t, a.handleComponentCfgGet, "GET", "/api/components/cfg?s=nope", ""); code != 404 {
+		t.Fatalf("未知会话应 404，实得 %d", code)
+	}
+}

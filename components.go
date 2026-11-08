@@ -361,12 +361,15 @@ func (a *App) handleListComponents(w http.ResponseWriter, r *http.Request) {
 		a.Components.Rescan()
 	}
 	// ?s=<会话id>：返回该会话的生效视图（会话覆盖优先于全局开关），并带
-	// sessionCustom 标记（本会话是否定制过）——前端 cx.js 与按对话开关浮窗用。
+	// sessionCustom 标记（本会话是否定制过）与 cfg（会话视角的组件配置合并层：
+	// 总开关 + 每组件覆盖）——前端 cx.js 一次拉齐、装配前就位，按对话开关
+	// 浮窗也照这份渲染。
 	sid := strings.TrimSpace(r.URL.Query().Get("s"))
 	if sid != "" {
 		writeJSON(w, 200, map[string]any{
 			"components":    a.cxoComponentList(sid),
 			"sessionCustom": a.SessionCX.custom(sid),
+			"cfg":           a.cxoComponentCfgView(sid),
 		})
 		return
 	}
