@@ -105,7 +105,14 @@ window.addEventListener('popstate', (e) => {
 });
 
 $('cxsession').addEventListener('click', (e) => { if (e.target === $('cxsession')) closeCXSessionUI(); });
-$('cxs-close').onclick = () => closeCXSessionUI();
+$('cxs-cancel').onclick = () => closeCXSessionUI(); // 丢弃设置区草稿（下次打开重挂重读）；开关的即时改动保持已生效状态
+// 底部「保存」＝组件设置区草稿统一落库（与设置页右下角同一个 CX.save 钩子链；
+// 开关本来就即时生效不归这里管）。任一组件保存失败就不关窗——错误亮在组件
+// 自己的状态行，修正后可再点保存。
+$('cxs-save').onclick = async () => {
+  if (!(await CX.saveSettingsSections())) return;
+  closeCXSessionUI();
+};
 $('cxs-back').onclick = () => {
   if (cxsNav.level === 2 && isNarrow()) {
     // 手机二级 → 一级：UI 直切，历史栈有就同步退一步（与设置页同款纪律）

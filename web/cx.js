@@ -59,12 +59,21 @@
       return '/api/components' + (this._session ? '?s=' + encodeURIComponent(this._session) : '');
     },
 
+    // 当前会话 id（''＝无会话/全局视角）。组件（如 user-memory 的会话独立
+    // 记忆）用它给自己的按会话读写接口拼 ?s= 参数。
+    session() {
+      return this._session || '';
+    },
+
     // 会话切换（含回首页＝空串）：记录会话并拉新清单对账——本会话关掉的组件
     // 热卸载、本会话额外打开的热注入，与设置页热开关同一条注入/卸载路径。
     setSession(id) {
       id = id || '';
       if (this._session === id) return;
       this._session = id;
+      // 会话切换事件：按会话视角自管状态的组件（如 user-memory 的气泡颜色）
+      // 监听它重取自己的值；与 cx:change（生效集变化）互补。
+      try { window.dispatchEvent(new CustomEvent('cx:session', { detail: { session: id } })); } catch (e) { /* 老引擎忽略 */ }
       if (!id) {
         this.sessionCustom = false;
         this._cfg = { scope: false, components: {} }; // 回首页：全局视角（也解掉旧会话的拦截）
