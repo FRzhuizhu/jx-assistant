@@ -8396,6 +8396,13 @@ function setupWidthHandles() {
     wrap.parentNode.insertBefore(zone, wrap);
     zone.appendChild(wrap);
   }
+  // 拖拽跟随不依赖 setPointerCapture：把手只有 10px 宽，捕获一旦失效，move 事件
+  // 只剩「指针正压在把手上」的窄窗才有——2026-11-08 远程实报：经网关打开的页面
+  // 上捕获静默不生效，对话区把手的 ×2 增益让把手以与指针同速跑离，拖几个像素
+  // 就再也跟不上（「能动很小一点，离开就不跟」）。改为拖动期间由 window 接管
+  // move/up：指针下无论是什么元素，事件都冒泡到 window，捕获在不在都持续跟随；
+  // setPointerCapture 保留为增强（本地可用时，指针拖出窗口外也不断流）。
+  // 三处分割条（对话区/右栏/左栏）同一模式，见 app-right.js / app-left.js。
   for (const side of ['left', 'right']) {
     const h = document.createElement('div');
     h.className = 'w-handle ' + side;
@@ -8409,7 +8416,7 @@ function setupWidthHandles() {
       h.classList.add('dragging');
       try { h.setPointerCapture(e.pointerId); } catch (err) { /* 旧浏览器忽略 */ }
     });
-    h.addEventListener('pointermove', (e) => {
+    window.addEventListener('pointermove', (e) => {
       if (!h.classList.contains('dragging')) return;
       const dx = (e.clientX - startX) * 2 * (side === 'right' ? 1 : -1); // 居中对称放大
       setContentWidth(startW + dx);
@@ -8419,8 +8426,8 @@ function setupWidthHandles() {
       h.classList.remove('dragging');
       setContentWidth(contentWidth(), true); // 松手落盘
     };
-    h.addEventListener('pointerup', up);
-    h.addEventListener('pointercancel', up);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
     h.addEventListener('dblclick', () => {
       document.documentElement.style.removeProperty('--content-w');
       lsSet('jx.contentWidth', null);

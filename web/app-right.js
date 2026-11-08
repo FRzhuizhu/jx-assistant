@@ -225,7 +225,10 @@ function toggleRpanel() {
   }
 }
 
-/* 右栏左缘拖拽：拖动中右栏与对话区同时变宽窄；松手只把对话区宽度落盘 */
+/* 右栏左缘拖拽：拖动中右栏与对话区同时变宽窄；松手只把对话区宽度落盘。
+   拖动跟随不依赖 setPointerCapture（捕获在远程页面会静默失效，10px 把手
+   之外收不到 move）——move/up 由 window 接管，事件从指针下元素冒泡到
+   window，捕获在不在都持续跟随；捕获保留为增强（本地拖出窗口也不断）。 */
 function setupRpanelResize() {
   const h = $('rp-resize');
   if (!h) return;
@@ -247,7 +250,7 @@ function setupRpanelResize() {
     h.classList.add('dragging');
     try { h.setPointerCapture(e.pointerId); } catch (err) { /* 旧浏览器忽略 */ }
   });
-  h.addEventListener('pointermove', (e) => {
+  window.addEventListener('pointermove', (e) => {
     if (!h.classList.contains('dragging')) return;
     const upper = Math.max(avail - RP_CONTENT_MIN, RP_MIN);
     const w = Math.round(Math.min(Math.max(startW + (startX - e.clientX), RP_MIN), upper));
@@ -268,8 +271,8 @@ function setupRpanelResize() {
     document.documentElement.style.setProperty('--content-w', cw + 'px');
     lsSet('jx.contentWidth', String(cw));
   };
-  h.addEventListener('pointerup', up);
-  h.addEventListener('pointercancel', up);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
 }
 
 let subKids = []; // 当前主对话的子对话清单（下拉面板数据）

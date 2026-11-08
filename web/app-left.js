@@ -1152,7 +1152,10 @@ function setupSidebarResize() {
     h.classList.add('dragging');
     try { h.setPointerCapture(e.pointerId); } catch (err) { /* 旧浏览器忽略 */ }
   });
-  h.addEventListener('pointermove', (e) => {
+  // 拖动跟随不依赖 setPointerCapture（远程页面上捕获会静默失效，10px 把手之外
+  // 收不到 move）：move/up 由 window 接管，事件从指针下元素冒泡到 window——
+  // 与对话区把手（app-chat.js）、右栏左缘（app-right.js）同一模式。
+  window.addEventListener('pointermove', (e) => {
     if (!h.classList.contains('dragging')) return;
     if (applySidebarWidth(startW + (e.clientX - startX)) !== startW) moved = true;
   });
@@ -1161,8 +1164,8 @@ function setupSidebarResize() {
     h.classList.remove('dragging');
     if (moved) applySidebarWidth(sbWidth(), true); // 松手落盘
   };
-  h.addEventListener('pointerup', up);
-  h.addEventListener('pointercancel', up);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
   h.addEventListener('dblclick', () => {
     lsSet('jx.sbw', null);
     applySidebarWidth(272);
