@@ -123,25 +123,31 @@ Write-Host ("== stage exe 校验通过：PE AMD64 / {0:N1} MB" -f ($exeItem.Leng
 Write-Host "== 暂存技能目录（含便携 Python 运行时，体积较大）"
 Copy-Item $SkillsSource (Join-Path $stage "技能") -Recurse -Force
 
-# 技能\_runtime 按仓库索引收敛：开发机上跑用户技能时 pip 装进共享运行时的
-# 第三方包（实测 AI 剪视频技能带来 nvidia/ctranslate2/faster-whisper 等 2 GB+）
-# 绝不能随包发给客户——用户技能的依赖由对方机器装技能时自己装配。判定基准
-# 就是 git 索引：HEAD 里有的是内置技能依赖（必须随包），没有的一律剔掉。
-# .version 被 .gitignore 忽略但运行时自检要用，白名单保留。
+# 技能\_runtime 按发行白名单收敛：开发机上跑用户技能时 pip 装进共享运行时的
+# 第三方包（实测 AI 剪视频技能带来 nvidia/ctranslate2/faster-whisper 等 2.5 GB）
+# 绝不能随包发给客户——用户技能的依赖由对方机器装技能时自己装配。
+# 基准是 打包\runtime-基线清单.txt：服务器当前发布中的 runtime 块（客户装的
+# 就是它）的条目清单。**不能用 git 索引**——运行时主体（python.exe / Lib /
+# DLL）从未入库，按索引收敛会把整个运行时掏空（2026-11-08 实测踩过，包从
+# 270 MB 掉到 165 MB、stage 里 python.exe 都没了）。清单缺失或运行时核心缺失
+# 一律拒绝出包。
 $rtStage = Join-Path $stage "技能\_runtime"
 if (Test-Path $rtStage) {
+  $rtList = Join-Path $packDir "runtime-基线清单.txt"
+  if (-not (Test-Path $rtList)) {
+    throw "缺少 打包\runtime-基线清单.txt（_runtime 发行白名单），拒绝出包：请按当前发布中的 runtime 块条目重生清单"
+  }
   $tracked = @{}
-  & git -C $root ls-files "技能/_runtime" 2>$null | ForEach-Object {
-    if ($_) { $tracked[($_ -replace "/", "\")] = $true }
+  Get-Content $rtList -Encoding UTF8 | ForEach-Object {
+    $rel = $_.Trim()
+    if ($rel -eq "" -or $rel.StartsWith("#")) { return }
+    $tracked[$rel] = $true
   }
-  $tracked["技能\_runtime\.version"] = $true
-  if ($tracked.Count -lt 50) {
-    throw "git 索引里的 技能/_runtime 文件太少（$($tracked.Count) 个），索引读取异常，拒绝出包"
-  }
-  $rtPrefix = "技能\_runtime"
+  if ($tracked.Count -lt 500) { throw "runtime 基线清单条目太少（$($tracked.Count) 条），清单异常，拒绝出包" }
+  $rtPrefix = "技能\_runtime\"
   $removedCnt = 0; [long]$removedBytes = 0
   Get-ChildItem $rtStage -Recurse -File -Force | ForEach-Object {
-    $rel = $rtPrefix + $_.FullName.Substring($rtStage.Length)
+    $rel = ($_.FullName.Substring($rtStage.Length + 1) -replace "\\", "/")
     if (-not $tracked.ContainsKey($rel)) {
       $removedBytes += $_.Length
       Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
@@ -153,7 +159,26 @@ if (Test-Path $rtStage) {
       Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
     }
   }
-  Write-Host ("== 运行时按仓库索引收敛：剔除未跟踪 {0} 个文件 / {1:N0} MB（用户技能装的依赖不随包）" -f $removedCnt, ($removedBytes / 1MB))
+  Write-Host ("== 运行时按发行白名单收敛：剔除清单外 {0} 个文件 / {1:N0} MB（用户技能装的依赖不随包）" -f $removedCnt, ($removedBytes / 1MB))
+  $rtPy = Join-Path $rtStage "python\python.exe"
+  if (-not (Test-Path $rtPy)) { throw "收敛后运行时缺 python.exe（白名单或源目录异常），拒绝出包：$rtPy" }
+  # 自检用 stage 自己的 python 导入**内置技能 manifest 声明的模块集合**（与前面
+  # 源运行时校验同一份 $modules），确认白名单没把内置依赖剔掉。python 的报错
+  # 走 stderr，先降 ErrorActionPreference 免得被当成脚本错误中断。
+  $oldEAP = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  $bad = @()
+  foreach ($rm in $modules.Keys) {
+    $out = & $rtPy -c "import $rm" 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      $bad += ($rm + " -> " + (($out.Trim() -split "`n") | Select-Object -Last 1))
+    }
+  }
+  $ErrorActionPreference = $oldEAP
+  if ($bad.Count -gt 0) {
+    throw ("收敛后 stage 运行时导入失败：" + ($bad -join "；") + "（白名单缺内置依赖，拒绝出包）")
+  }
+  Write-Host ("== 收敛后 stage 运行时自检通过（python.exe + {0} 个内置依赖全部可导入）" -f $modules.Count)
 }
 
 # 技能\user\ 是「用户自己装的技能」（本机开发机上是我们的内部技能，含服务器地址、
