@@ -42,9 +42,14 @@ if (-not (Test-Path $pyExe)) {
 # 模块在便携运行时里真实可导入——装配是按需触发的，开发机上没跑过的
 # 技能依赖可能没装，缺着出包会让最终用户在离线机器上踩坑，故缺一不出包。
 $modules = @{}
-# ★ 2026-10-12：递归扫描（含 user\ 子目录的用户技能，跳过 _runtime）——非递归会漏掉用户技能的依赖声明、校验假通过（实测曾漏 pywin32 全家；微信操作就在 user\ 下）
+# ★ 2026-10-12：递归扫描用户技能的依赖声明（实测曾漏 pywin32 全家；微信操作就在 user\ 下）
+# ★ 2026-11-08 口径修正：只校验**内置技能**（技能\ 下非 user）——用户技能不随包
+# 分发，其依赖也不该进发行包；此前连 user 技能的依赖一起校验，等于逼着把用户
+# 技能装的包（AI 剪视频的 faster-whisper / ctranslate2 / nvidia 全家，2 GB+）
+# 塞进共享运行时再随包发给客户，安装包体积直接失控。
 Get-ChildItem $SkillsSource -Recurse -Depth 2 -Directory | Where-Object {
   $_.FullName -notmatch '\\_runtime(\\|$)' -and
+  $_.FullName -notmatch '\\技能\\user(\\|$)' -and
   (Test-Path (Join-Path $_.FullName "manifest.json"))
 } | ForEach-Object {
   # manifest 是 UTF-8：PS5.1 的 Get-Content 默认按 GBK 读会把中文读成
@@ -117,6 +122,39 @@ Write-Host ("== stage exe 校验通过：PE AMD64 / {0:N1} MB" -f ($exeItem.Leng
 
 Write-Host "== 暂存技能目录（含便携 Python 运行时，体积较大）"
 Copy-Item $SkillsSource (Join-Path $stage "技能") -Recurse -Force
+
+# 技能\_runtime 按仓库索引收敛：开发机上跑用户技能时 pip 装进共享运行时的
+# 第三方包（实测 AI 剪视频技能带来 nvidia/ctranslate2/faster-whisper 等 2 GB+）
+# 绝不能随包发给客户——用户技能的依赖由对方机器装技能时自己装配。判定基准
+# 就是 git 索引：HEAD 里有的是内置技能依赖（必须随包），没有的一律剔掉。
+# .version 被 .gitignore 忽略但运行时自检要用，白名单保留。
+$rtStage = Join-Path $stage "技能\_runtime"
+if (Test-Path $rtStage) {
+  $tracked = @{}
+  & git -C $root ls-files "技能/_runtime" 2>$null | ForEach-Object {
+    if ($_) { $tracked[($_ -replace "/", "\")] = $true }
+  }
+  $tracked["技能\_runtime\.version"] = $true
+  if ($tracked.Count -lt 50) {
+    throw "git 索引里的 技能/_runtime 文件太少（$($tracked.Count) 个），索引读取异常，拒绝出包"
+  }
+  $rtPrefix = "技能\_runtime"
+  $removedCnt = 0; [long]$removedBytes = 0
+  Get-ChildItem $rtStage -Recurse -File -Force | ForEach-Object {
+    $rel = $rtPrefix + $_.FullName.Substring($rtStage.Length)
+    if (-not $tracked.ContainsKey($rel)) {
+      $removedBytes += $_.Length
+      Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+      $removedCnt++
+    }
+  }
+  Get-ChildItem $rtStage -Recurse -Directory -Force | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object {
+    if (-not (Get-ChildItem $_.FullName -Force -ErrorAction SilentlyContinue)) {
+      Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Write-Host ("== 运行时按仓库索引收敛：剔除未跟踪 {0} 个文件 / {1:N0} MB（用户技能装的依赖不随包）" -f $removedCnt, ($removedBytes / 1MB))
+}
 
 # 技能\user\ 是「用户自己装的技能」（本机开发机上是我们的内部技能，含服务器地址、
 # 部署命令），绝不随安装包发给客户——静默更新块早就是这个口径（发布静默更新.ps1
