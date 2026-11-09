@@ -363,40 +363,85 @@ const (
 	provisionTimeout = 20 * time.Minute
 )
 
+// runtimeReadyMarker 记录「便携运行时已完整装配（python + pip）」的标记，内容是
+// 装配时的 pythonVersion。只看 python.exe 在不在不够：下载/解压中断、pip 装失败
+// 都会留下半成品目录，半成品被当成「已就绪」会一路静默失败到调用点；而重新
+// 装配本身是幂等的（已下的不重下、已装的 pip 不重装），误判比多核一遍代价大得多。
+const runtimeReadyMarker = ".provisioned"
+
+// runtimeReady 判断运行时目录是否已完整装配：标记内容必须与当前 pythonVersion
+// 一致（升级运行时后旧目录要重新装配），且 python.exe 真的在——只有标记不算数，
+// 手工删掉 exe 的残局不能当就绪。
+func runtimeReady(rtDir string) bool {
+	if _, err := os.Stat(filepath.Join(rtDir, "python.exe")); err != nil {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(rtDir, runtimeReadyMarker))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == pythonVersion
+}
+
+// markRuntimeReady 写就绪标记。写失败只影响「下次多核一遍 pip」，不影响可用性，
+// 所以由调用方记日志、不当作错误。
+func markRuntimeReady(rtDir string) error {
+	return os.WriteFile(filepath.Join(rtDir, runtimeReadyMarker), []byte(pythonVersion+"\n"), 0o644)
+}
+
+// ensurePip 保证便携运行时能跑 `python -m pip`（装依赖的前提）。幂等：pip 已在
+// 就跳过，不在才下载 get-pip.py 重装——装配中断留下的半成品目录靠它自愈。
+func ensurePip(rtDir, pyExe string, emit func(string)) error {
+	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
+	probe, err := runCommandCapture(ctx, pyExe, []string{"-m", "pip", "--version"}, rtDir)
+	cancel()
+	if err == nil && strings.Contains(probe, "pip") {
+		return nil
+	}
+	emit("便携 Python 就绪，正在安装 pip…")
+	getPip := filepath.Join(rtDir, "get-pip.py")
+	if err := downloadFile(getPipURL, getPip); err != nil {
+		return fmt.Errorf("下载 get-pip 失败: %w", err)
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), provisionTimeout)
+	defer cancel2()
+	out, err := runCommandCapture(ctx2, pyExe, []string{getPip, "--no-warn-script-location", "-i", pipMirror}, rtDir)
+	_ = os.Remove(getPip)
+	if err != nil {
+		return fmt.Errorf("安装 pip 失败: %v\n%s", err, tailRunes(out, 800))
+	}
+	return nil
+}
+
 // provisionPythonRuntime 装配便携 Python：下载 embeddable 包 → 启用
-// site-packages → 装 pip → 从镜像装技能 wheel。幂等：已存在直接复用。
+// site-packages → 装 pip → 从镜像装技能 wheel。幂等：已完整装配直接复用
+// （判据是 runtimeReady 的版本标记，不是「python.exe 在不在」）。
 func provisionPythonRuntime(rtDir string, modules, wheels []string, emit func(string)) (*pythonRuntime, error) {
 	pyExe := filepath.Join(rtDir, "python.exe")
-	if _, err := os.Stat(pyExe); err != nil {
-		emit("首次使用本技能：正在下载便携 Python（约 11MB）…")
-		if err := os.MkdirAll(rtDir, 0755); err != nil {
+	ready := runtimeReady(rtDir)
+	if !ready {
+		if _, err := os.Stat(pyExe); err != nil {
+			emit("首次使用本技能：正在下载便携 Python（约 11MB）…")
+			if err := os.MkdirAll(rtDir, 0755); err != nil {
+				return nil, err
+			}
+			zipPath := filepath.Join(rtDir, "python-embed.zip")
+			if err := downloadFirstAvailable(zipPath, pythonEmbedURLs); err != nil {
+				return nil, fmt.Errorf("下载便携 Python 失败（需联网一次）: %w", err)
+			}
+			if err := unzip(zipPath, rtDir); err != nil {
+				return nil, fmt.Errorf("解压便携 Python 失败: %w", err)
+			}
+			_ = os.Remove(zipPath)
+			// embeddable 包默认禁用 site-packages：改 ._pth 启用，否则装好的库不可见
+			if err := enableSitePackages(rtDir); err != nil {
+				return nil, err
+			}
+		}
+		// python.exe 在但没有就绪标记 = 上次装配没走完（pip 可能缺），核一遍再走
+		if err := ensurePip(rtDir, pyExe, emit); err != nil {
 			return nil, err
 		}
-		zipPath := filepath.Join(rtDir, "python-embed.zip")
-		if err := downloadFirstAvailable(zipPath, pythonEmbedURLs); err != nil {
-			return nil, fmt.Errorf("下载便携 Python 失败（需联网一次）: %w", err)
-		}
-		if err := unzip(zipPath, rtDir); err != nil {
-			return nil, fmt.Errorf("解压便携 Python 失败: %w", err)
-		}
-		_ = os.Remove(zipPath)
-		// embeddable 包默认禁用 site-packages：改 ._pth 启用，否则装好的库不可见
-		if err := enableSitePackages(rtDir); err != nil {
-			return nil, err
-		}
-		emit("便携 Python 就绪，正在安装 pip…")
-		getPip := filepath.Join(rtDir, "get-pip.py")
-		if err := downloadFile(getPipURL, getPip); err != nil {
-			return nil, fmt.Errorf("下载 get-pip 失败: %w", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
-		defer cancel()
-		// -i 镜像：get-pip 要从 PyPI 拉 pip 本体，bootstrap 源在国内不稳
-		out, err := runCommandCapture(ctx, pyExe, []string{getPip, "--no-warn-script-location", "-i", pipMirror}, rtDir)
-		if err != nil {
-			return nil, fmt.Errorf("安装 pip 失败: %v\n%s", err, tailRunes(out, 800))
-		}
-		_ = os.Remove(getPip)
 	}
 
 	py := &pythonRuntime{Exe: pyExe, Version: "便携运行时"}
@@ -425,8 +470,42 @@ func provisionPythonRuntime(rtDir string, modules, wheels []string, emit func(st
 			}
 		}
 	}
+	// 全部步骤都过了才打就绪标记：中途失败（下载/解压/pip/依赖）下次会重来，
+	// 而不是留下一个「看着在、其实不能用」的运行时。
+	if !ready {
+		if err := markRuntimeReady(rtDir); err != nil {
+			emit(fmt.Sprintf("写运行时就绪标记失败（下次会再核一遍 pip）：%v", err))
+		}
+	}
 	emit("技能运行时就绪（后续离线可用）")
 	return py, nil
+}
+
+// prewarmSkillRuntime 启动时后台预热便携运行时。
+//
+// 为什么选「启动预热」而不是「装配期间推一条 IM 提示」：
+//   - 提示只解释等待、不减少等待，而且技能→IM 是反向依赖（skills.go 不该知道
+//     IM 存在）；何况这类进度提示历史上已经因为噪声被从对话里下线过（见
+//     skillRuntimeNotice 的注释），换到微信里同样是打扰；
+//   - 预热把 5 分钟的等待挪到启动后的空闲期，用户第一条任务通常已经装配完；
+//   - 已就绪时只是一次 stat，常态零开销；失败也只写引擎日志——首次调用技能时
+//     会重新装配并如实报错，不在这里挡启动。
+func (a *App) prewarmSkillRuntime() {
+	if isAndroidRuntime {
+		return // 安卓运行时随包烘焙，没有联网装配这一步
+	}
+	dir, err := a.SkillsDir()
+	if err != nil {
+		return
+	}
+	rtDir := filepath.Join(dir, "_runtime", "python")
+	if runtimeReady(rtDir) {
+		return
+	}
+	skillRuntimeNotice("启动预热：后台装配便携运行时（首次约几分钟，不影响其他功能）")
+	if _, err := a.ensureSkillRuntime(nil, nil); err != nil {
+		skillRuntimeNotice("启动预热失败（首次调用技能时会重试）：" + err.Error())
+	}
 }
 
 // runCommandCapture 在指定目录运行命令并捕获合并输出（供运行时装配用）。

@@ -128,6 +128,27 @@ func (a *App) handleIMWeixinReconnect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channels": a.imStatuses()})
 }
 
+// imTestNoContextMsg 是没有 context_token 时的拒绝文案：平台对「凭空主动消息」
+// 会 200 接受但不投递，与其假装成功，不如把原因直接说清楚（真机实测：没凭据
+// 的两条一条都没到手机）。
+const imTestNoContextMsg = "该会话还没有 context_token：微信不投递没有上下文的主动消息。" +
+	"请先在微信里给机器人发一句话（入站消息会带来 context_token），再点测试"
+
+// imTestReply 是 /test 的成功响应。ok 只代表「请求被平台接受」：messageIds 里
+// 是本端生成的 client_id（平台通常不回真实消息 id），所以把 submitted /
+// platformReceipt / contextToken 分开写清楚，别让 ok:true 被当成「已送达」。
+func imTestReply(ids []string) map[string]any {
+	return map[string]any{
+		"ok":              true,
+		"submitted":       true,
+		"platformReceipt": false,
+		"contextToken":    true,
+		"messageIds":      ids,
+		"note": "已提交给微信（请求被平台接受）；平台未回真实消息 id，" +
+			"messageIds 里是本端生成的 client_id。是否送达以手机为准。",
+	}
+}
+
 func (a *App) handleIMWeixinTest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		To   string `json:"to"`
@@ -145,10 +166,19 @@ func (a *App) handleIMWeixinTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "没有收件人：请先扫码绑定，或显式传 to")
 		return
 	}
+	// 没有 context_token 就不发：平台会 200 接受但不投递，发出去只会让人对着
+	// ok:true 干等。
+	if !ch.hasContextToken(to) {
+		writeErr(w, http.StatusConflict, imTestNoContextMsg)
+		return
+	}
 	text := body.Text
 	if strings.TrimSpace(text) == "" {
 		text = "来自坚祥数字助理的测试消息（" + imNow() + "）。收到这条说明微信通道双向可达。"
 	}
+	// /test 直接调渠道的 SendText（不经过 imPushWorker），所以出站日志要在这里补：
+	// 排查「点测试到底发出去没有」时，日志里必须能看到这一行。
+	log.Printf("[IM] 出站（test）→ %s ctx=yes", maskIMID(to))
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	ids, err := ch.SendText(ctx, IMConversation{Channel: "weixin", ChatID: to, ChatType: "dm", UserID: to}, text)
@@ -156,7 +186,7 @@ func (a *App) handleIMWeixinTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, weixinErrorOf(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messageIds": ids})
+	writeJSON(w, http.StatusOK, imTestReply(ids))
 }
 
 // weixinChannelForAPI 取微信渠道；不存在时按需建一个（保证扫码/测试在「还没
