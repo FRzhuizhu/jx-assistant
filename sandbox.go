@@ -83,7 +83,7 @@ func spawnConfinedLocal(ctx context.Context, r sandboxRun) (string, error) {
 
 // startConfinedAsync 在沙箱内启动一个后台作业风格的进程：输出增量写入 w，
 // ctx 取消时终止进程。返回一个等待 goroutine 已启动的标记（作业侧关 done）。
-func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() bool, error) {
+func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() (int, bool), error) {
 	switch {
 	case isWindowsRuntime:
 		wsAbs, err := filepath.Abs(r.Workspace)
@@ -97,12 +97,14 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		}
 		go child.drain(w)
 		waitDone := make(chan struct{}, 1)
+		var exitCode uint32
+		var timedOut bool
 		go func() {
-			child.wait(ctx, 0) // 0 = 不限时；终止只经 ctx（job_kill）
+			exitCode, timedOut = child.wait(ctx, 0) // 0 = 不限时；终止只经 ctx（job_kill）
 			child.cleanup()
 			close(waitDone)
 		}()
-		wait := func() bool { <-waitDone; return true }
+		wait := func() (int, bool) { <-waitDone; return int(exitCode), timedOut }
 		return wait, nil
 	case isLinuxRuntime:
 		exe, err := os.Executable()
@@ -129,8 +131,17 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		}
 		tree.attach(cmd)
 		waitDone := make(chan struct{}, 1)
-		go func() { _ = cmd.Wait(); tree.finish(); os.RemoveAll(tempDir); close(waitDone) }()
-		return func() bool { <-waitDone; return true }, nil
+		code := -1
+		go func() {
+			_ = cmd.Wait()
+			tree.finish()
+			os.RemoveAll(tempDir)
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
+			close(waitDone)
+		}()
+		return func() (int, bool) { <-waitDone; return code, false }, nil
 	case isAndroidRuntime:
 		// 安卓后台作业：同前台，无 OS 级沙箱；内置运行时优先、未就绪回落系统 sh
 		// （见 spawnConfinedLocal 的安卓分支注释）。
@@ -155,8 +166,16 @@ func startConfinedAsync(ctx context.Context, r sandboxRun, w io.Writer) (func() 
 		}
 		tree.attach(cmd)
 		waitDone := make(chan struct{}, 1)
-		go func() { _ = cmd.Wait(); tree.finish(); close(waitDone) }()
-		return func() bool { <-waitDone; return true }, nil
+		code := -1
+		go func() {
+			_ = cmd.Wait()
+			tree.finish()
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
+			close(waitDone)
+		}()
+		return func() (int, bool) { <-waitDone; return code, false }, nil
 	default:
 		return nil, fmt.Errorf("sandbox unavailable: 当前平台暂无沙箱后端")
 	}

@@ -956,7 +956,7 @@ func runCommandTool() Tool {
 				"cwd":                 strProp("工作目录（可选，默认会话工作区；是否可写由沙箱决定，cwd 本身不受限）"),
 				"timeout_sec":         intProp("超时秒数，默认 60，上限 600；后台作业忽略"),
 				"run_in_background":   boolProp("true 时后台执行并立即返回作业 id（仅本地）。长驻服务（开发服务器、监控程序等）也用它：command 直接写服务本体（如 node server.js、python -m http.server 8000），它会一直跑到你 job_kill、会话停止或软件退出（关软件时连其子进程一并清场）；不要套 Start-Process——shell 退出即作业连坐清理；作业会显示在进度面板「运行中的程序」，用户可手动停止"),
-				"visible":             boolProp("一般别用：只有确实需要用户盯着这个命令窗口时才置 true（默认 false = 后台悄悄跑，不弹任何窗口）"),
+				"visible":             boolProp("一般别用：只有确实需要用户盯着这个命令窗口时才置 true（默认 false = 后台悄悄跑，不弹任何窗口）。受限档（read-only / workspace-write）下沙箱子进程无法单独开控制台窗口，visible 不生效，仍按后台跑并以输出为准"),
 				"sandbox_permissions": strProp("仅用于被沙箱拒绝后的同轮重试：请求的更宽档位（workspace-write 或 danger-full-access），必须搭配 justification；会弹审批由用户决定"),
 				"justification":       strProp("与 sandbox_permissions 搭配：一句话向用户解释为什么这条命令需要更宽权限"),
 			}, "command")),
