@@ -1716,6 +1716,89 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 8. mods 无 `--plugin-dir` 热重载与 `claude plugin validate/test` CLI；装卸
    经设置页，重载即插件重载边界。
 
+## IM 接入（微信 iLink / ClawBot，im*.go）
+
+把助手接进聊天软件：在微信里给助手下指令、收任务结果（后续可加飞书/QQ，见本节末）。
+
+**通道与协议**：微信这一路走腾讯自家的 iLink 接口（`https://ilinkai.weixin.qq.com/`，
+社区把配套的 OpenClaw 插件叫 **ClawBot**）。它不是 Wechaty/padlocal 那类客户端
+hook，也不是第三方托管服务；但**腾讯没有公开文档、没有申请入口**，协议字段按
+MIT 参考实现（`@botharness/im-provider` 的 `src/channels/weixin/`，已记入
+`THIRD-PARTY-NOTICES.md`）逐字段移植，并与 `hermesclaw` 的独立实现互证。
+
+| 事实 | 说明 |
+|---|---|
+| 收消息 | `POST ilink/bot/getupdates` **35 秒长轮询**（客户端主动出网）→ **不需要公网回调**、不需要域名/证书/端口映射 |
+| 登录 | `get_bot_qrcode?bot_type=3` 出二维码 → 手机微信扫 → `get_qrcode_status` 轮询（`wait/scaned/need_verifycode/confirmed/expired/binded_redirect/scaned_but_redirect`）→ 拿 `bot_token` + `ilink_bot_id` + `ilink_user_id` |
+| 发消息 | `ilink/bot/sendmessage`，文本单条 **1800 字**上限（`im_text.go` 的 `splitWeixinText` 切段，优先切在换行处） |
+| 语音 | 入站 `voice_item.text` 就是**平台自带转写**（等于免费 ASR），不需要本地语音组件 |
+| 凭据 | token 落 `data/im_weixin.json`（DPAPI，与 SSH 密码同一套 `protectSecret`）；**失效只能重新扫码**，没有 refresh |
+
+**三条硬约束**（设置页照抄给用户，别自己另编文案）：
+1. **同一微信账号只能一个 poller**——本机若还跑着 OpenClaw/Tobs 的微信通道必须关掉，
+   否则 403/丢消息；
+2. **主动消息可能被拒**（带 `context_token` 成功率高）——所以回信一律带该会话最近
+   一次入站的 `context_token`（`weixinChannel.ctxTokens`，落 state 文件）；
+3. 协议无公开文档，字段可能变——**协议常量与字段全部集中在 `im_weixin.go` 顶部**，
+   平台改了就只改那一段。
+
+**分层（加平台时照这个来，别在业务代码里塞平台判断）**
+```
+微信 iLink ──长轮询──▶ im_weixin.go ──IMInbound──▶ im_hub.go ──▶ deliverToSession（数字经理）
+                          ▲                          │
+                          └──── SendText ◀─── 串行发件队列 ◀── im_hub.go ◀── sessionRun.publish(ev)
+```
+**出站钩子为什么在 `publish` 而不是 `broadcast`**：`executeRun` 的 emit 闭包对
+`message` 事件只广播 `session_updated`（正文不广播），而 `kickSessionRound`
+（IM 入站触发的正是这条）连 broadcast 都不调；各执行体的 emit 闭包又各不相同。
+唯一共用的出口是 `sessionRun.publish`，所以钩子挂那里（锁外调用）。
+- `im.go`：契约（`IMChannel`/`IMSender`/`IMInbound`/`IMConversation`/`IMChannelStatus`）
+  + 渠道登记与 `syncIM()` 起停 + 配置访问器（`imOn`/`imWeixinOn`/`imAllowWeixin`）。
+- `im_hub.go`：中枢——入站落点 `imOnInbound`（白名单 → 命令 → `deliverToSession` +
+  `kickSessionRound`）、出站消费 `imOnEvent`（只推数字经理最终答复）、命令
+  `/help /status /stop`、每会话串行发件队列、绑定表 `data/im_bindings.json`。
+- `im_weixin.go`：协议实现（登录状态机、长轮询、分段发送、游标与去重集合持久化）。
+- `im_api.go`：`/api/im/*`（状态只读开放给 AI；**扫码/解绑/测试消息不对 AI 开放**）。
+- `im_text.go`：分段 + Markdown→纯文本（聊天软件不渲染 Markdown）。
+
+**推什么（克制是硬要求）**：只推「当前数字经理会话的 `role=assistant` 且没有
+`tool_calls` 的正文」。工具过程、子会话过程一律不推——任务完成/失败本来就经
+「派发回报」汇总进经理那一轮，经理的答复才是用户在微信里该看的东西。多路推送
+只会把聊天窗口刷成日志流。筛选规则是纯函数 `imShouldPush`（有单测看护）。
+
+**幂等与顺序**：入站靠适配层 `seen` 集合 + 平台 `message_id`；出站靠每个会话的
+`lastSeq`（重启/重连后不重发历史答复）+ 一条串行发件队列（顺序不乱、单条失败不
+拖累后续）。`broadcast` 的 IM 消费必须在 `evtMu` **之外**（要读配置/查库/碰文件）。
+
+**状态与游标**：`data/im_weixin.json`（凭据，DPAPI）、`data/im_weixin_state.json`
+（`getUpdatesBuf` 游标 + 最近 512 条已处理 message_id + 每个会话的 `context_token`）。
+**重启必须靠游标续读**，否则平台重投会把旧消息再喂一遍；`seen` 集合是第二道去重。
+
+**配置**（`config.json` 的 `im` 段）：`enabled` 总开关、`weixin.enabled` 渠道开关、
+`weixin.allow` 白名单（`ilink_user_id`；**空=谁都不受理**，fail closed）。
+
+**当前进度**：阶段 1（协议闭环：登录 + 收 + 发文本）与阶段 2（双向对话：入站进
+`deliverToSession`、数字经理最终答复出站、白名单、幂等）代码已落。阶段 3（审批/
+提问推送与应答）、阶段 4（文件与语音）、阶段 5（设置页 UI）未做。
+
+**验证（隔离实例，别动正在运行的助手）**
+```
+go build -o .jxai\tmp\im-build\jx-assistant.exe .
+go test -run 'TestIM' .
+# 隔离配置（另建 data 目录与端口），然后：
+POST /api/im/weixin/qr            # 拿二维码（qrImage），手机扫
+GET  /api/im/weixin/qr?id=…       # 轮询到 status=confirmed
+GET  /api/im/status               # state=connected，账号掩码
+POST /api/im/settings             # {"allow":["<扫码得到的 ilink_user_id>"]} 填白名单
+POST /api/im/weixin/test          # 微信收到一条测试消息
+# 手机私聊发「/status」→ 收到状态；发一句话 → 数字经理跑一轮 → 微信收到最终答复
+# 发「/stop」→ 当前回合被叫停
+```
+
+**加平台的成本**：飞书（自建应用 + 长连接 WS）、QQ 官方 Bot（WebSocket 网关）都是
+「出站长连接、不需要公网回调」，各写一个 `im_<channel>.go` 实现 `IMChannel` +
+`IMSender` 即可；`syncIM()` 与 `/api/im/status` 按渠道名自动纳管，中枢与前端不动。
+
 ## 存储与模块结构
 
 数据存于 `data/jx.db`（SQLite 单文件，WAL 模式）：`sessions`（会话元信息）、
@@ -1769,6 +1852,7 @@ mcpHost 接口注入：插件侧 ccPluginHost 做 ${CLAUDE_PLUGIN_ROOT} 等替�
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
 | `gittools.go` | git_sync 模型工具（组件 `git-panel`）：与面板共用 gitSync 执行缝的宿主通道远程同步，绕开沙箱内远程 git 必败的限制（背景与实测见《Git远程同步工具-改动说明.md》） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
+| `im.go` / `im_hub.go` / `im_weixin.go` / `im_api.go` / `im_text.go` | IM 接入（第一期微信 iLink / ClawBot）：契约与渠道登记 `syncIM`（im.go）、中枢（im_hub.go：入站进 `deliverToSession`、只推数字经理最终答复、命令、串行发件队列、绑定表）、iLink 协议实现（扫码登录状态机、35 秒长轮询、1800 字分段发送、游标与去重集合持久化）、`/api/im/*` 接口、Markdown→纯文本。协议来自 MIT 参考实现，见 `THIRD-PARTY-NOTICES.md`；细节与硬约束见「IM 接入」一节 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页、市场页（`app-market.js`：左侧栏底部入口、主区整页视图 body.market-mode、三 tab+搜索+一键装卸；组件装卸后 `CX.refresh()` 热生效） |
 > **服务端已独立成仓库**（`D:\智能体工作区\jxaiserver`，module jxai-server）：远程访问中继 + 技能/组件/插件市场（含 /admin 管理页）+ 更新分发（日期+V序号版本体系）+ 公司接入（登记/UDP 发现/按人发 new-api 令牌/每月额度）。本仓库只保留客户端半边（market.go 市场客户端、wizard.go 接入向导、update.go 更新检查——与服务端的协议契约见各自文件头注释）；其部署与用法见该仓库 README/部署。开发完全分开，两边接口变更需双侧同步。
 

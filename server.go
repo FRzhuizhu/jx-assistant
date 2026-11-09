@@ -78,6 +78,11 @@ type App struct {
 	remoteCtlCancel     context.CancelFunc // 中继连接存活句柄（nil=未运行，remoteaccess.go）
 	shellEpochMu        sync.Mutex
 	shellEpoch          int64 // 远程外壳版本代数：「关于」页一键清缓存按钮递增（remoteaccess.go，落盘 data/shell-epoch.json）
+	imMu                sync.Mutex
+	imChannels          map[string]IMChannel // 在跑的 IM 渠道（键=渠道名，im.go 的 syncIM 维护）
+	imBindMu            sync.Mutex
+	imBindings          []*imBinding // 聊天会话 ↔ 数字经理的绑定与已推序号（im_hub.go，落 data/im_bindings.json）
+	imOut               *imOutbox    // 每个 IM 会话一条串行发件队列（im_hub.go）
 	evtMu               sync.Mutex
 	subscribers         map[chan Event]bool // /api/events 的订阅者
 	syncFailMu          sync.Mutex
@@ -278,6 +283,8 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	a.apiRoute(mux, "GET /api/search/content", a.handleSearchContent, apiMeta{Summary: "按内容搜会话", Params: "q=关键词", Perm: permReadOnly})
 	a.apiRoute(mux, "GET /api/config", a.handleGetConfig, apiMeta{Summary: "读全局配置（Key 已掩码）", Perm: permReadOnly})
 	a.apiRoute(mux, "POST /api/config", a.handleSetConfig, apiMeta{Summary: "改全局配置", Params: "要改的字段（providers 之外的一般项）", Perm: permFull, Danger: "修改全局配置，影响所有会话"})
+	// IM 接入（im_api.go）：状态只读开放，扫码/解绑/测试消息必须人来点。
+	a.registerIMRoutes(mux)
 	// 语音输入法联动（voicetype_link.go）：把听写快捷键与主题色写进 voicetype.json，
 	// 独立语音输入法（VoiceTypeGo）读它——它读不到本页 localStorage，也不该读 config.json。
 	a.apiRoute(mux, "POST /api/voicetype/link", a.handleVoicetypeLink, apiMeta{Summary: "同步听写快捷键/主题色给独立语音输入法", Params: "main、sub（键名数组）、accentColor、textColor，均可选", Perm: permReadOnly})
@@ -1618,6 +1625,9 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if a.Cfg.RemoteAccess != oldRA {
 		a.syncRemoteAccess()
 	}
+	// IM 接入开关不在本接口（走 /api/im/settings），这里只做一次幂等对账：
+	// 配置被别处改过（手工编辑 config.json）时也能跟上，在跑的不受影响。
+	a.syncIM()
 	a.handleGetConfig(w, r)
 }
 

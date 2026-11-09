@@ -21,6 +21,7 @@ import (
 // （POST /stop）或进程退出才会终止执行。
 
 type sessionRun struct {
+	app       *App // 反查 App（IM 出站钩子用：publish 是所有执行体共用的唯一事件出口）
 	ctx       context.Context
 	cancel    context.CancelFunc
 	startedAt time.Time
@@ -91,7 +92,7 @@ func (a *App) beginRun(id string) (*sessionRun, bool) {
 		return nil, false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &sessionRun{ctx: ctx, cancel: cancel, startedAt: time.Now(), done: make(chan struct{}),
+	r := &sessionRun{app: a, ctx: ctx, cancel: cancel, startedAt: time.Now(), done: make(chan struct{}),
 		subs: map[int]chan Event{}}
 	a.runners[id] = r
 	a.clearRunError(id)             // 新一轮开始：上一次的报错条自动消失
@@ -413,14 +414,21 @@ func stopReportHead(sub *SessionMeta, rec StopRecord, at string, rounds, steps i
 }
 
 // publish 把一个执行事件发给该会话的全部订阅者（订阅者跟不上就丢帧，绝不阻塞执行）。
+// 这里同时是 IM 出站的**唯一钩子点**：各执行体（executeRun、kickSessionRound、
+// runSubAgent、定时任务）各自传的 emit 闭包不一样，但都会走 observe+publish，
+// 所以正文只有在这里才齐全。钩子放在锁外——IM 侧要读配置、查库、碰文件，压在
+// 订阅者锁里会拖慢流式输出。
 func (r *sessionRun) publish(ev Event) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for _, ch := range r.subs {
 		select {
 		case ch <- ev:
 		default:
 		}
+	}
+	r.mu.Unlock()
+	if r.app != nil {
+		r.app.imOnEvent(ev)
 	}
 }
 
@@ -470,6 +478,8 @@ func (a *App) IsRunning(id string) bool {
 }
 
 // broadcast 向所有在线前端广播事件（无订阅者时丢弃，不阻塞）。
+// 注意：IM 出站不挂这里——broadcast 只承载 session_updated/done/审批等，正文
+// 事件（message）不在其中。IM 的钩子在 sessionRun.publish（见 im_hub.go）。
 func (a *App) broadcast(ev Event) {
 	a.evtMu.Lock()
 	defer a.evtMu.Unlock()
