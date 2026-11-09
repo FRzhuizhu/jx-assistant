@@ -578,6 +578,9 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 	a.permMu.Lock()
 	a.approvals[ap.ID] = ap
 	a.permMu.Unlock()
+	// 微信发起的那一轮：把这条审批推到微信并在那边登记待办（桌面端任务 origin 为空，
+	// 什么都不做——桌面端的审批绝不外发）。判定落在轮上，见 im_perm.go 顶部说明。
+	a.imTrackApproval(a.runOriginOf(sess.ID), ap)
 	a.broadcast(Event{Type: "approval_required", ApprovalID: ap.ID, SessionID: sess.ID, Title: sess.Title,
 		Name: tool, Summary: summary, Reason: reason})
 	// 久等声光提醒（与提问卡/计划审批共用同一套机制与同一个设置项——设置·常规
@@ -600,6 +603,13 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 		a.permMu.Lock()
 		delete(a.approvals, ap.ID)
 		a.permMu.Unlock()
+		// 微信里还挂着这条待办 = 没人从任何入口处理它（超时 / 本轮被停止 / 执行体退出）。
+		// 撤下并明说后果：审批一律按拒绝（fail closed），绝不留「没回就是同意」的口子。
+		reason := "超过等待上限没有回复，已按拒绝处理（不会执行）。"
+		if ctx.Err() != nil {
+			reason = "本轮已结束，该审批已失效（按拒绝处理，不会执行）。"
+		}
+		a.imDropPendingOnExpire(imPendingApproval, ap.ID, "【审批已失效】"+imTruncate(summary, 80)+"："+reason)
 		a.broadcast(Event{Type: "approval_resolved", ApprovalID: ap.ID, SessionID: sess.ID})
 	}()
 	timer := time.NewTimer(approvalTTL)
@@ -621,13 +631,27 @@ func (a *App) requestApproval(ctx context.Context, sess *SessionMeta, tool, summ
 func (a *App) resolveApproval(id string, approved, always bool) error {
 	a.permMu.Lock()
 	ap, ok := a.approvals[id]
-	if ok && !ap.decided {
+	fresh := ok && !ap.decided
+	if fresh {
 		ap.decided = true
 		ap.ch <- approvalResult{approved: approved, always: always}
 	}
 	a.permMu.Unlock()
 	if !ok {
 		return fmt.Errorf("审批请求不存在或已处理（可能已超时）")
+	}
+	// 这条审批正挂在微信待办里、却被别的入口（桌面端/HTTP）处理掉了：撤下那条待办
+	// 并回一句，免得用户在微信里再回一次（那时只会得到「已失效」）。微信侧自己处理
+	// 时会先把待办摘掉，所以这里拿到 nil——两条路不会各说一遍。
+	if fresh {
+		if p := a.imPendingTake(imPendingApproval, id); p != nil {
+			word := "批准"
+			if !approved {
+				word = "拒绝"
+			}
+			a.imEnqueuePush(p.Channel, p.ChatID, "【已在桌面端处理】"+imTruncate(ap.Summary, 80)+"："+word+"。", 0, "")
+			a.imAuditDecision(p, "桌面端"+word, "desktop", "")
+		}
 	}
 	// 注意：always 的能力点亮在 authorize 里按升级类别进行（那里知道
 	// 请求的是哪一类动作），这里只负责唤醒等待中的工具执行。

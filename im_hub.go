@@ -92,6 +92,11 @@ func (a *App) imOnInbound(in IMInbound) {
 	if a.imHandleCommand(in.Conv, text) {
 		return
 	}
+	// 审批/提问的答复：微信发起的任务产生的待办，就在微信里回「批准/拒绝/回答」。
+	// 放在白名单之后（非白名单连解析都不做）、命令之后（/status /stop 照旧优先）。
+	if a.imHandleInboundDecision(in.Conv, text) {
+		return
+	}
 	m, err := a.assistantSession()
 	if err != nil || m == nil {
 		a.imSay(in.Conv, "助手主对话不可用："+errTextOf(err))
@@ -101,9 +106,13 @@ func (a *App) imOnInbound(in IMInbound) {
 	log.Printf("[IM] 投递入站消息到数字经理（%s，会话 %s）：%s", maskIMID(in.Conv.UserID), m.ID, imTruncate(text, 60))
 	d := a.deliverToSession(m, text, kindChat, imOriginName)
 	if d.Started {
+		// 给这一轮打来源标记：它产生的审批/提问要回到这个聊天。
+		d.Run.setOrigin(imOriginTag(in.Conv.Channel, in.Conv.ChatID))
 		kickSessionRound(a, m, d.Run)
 	} else {
 		// 正在执行：已插话，它下一步就会看到（与前端「对话中途发消息」同语义）。
+		// 注意这一轮本身的来源标记不改：插话进的是「已经开跑的那一轮」，它的审批
+		// 该回哪就回哪（桌面端发起的那一轮不会因为一句微信插话就改成推微信）。
 		log.Printf("[IM] 数字经理正在执行，消息已插话（%s）", maskIMID(b.ChatID))
 	}
 }
@@ -117,6 +126,7 @@ func (a *App) imHandleCommand(conv IMConversation, text string) bool {
 	switch strings.ToLower(fields[0]) {
 	case "/help", "/?", "/帮助":
 		a.imSay(conv, "在微信里直接说话就行：我会把话转给数字经理，它安排任务，完成后把结果回给你。\n"+
+			"微信发起的任务要审批/提问时会推到这里：回「批准」或「拒绝」（多项时带序号，如「1 批准」），提问直接回内容。\n"+
 			"/status 看当前状态　/stop 叫停正在跑的这一轮\n"+
 			"长答复会分几条发（微信单条上限 1800 字）。")
 		return true

@@ -196,6 +196,33 @@ func (a *App) restartIM(name string) {
 // imNow 统一的时间戳口径（与 now() 一致，但给状态字段留一个可测的缝）。
 func imNow() string { return time.Now().Format("2006-01-02 15:04:05") }
 
+// imOriginTag 拼「这一轮是谁发起的」标记：im:<渠道>:<chatId>。
+// 它挂在轮上（sessionRun.origin），不挂在会话上——同一个数字经理会话既可能被
+// 桌面端触发、也可能被微信触发，只有轮知道这一次是谁发起；审批/提问按它决定
+// 推不推微信（见 im_perm.go）。
+func imOriginTag(channel, chatID string) string {
+	channel, chatID = strings.TrimSpace(channel), strings.TrimSpace(chatID)
+	if channel == "" || chatID == "" {
+		return ""
+	}
+	return "im:" + channel + ":" + chatID
+}
+
+// imParseOrigin 解析来源标记；不是 IM 来源（空串 / 别的形态）返回 ok=false。
+// 只按前两个冒号切：chatId 理论上不含冒号，但别假设它不含。
+func imParseOrigin(origin string) (channel, chatID string, ok bool) {
+	s := strings.TrimSpace(origin)
+	if !strings.HasPrefix(s, "im:") {
+		return "", "", false
+	}
+	rest := s[len("im:"):]
+	i := strings.Index(rest, ":")
+	if i <= 0 || i >= len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:i], rest[i+1:], true
+}
+
 // 入站落点（imOnInbound）与出站消费（imOnEvent）在 im_hub.go：阶段 2 起，
 // IM 的消息进 deliverToSession、答复从 sessionRun.publish 出站，这里不再放桩。
 func maskIMID(id string) string {

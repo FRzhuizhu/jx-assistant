@@ -135,6 +135,8 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 	a.permMu.Lock()
 	a.questions[q.ID] = q
 	a.permMu.Unlock()
+	// 微信发起的那一轮：提问推到微信并登记待办（桌面端任务 origin 为空，不推）。
+	a.imTrackQuestion(a.runOriginOf(sess.ID), q)
 	ev := Event{Type: "question_required", QuestionID: q.ID, SessionID: sess.ID, Title: sess.Title,
 		Kind: q.Kind, Summary: q.Question, Plan: q.Plan, Options: q.Options, Reason: q.Question,
 		DeadlineMs: q.DeadlineMs}
@@ -160,6 +162,16 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 		a.permMu.Lock()
 		delete(a.questions, q.ID)
 		a.permMu.Unlock()
+		// 微信里还挂着这条提问 = 没人答（超时 / 本轮被停止）：撤下并说明后果，
+		// 与提问工具的返回口径一致（ask 超时＝按默认方案放行，进入计划模式＝维持原模式）。
+		reason := "超过等待上限没有回答，已按默认方案继续。"
+		if q.Kind == askKindEnter {
+			reason = "超过等待上限没有确认，会话维持原模式。"
+		}
+		if ctx.Err() != nil {
+			reason = "本轮已结束，该提问已失效。"
+		}
+		a.imDropPendingOnExpire(imPendingQuestion, q.ID, "【提问已失效】"+imTruncate(q.Question, 80)+"："+reason)
 		// 计划仍在库里等审批（这一轮只是被停止/中断，不是用户批了或驳了）：
 		// 不发「已解决」——前端把卡收了就再没人挂出来；改为让会话刷新一次，
 		// 卡片原样留着等用户处置（用户之后批准/修改走 resolvePersistedPlan）。
@@ -199,7 +211,8 @@ func (a *App) requestUserAnswer(ctx context.Context, sess *SessionMeta, q *UserQ
 func (a *App) resolveQuestion(id, answer string) error {
 	a.permMu.Lock()
 	q, ok := a.questions[id]
-	if ok && !q.decided {
+	fresh := ok && !q.decided
+	if fresh {
 		q.decided = true
 		q.ch <- answer
 	}
@@ -209,6 +222,14 @@ func (a *App) resolveQuestion(id, answer string) error {
 		// （exit_plan_mode 提交时落了库，重启后谁也不在阻塞等待）。
 		// 那种情况按「恢复执行」处理：把批准/修改落成一条通知并接续这一轮。
 		return a.resolvePersistedPlan(id, answer)
+	}
+	// 正挂在微信待办里、却被别的入口（桌面端）回答掉了：撤下那条待办并回一句，
+	// 免得用户在微信里再答一次。微信侧自己回答时先摘待办，这里拿到 nil。
+	if fresh {
+		if p := a.imPendingTake(imPendingQuestion, id); p != nil {
+			a.imEnqueuePush(p.Channel, p.ChatID, "【已在桌面端回答】"+imTruncate(q.Question, 80)+"。", 0, "")
+			a.imAuditDecision(p, "桌面端回答", "desktop", answer)
+		}
 	}
 	return nil
 }
