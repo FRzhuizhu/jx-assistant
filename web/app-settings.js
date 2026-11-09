@@ -990,8 +990,17 @@ function buildProvCard(p, key) {
       const merged = [];
       for (const fm of (d.models || [])) {
         const ex = oldMap.get(fm.id);
-        if (ex) { oldMap.delete(fm.id); merged.push(ex); }
-        else merged.push({ id: fm.id, name: fm.name || '', contextWindow: fm.contextWindow || 0, maxOutput: 0, supportsImages: !!fm.supportsImages });
+        if (ex) {
+          oldMap.delete(fm.id);
+          // 思考档位没有手工编辑入口：服务端报了真实 supported_levels 就以它为准
+          if (fm.reasoningLevels && fm.reasoningLevels.length) ex.reasoningLevels = fm.reasoningLevels.slice();
+          merged.push(ex);
+        }
+        else merged.push({
+          id: fm.id, name: fm.name || '', contextWindow: fm.contextWindow || 0,
+          maxOutput: fm.maxOutput || 0, supportsImages: !!fm.supportsImages,
+          reasoningLevels: (fm.reasoningLevels && fm.reasoningLevels.length) ? fm.reasoningLevels.slice() : null,
+        });
       }
       for (const ex of oldMap.values()) merged.push(ex); // 手工添加的保留在末尾
       p.models = merged;

@@ -61,8 +61,10 @@ const DefaultContextWindow = 262144
 func DefaultProviders() []ProviderCfg {
 	return []ProviderCfg{
 		{ID: "deepseek", Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Models: []ModelCfg{
-			{ID: "deepseek-flash", Name: "DeepSeek-V4.1-Flash", ContextWindow: 1048576, ReasoningLevels: []string{"enabled", "disabled"}},
-			{ID: "deepseek-v4-pro", Name: "DeepSeek-V4-Pro", ContextWindow: 1048576, ReasoningLevels: []string{"enabled", "disabled"}},
+			// 官方思考控制：thinking{type} 开关 + reasoning_effort low/high/max
+			//（minimal/medium/xhigh/ultra 均映射到这三档，菜单不重复列）
+			{ID: "deepseek-flash", Name: "DeepSeek-V4.1-Flash", ContextWindow: 1048576, ReasoningLevels: []string{"enabled", "disabled", "low", "high", "max"}},
+			{ID: "deepseek-v4-pro", Name: "DeepSeek-V4-Pro", ContextWindow: 1048576, ReasoningLevels: []string{"enabled", "disabled", "low", "high", "max"}},
 		}},
 		{ID: "token-plan-cn", Name: "小米 MiMo（Token Plan）", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Models: []ModelCfg{
 			{ID: "mimo-v2.6-pro", Name: "MiMo v2.6 Pro", ReasoningLevels: []string{"enabled", "disabled"}},
@@ -295,7 +297,9 @@ func guessReasoningLevels(id string) []string {
 	case has("deepseek-reasoner"), has("-r1"):
 		return []string{"enabled"} // 思考专用模型，只能开
 	case has("deepseek"):
-		return []string{"enabled", "disabled"} // V3.2+ 混合思考
+		// 官方支持 thinking 开关 + reasoning_effort low/high/max（思考默认开、
+		// effort 默认 high；minimal/medium/xhigh/ultra 是这三档的别名映射）
+		return []string{"enabled", "disabled", "low", "high", "max"}
 	case has("glm-5.3"):
 		return []string{"enabled", "low", "high", "max"} // 5.3 起思考常开，用 reasoning_effort 调深浅
 	case has("glm-4.5"), has("glm-4.6"), has("glm-5"):
@@ -304,6 +308,41 @@ func guessReasoningLevels(id string) []string {
 		return []string{"enabled", "disabled"}
 	}
 	return nil
+}
+
+// effectiveReasoningLevels 取模型思考档位的最终展示/使用值：存储值优先
+//（「拉取模型」固化的服务端真实 supported_levels），但存储值是当前按 ID
+// 推断结果的子集时视为过时的自动推断，跟随本版本推断刷新——档位没有手工
+// 编辑入口，存量配置里的值全是程序写入的（保存兜底会把 guess 写死进
+// config），guess 修正后老配置必须能跟着升级，否则用户永远看不到新档位。
+func effectiveReasoningLevels(modelID string, stored []string) []string {
+	guessed := guessReasoningLevels(modelID)
+	if len(stored) == 0 {
+		return guessed
+	}
+	if guessed == nil {
+		return stored // 该 ID 按命名规则无思考控制：存过值说明拉取到过真实档位
+	}
+	subset := true
+	for _, lv := range stored {
+		if !containsStr(guessed, lv) {
+			subset = false
+			break
+		}
+	}
+	if subset {
+		return guessed
+	}
+	return stored
+}
+
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // ModelTestResult 是单个模型的连通性测试结果。

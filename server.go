@@ -1038,10 +1038,8 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, m := range p.Models {
-			levels := m.ReasoningLevels
-			if len(levels) == 0 { // 老配置未存档位：按 ID 现场推断
-				levels = guessReasoningLevels(m.ID)
-			}
+			// 存储的档位若是旧版推断写死的（无手工编辑入口），跟随新版本刷新
+			levels := effectiveReasoningLevels(m.ID, m.ReasoningLevels)
 			items = append(items, modelItem{p.ID, p.Name, m.ID, m.Name, m.ContextWindow, levels, !p.IsSelectable(), via})
 		}
 	}
