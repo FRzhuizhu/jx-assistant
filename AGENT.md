@@ -1794,6 +1794,10 @@ POST /api/im/weixin/test          # 微信收到一条测试消息
 # 手机私聊发「/status」→ 收到状态；发一句话 → 数字经理跑一轮 → 微信收到最终答复
 # 发「/stop」→ 当前回合被叫停
 ```
+**注意**：`POST /api/im/weixin/{qr,logout,reconnect,test}` 与 `POST /api/im/{remark,read}`
+只放行**界面点击**（要求同源 `Origin`，见 `im_api.go` 的 `requireUIAction`）：浏览器
+界面天然满足，**curl/脚本会被 403 拒绝**——这几步等于替用户绑定外部账号或对外发消息，
+必须由人点。`GET /api/im/weixin/qr`（轮询）不加闸（只读，且浏览器同源 GET 不带 Origin）。
 
 **加平台的成本**：飞书（自建应用 + 长连接 WS）、QQ 官方 Bot（WebSocket 网关）都是
 「出站长连接、不需要公网回调」，各写一个 `im_<channel>.go` 实现 `IMChannel` +

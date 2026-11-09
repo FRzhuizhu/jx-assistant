@@ -3442,3 +3442,140 @@ html.electron-shell .bpw-hint { display: none; }
 }
 .hk-conf-title { font-size: 12.5px; font-weight: 600; color: var(--danger); margin-bottom: 6px; }
 .hk-conf-item { font-size: 12px; color: var(--text-2); line-height: 1.7; }
+
+/* ==================== IM（微信）会话记录面板 ====================
+   口径见 web/app-im.js 与评审图 mockup-A-im-panel.png：左列聊天 + 右侧流水，
+   整页覆盖在主区之上（不动 index.html 的既有布局），面板只读。 */
+
+/* 左栏入口的未读数（挂在「微信」按钮上，与内置按钮同一套外观） */
+.im-entry-badge {
+  margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center;
+}
+
+.im-view {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--bg, #fff); color: var(--text);
+}
+
+/* 顶栏：标题 + 渠道状态 + 白名单人数 + 刷新/关闭 */
+.im-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.im-head-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.im-head-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.im-badge {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+}
+.im-pill { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; }
+.im-pill.ok { color: var(--green); background: var(--green-bg); }
+.im-pill.off { color: var(--text-2); background: var(--gray-bg); }
+.im-muted { font-size: 12px; color: var(--text-2); }
+.im-icon-btn {
+  font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+}
+.im-icon-btn:hover { color: var(--text); background: var(--hover); }
+
+/* 主体：左列固定 280px，右侧自适应 */
+.im-body { flex: 1; display: flex; min-height: 0; }
+.im-list {
+  width: 280px; flex: 0 0 280px; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border); min-height: 0;
+}
+.im-search {
+  margin: 10px 12px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel, transparent);
+  color: var(--text); font-size: 12.5px; outline: none;
+}
+.im-search:focus { border-color: var(--accent); }
+.im-filters { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
+.im-chip {
+  font-size: 12px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+}
+.im-chip.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.im-chats { flex: 1; overflow-y: auto; min-height: 0; padding: 0 8px 8px; }
+.im-chat-item {
+  display: flex; gap: 10px; align-items: center;
+  padding: 8px 10px; border-radius: 10px; cursor: pointer;
+}
+.im-chat-item:hover { background: var(--hover); }
+.im-chat-item.active { background: var(--active); box-shadow: inset 3px 0 0 var(--accent); }
+.im-avatar {
+  width: 32px; height: 32px; flex: 0 0 32px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent); font-size: 13px; font-weight: 600;
+}
+.im-chat-main { flex: 1; min-width: 0; }
+.im-chat-top { display: flex; gap: 8px; align-items: baseline; }
+.im-name { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.im-time { margin-left: auto; font-size: 11.5px; color: var(--text-2); flex: 0 0 auto; }
+.im-chat-sub { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.im-unread {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; flex: 0 0 auto;
+  background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+}
+.im-unread.warn { background: var(--amber); }
+
+/* 右栏：聊天头 + 流水 + 只读提示 */
+.im-chat { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.im-chat-head { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.im-back { display: none; margin-bottom: 6px; }
+.im-chat-title { font-size: 14px; font-weight: 600; }
+.im-chat-sub { font-size: 11.5px; color: var(--text-2); margin-top: 3px; }
+.im-msgs { flex: 1; overflow-y: auto; padding: 14px 16px; min-height: 0; }
+.im-msg { display: flex; flex-direction: column; margin-bottom: 14px; }
+.im-msg.in { align-items: flex-start; }
+.im-msg.out { align-items: flex-end; }
+.im-bubble {
+  max-width: 74%; padding: 9px 12px; border-radius: 10px;
+  font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+}
+.im-msg.in .im-bubble { background: var(--panel, #f7f8fa); border: 1px solid var(--border); }
+.im-msg.out .im-bubble { background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+.im-bubble.failed { border-color: color-mix(in srgb, var(--amber) 55%, var(--border)); }
+.im-meta { font-size: 11px; color: var(--text-2); margin-top: 4px; }
+.im-meta.ok { color: var(--green); }
+.im-meta.bad { color: var(--danger); }
+.im-meta.warn { color: var(--amber); }
+.im-readonly {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px; border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-2);
+}
+.im-readonly .im-muted { margin-left: auto; }
+.im-empty { padding: 28px 16px; text-align: center; font-size: 12.5px; color: var(--text-2); line-height: 1.9; }
+
+/* ---------- C：会话内的 IM 来源徽标 + 「只看微信来源」 ---------- */
+.im-only-chip {
+  font-size: 12px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+  margin-left: 8px; white-space: nowrap;
+}
+.im-only-chip:hover { color: var(--text); background: var(--hover); }
+.im-only-chip.on {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.im-src { font-size: 11px; color: var(--text-2); margin: 2px 0 4px; line-height: 1.5; }
+.im-src.in { color: var(--green); }
+.im-src.sent { color: var(--green); }
+.im-src.failed { color: var(--danger); }
+.im-src.skipped { color: var(--amber); }
+/* 只看微信来源：非 IM 消息淡出保留（不删除、不改数据） */
+body.im-only #msg-col [data-seq]:not(.im-tagged) { opacity: .35; }
+
+@media (max-width: 760px) {
+  .im-list { width: 100%; flex: 1 1 auto; border-right: none; }
+  .im-chat { display: none; }
+  .im-view.im-detail .im-list { display: none; }
+  .im-view.im-detail .im-chat { display: flex; }
+  .im-view.im-detail .im-back { display: inline-block; }
+}
+

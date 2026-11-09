@@ -46,6 +46,11 @@ type imBinding struct {
 	SessionID string `json:"sessionId,omitempty"` // lastSeq 所属的数字经理会话
 	LastSeq   int64  `json:"lastSeq"`
 	UpdatedAt string `json:"updatedAt"`
+	// Remark 是用户给这个联系人起的本地备注（微信 iLink 协议只给 ilink_user_id，
+	// 拿不到昵称），面板左列优先显示它。
+	Remark string `json:"remark,omitempty"`
+	// ReadUpTo 是「已读到哪条流水」（im_messages.id），面板未读红点按它算。
+	ReadUpTo int64 `json:"readUpTo,omitempty"`
 }
 
 type imBindingFile struct {
@@ -57,6 +62,7 @@ type imOutItem struct {
 	text      string
 	seq       int64
 	sessionID string // seq 所属会话（推送成功后据此推进 lastSeq）
+	logID     int64  // 流水行 id（发送后回填 sent/failed，面板据此显示状态徽标）
 }
 
 // imOutbox 每个 IM 会话一条串行发件队列（保证顺序 + 单条失败不拖累后续）。
@@ -70,38 +76,56 @@ func newIMOutbox() *imOutbox { return &imOutbox{queues: map[string]chan imOutIte
 // ---------- 入站 ----------
 
 // imOnInbound 是一条 IM 入站消息的唯一落点（适配层解析完就交到这里）。
+// 这里同时记一条入站流水（im_log.go）：白名单拒绝、群消息、只带图片的消息也记——
+// 「我在微信发了，助手没反应」正是最需要能回看的那类情况。
 func (a *App) imOnInbound(in IMInbound) {
 	if a == nil || a.Cfg == nil {
 		return
 	}
+	logID := a.imLogAppend(imLogEntry{
+		Channel: in.Conv.Channel, ChatID: in.Conv.ChatID, Direction: imDirIn,
+		Kind: imInboundKind(in), Text: in.Text, PlatformID: in.MessageID,
+	})
+	// 结局在这条消息处理完后回填（两条 SQL 总成对出现，面板不会停在「处理中」）
+	status, statusErr := imStatusAccepted, ""
+	defer func() { a.imLogUpdate(logID, status, statusErr) }()
 	if in.Conv.ChatType == "group" {
+		status, statusErr = imStatusGroup, "群聊暂不支持"
 		a.imSay(in.Conv, "群聊暂不支持：请私聊我，我才能按你的身份判断权限。")
 		return
 	}
 	// 白名单：空白名单 = 谁都不受理（fail closed）。把 id 回给用户，方便他去设置页填。
 	if !a.Cfg.imAllowWeixin(in.Conv.UserID) {
+		status, statusErr = imStatusRejected, "不在白名单"
 		log.Printf("[IM] 拒绝未授权账号 %s 的消息（白名单 %d 条）", maskIMID(in.Conv.UserID), a.Cfg.imAllowCount())
 		a.imSay(in.Conv, "未授权：请在助手「设置 · IM 接入」里把这个账号加入白名单。\n你的 id："+in.Conv.UserID)
 		return
 	}
 	text := strings.TrimSpace(in.Text)
 	if text == "" {
+		status, statusErr = imStatusRejected, "只收到图片/文件/语音"
 		a.imSay(in.Conv, "只收到图片/文件/语音：文件与图片暂时还处理不了（阶段 4 接），先用文字告诉我。")
 		return
 	}
 	if a.imHandleCommand(in.Conv, text) {
+		status = imStatusCommand
 		return
 	}
 	// 审批/提问的答复：微信发起的任务产生的待办，就在微信里回「批准/拒绝/回答」。
 	// 放在白名单之后（非白名单连解析都不做）、命令之后（/status /stop 照旧优先）。
 	if a.imHandleInboundDecision(in.Conv, text) {
+		status = imStatusCommand // 控制指令：已消费，不落会话
 		return
 	}
 	m, err := a.assistantSession()
 	if err != nil || m == nil {
+		status, statusErr = imStatusRejected, "助手主对话不可用"
 		a.imSay(in.Conv, "助手主对话不可用："+errTextOf(err))
 		return
 	}
+	// 会话视图要给「来自微信」的入站消息打来源徽标、给答复打送达状态，
+	// 都按 session_id 查流水——入站这条落库时还不知道投给谁，这里补上。
+	a.imLogSetSession(logID, m.ID)
 	b := a.imBindChat(in.Conv.Channel, in.Conv.UserID)
 	log.Printf("[IM] 投递入站消息到数字经理（%s，会话 %s）：%s", maskIMID(in.Conv.UserID), m.ID, imTruncate(text, 60))
 	d := a.deliverToSession(m, text, kindChat, imOriginName)
@@ -216,9 +240,9 @@ func (a *App) imOnEvent(ev Event) {
 		return
 	}
 	text := imCapPushText(strings.TrimSpace(ev.Message.Text()))
-	if a.imQuietNow() {
-		return
-	}
+	// 「桌面在线不推」是策略性跳过，不是故障——但也要在面板里留痕，否则用户
+	// 事后只会看到「微信没收到这条」，误以为是丢了。
+	quiet := a.imQuietNow()
 	for _, b := range binds {
 		if b.Channel != "weixin" {
 			continue
@@ -229,6 +253,14 @@ func (a *App) imOnEvent(ev Event) {
 		}
 		if ev.Seq > 0 && ev.Seq <= b.LastSeq {
 			continue // 已经推过（重启/重连后的事件重放）
+		}
+		if quiet {
+			a.imLogAppend(imLogEntry{
+				Channel: b.Channel, ChatID: b.ChatID, Direction: imDirOut, Kind: imKindAnswer,
+				Text: text, Status: imStatusSkipped, Error: "桌面端在线，按「静默」设置未推送",
+				SessionID: cur, Seq: ev.Seq,
+			})
+			continue
 		}
 		a.imEnqueuePush(b.Channel, b.ChatID, text, ev.Seq, cur)
 	}
@@ -281,21 +313,40 @@ func (a *App) imQuietNow() bool {
 	return len(a.subscribers) > 0
 }
 
-// imSay 是「回一句即时话」的入口（命令回执、拒绝说明），走同一条发件队列，
-// 保证与后续答复的顺序。
+// imSay 是「回一句即时话」的入口（命令回执、拒绝说明、审批提示），走同一条发件
+// 队列，保证与后续答复的顺序。
 func (a *App) imSay(conv IMConversation, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	a.imEnqueuePush(conv.Channel, conv.UserID, text, 0, "")
+	a.imEnqueuePushKind(conv.Channel, conv.UserID, text, 0, "", imKindNotice)
 }
 
 // imEnqueuePush 把一条文本排进该会话的串行发件队列（首次使用就起一个 worker）。
 // sessionID 与 seq 一起用于推送成功后推进 lastSeq（imSay 这类即时话不推进）。
+// 语意类别按序号推断：带序号的是「数字经理的答复」，不带的是命令回执/系统提示。
 func (a *App) imEnqueuePush(channel, chatID, text string, seq int64, sessionID string) {
+	kind := imKindNotice
+	if seq > 0 {
+		kind = imKindAnswer
+	}
+	a.imEnqueuePushKind(channel, chatID, text, seq, sessionID, kind)
+}
+
+// imEnqueuePushKind 是 imEnqueuePush 的带类别版本。
+// 入队同时记一条 pending 流水：推送成功/失败再回填——「这条到底发出去了没有」
+// 是用户在面板里最想确认的事，光有日志文件不算。
+func (a *App) imEnqueuePushKind(channel, chatID, text string, seq int64, sessionID, kind string) {
 	if chatID == "" || strings.TrimSpace(text) == "" {
 		return
 	}
+	if kind == "" {
+		kind = imKindNotice
+	}
+	logID := a.imLogAppend(imLogEntry{
+		Channel: channel, ChatID: chatID, Direction: imDirOut, Kind: kind,
+		Text: text, Status: imStatusPending, SessionID: sessionID, Seq: seq,
+	})
 	out := a.imOutbox()
 	key := channel + "|" + chatID
 	out.mu.Lock()
@@ -309,9 +360,10 @@ func (a *App) imEnqueuePush(channel, chatID, text string, seq int64, sessionID s
 		go a.imPushWorker(channel, chatID, q)
 	}
 	select {
-	case q <- imOutItem{text: text, seq: seq, sessionID: sessionID}:
+	case q <- imOutItem{text: text, seq: seq, sessionID: sessionID, logID: logID}:
 	default:
 		log.Printf("[IM] 发件队列已满，丢弃一条推送（%s）", maskIMID(chatID))
+		a.imLogUpdate(logID, imStatusFailed, "发件队列已满，已丢弃")
 	}
 }
 
@@ -332,12 +384,15 @@ func (a *App) imPushWorker(channel, chatID string, q chan imOutItem) {
 		if err := a.imSendText(channel, chatID, it.text); err != nil {
 			log.Printf("[IM] 推送失败（%s/%s）: %v", channel, maskIMID(chatID), err)
 			a.imNotePush(channel, it.seq, false)
+			// 失败原因存人话（面板红字就显示这一句），别把原始 JSON 甩给用户
+			a.imLogUpdate(it.logID, imStatusFailed, imCutText(weixinErrorOf(err), 300))
 			continue
 		}
 		// 成功也留一行：只看 lastSeq 分不清「推成功」与「根本没推」，真机联调
 		// 时这一点最要命（答复到底有没有出去，日志里必须能直接看到）。
 		log.Printf("[IM] 已推送 seq=%d → %s（会话 %s）", it.seq, maskIMID(chatID), it.sessionID)
 		a.imNotePush(channel, it.seq, true)
+		a.imLogUpdate(it.logID, imStatusSent, "")
 		if it.seq > 0 {
 			a.imMarkPushed(channel, chatID, it.sessionID, it.seq)
 		}
@@ -447,6 +502,43 @@ func (a *App) imBindChat(channel, chatID string) imBinding {
 	a.imBindings = append(a.imBindings, b)
 	a.saveIMBindingsLocked()
 	return *b
+}
+
+// imSetRemark 给联系人设/清本地备注（微信 iLink 协议只给 ilink_user_id，拿不到
+// 昵称，只能靠用户自己起名）。返回更新后的绑定与「是否找到该聊天」。
+func (a *App) imSetRemark(channel, chatID, remark string) (imBinding, bool) {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	for _, b := range a.imBindings {
+		if b.Channel == channel && b.ChatID == chatID {
+			b.Remark = strings.TrimSpace(remark)
+			b.UpdatedAt = imNow()
+			a.saveIMBindingsLocked()
+			return *b, true
+		}
+	}
+	return imBinding{}, false
+}
+
+// imMarkRead 记「这个聊天已读到哪条流水」（面板未读红点按它算）。
+// 只增不减：回看旧消息不该把红点又点亮。
+func (a *App) imMarkRead(channel, chatID string, upTo int64) {
+	if upTo <= 0 {
+		return
+	}
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	for _, b := range a.imBindings {
+		if b.Channel == channel && b.ChatID == chatID {
+			if upTo > b.ReadUpTo {
+				b.ReadUpTo = upTo
+				a.saveIMBindingsLocked()
+			}
+			return
+		}
+	}
 }
 
 // imMarkPushed 记录「这个会话已经推到这个序号」（序号属于哪个数字经理版本一并记下）。

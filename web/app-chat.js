@@ -95,6 +95,7 @@ function goHomeNewTask() {
   // 不在场即跳过）——回首页即关掉占领主区的整页视图
   if (typeof marketOpen === 'function' && marketOpen() && typeof closeMarket === 'function') closeMarket();
   if (typeof sitesViewOpen === 'function' && sitesViewOpen() && typeof closeSites === 'function') closeSites();
+  if (typeof imIsOpen === 'function' && imIsOpen() && typeof imClose === 'function') imClose();
   detachStream(mainView); // 回首页只放开本地流，正在跑的那一轮继续在后台跑完
   if (state.cur) rpSnapshot(state.cur.id); // 回首页前记住这个对话的右栏状态（resetEmpty 会收起右栏）
   flushMainDraft(); // cur 置空前把防抖窗口内的输入落进旧会话草稿（resetEmpty 会整体替换输入框）
@@ -118,6 +119,7 @@ async function openSession(id) {
   // 市场像一张对话页：打开任何对话即关掉它——两个视图均已组件化，接口不在场即跳过
   if (typeof marketOpen === 'function' && marketOpen() && typeof closeMarket === 'function') closeMarket();
   if (typeof sitesViewOpen === 'function' && sitesViewOpen() && typeof closeSites === 'function') closeSites();
+  if (typeof imIsOpen === 'function' && imIsOpen() && typeof imClose === 'function') imClose();
   // 正在流式时切到别的会话：只放开本地这条流（后端执行照旧，回来会自动接上），
   // 不这样做的话旧会话的增量会被写进新会话的界面
   if (state.streaming && (!state.cur || state.cur.id !== id)) detachStream(mainView);
@@ -4935,6 +4937,9 @@ function setStreamUI(on, view) {
 
 function handleEvent(ev, view) {
   view = view || mainView;
+  // IM 流水变了（收发/推送状态回填）：只叫醒 IM 面板按需重拉，不把 IM 数据塞进
+  // 会话视图——面板没开时这个函数自己会忽略。
+  if (ev && ev.type === 'im' && typeof imOnServerEvent === 'function') imOnServerEvent(ev);
   switch (ev.type) {
     case 'edited': {
       // 编辑重发的截断确认：服务端已删掉 seq 之后的记录并改写正文，

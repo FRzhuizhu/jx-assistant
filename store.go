@@ -332,6 +332,33 @@ var storeMigrations = []migration{
 			`ALTER TABLE sessions ADD COLUMN voice_used INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		// IM 通道流水（微信等聊天软件的收发账本，im_log.go）。
+		// 为什么不复用 messages 表：messages 只记「会话里发生了什么」，而 IM 的
+		// 即时回执（/status 之类）、推送成功/失败/静默跳过这三件事根本不进会话；
+		// 且换数字经理版本、删会话、压缩都会让 messages 侧的 IM 痕迹失真。
+		// 正文仍以会话为准，本表只额外留一份快照（供独立面板成页查看）。
+		id: "0016_im_messages",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS im_messages (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				channel     TEXT NOT NULL DEFAULT 'weixin',
+				chat_id     TEXT NOT NULL,
+				direction   TEXT NOT NULL DEFAULT '',
+				kind        TEXT NOT NULL DEFAULT 'text',
+				text        TEXT NOT NULL DEFAULT '',
+				status      TEXT NOT NULL DEFAULT '',
+				error       TEXT NOT NULL DEFAULT '',
+				retries     INTEGER NOT NULL DEFAULT 0,
+				platform_id TEXT NOT NULL DEFAULT '',
+				session_id  TEXT NOT NULL DEFAULT '',
+				seq         INTEGER NOT NULL DEFAULT 0,
+				created_at  TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_im_messages_chat ON im_messages(channel, chat_id, id)`,
+			`CREATE INDEX IF NOT EXISTS idx_im_messages_time ON im_messages(created_at)`,
+		},
+	},
 }
 
 // createSchema 用迁移账本驱动建库：账本表自举，逐条执行未应用的迁移，
