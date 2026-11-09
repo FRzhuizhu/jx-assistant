@@ -73,6 +73,7 @@ function imEnsureView() {
       <div class="im-head-right">
         <span class="im-pill" id="im-conn">微信</span>
         <span class="im-muted" id="im-whitelist"></span>
+        <button class="im-icon-btn" id="im-bind-btn" title="扫码绑定 / 解绑 / 发测试消息">绑定</button>
         <button class="im-icon-btn" id="im-refresh" title="刷新">刷新</button>
         <button class="im-icon-btn" id="im-close" title="关闭面板">关闭</button>
       </div>
@@ -95,10 +96,19 @@ function imEnsureView() {
           <span class="im-muted" id="im-bound"></span>
         </div>
       </div>
+    </div>
+    <div class="im-drawer hidden" id="im-drawer">
+      <div class="im-drawer-head">
+        <div class="im-drawer-title">微信绑定</div>
+        <button class="im-icon-btn" id="im-drawer-close">关闭</button>
+      </div>
+      <div class="im-drawer-body" id="im-drawer-body"></div>
     </div>`;
   const main = document.getElementById('main');
   (main || document.body).appendChild(v);
   v.querySelector('#im-close').onclick = () => imClose();
+  v.querySelector('#im-bind-btn').onclick = () => imBindOpen();
+  v.querySelector('#im-drawer-close').onclick = () => imBindClose();
   v.querySelector('#im-refresh').onclick = () => imReload(true);
   v.querySelector('#im-back').onclick = () => v.classList.remove('im-detail');
   v.querySelector('#im-search').oninput = (e) => { imState.q = e.target.value; imRenderChats(); };
@@ -148,6 +158,7 @@ function imClose() {
   imState.open = false;
   if (imState.poll) { clearInterval(imState.poll); imState.poll = 0; }
   if (imState.timer) { clearTimeout(imState.timer); imState.timer = 0; }
+  imBindClose(); // 关面板顺手收起绑定抽屉、停掉扫码轮询
 }
 
 function imIsOpen() {
@@ -350,6 +361,320 @@ function imRenderMessages(placeholder) {
       ${meta}</div>`;
   }).join('');
   box.scrollTop = box.scrollHeight;
+}
+
+// ==================== 绑定抽屉：扫码 / 解绑 / 测试消息 ====================
+//
+// 这里是**绑定运维**，不是消息通道：面板仍然只读，不给 AI 也不给界面开
+// 「给真人发消息」的口子（除了用户自己按下的那一条测试消息）。
+//
+// 接口与闸（见 im_api.go）：
+//   POST /api/im/weixin/qr        同源 POST → 过 requireUIAction ✓
+//   GET  /api/im/weixin/qr?id=    轮询：**刻意不加闸**（浏览器同源 GET 不带 Origin），
+//                                 所以这里 getAll 式调用，绝不加自定义头
+//   POST /api/im/weixin/logout    过闸 + 二次确认（会删凭据、清绑定表）
+//   POST /api/im/weixin/test      过闸；返回语义诚实（submitted / platformReceipt:false）
+//
+// 真机上 qrImage 不是 base64 PNG，而是 liteapp 链接（https://liteapp.weixin.qq.com/q/…），
+// 所以用 qrLib.qrSVG() 现渲染成二维码（它接受任意文本），失败再退回「可点链接」。
+
+const imBind = {
+  snap: null,      // 最近一次扫码快照（id/status/qrImage/expiresIn/verifyNeeded）
+  timer: 0,        // 轮询定时器
+  busy: false,     // 防连点
+  note: '',        // 测试消息等操作的回执文案（诚实口径）
+  err: '',         // 最近一次错误
+  renderedQr: '',  // 已经渲染过的 qrImage（避免轮询时反复重画、闪一下）
+};
+
+function imBindChannel() {
+  return imState.conn || null;
+}
+
+function imBindEl(id) {
+  return document.getElementById(id);
+}
+
+function imBindOpen() {
+  const d = imBindEl('im-drawer');
+  if (!d) return;
+  d.classList.remove('hidden');
+  imBind.note = '';
+  imBindRender();
+}
+
+function imBindClose() {
+  const d = imBindEl('im-drawer');
+  if (d) d.classList.add('hidden');
+  imBindStopPoll();
+}
+
+function imBindStopPoll() {
+  if (imBind.timer) { clearTimeout(imBind.timer); imBind.timer = 0; }
+}
+
+// imBindStatusText 把平台状态翻成人话（wait→扫码中、scaned→去手机确认…）
+function imBindStatusText() {
+  const s = imBind.snap;
+  if (!s) return '';
+  const left = typeof s.expiresIn === 'number' ? s.expiresIn : 0;
+  switch (String(s.status || '')) {
+    case 'wait': return `等待扫码…（约 ${left} 秒后过期）`;
+    case 'scaned': return '已扫码，请在手机上确认登录';
+    case 'need_verifycode': return '手机要求输入配对码：请在下方填写并提交';
+    case 'confirmed': return '绑定成功，正在刷新…';
+    case 'expired': return '二维码已过期，点「重新生成」再来一次';
+    case 'failed': return `绑定失败：${s.error || '未知原因'}`;
+    case 'binded': return '这台设备此前已绑定过微信，可直接使用';
+    default: return s.error || String(s.status || '');
+  }
+}
+
+function imBindRender() {
+  const box = imBindEl('im-drawer-body');
+  if (!box) return;
+  const ch = imBindChannel();
+  const connected = !!(ch && ch.state === 'connected');
+  const s = imBind.snap;
+  const st = s ? String(s.status || '') : '';
+  const hasQr = !!(s && s.qrImage);
+  const dead = st === 'expired' || st === 'failed' || st === 'confirmed';
+  const rows = [
+    ['渠道状态', ch ? (ch.state || '未知') : '未启用'],
+    ['账号', (ch && (ch.accountId || ch.ownerId)) || '未绑定'],
+    ['白名单', `${ch ? (ch.allow || 0) : 0} 条${ch && ch.allow ? '' : '（0 条＝谁都不能下指令）'}`],
+    ['会话凭据', ch && ch.contextToken ? '已有（可发主动消息）' : '没有（平台不投递主动消息）'],
+  ];
+  let html = `<div class="im-card">${rows.map(([k, v]) =>
+    `<div class="im-card-row"><span class="im-muted">${esc(k)}</span><span>${esc(v)}</span></div>`).join('')}`;
+  if (ch && ch.lastError) {
+    html += `<div class="im-card-row"><span class="im-muted">最近错误</span><span class="im-err">${esc(ch.lastError)}</span></div>`;
+  }
+  html += '</div>';
+
+  if (hasQr && !dead) {
+    html += `<div class="im-qr"><div class="im-qr-img" id="im-qr-img">二维码生成中…</div>
+      <div class="im-qr-tip" id="im-qr-tip">${esc(imBindStatusText())}</div>`;
+    if (st === 'need_verifycode') {
+      html += `<div class="im-qr-verify">
+        <input id="im-verify" placeholder="手机上显示的配对码">
+        <button class="im-icon-btn" id="im-verify-go">提交</button>
+      </div>`;
+    }
+    html += `<div class="im-qr-tip im-muted">手机微信扫一扫 → 确认登录；二维码约 2 分钟内有效</div>`;
+    html += '</div>';
+  } else if (!connected || dead) {
+    html += `<button class="im-primary" id="im-qr-start">${dead ? '重新生成二维码' : '扫码绑定微信'}</button>`;
+  }
+
+  if (st === 'expired' || st === 'failed') {
+    html += `<div class="im-err" id="im-bind-err">${esc(imBindStatusText())}</div>`;
+  }
+  if (imBind.err) {
+    html += `<div class="im-err">${esc(imBind.err)}</div>`;
+  }
+  if (imBind.note) {
+    html += `<div class="im-note">${esc(imBind.note)}</div>`;
+  }
+
+  html += '<div class="im-drawer-actions">';
+  if (connected) {
+    html += `<button class="im-icon-btn" id="im-test">发一条测试消息</button>`;
+    html += `<button class="im-icon-btn im-danger" id="im-unbind">解除绑定</button>`;
+  }
+  html += `<button class="im-icon-btn" id="im-bind-refresh">刷新状态</button></div>`;
+
+  box.innerHTML = html;
+
+  // 事件（每次重渲染都重新绑定：innerHTML 会丢掉旧监听）
+  const start = imBindEl('im-qr-start');
+  if (start) start.onclick = () => imBindStart();
+  const vgo = imBindEl('im-verify-go');
+  if (vgo) vgo.onclick = () => imBindVerify((imBindEl('im-verify') || {}).value || '');
+  const test = imBindEl('im-test');
+  if (test) test.onclick = () => imBindTest();
+  const unb = imBindEl('im-unbind');
+  if (unb) unb.onclick = () => imBindLogout(unb);
+  const rf = imBindEl('im-bind-refresh');
+  if (rf) rf.onclick = () => imBindRefreshChannel();
+
+  // 二维码只在 qrImage 变化时重画（轮询每 1.5 秒一次，重画会闪）
+  const qrBox = imBindEl('im-qr-img');
+  if (qrBox && hasQr) imBindRenderQr(qrBox, String(s.qrImage));
+}
+
+// imBindRenderQr 优先用 qrLib 把 qrImage（liteapp 链接）渲染成 SVG 二维码；
+// 渲染不了就退回「可点链接 + 原文」，至少不会白屏。
+async function imBindRenderQr(box, text) {
+  if (imBind.renderedQr === text && box.querySelector('svg,img,a')) return;
+  imBind.renderedQr = text;
+  if (/^data:image\//i.test(text)) {
+    box.innerHTML = `<img alt="微信绑定二维码" src="${esc(text)}">`;
+    return;
+  }
+  if (typeof qrLib !== 'undefined' && qrLib && typeof qrLib.qrSVG === 'function') {
+    try {
+      box.innerHTML = await qrLib.qrSVG(text, { size: 200 });
+      return;
+    } catch (e) { /* 落到链接兜底 */ }
+  }
+  box.innerHTML = `<a href="${esc(text)}" target="_blank" rel="noopener">在手机浏览器里打开绑定链接</a>
+    <div class="im-qr-raw">${esc(text)}</div>`;
+}
+
+async function imBindStart() {
+  if (imBind.busy) return;
+  imBind.busy = true;
+  imBind.err = '';
+  imBind.note = '';
+  imBind.snap = null;
+  imBind.renderedQr = '';
+  imBindStopPoll();
+  try {
+    const snap = await api('/api/im/weixin/qr', { method: 'POST', body: '{}' });
+    imBind.snap = snap;
+    imBindRender();
+    imBindPoll();
+  } catch (e) {
+    imBind.err = '生成二维码失败：' + ((e && e.message) || '未知原因');
+    imBindRender();
+  } finally {
+    imBind.busy = false;
+  }
+}
+
+// imBindPoll 每 1.5 秒问一次扫码进度。GET 是**同源无自定义头**的调用：
+// 服务端这条路由刻意没加 Origin 闸（浏览器同源 GET 不带 Origin）。
+function imBindPoll() {
+  imBindStopPoll();
+  const s = imBind.snap;
+  if (!s || !s.id) return;
+  const st = String(s.status || '');
+  if (st === 'confirmed' || st === 'expired' || st === 'failed') return;
+  imBind.timer = setTimeout(async () => {
+    try {
+      const next = await api(`/api/im/weixin/qr?id=${encodeURIComponent(s.id)}`);
+      imBind.snap = next;
+      const ns = String(next.status || '');
+      // 状态机转折点整块重画（要出验证码输入框 / 重生成按钮），其余只改提示文字
+      if (ns === 'need_verifycode' || ns === 'expired' || ns === 'failed' || ns === 'confirmed') {
+        imBindRender();
+      } else {
+        const tip = imBindEl('im-qr-tip');
+        if (tip) tip.textContent = imBindStatusText();
+      }
+      if (ns === 'confirmed') {
+        toast('微信绑定成功');
+        imBindStopPoll();
+        imBind.snap = null;      // 收掉二维码区，回到「已连接」形态
+        await imReload(true);    // 顶栏渠道状态、左列聊天都跟着更新
+        imBindRender();
+      } else if (ns === 'expired' || ns === 'failed') {
+        imBindStopPoll();
+      } else {
+        imBindPoll();
+      }
+    } catch (e) {
+      imBind.err = '查询扫码状态失败：' + ((e && e.message) || '未知原因');
+      imBindStopPoll();
+      imBindRender();
+    }
+  }, 1500);
+}
+
+async function imBindVerify(code) {
+  const s = imBind.snap;
+  const v = String(code || '').trim();
+  if (!s || !s.id) return;
+  if (!v) { toast('请先输入手机上的配对码'); return; }
+  try {
+    const next = await api(`/api/im/weixin/qr?id=${encodeURIComponent(s.id)}&verify=${encodeURIComponent(v)}`);
+    imBind.snap = next;
+    imBind.err = '';
+    imBindRender();
+    imBindPoll();
+  } catch (e) {
+    imBind.err = '提交配对码失败：' + ((e && e.message) || '未知原因');
+    imBindRender();
+  }
+}
+
+// imBindRefreshChannel 只刷新右上角/抽屉里的渠道状态（不动扫码流程）
+async function imBindRefreshChannel() {
+  try {
+    const d = await api('/api/im/status');
+    const ch = (d.channels || []).find((c) => c.channel === 'weixin') || (d.channels || [])[0] || null;
+    imState.conn = ch;
+    imState.whitelist = ch ? (ch.allow || 0) : 0;
+    const pill = document.getElementById('im-conn');
+    const wl = document.getElementById('im-whitelist');
+    const ok = !!(ch && ch.state === 'connected');
+    if (pill) {
+      pill.textContent = ok ? '微信已连接' : ((ch && ch.state) ? `微信 ${ch.state}` : '微信未连接');
+      pill.className = `im-pill ${ok ? 'ok' : 'off'}`;
+    }
+    if (wl) wl.textContent = `白名单 ${imState.whitelist} 条`;
+    imBind.err = '';
+    imBindRender();
+  } catch (e) {
+    imBind.err = '读取渠道状态失败：' + ((e && e.message) || '未知原因');
+    imBindRender();
+  }
+}
+
+// imBindLogout 二次确认（第一次点只把按钮换成确认态，5 秒后自动收回）
+function imBindLogout(btn) {
+  if (!btn) return;
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = '确认解除？会删凭据与绑定';
+    btn.classList.add('im-danger-armed');
+    setTimeout(() => {
+      if (!document.body.contains(btn)) return;
+      btn.dataset.armed = '';
+      btn.textContent = '解除绑定';
+      btn.classList.remove('im-danger-armed');
+    }, 5000);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '正在解除…';
+  api('/api/im/weixin/logout', { method: 'POST', body: '{}' })
+    .then(async () => {
+      imBind.snap = null;
+      imBind.renderedQr = '';
+      imBind.note = '已解除绑定：凭据与绑定表都清了。要再连，重新扫码即可。';
+      imBind.err = '';
+      await imReload(true);
+      await imBindRefreshChannel();
+    })
+    .catch((e) => {
+      imBind.err = '解除绑定失败：' + ((e && e.message) || '未知原因');
+      imBindRender();
+    });
+}
+
+// imBindTest 发一条测试消息。服务端的语义是诚实的（submitted 只代表平台接受），
+// 界面上不许把它说成「已送达」；没有 context_token 时 409 的原文照抄给用户。
+function imBindTest() {
+  const btn = imBindEl('im-test');
+  if (btn) { btn.disabled = true; btn.textContent = '正在发送…'; }
+  api('/api/im/weixin/test', { method: 'POST', body: '{}' })
+    .then((d) => {
+      const ok = d && d.ok;
+      const note = (d && d.note) || '';
+      imBind.note = ok
+        ? `已提交给微信（平台未回真实回执，是否收到以手机为准）。${note}`
+        : `平台没有接受这条消息。${note}`;
+      imBind.err = '';
+      imBindRender();
+    })
+    .catch((e) => {
+      // 409 = 没有 context_token：把那句「先去微信说一句话」原样给用户看
+      imBind.err = (e && e.message) || '发送测试消息失败';
+      imBind.note = '';
+      imBindRender();
+    });
 }
 
 // ---------- 启动 ----------

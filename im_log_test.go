@@ -317,7 +317,24 @@ func TestIMWeixinWriteRoutesRequireUI(t *testing.T) {
 		}
 	}
 	// 扫码**轮询**是 GET，浏览器同源 GET 不带 Origin——刻意不加闸（加了扫码进度
-	// 会停更）。这里不调用它：会真的去问渠道，不是单元测试该做的事。
+	// 会停更）。它的边界由 TestIMWeixinQrPollNotGated 单独钉住。
+}
+
+// TestIMWeixinQrPollNotGated 钉住「扫码轮询不加 Origin 闸」这条边界：
+// 界面每 1.5 秒 GET 一次进度，浏览器对同源 GET **不带** Origin；一旦给这条路由
+// 也套 requireUIAction，扫码进度会被 403 打死（二维码永远停在「等待扫码」）。
+// 这里没有进行中的扫码，期望 404（找不到扫码会话）——关键是**不能是 403**。
+func TestIMWeixinQrPollNotGated(t *testing.T) {
+	a := newIMTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/im/weixin/qr?id=x", nil) // 刻意不带 Origin
+	w := httptest.NewRecorder()
+	a.handleIMWeixinQrPoll(w, req)
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("扫码轮询被 Origin 闸拦住了（界面轮询会 403、扫码进度停更）")
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("没有进行中的扫码应回 404，得到 %d：%s", w.Code, w.Body.String())
+	}
 }
 
 // TestIMUIOnlyEndpointsRejectNonBrowser 钉住「备注/已读只能在界面里点」这道闸：
