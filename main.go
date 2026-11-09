@@ -233,6 +233,8 @@ func main() {
 	// 连接按配置即时启动；设置页的开关/身份/网关改动同样热生效。
 	app.listenPort = portNo
 	app.syncRemoteAccess()
+	// IM 接入（im.go）：按配置起停微信 iLink 渠道的长轮询，设置页改动同样热生效。
+	app.syncIM()
 	// 更新：先结算上一次 engine 静默交换（确认版本/清 .old 残留/恢复横幅状态），
 	// 再结算技能区（清换位残留的旧运行时、把与当前版本不符的旧运行时清掉），
 	// 最后启动轮询

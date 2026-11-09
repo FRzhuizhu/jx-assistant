@@ -245,6 +245,20 @@ https://www.gnu.org/licenses/gpl-3.0.html 。
 https://github.com/certifi/python-certifi 、https://github.com/tqdm/tqdm 。
 MPL-2.0 全文：https://mozilla.org/MPL/2.0/
 
+## 9. 协议实现参考（不随包分发，无代码依赖）
+
+### 9.1 微信 iLink（ClawBot）协议
+
+`im_weixin.go` 的协议字段、状态机与错误码按 MIT 许可的参考实现移植（Go 重写，
+不包含其代码，仅沿用协议事实与文案口径）：
+
+| 参考实现 | 许可 | 地址 |
+|---|---|---|
+| @botharness/im-provider（`src/channels/weixin/`） | MIT，Copyright (c) BotHarness / xmanrui | https://github.com/xmanrui/dsh-im |
+| hermesclaw（微信 iLink 独立实现，用于交叉验证） | MIT | https://github.com/AaronWong1999/hermesclaw |
+
+本产品未分发上述项目的任何代码或资源，仅使用其公开描述的协议行为。
+
 ---
 
 本文件按本仓库当前分发清单维护；依赖更新时请同步更新本声明。

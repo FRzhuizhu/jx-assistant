@@ -172,6 +172,34 @@ type Config struct {
 	// 进程与后端（会话/任务）驻留，双击托盘图标回到界面。nil 表示未写过该键＝
 	// 默认开启；显式 false 才关闭：关窗即真正退出程序。网页/手机形态无此语义。
 	CloseToTray *bool `json:"closeToTray,omitempty"`
+	// IM 接入（把助手接进聊天软件：在微信里下指令、收结果回报）。第一期只做
+	// 微信 iLink（社区叫 ClawBot）一个渠道，协议实现见 im_weixin.go。开关与
+	// 白名单留在这里；账号 token 单独落 data/im_weixin.json（DPAPI 加密）——
+	// 配置导出/拷贝时不带凭据，换机器要重新扫码。
+	IM IMCfg `json:"im,omitempty"`
+}
+
+// IMCfg 是 IM 接入的配置段：总开关 + 各渠道。
+type IMCfg struct {
+	// Enabled 是 IM 接入总开关：关掉后所有渠道停轮询（凭据保留，重开即恢复）。
+	Enabled bool `json:"enabled"`
+	// Weixin 是微信 iLink（ClawBot）渠道。扫码绑定一个微信机器人身份，
+	// 长轮询收发，不需要公网回调。同一微信账号只能有一个轮询进程。
+	Weixin IMWeixinCfg `json:"weixin,omitempty"`
+	// QuietWhenDesktop=true 时「桌面在线就不推」：有前端订阅者（有人正看着界面）
+	// 时不往 IM 发答复，避免同一条结论在两处重复打扰。nil=默认推（IM 是主力入口时
+	// 用户往往不在电脑前，宁可多推一条）。
+	QuietWhenDesktop *bool `json:"quietWhenDesktop,omitempty"`
+}
+
+// IMWeixinCfg 微信渠道配置。
+type IMWeixinCfg struct {
+	Enabled bool `json:"enabled"`
+	// Allow 是允许通过 IM 给助手下指令的 ilink_user_id 白名单。空 = 谁都不受理
+	// （fail closed）：扫码绑定后把 owner id 填进来才能用。
+	Allow []string `json:"allow,omitempty"`
+	// TestUser 是 /api/im/weixin/test 的默认收件人（空 = 扫码绑定的 owner）。
+	TestUser string `json:"testUser,omitempty"`
 }
 
 // CompanyQuotaCfg 公司内部通道的额度快照（服务端 quota.go 的 quotaPayload 结构，

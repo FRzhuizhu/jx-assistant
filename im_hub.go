@@ -1,0 +1,487 @@
+package main
+
+// IM 中枢（阶段 2）：把「聊天软件里的消息」接进 jx 的会话体系，把「数字经理的
+// 最终答复」推回聊天软件。
+//
+// 三条设计原则（别为了省事绕开）：
+//  1. **入站只有一条路**：一律走 deliverToSession（runtime.go:522），与前端发
+//     消息完全同语义（空闲就落库并占执行权、执行中就插话）。IM 是「另一个用户
+//     入口」，不是第二套投递机制——否则提权、插话、排队、停止的语义会分叉。
+//  2. **出站只有一个点**：挂 sessionRun.publish（runtime.go:416）——所有执行体
+//     （executeRun / kickSessionRound / 子代理 / 定时任务）的事件都从那里出去。
+//     注意**不是** broadcast：broadcast 只承载 session_updated/done/审批，正文
+//     事件（message）根本不在其中，挂那里会一条都推不出去。业务代码同样不需要
+//     知道 IM 的存在。
+//  3. **推什么要克制**：只推「当前数字经理会话的最终答复」（role=assistant 且
+//     没有 tool_calls）。工具过程、子会话过程一律不推——任务完成/失败本来就经
+//     「派发回报」汇总到经理那一轮，经理的最终答复就是用户在微信里该看到的东西。
+//     多路推送只会把聊天窗口刷成日志流。
+//
+// 幂等：入站靠适配层的 seen 集合 + 平台 message_id；出站靠每个会话的 lastSeq
+//（重启/重连后不会把历史答复重发一遍）。同一会话的推送走一条串行发件队列，
+// 保证顺序，且发送失败不阻塞 broadcast、不影响后续消息。
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// imOriginName 是 IM 入站消息的 origin 标记（kind 仍是 chat：前端按用户气泡显示，
+// 但落库行上能看出「这句来自微信」）。
+const imOriginName = "im"
+
+// imBinding 是一条「聊天会话 ↔ 数字经理」的绑定：已推到的序号 + 该序号属于哪一
+// 版数字经理。存 SessionID 只为一件事：数字经理换版本后消息序号会从头计，若不
+// 认版本，旧绑定里的 lastSeq 会把新版本的答复永久吞掉（见 imRebaseBinding）。
+type imBinding struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chatId"`
+	SessionID string `json:"sessionId,omitempty"` // lastSeq 所属的数字经理会话
+	LastSeq   int64  `json:"lastSeq"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type imBindingFile struct {
+	Chats []*imBinding `json:"chats"`
+}
+
+// imOutItem 是一条待推送的答复。
+type imOutItem struct {
+	text      string
+	seq       int64
+	sessionID string // seq 所属会话（推送成功后据此推进 lastSeq）
+}
+
+// imOutbox 每个 IM 会话一条串行发件队列（保证顺序 + 单条失败不拖累后续）。
+type imOutbox struct {
+	mu     sync.Mutex
+	queues map[string]chan imOutItem
+}
+
+func newIMOutbox() *imOutbox { return &imOutbox{queues: map[string]chan imOutItem{}} }
+
+// ---------- 入站 ----------
+
+// imOnInbound 是一条 IM 入站消息的唯一落点（适配层解析完就交到这里）。
+func (a *App) imOnInbound(in IMInbound) {
+	if a == nil || a.Cfg == nil {
+		return
+	}
+	if in.Conv.ChatType == "group" {
+		a.imSay(in.Conv, "群聊暂不支持：请私聊我，我才能按你的身份判断权限。")
+		return
+	}
+	// 白名单：空白名单 = 谁都不受理（fail closed）。把 id 回给用户，方便他去设置页填。
+	if !a.Cfg.imAllowWeixin(in.Conv.UserID) {
+		log.Printf("[IM] 拒绝未授权账号 %s 的消息（白名单 %d 条）", maskIMID(in.Conv.UserID), a.Cfg.imAllowCount())
+		a.imSay(in.Conv, "未授权：请在助手「设置 · IM 接入」里把这个账号加入白名单。\n你的 id："+in.Conv.UserID)
+		return
+	}
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		a.imSay(in.Conv, "只收到图片/文件/语音：文件与图片暂时还处理不了（阶段 4 接），先用文字告诉我。")
+		return
+	}
+	if a.imHandleCommand(in.Conv, text) {
+		return
+	}
+	m, err := a.assistantSession()
+	if err != nil || m == nil {
+		a.imSay(in.Conv, "助手主对话不可用："+errTextOf(err))
+		return
+	}
+	b := a.imBindChat(in.Conv.Channel, in.Conv.UserID)
+	log.Printf("[IM] 投递入站消息到数字经理（%s，会话 %s）：%s", maskIMID(in.Conv.UserID), m.ID, imTruncate(text, 60))
+	d := a.deliverToSession(m, text, kindChat, imOriginName)
+	if d.Started {
+		kickSessionRound(a, m, d.Run)
+	} else {
+		// 正在执行：已插话，它下一步就会看到（与前端「对话中途发消息」同语义）。
+		log.Printf("[IM] 数字经理正在执行，消息已插话（%s）", maskIMID(b.ChatID))
+	}
+}
+
+// imHandleCommand 处理 /help /status /stop（返回 true 表示已消费，不再进会话）。
+func (a *App) imHandleCommand(conv IMConversation, text string) bool {
+	fields := strings.Fields(text)
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/help", "/?", "/帮助":
+		a.imSay(conv, "在微信里直接说话就行：我会把话转给数字经理，它安排任务，完成后把结果回给你。\n"+
+			"/status 看当前状态　/stop 叫停正在跑的这一轮\n"+
+			"长答复会分几条发（微信单条上限 1800 字）。")
+		return true
+	case "/status", "/状态":
+		a.imSay(conv, a.imStatusText())
+		return true
+	case "/stop", "/停":
+		m := a.currentAssistant()
+		if m == nil {
+			a.imSay(conv, "当前没有主对话，没什么可停的。")
+			return true
+		}
+		if a.stopRunBy(m.ID, imOriginName, "用户在微信里叫停") {
+			a.imSay(conv, "已叫停这一轮。")
+		} else {
+			a.imSay(conv, "现在没有在跑的回合。")
+		}
+		return true
+	}
+	return false
+}
+
+// imStatusText 是 /status 的正文（运行中会话数 + IM 连接态 + 白名单规模）。
+func (a *App) imStatusText() string {
+	b := &strings.Builder{}
+	b.WriteString("【状态】" + imNow() + "\n")
+	running := a.runningIDs()
+	b.WriteString(fmt.Sprintf("运行中会话：%d 个\n", len(running)))
+	if m := a.currentAssistant(); m != nil {
+		b.WriteString("数字经理：" + m.Title + "\n")
+	} else {
+		b.WriteString("数字经理：未创建\n")
+	}
+	for _, st := range a.imStatuses() {
+		line := fmt.Sprintf("渠道 %s：%s", st.Channel, imStateText(st.State))
+		if st.AccountID != "" {
+			line += "（账号 " + st.AccountID + "）"
+		}
+		if st.LastError != "" {
+			line += "，最近错误：" + st.LastError
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString(fmt.Sprintf("白名单：%d 个账号可下指令", a.Cfg.imAllowCount()))
+	return b.String()
+}
+
+// imStateText 把渠道状态翻译成给人看的一句话。
+func imStateText(state string) string {
+	switch state {
+	case "connected":
+		return "已连接"
+	case "connecting":
+		return "连接中"
+	case "waiting_scan":
+		return "等待扫码绑定"
+	case "failed":
+		return "连接失败"
+	case "disabled":
+		return "未启用"
+	}
+	if state == "" {
+		return "未启用"
+	}
+	return state
+}
+
+// ---------- 出站 ----------
+
+// imOnEvent 消费执行事件流（挂在 sessionRun.publish 上，阶段 2 只关心「数字经理
+// 的最终答复」）。钩子在 publish 的订阅者锁之外调用：这里要读配置、查库、碰文件。
+func (a *App) imOnEvent(ev Event) {
+	if a == nil || a.Cfg == nil || !a.Cfg.imWeixinOn() {
+		return
+	}
+	// 热路径：delta/reasoning 等高频事件也走这里，先做零成本判断。
+	if !imIsFinalAnswer(ev) {
+		return
+	}
+	// 没有任何绑定就不必查库算「当前数字经理」。
+	binds := a.imBindingList()
+	if len(binds) == 0 {
+		return
+	}
+	cur := a.currentAssistantID()
+	if !imShouldPush(ev, cur) {
+		return
+	}
+	text := imCapPushText(strings.TrimSpace(ev.Message.Text()))
+	if a.imQuietNow() {
+		return
+	}
+	for _, b := range binds {
+		if b.Channel != "weixin" {
+			continue
+		}
+		if b.SessionID != cur {
+			// 换了数字经理版本：序号重新计数，绑定得跟着重置，否则新答复全被吞。
+			b = a.imRebaseBinding(b.Channel, b.ChatID, cur)
+		}
+		if ev.Seq > 0 && ev.Seq <= b.LastSeq {
+			continue // 已经推过（重启/重连后的事件重放）
+		}
+		a.imEnqueuePush(b.Channel, b.ChatID, text, ev.Seq, cur)
+	}
+}
+
+// imIsFinalAnswer 只按事件内容判断「这是不是一段该给人看的答复」（不查库）。
+//   - 只认 message 事件里已落库的 assistant 正文（kind=chat）；
+//   - 带 tool_calls 的是「准备调工具」的中间态，推出去等于把过程当结论发给人。
+func imIsFinalAnswer(ev Event) bool {
+	if ev.Type != "message" || ev.Message == nil || ev.Kind != kindChat {
+		return false
+	}
+	if ev.Message.Role != "assistant" || len(ev.Message.ToolCalls) > 0 {
+		return false
+	}
+	return strings.TrimSpace(ev.Message.Text()) != ""
+}
+
+// imShouldPush 在 imIsFinalAnswer 之上再加「是不是当前数字经理会话」：子会话/
+// 任务会话的过程不进聊天窗口——它们的结果本来就会经「派发回报」汇总进经理那一
+// 轮，经理的答复才是用户该看的。纯函数，单测直接覆盖。
+func imShouldPush(ev Event, curID string) bool {
+	if !imIsFinalAnswer(ev) {
+		return false
+	}
+	return curID != "" && ev.SessionID == curID
+}
+
+// imMaxPushChars 单条答复推送上限：超过就截断并提示去桌面端看全文。微信按 1800
+// 字分段，6000 字已经是 4 条——再长就不是「聊天里能读」的东西了。
+const imMaxPushChars = 6000
+
+// imCapPushText 按上限截断答复（保留换行：长答复的层次感全靠换行）。
+func imCapPushText(s string) string {
+	r := []rune(s)
+	if len(r) <= imMaxPushChars {
+		return s
+	}
+	return string(r[:imMaxPushChars]) + "\n…（答复过长，已截断；完整内容请在桌面端查看）"
+}
+
+// imQuietNow 判断「桌面在线时是否不推」：开关打开且此刻有前端订阅者（有人在看
+// 界面）就不推，避免同一条答复在两处重复打扰。
+func (a *App) imQuietNow() bool {
+	if a.Cfg == nil || a.Cfg.IM.QuietWhenDesktop == nil || !*a.Cfg.IM.QuietWhenDesktop {
+		return false
+	}
+	a.evtMu.Lock()
+	defer a.evtMu.Unlock()
+	return len(a.subscribers) > 0
+}
+
+// imSay 是「回一句即时话」的入口（命令回执、拒绝说明），走同一条发件队列，
+// 保证与后续答复的顺序。
+func (a *App) imSay(conv IMConversation, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	a.imEnqueuePush(conv.Channel, conv.UserID, text, 0, "")
+}
+
+// imEnqueuePush 把一条文本排进该会话的串行发件队列（首次使用就起一个 worker）。
+// sessionID 与 seq 一起用于推送成功后推进 lastSeq（imSay 这类即时话不推进）。
+func (a *App) imEnqueuePush(channel, chatID, text string, seq int64, sessionID string) {
+	if chatID == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	out := a.imOutbox()
+	key := channel + "|" + chatID
+	out.mu.Lock()
+	q, ok := out.queues[key]
+	if !ok {
+		q = make(chan imOutItem, 32)
+		out.queues[key] = q
+	}
+	out.mu.Unlock()
+	if !ok {
+		go a.imPushWorker(channel, chatID, q)
+	}
+	select {
+	case q <- imOutItem{text: text, seq: seq, sessionID: sessionID}:
+	default:
+		log.Printf("[IM] 发件队列已满，丢弃一条推送（%s）", maskIMID(chatID))
+	}
+}
+
+// imOutbox 取发件队列表（惰性创建，加锁避免并发首次使用时建出两份）。
+func (a *App) imOutbox() *imOutbox {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	if a.imOut == nil {
+		a.imOut = newIMOutbox()
+	}
+	return a.imOut
+}
+
+// imPushWorker 串行发一个会话的所有推送；成功才推进 lastSeq（失败的那条不推进，
+// 但也不重试——答复是「当时的结论」，过期重发比丢更让人困惑）。
+func (a *App) imPushWorker(channel, chatID string, q chan imOutItem) {
+	for it := range q {
+		if err := a.imSendText(channel, chatID, it.text); err != nil {
+			log.Printf("[IM] 推送失败（%s/%s）: %v", channel, maskIMID(chatID), err)
+			continue
+		}
+		if it.seq > 0 {
+			a.imMarkPushed(channel, chatID, it.sessionID, it.seq)
+		}
+	}
+}
+
+// imSendText 通过渠道适配层发一段文本（分段在适配层内部做）。
+func (a *App) imSendText(channel, chatID, text string) error {
+	ch := a.imChannelOf(channel)
+	if ch == nil {
+		return fmt.Errorf("渠道 %s 未运行", channel)
+	}
+	sender, ok := ch.(IMSender)
+	if !ok {
+		return fmt.Errorf("渠道 %s 不支持发送文本", channel)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, err := sender.SendText(ctx, IMConversation{
+		Channel: channel, ChatID: chatID, ChatType: "dm", UserID: chatID,
+	}, text)
+	return err
+}
+
+// ---------- 绑定表（data/im_bindings.json） ----------
+
+func (a *App) imBindingsPath() string {
+	return filepathAbsOf(filepath.Join(a.Cfg.DataDir, "im_bindings.json"))
+}
+
+// ensureIMBindingsLocked 首次访问时从磁盘装载（调用方持 imBindMu）。
+func (a *App) ensureIMBindingsLocked() {
+	if a.imBindings != nil {
+		return
+	}
+	a.imBindings = []*imBinding{}
+	raw, err := os.ReadFile(a.imBindingsPath())
+	if err != nil {
+		return
+	}
+	var f imBindingFile
+	if json.Unmarshal(raw, &f) != nil {
+		return
+	}
+	for _, b := range f.Chats {
+		if b != nil && b.ChatID != "" {
+			a.imBindings = append(a.imBindings, b)
+		}
+	}
+}
+
+func (a *App) saveIMBindingsLocked() {
+	raw, _ := json.MarshalIndent(imBindingFile{Chats: a.imBindings}, "", " ")
+	if err := os.MkdirAll(filepath.Dir(a.imBindingsPath()), 0o755); err != nil {
+		return
+	}
+	if err := writeFileAtomic(a.imBindingsPath(), raw); err != nil {
+		log.Printf("[IM] 绑定表落盘失败: %v", err)
+	}
+}
+
+// imBindingList 复制一份绑定表（不持锁返回，调用方随便读）。
+func (a *App) imBindingList() []imBinding {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	out := make([]imBinding, 0, len(a.imBindings))
+	for _, b := range a.imBindings {
+		out = append(out, *b)
+	}
+	return out
+}
+
+// imBindChat 登记（或刷新）一条绑定，返回副本。
+func (a *App) imBindChat(channel, chatID string) imBinding {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	for _, b := range a.imBindings {
+		if b.Channel == channel && b.ChatID == chatID {
+			b.UpdatedAt = imNow()
+			a.saveIMBindingsLocked()
+			return *b
+		}
+	}
+	b := &imBinding{Channel: channel, ChatID: chatID, UpdatedAt: imNow()}
+	a.imBindings = append(a.imBindings, b)
+	a.saveIMBindingsLocked()
+	return *b
+}
+
+// imMarkPushed 记录「这个会话已经推到这个序号」（序号属于哪个数字经理版本一并记下）。
+func (a *App) imMarkPushed(channel, chatID, sessionID string, seq int64) {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	for _, b := range a.imBindings {
+		if b.Channel == channel && b.ChatID == chatID {
+			// 绑定还没有版本（imBindChat 刚建出来的）：采纳调用方的版本。否则第一次
+			// 记录会被「版本不一致」挡掉，序号白记。
+			if b.SessionID == "" {
+				b.SessionID = sessionID
+			}
+			if b.SessionID == sessionID && seq > b.LastSeq {
+				b.LastSeq = seq
+				b.UpdatedAt = imNow()
+				a.saveIMBindingsLocked()
+			}
+			return
+		}
+	}
+}
+
+// imRebaseBinding 把绑定挪到新的数字经理版本上：序号从头计，所以 lastSeq 归零。
+// 不做这一步，换版本后新会话的 seq（从小数字重新开始）会一直小于旧 lastSeq，
+// 答复会被永久吞掉。
+func (a *App) imRebaseBinding(channel, chatID, sessionID string) imBinding {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	for _, b := range a.imBindings {
+		if b.Channel == channel && b.ChatID == chatID {
+			if b.SessionID != sessionID {
+				b.SessionID = sessionID
+				b.LastSeq = 0
+				b.UpdatedAt = imNow()
+				a.saveIMBindingsLocked()
+				log.Printf("[IM] 绑定 %s 已跟到新的数字经理会话 %s（序号重置）", maskIMID(chatID), sessionID)
+			}
+			return *b
+		}
+	}
+	b := &imBinding{Channel: channel, ChatID: chatID, SessionID: sessionID, UpdatedAt: imNow()}
+	a.imBindings = append(a.imBindings, b)
+	a.saveIMBindingsLocked()
+	return *b
+}
+
+// imUnbindChannel 清掉某个渠道的全部绑定（解绑账号时调用：换了微信账号，旧会话
+// 不该继续收到答复）。
+func (a *App) imUnbindChannel(channel string) {
+	a.imBindMu.Lock()
+	defer a.imBindMu.Unlock()
+	a.ensureIMBindingsLocked()
+	kept := a.imBindings[:0]
+	for _, b := range a.imBindings {
+		if b.Channel == channel {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	a.imBindings = kept
+	a.saveIMBindingsLocked()
+}
+
+// errTextOf 把可能为 nil 的错误转成一句人话（避免 "%v" 打出 "<nil>"）。
+func errTextOf(err error) string {
+	if err == nil {
+		return "未知原因"
+	}
+	return err.Error()
+}
