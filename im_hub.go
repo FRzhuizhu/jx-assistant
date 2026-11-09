@@ -150,7 +150,7 @@ func (a *App) imHandleCommand(conv IMConversation, text string) bool {
 	switch strings.ToLower(fields[0]) {
 	case "/help", "/?", "/帮助":
 		a.imSay(conv, "在微信里直接说话就行：我会把话转给数字经理，它安排任务，完成后把结果回给你。\n"+
-			"微信发起的任务要审批/提问时会推到这里：回「批准」或「拒绝」（多项时带序号，如「1 批准」），提问直接回内容。\n"+
+			"微信发起的任务要审批/提问时会推到这里：回「批准」或「拒绝」（多项时带序号，如「1 批准」），提问直接回内容；「始终允许」这类常设授权只能在桌面端点。\n"+
 			"/status 看当前状态　/stop 叫停正在跑的这一轮\n"+
 			"长答复会分几条发（微信单条上限 1800 字）。")
 		return true

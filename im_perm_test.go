@@ -610,6 +610,85 @@ func TestIMMixedPendingIndexSelect(t *testing.T) {
 	}
 }
 
+// 「始终允许」这类常设授权意图：微信端不认——不执行任何审批动作、也不当普通需求
+// 投给数字经理，而是明确回一句「请到桌面端点」并留痕；待审批状态保持不变。
+// 单次「允许/批准」的行为不受影响。
+func TestIMAlwaysAllowIntentDenied(t *testing.T) {
+	a, fake := newIMPermApp(t)
+	// 数字经理会话就位：万一这条消息被当普通需求投进去，会在它身上留下消息行
+	mgr := &SessionMeta{ID: "mgr", Title: "数字经理", Mode: "assistant",
+		Workspace: t.TempDir(), CreatedAt: now(), UpdatedAt: now()}
+	if err := a.Store.Create(mgr); err != nil {
+		t.Fatalf("建数字经理会话失败: %v", err)
+	}
+	sess := newTestSession(t, a, "s-alw", "微信任务")
+	registerTestRun(t, a, sess.ID, imOriginTag("weixin", "u1"))
+
+	done := make(chan bool, 1)
+	go func() {
+		approved, always, _ := a.requestApproval(context.Background(), sess, "write_file",
+			"写入 D:\\x\\y.txt", "工作区外写入")
+		if always {
+			t.Errorf("微信侧的回复不该产生常设授权（always=true）")
+		}
+		done <- approved
+	}()
+	waitApprovals(t, a, 1)
+	fake.wait(t, 1) // 审批推送
+
+	variants := []string{"始终允许", "始终允许 1", "永久允许", "always"}
+	for _, text := range variants {
+		a.imOnInbound(IMInbound{Conv: weixinConv("u1"), MessageID: "alw-" + text, Kind: "text", Text: text})
+	}
+	// 每条都要有回话（1 条审批推送 + 4 条提示）
+	got := fake.wait(t, 1+len(variants))
+	if !strings.Contains(got[len(got)-1], "常设授权（始终允许）请到桌面端点") {
+		t.Fatalf("应明确回话「常设授权请到桌面端点」：%q", got[len(got)-1])
+	}
+	// 待审批状态不变：审批还挂着、微信待办还在
+	if n := len(a.pendingApprovals()); n != 1 {
+		t.Fatalf("常设授权意图不该改变审批状态，待审批 %d 条", n)
+	}
+	if n := a.imPendingCount("weixin", "u1"); n != 1 {
+		t.Fatalf("微信待办应原样保留，得到 %d 条", n)
+	}
+	select {
+	case <-done:
+		t.Fatalf("常设授权意图不该放行审批")
+	case <-time.After(100 * time.Millisecond):
+	}
+	// 不产生普通投递：数字经理会话里没有任何消息行，也没有起轮
+	rows, err := a.Store.MessagesWithSeq(mgr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("常设授权意图不该当普通需求投给数字经理，却落了 %d 行", len(rows))
+	}
+	if a.IsRunning(mgr.ID) {
+		t.Fatalf("常设授权意图不该拉起数字经理的一轮")
+	}
+	// 单次「允许」行为不变：正常放行
+	a.imOnInbound(IMInbound{Conv: weixinConv("u1"), MessageID: "single-allow", Kind: "text", Text: "允许"})
+	select {
+	case approved := <-done:
+		if !approved {
+			t.Fatalf("单次「允许」仍应放行")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("单次「允许」没有生效")
+	}
+}
+
+// 没有待办时回「始终允许」：同样明确回话（不放行、不投递）。
+func TestIMAlwaysAllowWithoutPending(t *testing.T) {
+	a, fake := newIMPermApp(t)
+	if !a.imHandleInboundDecision(weixinConv("u1"), "始终允许") {
+		t.Fatalf("常设授权意图应被消费")
+	}
+	waitSentContains(t, fake, "常设授权（始终允许）请到桌面端点")
+}
+
 // 回复解析：明确词（可带序号）才算；模糊词一律 ambiguous；其余是普通消息。
 func TestIMParseDecision(t *testing.T) {
 	cases := []struct {
@@ -633,9 +712,22 @@ func TestIMParseDecision(t *testing.T) {
 		{"可以", imDecisionAmbiguous, 0},
 		{"行吧", imDecisionAmbiguous, 0},
 		{"你看着办", imDecisionAmbiguous, 0},
+		// 常设授权意图：微信端不认，但要识别出来明确回话（见 imSayAlwaysAllowDenied）
+		{"始终允许", imDecisionAlwaysAllow, 0},
+		{"始终允许 1", imDecisionAlwaysAllow, 1},
+		{"永久允许", imDecisionAlwaysAllow, 0},
+		{"永远同意", imDecisionAlwaysAllow, 0},
+		{"一直允许", imDecisionAlwaysAllow, 0},
+		{"总是允许", imDecisionAlwaysAllow, 0},
+		{"always", imDecisionAlwaysAllow, 0},
+		{"Always Allow", imDecisionAlwaysAllow, 0},
+		// 别误伤：「允许」是单次批准；普通句子里的「一直」不算常设意图
+		{"允许", imDecisionApprove, 0},
+		{"任务一直在跑吗", imDecisionNone, 0},
+		{"一直允许吗", imDecisionNone, 0},
 		{"帮我看看磁盘还剩多少", imDecisionNone, 0},
 		{"批准这个方案并继续执行后面的步骤", imDecisionNone, 0}, // 长句不是明确答复
-		{"1 换个名字", imDecisionNone, 1},                 // 认不出决定词也要带回序号（对号用）
+		{"1 换个名字", imDecisionNone, 1},           // 认不出决定词也要带回序号（对号用）
 		{"", imDecisionNone, 0},
 	}
 	for _, c := range cases {
