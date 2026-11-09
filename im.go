@@ -71,6 +71,19 @@ type IMChannelStatus struct {
 	LastError     string `json:"lastError,omitempty"`
 	LastErrorCode string `json:"lastErrorCode,omitempty"`
 	Allow         int    `json:"allow"` // 白名单条数：0 = 没人能下指令（fail closed）
+	// ContextToken 表示「与该账号的会话已有上下文凭据」，也就是现在发主动消息
+	// 平台才会投递（没有凭据时平台照样 200 但不送达，见 im_weixin.go 发送段）。
+	ContextToken bool `json:"contextToken"`
+	// LastPush 是最近一条「答复推送」的结果：只看 lastSeq 分不清是推成功还是
+	// 推失败（失败的也不推进序号），排障时必须能直接看到 ok=false。
+	LastPush *IMPushStatus `json:"lastPush,omitempty"`
+}
+
+// IMPushStatus 一条答复推送的回执（seq 0 = 命令回执这类不占序号的话）。
+type IMPushStatus struct {
+	Seq int64  `json:"seq"`
+	At  string `json:"at"`
+	OK  bool   `json:"ok"`
 }
 
 // IMChannel 是一个 IM 渠道的长连接实现：Start 负责「登录态检查 + 长轮询循环」，

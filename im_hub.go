@@ -321,10 +321,25 @@ func (a *App) imPushWorker(channel, chatID string, q chan imOutItem) {
 	for it := range q {
 		if err := a.imSendText(channel, chatID, it.text); err != nil {
 			log.Printf("[IM] 推送失败（%s/%s）: %v", channel, maskIMID(chatID), err)
+			a.imNotePush(channel, it.seq, false)
 			continue
 		}
+		// 成功也留一行：只看 lastSeq 分不清「推成功」与「根本没推」，真机联调
+		// 时这一点最要命（答复到底有没有出去，日志里必须能直接看到）。
+		log.Printf("[IM] 已推送 seq=%d → %s（会话 %s）", it.seq, maskIMID(chatID), it.sessionID)
+		a.imNotePush(channel, it.seq, true)
 		if it.seq > 0 {
 			a.imMarkPushed(channel, chatID, it.sessionID, it.seq)
+		}
+	}
+}
+
+// imNotePush 把推送结果记到渠道上（渠道没实现就跳过，状态页少这一块而已）。
+func (a *App) imNotePush(channel string, seq int64, ok bool) {
+	type pushRecorder interface{ notePush(seq int64, ok bool) }
+	if ch := a.imChannelOf(channel); ch != nil {
+		if r, isRec := ch.(pushRecorder); isRec {
+			r.notePush(seq, ok)
 		}
 	}
 }
@@ -339,6 +354,16 @@ func (a *App) imSendText(channel, chatID, text string) error {
 	if !ok {
 		return fmt.Errorf("渠道 %s 不支持发送文本", channel)
 	}
+	// 出站也留一行，并标出这条主动消息有没有上下文凭据：平台对没有
+	// context_token 的主动消息照样 200 但不投递，「发了没收到」全靠这一位判断。
+	ctxFlag := "n/a"
+	if t, isCtx := ch.(interface{ hasContextToken(string) bool }); isCtx {
+		ctxFlag = "no"
+		if t.hasContextToken(chatID) {
+			ctxFlag = "yes"
+		}
+	}
+	log.Printf("[IM] 出站 → %s ctx=%s", maskIMID(chatID), ctxFlag)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	_, err := sender.SendText(ctx, IMConversation{

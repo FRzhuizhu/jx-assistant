@@ -471,6 +471,7 @@ type weixinChannel struct {
 	lastIn     time.Time
 	lastInText string
 	lastSend   time.Time
+	lastPush   IMPushStatus
 	cursor     string
 	seen       map[string]bool
 	seenOrder  []string
@@ -526,10 +527,34 @@ func (c *weixinChannel) Status() IMChannelStatus {
 	if !c.lastSend.IsZero() {
 		st.LastSendAt = c.lastSend.Format("2006-01-02 15:04:05")
 	}
+	if c.account != nil {
+		st.ContextToken = c.ctxTokens[c.account.OwnerID] != ""
+	}
+	if c.lastPush.At != "" {
+		p := c.lastPush
+		st.LastPush = &p
+	}
 	if c.state == "" {
 		st.State = "disabled"
 	}
 	return st
+}
+
+// hasContextToken 该会话是否已有上下文凭据（最近一次入站带来的 context_token）。
+// 没有它，平台对「主动消息」照样 200 接受但不投递——/test 与出站日志都靠这个
+// 判断来把话说清楚，而不是让人对着一个 ok:true 干等。
+func (c *weixinChannel) hasContextToken(userID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ctxTokens[userID] != ""
+}
+
+// notePush 记一条推送回执（imPushWorker 在成功/失败时调；seq 0 = 命令回执这类
+// 不占序号的话，照样记——排查「回执到底发出去没有」同样需要它）。
+func (c *weixinChannel) notePush(seq int64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastPush = IMPushStatus{Seq: seq, At: imNow(), OK: ok}
 }
 
 // Start 起长轮询。没有凭据时不报错，只把状态摆成 waiting_scan——用户需要先
@@ -761,6 +786,14 @@ func (c *weixinChannel) accept(m *weixinMessage) {
 		c.ctxTokens[in.Conv.UserID] = in.ContextToken
 	}
 	c.mu.Unlock()
+	// 入站也写一行引擎日志：此前入站完全不留痕，真机联调时只能靠 state 文件
+	// 与数据库反推「到底有没有收到」，排障成本太高。ctx 一并记，出站缺凭据
+	// 的锅一眼能对上。
+	ctxFlag := "no"
+	if in.ContextToken != "" {
+		ctxFlag = "yes"
+	}
+	log.Printf("[IM] 入站 %s %s ctx=%s", maskIMID(in.Conv.UserID), imTruncate(in.Text, 40), ctxFlag)
 	c.saveRuntimeState()
 	c.app.imOnInbound(in)
 }

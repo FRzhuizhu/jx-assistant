@@ -204,6 +204,9 @@ func main() {
 	// 撤除），启动时自动还原为 Medium（异步；根级签名校验防误伤他人标签）。
 	go app.startupIntegrityLabelRestore(cfg.Workspace)
 	go app.startupPySessionCleanup(cfg.Workspace) // run_python 会话脚本目录的按天兜底回收（run_python.go）
+	// 技能运行时预热：首次装配要下载 11MB + 装 pip（真机实测 5 分钟），放后台
+	// 做，别让用户的第一条任务替它等；已就绪时只是一次 stat。
+	go app.prewarmSkillRuntime()
 
 	host := cfg.BindHost
 	if host == "" {
