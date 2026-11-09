@@ -3489,7 +3489,7 @@ html.electron-shell .bpw-hint { display: none; }
 }
 .im-search {
   margin: 10px 12px; padding: 7px 10px; border-radius: 8px;
-  border: 1px solid var(--border); background: var(--panel, transparent);
+  border: 1px solid var(--border); background: var(--hover);
   color: var(--text); font-size: 12.5px; outline: none;
 }
 .im-search:focus { border-color: var(--accent); }
@@ -3537,7 +3537,7 @@ html.electron-shell .bpw-hint { display: none; }
   max-width: 74%; padding: 9px 12px; border-radius: 10px;
   font-size: 13px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
 }
-.im-msg.in .im-bubble { background: var(--panel, #f7f8fa); border: 1px solid var(--border); }
+.im-msg.in .im-bubble { background: var(--hover); border: 1px solid var(--border); }
 .im-msg.out .im-bubble { background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
 .im-bubble.failed { border-color: color-mix(in srgb, var(--amber) 55%, var(--border)); }
 .im-meta { font-size: 11px; color: var(--text-2); margin-top: 4px; }
@@ -3570,6 +3570,62 @@ html.electron-shell .bpw-hint { display: none; }
 .im-src.skipped { color: var(--amber); }
 /* 只看微信来源：非 IM 消息淡出保留（不删除、不改数据） */
 body.im-only #msg-col [data-seq]:not(.im-tagged) { opacity: .35; }
+
+/* ---------- 绑定抽屉（扫码 / 解绑 / 测试消息）：面板内的运维面板，仍只读 ---------- */
+.im-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 360px; max-width: 92%;
+  display: flex; flex-direction: column; z-index: 5;
+  background: var(--bg, #fff); border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, .08);
+}
+.im-drawer.hidden { display: none; }
+.im-drawer-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+}
+.im-drawer-title { font-size: 14px; font-weight: 600; }
+.im-drawer-head .im-icon-btn { margin-left: auto; }
+.im-drawer-body {
+  flex: 1 1 auto; overflow: auto; padding: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.im-card {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  background: var(--hover);
+}
+.im-card-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; line-height: 1.6; }
+.im-qr {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+}
+/* 二维码容器固定 200×200：SVG 与 <img> 兜底都按这个尺寸摆，不会把抽屉顶开 */
+.im-qr-img {
+  width: 200px; height: 200px; display: flex; align-items: center; justify-content: center;
+  background: #fff; border-radius: 6px;
+}
+.im-qr-img svg, .im-qr-img img { width: 200px; height: 200px; display: block; }
+.im-qr-tip { font-size: 12.5px; color: var(--text-2); text-align: center; line-height: 1.6; }
+.im-qr-raw { font-size: 10.5px; color: var(--text-2); word-break: break-all; margin-top: 6px; text-align: center; }
+.im-qr-verify { display: flex; gap: 6px; width: 100%; }
+.im-qr-verify input {
+  flex: 1 1 auto; padding: 6px 8px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--text);
+}
+.im-primary {
+  padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  border: 1px solid var(--accent); background: var(--accent); color: #fff;
+}
+.im-primary:hover { filter: brightness(1.06); }
+.im-err { font-size: 12px; color: var(--danger); line-height: 1.6; word-break: break-word; }
+.im-note {
+  font-size: 12px; color: var(--text-2); line-height: 1.6;
+  background: var(--hover); border-radius: 8px; padding: 8px 10px;
+}
+.im-danger { color: var(--danger); border-color: var(--danger); }
+.im-danger-armed { background: var(--danger); color: #fff; font-weight: 600; }
+.im-drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 @media (max-width: 760px) {
   .im-list { width: 100%; flex: 1 1 auto; border-right: none; }
