@@ -3385,6 +3385,38 @@ html.electron-shell .bpw-hint { display: none; }
 .wz-either { font-size: 12.5px; color: var(--text-2); padding: 2px 0 0; }
 .wz-either b { color: var(--text); font-weight: 600; }
 .wz-form label.strong { color: var(--text); font-weight: 600; } /* 姓名标签：黑字加粗，与二选一提示行同款强调 */
+/* 向导左侧防误触带：输入公司名/人名时拖选文字惯性往左滑，滑出输入区点到遮罩会
+   误关向导——带子与弹窗包在同一个壳里（.wz-shell 承担圆角/阴影/裁剪），两者同高
+   零缝隙拼接成一块：点带子 target 不是遮罩即不关窗，滑过拼缝也不会踩到遮罩
+   （app-wizard.js 的按下起点判定是第二道防线） */
+.wz-shell {
+  display: flex; align-items: stretch;
+  max-width: calc(100vw - 32px); max-height: 88vh;
+  /* 壳本身不铺底色：只有卡片有实底，防误触带是真半透明、透出后面的遮罩 */
+  border-radius: 14px; overflow: hidden;
+  box-shadow: 0 8px 30px rgba(16, 20, 26, .12);
+}
+.wz-guard {
+  flex: 0 1 auto; width: 220px; min-width: 0; overflow: hidden; /* 窄窗口时先让带子收窄，卡片不缩 */
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 16px; background: rgba(255, 255, 255, .5);
+  backdrop-filter: blur(12px); /* 磨砂：半透明透出底色，又不让身后页面的文字/按钮透上来 */
+  user-select: none; cursor: default;
+}
+.wz-guard::before, .wz-guard::after {
+  content: ''; width: 1px; flex: 0 0 56px; background: rgba(15, 18, 22, .3);
+}
+.wz-guard span {
+  writing-mode: vertical-rl; letter-spacing: .45em; padding-inline-start: .45em; /* 末字空隙补偿视觉居中 */
+  font-size: 12.5px; color: rgba(15, 18, 22, .42);
+}
+:root[data-theme='dark'] .wz-shell { box-shadow: 0 8px 30px rgba(0, 0, 0, .5); }
+:root[data-theme='dark'] .wz-guard { background: rgba(255, 255, 255, .07); }
+:root[data-theme='dark'] .wz-guard::before, :root[data-theme='dark'] .wz-guard::after { background: rgba(255, 255, 255, .25); }
+:root[data-theme='dark'] .wz-guard span { color: rgba(255, 255, 255, .42); }
+/* 壳内的卡片去掉自己的圆角/边框/阴影（外壳负责），也不参与收缩：拼缝只剩色差、没有多余竖线 */
+.wz-shell .welcome-card { flex: 0 0 auto; border-radius: 0; border: none; box-shadow: none; }
+@media (max-width: 639.98px) { .wz-guard { display: none; } } /* 窄屏空间不足：卡片占满屏宽，带子放不下 */
 
 /* ============================================================
    MCP 服务器（app-ccplugins.js 的 MCP 分区：手动添加行 + 设计软件
