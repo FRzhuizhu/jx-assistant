@@ -26,6 +26,7 @@ func newTestWeixinApp(t *testing.T) (*App, *weixinChannel) {
 func TestIMWeixinTestRejectsWithoutContextToken(t *testing.T) {
 	app, _ := newTestWeixinApp(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/im/weixin/test", strings.NewReader("{}"))
+	req.Header.Set("Origin", "http://example.com") // 同源：这些写接口只放行界面点（requireUIAction）
 	w := httptest.NewRecorder()
 	app.handleIMWeixinTest(w, req)
 	if w.Code != http.StatusConflict {
@@ -44,10 +45,14 @@ func TestIMWeixinTestPassesGateWithContextToken(t *testing.T) {
 	ch.ctxTokens["owner@im.wechat"] = "ctx-token-abc"
 	ch.mu.Unlock()
 	req := httptest.NewRequest(http.MethodPost, "/api/im/weixin/test", strings.NewReader("{}"))
+	req.Header.Set("Origin", "http://example.com") // 同上：过 Origin 闸才谈得上「前置门放行」
 	w := httptest.NewRecorder()
 	app.handleIMWeixinTest(w, req)
 	if w.Code == http.StatusConflict {
 		t.Fatalf("已有 context_token 不该被拒：%s", w.Body.String())
+	}
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("同源请求不该被 Origin 闸拦住：%s", w.Body.String())
 	}
 }
 
