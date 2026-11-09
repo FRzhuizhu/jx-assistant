@@ -1777,9 +1777,34 @@ MIT 参考实现（`@botharness/im-provider` 的 `src/channels/weixin/`，已记
 **配置**（`config.json` 的 `im` 段）：`enabled` 总开关、`weixin.enabled` 渠道开关、
 `weixin.allow` 白名单（`ilink_user_id`；**空=谁都不受理**，fail closed）。
 
-**当前进度**：阶段 1（协议闭环：登录 + 收 + 发文本）与阶段 2（双向对话：入站进
-`deliverToSession`、数字经理最终答复出站、白名单、幂等）代码已落。阶段 3（审批/
-提问推送与应答）、阶段 4（文件与语音）、阶段 5（设置页 UI）未做。
+**当前进度**：阶段 1（协议闭环：登录 + 收 + 发文本）、阶段 2（双向对话：入站进
+`deliverToSession`、数字经理最终答复出站、白名单、幂等）、阶段 3（审批/提问推微信、
+在微信里单次批准/拒绝，见 `im_perm.go`）代码已落。阶段 4（文件与语音）、阶段 5
+（设置页 UI）未做。
+
+**阶段 3 的三条硬约束（改这块之前先读 `im_perm.go` 顶部说明）**
+1. **只推「微信发起的那一轮」**：来源标记落在**轮**上（`sessionRun.origin` =
+   `im:<渠道>:<chatId>`），派发出去的子任务继承同一标记（`deliverSub` →
+   `imInheritRunOrigin`，继承式，孙任务同理）；桌面端任务的 origin 为空，审批/提问
+   一条都不外发。为什么不挂会话上：同一个数字经理会话既可能被桌面端、也可能被微信
+   触发，会话级字段只能记「最近一次」。
+2. **微信里只能单次批准/拒绝**：明确词才算（`imParseDecision`）；模糊回复（嗯/可以/
+   行吧/你看着办）**追问不放行**；多条按序号选、序号对不上只提示；超时按拒绝
+   （fail closed）。**「始终允许」这类常设授权一律不认**（`imSayAlwaysAllowDenied`：
+   既不放行、也不当普通需求投给经理，只回一句「请到桌面端点」并留日志）——手机上一
+   句话永久放行某类写文件/执行命令的动作，风险与收益不成比例。真机上曾因为词表里
+   没有「始终允许」，这句话被当普通需求投给了经理，审批一直挂着，用户只能回桌面端点。
+3. **每次决定留痕**：`kind=audit` / `type=im_decision`，带 `via=im:<渠道>:<chatId>`、
+   审批 id、工具、时间（导出日志可追）。桌面端处理掉微信里挂着的待办时同样留一条。
+
+**联调与运维事实（真机踩出来的，别再踩）**
+- 隔离实例**必须带 stdout 重定向**启动，否则实例本身跑得好好的、日志却一行不写，
+  排查全瞎。现用包装器 `D:\jx-im-test\run-3431.cmd`：
+  `jx-assistant.exe -config D:\jx-im-test\config.json -port 3431 -noopen >> D:\jx-im-test\instance-3431.log 2>&1`。
+- **会话权限存在 sqlite 的 `sessions.permission`**，`config.json` 里没有这个字段；
+  `assistant` 模式新建的主对话默认 `full`——要在真机上触发审批，得先
+  `PATCH /api/sessions/{id}` 把它降到 `workspace-write`（否则写文件/跑命令根本不弹审批，
+  会误判成「阶段 3 没生效」）。
 
 **验证（隔离实例，别动正在运行的助手）**
 ```
@@ -1856,7 +1881,7 @@ POST /api/im/weixin/test          # 微信收到一条测试消息
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
 | `gittools.go` | git_sync 模型工具（组件 `git-panel`）：与面板共用 gitSync 执行缝的宿主通道远程同步，绕开沙箱内远程 git 必败的限制（背景与实测见《Git远程同步工具-改动说明.md》） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
-| `im.go` / `im_hub.go` / `im_weixin.go` / `im_api.go` / `im_text.go` | IM 接入（第一期微信 iLink / ClawBot）：契约与渠道登记 `syncIM`（im.go）、中枢（im_hub.go：入站进 `deliverToSession`、只推数字经理最终答复、命令、串行发件队列、绑定表）、iLink 协议实现（扫码登录状态机、35 秒长轮询、1800 字分段发送、游标与去重集合持久化）、`/api/im/*` 接口、Markdown→纯文本。协议来自 MIT 参考实现，见 `THIRD-PARTY-NOTICES.md`；细节与硬约束见「IM 接入」一节 |
+| `im.go` / `im_hub.go` / `im_weixin.go` / `im_api.go` / `im_text.go` / `im_perm.go` | IM 接入（第一期微信 iLink / ClawBot）：契约与渠道登记 `syncIM`（im.go）、中枢（im_hub.go：入站进 `deliverToSession`、只推数字经理最终答复、命令、串行发件队列、绑定表）、iLink 协议实现（扫码登录状态机、35 秒长轮询、1800 字分段发送、游标与去重集合持久化）、`/api/im/*` 接口、Markdown→纯文本、**审批/提问推微信与微信侧的批准/拒绝**（im_perm.go：来源标记传播、待办清单与序号、明确回复解析、超时按拒绝、留痕）。协议来自 MIT 参考实现，见 `THIRD-PARTY-NOTICES.md`；细节与硬约束见「IM 接入」一节 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页、市场页（`app-market.js`：左侧栏底部入口、主区整页视图 body.market-mode、三 tab+搜索+一键装卸；组件装卸后 `CX.refresh()` 热生效） |
 > **服务端已独立成仓库**（`D:\智能体工作区\jxaiserver`，module jxai-server）：远程访问中继 + 技能/组件/插件市场（含 /admin 管理页）+ 更新分发（日期+V序号版本体系）+ 公司接入（登记/UDP 发现/按人发 new-api 令牌/每月额度）。本仓库只保留客户端半边（market.go 市场客户端、wizard.go 接入向导、update.go 更新检查——与服务端的协议契约见各自文件头注释）；其部署与用法见该仓库 README/部署。开发完全分开，两边接口变更需双侧同步。
 

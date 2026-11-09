@@ -227,7 +227,8 @@ const (
 	imDecisionNone = iota
 	imDecisionApprove
 	imDecisionReject
-	imDecisionAmbiguous // 像在答复，但不够明确：追问，绝不默认放行
+	imDecisionAmbiguous   // 像在答复，但不够明确：追问，绝不默认放行
+	imDecisionAlwaysAllow // 「始终允许」这类常设授权意图：微信端不认，明确回话（见 imSayAlwaysAllowDenied）
 )
 
 // imDecision 是一条解析出来的答复：Kind + 序号（0 = 没带序号）。
@@ -274,6 +275,8 @@ func imParseDecision(text string) imDecision {
 	word := strings.Join(strings.Fields(rest), "") // "批准 1" 去空格后还剩「批准」
 	word = strings.Trim(word, " \t\r\n。！!？?，,、~～.：:")
 	switch {
+	case imIsAlwaysIntent(word):
+		return imDecision{Kind: imDecisionAlwaysAllow, Index: idx}
 	case imApproveWords[word]:
 		return imDecision{Kind: imDecisionApprove, Index: idx}
 	case imRejectWords[word]:
@@ -284,6 +287,39 @@ func imParseDecision(text string) imDecision {
 	// 认不出决定词：序号照样带回去——「1 换个名字」这种回复要能对上第 1 项
 	// （对不上就提示，而不是悄悄当成别的项的答案）。
 	return imDecision{Kind: imDecisionNone, Index: idx}
+}
+
+// imAlwaysPrefixes 是「常设授权」的限定词：带了它们就不是单次批准，而是「以后
+// 这类动作都别再问我」。微信端一律不认（见 imSayAlwaysAllowDenied）。
+var imAlwaysPrefixes = []string{"始终", "永久", "永远", "一直", "总是"}
+
+// imAlwaysVerbs 是能跟在限定词后面的决定动词（允许/同意/批准…）。
+var imAlwaysVerbs = []string{"允许", "同意", "批准", "放行", "通过"}
+
+// imIsAlwaysIntent 判断这是不是「常设授权」的意图（始终允许 / 永久允许 / always…）。
+// 判定刻意收紧到「限定词 + 决定动词」的整体匹配：「任务一直在跑吗」这类普通
+// 句子里的「一直」不算，否则用户的话会被这条分支吞掉。
+func imIsAlwaysIntent(word string) bool {
+	w := strings.TrimRight(strings.TrimSpace(word), "吧了呀啊！!")
+	if w == "" {
+		return false
+	}
+	switch w {
+	case "always", "alwaysallow", "alwaysapprove", "alwaysallowit", "alwaysyes":
+		return true
+	}
+	for _, pre := range imAlwaysPrefixes {
+		rest, cut := strings.CutPrefix(w, pre)
+		if !cut || rest == "" {
+			continue
+		}
+		for _, v := range imAlwaysVerbs {
+			if rest == v {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // imSplitIndex 从文本开头或结尾取出序号（「1 批准」/「批准 1」/「1批准」），
@@ -344,6 +380,9 @@ func (a *App) imHandleInboundDecision(conv IMConversation, text string) bool {
 				a.imSay(conv, "现在没有等你审批或回答的请求（可能已超时，或已在桌面端处理过）。")
 				return true
 			}
+		} else if d.Kind == imDecisionAlwaysAllow {
+			a.imSayAlwaysAllowDenied(conv, text)
+			return true
 		}
 		return false
 	}
@@ -359,6 +398,11 @@ func (a *App) imHandleInboundDecision(conv IMConversation, text string) bool {
 			return a.imApplyAnswer(conv, q, imDecisionAnswerText(d.Kind), list)
 		}
 		a.imSay(conv, imPendingPickHint(list, d.Index))
+		return true
+	case imDecisionAlwaysAllow:
+		// 「始终允许」既是审批意图又不在微信端的能力范围：明说做不到并留痕，
+		// 不放行、也不当普通需求投给经理（否则用户以为批过了，审批一直挂着）。
+		a.imSayAlwaysAllowDenied(conv, text)
 		return true
 	case imDecisionAmbiguous:
 		a.imSay(conv, "这条回复不够明确，我不会替你放行：\n"+imPendingText("请明确回复", list))
@@ -460,6 +504,17 @@ func imDecisionAnswerText(kind int) string {
 		return "__approve__"
 	}
 	return "拒绝"
+}
+
+// imSayAlwaysAllowDenied 回一句「微信端不支持常设授权」并留痕。
+//
+// 为什么不做（用户 2026-11-10 拍板）：手机上一句话就把「始终允许」授出去，等于
+// 永久放行某一类写文件/执行命令的动作，风险与收益完全不成比例——常设授权请到
+// 桌面端点了那张卡上的「始终允许」。但也不能静默：不认这类回复时若当成普通需求
+// 投给经理，用户会以为已经批过了，审批却一直挂着等人去桌面端点（真机就这么踩到过）。
+func (a *App) imSayAlwaysAllowDenied(conv IMConversation, text string) {
+	log.Printf("[IM] 常设授权意图被拒（需桌面端）：%s（%s）", imTruncate(text, 40), maskIMID(conv.UserID))
+	a.imSay(conv, "微信端只能单次「批准」或「拒绝」；常设授权（始终允许）请到桌面端点，避免手机上一句话永久放行某类操作。")
 }
 
 // imApplyApproval 执行一条微信里的批准/拒绝：先从待办里摘掉（原子：谁先摘到谁
