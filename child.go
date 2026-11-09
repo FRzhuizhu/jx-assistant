@@ -299,7 +299,9 @@ func runArgv(ctx context.Context, r sandboxRun) (string, error) {
 
 // startChild 异步启动一个会话命令（后台作业）：输出增量写入 w，返回等待函数。
 // 与同步路径共用沙箱分派与登记（进度面板能看见它一直在跑）。
-func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func() bool, error) {
+// 等待函数返回子进程退出码与是否超时/取消：作业面板据此显示真实结局
+// （「启动即死」的作业以前也显示 exit 0，等于假成功）。
+func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func() (int, bool), error) {
 	r = a.childDefaults(r)
 	if r.Argv != nil {
 		r.Timeout = 0 // 异步：不限时，终止只经 ctx
@@ -311,13 +313,17 @@ func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func()
 		tree.attach(cmd)
 		entry := a.registerChild(r, cmd.Process.Pid)
 		done := make(chan struct{}, 1)
+		code := -1
 		go func() {
 			err := cmd.Wait()
 			tree.finish() // 作业结束：job 句柄关闭，残留孙进程清场
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
 			entry.setExit(childExitInfo(err, ctx))
 			close(done)
 		}()
-		return func() bool { <-done; return true }, nil
+		return func() (int, bool) { <-done; return code, false }, nil
 	}
 	if r.Policy == permFull {
 		cmd, tree := shellCmd(ctx, r, w)
@@ -328,13 +334,17 @@ func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func()
 		tree.attach(cmd)
 		entry := a.registerChild(r, cmd.Process.Pid)
 		done := make(chan struct{}, 1)
+		code := -1
 		go func() {
 			err := cmd.Wait()
 			tree.finish() // 同上：整树纪律对后台 shell 作业一致
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
 			entry.setExit(childExitInfo(err, ctx))
 			close(done)
 		}()
-		return func() bool { <-done; return true }, nil
+		return func() (int, bool) { <-done; return code, false }, nil
 	}
 	wait, err := startConfinedAsync(ctx, r, w)
 	if err != nil {
@@ -342,10 +352,30 @@ func (a *App) startChild(ctx context.Context, r sandboxRun, w io.Writer) (func()
 	}
 	entry := a.registerChild(r, 0)
 	go func() {
-		wait()
-		entry.setExit(childExitInfo(nil, ctx))
+		code, timedOut := wait()
+		entry.setExit(confinedExitInfo(code, timedOut, ctx))
 	}()
 	return wait, nil
+}
+
+// confinedExitInfo 把沙箱子进程的退出码翻成登记表里的退出文案（沙箱路径拿不到
+// *exec.ExitError，只能用退出码）：面板上「exit 0」必须是真跑成功，而不是没跑。
+func confinedExitInfo(code int, timedOut bool, ctx context.Context) string {
+	if ctx != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "超时"
+		}
+		if ctx.Err() == context.Canceled {
+			return "被终止"
+		}
+	}
+	if timedOut {
+		return "超时"
+	}
+	if code != 0 {
+		return fmt.Sprintf("exit code %d (0x%08X)", code, uint32(code))
+	}
+	return "exit 0"
 }
 
 // shellCmd 起一个「输出进 w」的 shell 子进程（不受限档位的异步路径）。

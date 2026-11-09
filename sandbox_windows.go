@@ -17,6 +17,9 @@ package main
 //      restricting SID 的检查」：除工作区/临时目录外，任何写都被内核
 //      拒绝。读不受限（官方同款语义，WRITE_RESTRICTED）。
 //   5. fail closed：任何一步 Win32 失败，子进程宁可不启动。
+//   6. 控制台前提：受限子进程必须有一个**可继承的控制台**——受限令牌建不出
+//      自己的控制台（新建控制台一律 0xC0000142 秒退），桌面形态的 GUI 引擎
+//      本身没有控制台，所以由 ensureSandboxConsole 给引擎补一个隐藏的。
 //
 // 已知边界（DSH 官方同款，自报 partial）：Everyone 可写的位置与 NTFS 硬
 // 链接可以绕路写（硬链接在受限进程打开 ws 内链接名时，NTFS 懒传播会把
@@ -100,7 +103,49 @@ var (
 	procGetTokenInformation   = advapi32.NewProc("GetTokenInformation")
 	procSetTokenInformation   = advapi32.NewProc("SetTokenInformation")
 	procSetErrorMode          = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetErrorMode")
+	// 控制台相关（受限子进程必须有一个可继承的控制台，见 ensureSandboxConsole）：
+	// kernel32 用 pickfolder_windows.go 里已有的那个懒加载实例，不重复声明。
+	procGetConsoleCP     = kernel32.NewProc("GetConsoleCP")
+	procAllocConsole     = kernel32.NewProc("AllocConsole")
+	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
+	procSetCtrlHandler   = kernel32.NewProc("SetConsoleCtrlHandler")
+	procShowWindow       = windows.NewLazySystemDLL("user32.dll").NewProc("ShowWindow")
 )
+
+// 受限子进程「启动即死」的状态码（STATUS_DLL_INIT_FAILED）：命令根本没跑起来，
+// 与「命令跑了但失败」必须分开——见 spawnConfinedWindows 的退出码处理。
+const statusDllInitFailed = 0xC0000142
+
+var sandboxConsoleOnce sync.Once
+
+// ensureSandboxConsole 保证当前进程持有一个控制台，供受限子进程继承。
+//
+// 为什么必须有：控制台子系统（console）的新进程启动时要么继承父进程的控制台，
+// 要么由系统为它新建一个——而在这个受限令牌下「新建控制台」必败（CREATE_NO_WINDOW
+// 是新建隐藏控制台、CREATE_NEW_CONSOLE 是新建可见控制台，两者都以 0xC0000142
+// STATUS_DLL_INIT_FAILED 秒退，实测任何 restricting SID / 令牌标志组合都救不回来）。
+// 桌面形态的引擎是 GUI 进程、本身没有控制台，于是每个受限命令都秒退——以前还
+// 因为执行层不校验退出码，表现为「命令执行完成，无输出」：既没执行也没报错。
+// 这里给引擎自己分配一个控制台并把窗口藏起来，子进程继承它即可正常创建；命令
+// 的输出不走控制台（走我们自己的管道），所以隐藏它不影响任何输出捕获。
+func ensureSandboxConsole() {
+	sandboxConsoleOnce.Do(func() {
+		if cp, _, _ := procGetConsoleCP.Call(); cp != 0 {
+			return // 已有控制台（从终端启动的开发形态），直接给子进程继承
+		}
+		if r, _, _ := procAllocConsole.Call(); r == 0 {
+			// 分配失败不在这里编故事：后面的 CreateProcess 会给出真实错误，
+			// 由调用方如实上报（fail 明确，而不是假装成功）。
+			return
+		}
+		if hwnd, _, _ := procGetConsoleWindow.Call(); hwnd != 0 {
+			procShowWindow.Call(hwnd, swHide)
+		}
+		// 这个控制台与受限子进程共享：SetConsoleCtrlHandler(NULL, TRUE) 让引擎
+		// 忽略 CTRL+C，沙箱里的命令就没办法借共享控制台广播 Ctrl+C 打断引擎。
+		procSetCtrlHandler.Call(0, 1)
+	})
+}
 
 // sidForPath 从路径派生稳定合成 SID：S-1-80-<h0>-<h1>-<h2>-<h3>。
 // 权威值 80 未被 Windows 语义占用，可安全用作私有授权身份。
@@ -813,17 +858,22 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 		return nil, fmt.Errorf("sandbox unavailable: 创建 Job 对象失败: %w", err)
 	}
 
-	// 6) CreateProcessAsUser 以挂起态启动（官方 spawnJobProcess 同款），
-	// 带 CREATE_NO_WINDOW：桌面形态没有控制台可复用，否则 run_command 每执行
-	// 一次就在桌面上闪一个控制台窗口（读写句柄照走管道，取输出不受影响）。
+	// 5c) 先确保引擎自己有控制台可供继承（见 ensureSandboxConsole 的来龙去脉）
+	ensureSandboxConsole()
+
+	// 6) CreateProcessAsUser 以挂起态启动（官方 spawnJobProcess 同款）。
 	// 分配进 Job 后再恢复初始线程——保证不会出现「已跑起来但不在 Job 里」
 	// 的逃逸窗口。所需主令牌特权来自源句柄的 TOKEN_ASSIGN_PRIMARY。
-	// 创建标志：默认压掉子进程的控制台窗口（桌面形态自身没有控制台可复用，不压
-	// 就是一个个黑窗）；Visible=true 时不压——调用方明确要用户看见这个窗口。
+	//
+	// 创建标志刻意**不含**任何控制台标志：控制台子系统的新进程只能「继承父进程
+	// 控制台」或「由系统新建控制台」，而受限令牌下新建必以 0xC0000142 秒退
+	// （CREATE_NO_WINDOW 新建隐藏控制台、CREATE_NEW_CONSOLE 新建可见控制台，
+	// 实测任何 restricting SID / 令牌标志组合都救不回来）。所以这里一律走继承：
+	// 引擎有控制台就继承它，没有就由 ensureSandboxConsole 补一个隐藏的——两种情况
+	// 都不会在桌面上冒出窗口，输出也照走我们自己的管道。
+	// 代价：受限档下 Visible 无法真给用户一个独立窗口（受限令牌建不出控制台），
+	// 用户仍可通过命令输出观察执行过程。
 	flags := uint32(windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
-	if !r.Visible {
-		flags |= windows.CREATE_NO_WINDOW
-	}
 	err = windows.CreateProcessAsUser(restricted, appPtr, cmdPtr, nil, nil, true,
 		flags, envBlock, dirPtr, si, &pi)
 	// 父进程侧的写端立即关闭，避免读不完
@@ -875,7 +925,9 @@ func (c *confinedChild) drain(w io.Writer) {
 
 // wait 阻塞等待子进程退出；timeout 到点或 ctx 取消时终止它。
 // timeout<=0 表示不限时（后台作业），终止只经 ctx（job_kill）。
-func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) (timedOut bool) {
+// 返回子进程退出码与是否超时/取消——退出码是「命令到底跑没跑」的唯一凭据
+// （只看输出会把启动即死的子进程误报成成功）。
+func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) (exitCode uint32, timedOut bool) {
 	waitDone := make(chan struct{}, 1)
 	go func() {
 		_, _ = windows.WaitForSingleObject(c.proc, windows.INFINITE)
@@ -898,7 +950,13 @@ func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) (timedO
 		<-waitDone
 		timedOut = true
 	}
-	return timedOut
+	// 退出码：调用方必须据此判断「命令到底跑没跑」，不能只看有没有输出。
+	// 句柄在 cleanup 里才关闭，这里取得到。
+	var code uint32
+	if err := windows.GetExitCodeProcess(c.proc, &code); err == nil {
+		exitCode = code
+	}
+	return exitCode, timedOut
 }
 
 // spawnConfinedWindows 用受限令牌在沙箱内执行一次命令，返回合并输出。
@@ -909,14 +967,31 @@ func spawnConfinedWindows(ctx context.Context, r sandboxRun) (string, error) {
 	}
 	defer child.cleanup()
 	var buf syncBuffer
-	go child.drain(&buf)
-	timedOut := child.wait(ctx, r.Timeout)
+	drained := make(chan struct{})
+	go func() { child.drain(&buf); close(drained) }()
+	code, timedOut := child.wait(ctx, r.Timeout)
+	// 子进程退出后管道写端关闭，搬运输出的 goroutine 随即读到 EOF：等它收尾再取
+	// 缓冲，否则可能把「已经产生、还没来得及拷进缓冲」的输出整段丢掉。
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+	}
 	res := strings.TrimRight(decodeCmdOutput(buf.Bytes()), "\r\n")
 	if len(res) > 64*1024 {
 		res = res[:64*1024] + "\n[输出过长已截断]"
 	}
 	if timedOut {
 		res += "\n[命令超时或被取消，已终止]"
+		return res, nil
+	}
+	// 启动即死（DLL 初始化失败）：命令一行都没执行。这是沙箱执行层的问题，
+	// 既不是命令失败、也不是策略拒绝——必须明确报错，绝不能再落成
+	// 「（命令执行完成，无输出）」那种假成功。
+	if code == statusDllInitFailed {
+		return "", fmt.Errorf("sandbox unavailable: 受限子进程启动即失败（exit code 0x%08X STATUS_DLL_INIT_FAILED，命令没有运行）", code)
+	}
+	if code != 0 {
+		res += fmt.Sprintf("\n[进程退出异常: exit code %d (0x%08X)]", code, code)
 	}
 	if strings.TrimSpace(res) == "" {
 		res = "（命令执行完成，无输出）"

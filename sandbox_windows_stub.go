@@ -32,5 +32,7 @@ func startConfinedWindows(r sandboxRun) (*confinedChild, error) {
 }
 
 func (c *confinedChild) drain(w io.Writer)                                    {}
-func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) bool { return false }
-func (c *confinedChild) cleanup()                                             {}
+func (c *confinedChild) wait(ctx context.Context, timeout time.Duration) (uint32, bool) {
+	return 0, false
+}
+func (c *confinedChild) cleanup() {}

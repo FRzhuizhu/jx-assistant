@@ -130,17 +130,22 @@ func (a *App) startJob(t *toolContext, command, shell, cwd, policy string) (*job
 	}
 	go func() {
 		defer cancel()
-		wait()
+		code, timedOut := wait()
 		if ctx.Err() != nil {
 			j.setExit("被终止（job_kill 或会话停止）")
 			return
 		}
-		// 沙箱路径的 wait 不携带真实退出码（文案照旧），但补一行日志留痕：
-		// 「作业启动后秒退」类异常（2026-10-17 曾发生一次、不可复现）从此可从
-		// 日志对账定位，不再查无实据。运行时长是关键信号：秒退 = 命令没真跑起来。
 		dur := time.Since(j.startedAt).Round(time.Second)
-		j.setExit("exit 0")
-		log.Printf("[作业] %s（%s）正常结束，运行 %s", j.ID, truncateRunes(j.Command, 60), dur)
+		info := confinedExitInfo(code, timedOut, ctx)
+		j.setExit(info)
+		// 只有真跑成功才记「正常结束」：运行时长是关键信号，秒退 = 命令没真跑起来
+		// （2026-10-17 曾出现一次不可复现的「作业启动后秒退」，当时因为沙箱路径
+		// 不携带退出码，面板一律显示 exit 0，查无实据）。
+		if code == 0 && !timedOut {
+			log.Printf("[作业] %s（%s）正常结束，运行 %s", j.ID, truncateRunes(j.Command, 60), dur)
+			return
+		}
+		log.Printf("[作业] %s（%s）异常结束：%s，运行 %s", j.ID, truncateRunes(j.Command, 60), info, dur)
 	}()
 	return j, nil
 }
