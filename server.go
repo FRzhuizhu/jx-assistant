@@ -84,6 +84,8 @@ type App struct {
 	imBindMu            sync.Mutex
 	imBindings          []*imBinding // 聊天会话 ↔ 数字经理的绑定与已推序号（im_hub.go，落 data/im_bindings.json）
 	imOut               *imOutbox    // 每个 IM 会话一条串行发件队列（im_hub.go）
+	imPendingMu         sync.Mutex
+	imPendings          map[string][]*imPending // 待微信处理的审批/提问（键 channel|chatId，im_perm.go）
 	evtMu               sync.Mutex
 	subscribers         map[chan Event]bool // /api/events 的订阅者
 	syncFailMu          sync.Mutex

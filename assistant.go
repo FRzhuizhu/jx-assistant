@@ -141,6 +141,9 @@ func (t *toolContext) deliverSub(sub *SessionMeta, text, note string) string {
 	if !d.Started {
 		return subQueueNote(sub, note)
 	}
+	// 派发方这一轮若由微信发起，被派发的那一轮继承同一个来源标记：它产生的审批/
+	// 提问要回到同一个 chatId（否则用户人在手机上，子任务的审批只能干等到超时）。
+	t.app.imInheritRunOrigin(t.sess.ID, d.Run)
 	// 当前主对话的 SSE 若还连着，先给它推一条派发确认
 	t.emit(Event{Type: "sub_start", SessionID: sub.ID, Title: sub.Title})
 	go t.app.runSubAgent(t.sess, sub, d.Run)

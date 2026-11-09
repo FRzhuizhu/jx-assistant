@@ -37,6 +37,27 @@ type sessionRun struct {
 	cleanEnd bool   // 本轮是否正常收尾（没出错、没被停止）：收口时据此决定要不要兜底续发队列
 
 	modelAbort *modelAbortEntry // 模型调用进行中的步级打断句柄（插话立即打断用）。只在主循环调模型的窗口内非 nil——工具执行段为 nil，插话此刻到达就不打断、照旧等下一步调用模型前注入
+
+	// origin 是本轮的来源标记（"im:<渠道>:<chatId>" = 由该聊天发起；空 = 桌面端）。
+	// 为什么不挂在会话上：同一个数字经理会话既可能被桌面端触发、也可能被微信触发，
+	// 只有「轮」才知道这一次是谁发起的。审批/提问据此决定推不推微信——桌面端的
+	// 审批绝不外发（免得手机被无关审批刷屏），微信发起的那一轮（以及它派发出去的
+	// 子任务，见 imInheritRunOrigin）才推回同一个聊天。
+	origin string
+}
+
+// setOrigin / originOf 读写的都是「这一轮」的来源标记（r.mu 保护：派发线程会在
+// 执行开始前后写它，审批/提问则在执行体里读）。
+func (r *sessionRun) setOrigin(o string) {
+	r.mu.Lock()
+	r.origin = o
+	r.mu.Unlock()
+}
+
+func (r *sessionRun) originOf() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.origin
 }
 
 // PendingMsg 是执行中的一条待生效用户消息：插话（下一步调用模型前注入）
@@ -177,6 +198,15 @@ func (a *App) runOf(id string) *sessionRun {
 	r := a.runners[id]
 	a.runMu.Unlock()
 	return r
+}
+
+// runOriginOf 取会话当前那一轮的来源标记（没在跑 = 空，按桌面端对待）。
+// 审批/提问创建时问它「这一轮是谁发起的」，决定要不要推到微信。
+func (a *App) runOriginOf(id string) string {
+	if r := a.runOf(id); r != nil {
+		return r.originOf()
+	}
+	return ""
 }
 
 // 停止的触发者口径（StopRecord.Actor 的取值）：两种都是「人为叫停」——Kind 一律
