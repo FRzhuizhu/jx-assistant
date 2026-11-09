@@ -310,8 +310,13 @@ func vtLoadHotkeys() {
 	}
 
 	// 3) 联动覆盖：主程序说的算（热键 + 触发方式 + 长按阈值）
+	//
+	// 判据用 Main != nil 而不是非空：主程序写的是 `[]` 时是**用户显式停用**
+	//（设置页把主热键叉掉），必须照办——按空数组回退到 hotkeys.json 会让旧键
+	// 死而复生（实测 bug：叉掉鼠标侧键后输入法还在用侧键）。字段缺失/null 才算
+	// 联动没管热键（只有颜色的手写文件），这时才留给下一级。
 	src := "本目录 hotkeys.json"
-	if len(link.Cfg.Hotkeys.Main) > 0 {
+	if link.Cfg.Hotkeys.Main != nil {
 		c.Main = append([]string{}, link.Cfg.Hotkeys.Main...)
 		if link.Cfg.Hotkeys.Sub == nil {
 			c.Sub = []string{}

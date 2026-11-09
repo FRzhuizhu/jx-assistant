@@ -11,7 +11,11 @@ package main
 //   · 不该吞却吞 → 用户在这些程序里按不了 Alt+F4 / Alt+Tab / Ctrl+F2。
 // 这两种故障都不会报错，只能靠用例兜。
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func vtResetHotkeyState() {
 	vtHeld = map[string]bool{}
@@ -274,6 +278,89 @@ func TestAltUpNeverStuck(t *testing.T) {
 	}
 	if c, _ := vtHookConsume("ralt", 0xA5, llkhfUp, false); !c {
 		t.Fatal("右 Alt 抬起应吞（配对吞掉，前台看不到半截 Alt）")
+	}
+}
+
+// TestLoadHotkeysLinkEmptyMainDisables 联动文件写 `main: []`（用户在设置页把主热键
+// 叉掉）必须被当成**显式停用**照办，而不是"联动没说话"回退到 hotkeys.json——
+// 实测 bug：叉掉鼠标侧键后输入法还在用侧键，就是回退把旧键死而复生。
+// 本目录 hotkeys.json 真实存在且 main=[mouse-side]，正好当"下一级"的干扰项：
+// 联动空 main 必须把它压掉。
+func TestLoadHotkeysLinkEmptyMainDisables(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "voicetype.json")
+	link := `{"hotkeys": {"main": [], "sub": ["alt"], "mode": "tap"}, "updatedAt": "test"}`
+	if err := os.WriteFile(tmp, []byte(link), 0o644); err != nil {
+		t.Fatalf("写联动文件失败: %v", err)
+	}
+	oldEnv := os.Getenv("VT_VOICETYPE_JSON")
+	os.Setenv("VT_VOICETYPE_JSON", tmp)
+	t.Cleanup(func() {
+		if oldEnv == "" {
+			os.Unsetenv("VT_VOICETYPE_JSON")
+		} else {
+			os.Setenv("VT_VOICETYPE_JSON", oldEnv)
+		}
+		vtResetHotkeyState()
+	})
+
+	vtLoadHotkeys()
+	hk := vtHotkeys()
+	if len(hk.Main) != 0 {
+		t.Fatalf("联动 main=[] 是显式停用，热键必须为空，实际 main=%v（被 hotkeys.json 的旧键顶回来了）", hk.Main)
+	}
+	if len(hk.Sub) != 1 || hk.Sub[0] != "ralt" {
+		t.Fatalf("sub 应跟随联动（alt→右侧 ralt），实际 sub=%v", hk.Sub)
+	}
+	if hk.Mode != "tap" {
+		t.Fatalf("mode 应跟随联动 tap，实际 %q", hk.Mode)
+	}
+
+	// 反向钉住：联动文件不带 hotkeys 字段（只有颜色的手写文件）才留给下一级
+	colorOnly := `{"accentColor": "#123456", "updatedAt": "test"}`
+	if err := os.WriteFile(tmp, []byte(colorOnly), 0o644); err != nil {
+		t.Fatalf("改写联动文件失败: %v", err)
+	}
+	vtLoadHotkeys()
+	hk = vtHotkeys()
+	if len(hk.Main) == 0 {
+		t.Fatal("联动没管热键（字段缺失）时应该用 hotkeys.json/默认，热键不该被清空")
+	}
+}
+
+// TestLinkCandidateWorkspaceRoot 双击启动（无 VT_VOICETYPE_JSON 环境变量）也必须
+// 探测到工作区根的联动文件：voicetype → voice → 组件 → 工作区根是**三级**向上。
+// 实测 bug：写成了两级（解析到 组件\voicetype.json，不存在），双击启动的输入法
+// 读不到主程序设置，回退 hotkeys.json——叉掉的侧键在重启后死而复生。
+func TestLinkCandidateWorkspaceRoot(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "组件dir", "voice", "voicetype")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+	linkPath := filepath.Join(root, "voicetype.json")
+	if err := os.WriteFile(linkPath, []byte(`{"hotkeys": {"main": ["ctrl","f2"], "sub": []}, "updatedAt": "t"}`), 0o644); err != nil {
+		t.Fatalf("写联动文件失败: %v", err)
+	}
+	oldDir, oldEnv := vtDir, os.Getenv("VT_VOICETYPE_JSON")
+	vtDir = deep
+	os.Unsetenv("VT_VOICETYPE_JSON")
+	t.Cleanup(func() {
+		vtDir = oldDir
+		if oldEnv != "" {
+			os.Setenv("VT_VOICETYPE_JSON", oldEnv)
+		}
+		vtResetHotkeyState()
+	})
+
+	st := vtLoadLink()
+	if !st.Loaded {
+		t.Fatal("未探测到工作区根的联动文件（层级差一级？双击启动将读不到主程序设置）")
+	}
+	if filepath.Clean(st.Path) != filepath.Clean(linkPath) {
+		t.Fatalf("联动文件应为工作区根的 %q，实际 %q", linkPath, st.Path)
+	}
+	if len(st.Cfg.Hotkeys.Main) != 2 || st.Cfg.Hotkeys.Main[0] != "ctrl" {
+		t.Fatalf("联动内容不对: %v", st.Cfg.Hotkeys.Main)
 	}
 }
 
