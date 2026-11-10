@@ -64,42 +64,42 @@ func (f *fakeIMChannel) wait(t *testing.T, n int) []string {
 func TestIMShouldPush(t *testing.T) {
 	final := Event{Type: "message", SessionID: "s1", Seq: 7, Kind: kindChat,
 		Message: &Message{Role: "assistant", Content: "磁盘还剩 42G"}}
-	if !imShouldPush(final, "s1") {
+	if !imShouldPush(final, "s1", imOriginTag("weixin", "u1")) {
 		t.Fatalf("数字经理的最终答复应推送")
 	}
 	// 带 tool_calls 的中间态不推（过程不是结论）
 	toolCall := final
 	toolCall.Message = &Message{Role: "assistant", Content: "",
 		ToolCalls: []ToolCall{{ID: "t1", Type: "function"}}}
-	if imShouldPush(toolCall, "s1") {
+	if imShouldPush(toolCall, "s1", imOriginTag("weixin", "u1")) {
 		t.Fatalf("带 tool_calls 的中间态不该推送")
 	}
 	// 用户消息不推（否则自己的话会被回声一遍）
 	userMsg := final
 	userMsg.Message = &Message{Role: "user", Content: "你好"}
-	if imShouldPush(userMsg, "s1") {
+	if imShouldPush(userMsg, "s1", imOriginTag("weixin", "u1")) {
 		t.Fatalf("用户消息不该推送")
 	}
 	// 别的会话（子会话/任务会话）不推
-	if imShouldPush(final, "s2") {
+	if imShouldPush(final, "s2", imOriginTag("weixin", "u1")) {
 		t.Fatalf("非当前数字经理会话不该推送")
 	}
 	// 没有当前数字经理时不推
-	if imShouldPush(final, "") {
+	if imShouldPush(final, "", imOriginTag("weixin", "u1")) {
 		t.Fatalf("没有当前数字经理时不该推送")
 	}
 	// 非 message 事件、非 chat 行、空正文都不推
-	if imShouldPush(Event{Type: "delta", SessionID: "s1"}, "s1") {
+	if imShouldPush(Event{Type: "delta", SessionID: "s1"}, "s1", imOriginTag("weixin", "u1")) {
 		t.Fatalf("delta 事件不该推送")
 	}
 	report := final
 	report.Kind = kindReport
-	if imShouldPush(report, "s1") {
+	if imShouldPush(report, "s1", imOriginTag("weixin", "u1")) {
 		t.Fatalf("report 行不该当答复推送")
 	}
 	empty := final
 	empty.Message = &Message{Role: "assistant", Content: "   "}
-	if imShouldPush(empty, "s1") {
+	if imShouldPush(empty, "s1", imOriginTag("weixin", "u1")) {
 		t.Fatalf("空正文不该推送")
 	}
 }
@@ -186,7 +186,10 @@ func TestIMSayDeliversThroughQueue(t *testing.T) {
 }
 
 func TestIMInboundRejectsStranger(t *testing.T) {
+	// 白名单非空（主人已经定了谁能下指令）时，名单外的账号一律拒绝：
+	// 空白名单是另一码事——那是「还没有主人的信任记录」，走 im_allow.go 的兜底。
 	a := &App{Cfg: &Config{DataDir: t.TempDir()}}
+	a.Cfg.IM.Weixin.Allow = []string{"owner-1"}
 	fake := &fakeIMChannel{}
 	a.imSetChannel("weixin", fake)
 	a.imOnInbound(IMInbound{
@@ -196,6 +199,9 @@ func TestIMInboundRejectsStranger(t *testing.T) {
 	got := fake.wait(t, 1)
 	if !strings.Contains(got[0], "未授权") || !strings.Contains(got[0], "u9") {
 		t.Fatalf("白名单外应拒绝并回 id：%q", got[0])
+	}
+	if a.Cfg.imAllowWeixin("u9") {
+		t.Fatalf("名单外的账号不该被信任")
 	}
 }
 

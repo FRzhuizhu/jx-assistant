@@ -1885,10 +1885,20 @@ MIT 参考实现（`@botharness/im-provider` 的 `src/channels/weixin/`，已记
 - `im_api.go`：`/api/im/*`（状态只读开放给 AI；**扫码/解绑/测试消息不对 AI 开放**）。
 - `im_text.go`：分段 + Markdown→纯文本（聊天软件不渲染 Markdown）。
 
-**推什么（克制是硬要求）**：只推「当前数字经理会话的 `role=assistant` 且没有
-`tool_calls` 的正文」。工具过程、子会话过程一律不推——任务完成/失败本来就经
-「派发回报」汇总进经理那一轮，经理的答复才是用户在微信里该看的东西。多路推送
-只会把聊天窗口刷成日志流。筛选规则是纯函数 `imShouldPush`（有单测看护）。
+**推什么（克制是硬要求，2026-11-10 又收紧一次）**：两个条件同时满足才推——
+①「当前数字经理会话的 `role=assistant` 且没有 `tool_calls` 的正文」；②**这一轮的
+来源允许**（`sessionRun.origin`，见 `im_push.go`）。来源口径：
+- `im:weixin:<chatId>`（微信入站触发的那一轮）→ 推，且**只推给问话的那个聊天**；
+- `todo:weixin`（定时任务描述开头带 `【推送到微信】`）→ 推，但**每聊天每天最多
+  2 条**（`data/im_todo_push.json` 计数，跨天清零），超限只记日志不发；
+- 其它（空 = 桌面端 / 子任务 / 普通定时任务）→ **一律不推**。
+
+为什么收紧：桌面端发起的活儿也往微信推，主动消息太多被平台拒发（`-2 微信拒绝
+发送消息`，用户 2026-11-10 报障）。规则原话：「回复 jx 界面的消息不用转发微信了，
+微信发送/回复的消息仅是通过微信收到的消息」。工具过程、子会话过程依旧不推——
+它们的结果经「派发回报」汇总进经理那一轮。筛选规则是纯函数 `imShouldPush`
+（有单测看护）。推送失败时日志带平台原始码 `[IM] 推送被拒 code=-2 …`，同会话
+连续失败 3 次后退避 60 秒（不硬推，避免加剧限流）。
 
 **幂等与顺序**：入站靠适配层 `seen` 集合 + 平台 `message_id`；出站靠每个会话的
 `lastSeq`（重启/重连后不重发历史答复）+ 一条串行发件队列（顺序不乱、单条失败不
@@ -1899,7 +1909,21 @@ MIT 参考实现（`@botharness/im-provider` 的 `src/channels/weixin/`，已记
 **重启必须靠游标续读**，否则平台重投会把旧消息再喂一遍；`seen` 集合是第二道去重。
 
 **配置**（`config.json` 的 `im` 段）：`enabled` 总开关、`weixin.enabled` 渠道开关、
-`weixin.allow` 白名单（`ilink_user_id`；**空=谁都不受理**，fail closed）。
+`weixin.allow` 白名单（`ilink_user_id`）。
+
+**白名单＝绑定即放行（`im_allow.go`，2026-11-10 定调）**：微信 ClawBot 的绑定关系
+本来就只认一个 owner——扫码的人就是账号主人，所以**不再要求用户手填 id**（设置里
+根本没有那块界面，阶段 5 没做；旧提示「请到设置 · IM 接入加白名单」是死路，已全仓
+清除）。三条入口都幂等：
+1. **扫码绑定成功** → 把 `lr.IlinkUserID` 写进白名单（主路径：owner 是登录确认时
+   平台给的，确定就是扫码的人，比「第一个发消息的人」可靠）；
+2. **启动补齐** → 渠道 `Start` 时白名单为空但凭据里有 owner，自动写入（老用户升级
+   后自动修好，不用重新扫码）；
+3. **兜底 TOFU** → 拿不到 owner 且白名单为空时，信任第一个发消息的人，并回一句
+   「已把你的账号加入白名单；如果不是你本人操作，请立即在桌面端解绑微信」。
+边界：只在**空**白名单时兜底/补齐（非空列表是用户写下的信任边界，自动逻辑不碰；
+唯一例外是刚绑定那一刻追加 owner 本人）；**owner 已知而发送者不是他 → 照旧
+fail closed**。`POST /api/im/settings` 的 `allow` 原样保留（要多放几个人进来走它）。
 
 **当前进度**：阶段 1（协议闭环：登录 + 收 + 发文本）、阶段 2（双向对话：入站进
 `deliverToSession`、数字经理最终答复出站、白名单、幂等）、阶段 3（审批/提问推微信、
@@ -1938,7 +1962,7 @@ go test -run 'TestIM' .
 POST /api/im/weixin/qr            # 拿二维码（qrImage），手机扫
 GET  /api/im/weixin/qr?id=…       # 轮询到 status=confirmed
 GET  /api/im/status               # state=connected，账号掩码
-POST /api/im/settings             # {"allow":["<扫码得到的 ilink_user_id>"]} 填白名单
+POST /api/im/settings             # 可选：{"allow":["+8613…"]} 手动加人（绑定者已自动放行）
 POST /api/im/weixin/test          # 微信收到一条测试消息
 # 手机私聊发「/status」→ 收到状态；发一句话 → 数字经理跑一轮 → 微信收到最终答复
 # 发「/stop」→ 当前回合被叫停
@@ -2005,7 +2029,7 @@ POST /api/im/weixin/test          # 微信收到一条测试消息
 | `gitpanel.go`（+`gitpanel_windows.go`/`_other.go`） | Git 面板（组件 `git-panel` 的宿主半边）：仓库扫描、porcelain/图谱/分支解析、暂存/提交（白名单 argv 直调 git，永不过 shell） |
 | `gittools.go` | git_sync 模型工具（组件 `git-panel`）：与面板共用 gitSync 执行缝的宿主通道远程同步，绕开沙箱内远程 git 必败的限制（背景与实测见《Git远程同步工具-改动说明.md》） |
 | `server.go` | 路由、聊天 SSE、全局事件流、压缩接口、插件注入、内嵌前端 |
-| `im.go` / `im_hub.go` / `im_weixin.go` / `im_api.go` / `im_text.go` / `im_perm.go` | IM 接入（第一期微信 iLink / ClawBot）：契约与渠道登记 `syncIM`（im.go）、中枢（im_hub.go：入站进 `deliverToSession`、只推数字经理最终答复、命令、串行发件队列、绑定表）、iLink 协议实现（扫码登录状态机、35 秒长轮询、1800 字分段发送、游标与去重集合持久化）、`/api/im/*` 接口、Markdown→纯文本、**审批/提问推微信与微信侧的批准/拒绝**（im_perm.go：来源标记传播、待办清单与序号、明确回复解析、超时按拒绝、留痕）。协议来自 MIT 参考实现，见 `THIRD-PARTY-NOTICES.md`；细节与硬约束见「IM 接入」一节 |
+| `im.go` / `im_hub.go` / `im_weixin.go` / `im_api.go` / `im_text.go` / `im_perm.go` / `im_allow.go` / `im_push.go` | IM 接入（第一期微信 iLink / ClawBot）：契约与渠道登记 `syncIM`（im.go）、中枢（im_hub.go：入站进 `deliverToSession`、出站按来源推送、命令、串行发件队列、绑定表）、iLink 协议实现（扫码登录状态机、35 秒长轮询、1800 字分段发送、游标与去重集合持久化）、`/api/im/*` 接口、Markdown→纯文本、**审批/提问推微信与微信侧的批准/拒绝**（im_perm.go：来源标记传播、待办清单与序号、明确回复解析、超时按拒绝、留痕）、**白名单绑定即放行**（im_allow.go）、**出站来源收口与定时推送每日闸**（im_push.go）。协议来自 MIT 参考实现，见 `THIRD-PARTY-NOTICES.md`；细节与硬约束见「IM 接入」一节 |
 | `web/` | 前端：工作区分组侧栏、子对话抽屉、子任务卡片、模型选择器、设置页、市场页（`app-market.js`：左侧栏底部入口、主区整页视图 body.market-mode、三 tab+搜索+一键装卸；组件装卸后 `CX.refresh()` 热生效） |
 > **服务端已独立成仓库**（`D:\智能体工作区\jxaiserver`，module jxai-server）：远程访问中继 + 技能/组件/插件市场（含 /admin 管理页）+ 更新分发（日期+V序号版本体系）+ 公司接入（登记/UDP 发现/按人发 new-api 令牌/每月额度）。本仓库只保留客户端半边（market.go 市场客户端、wizard.go 接入向导、update.go 更新检查——与服务端的协议契约见各自文件头注释）；其部署与用法见该仓库 README/部署。开发完全分开，两边接口变更需双侧同步。
 

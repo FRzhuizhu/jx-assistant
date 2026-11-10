@@ -167,8 +167,10 @@ func TestIMRemarkPersists(t *testing.T) {
 }
 
 func TestIMInboundWritesLog(t *testing.T) {
-	// 空白名单：拒收，但要留一条「in / rejected」流水——「发了没反应」全靠它回看
+	// 名单外账号：拒收，但要留一条「in / rejected」流水——「发了没反应」全靠它回看。
+	// （空白名单不适用：那会走 im_allow.go 的兜底信任，第一条消息反而被受理）
 	a := newIMTestApp(t)
+	a.Cfg.IM.Weixin.Allow = []string{"owner-1"}
 	a.imOnInbound(IMInbound{
 		Conv:      IMConversation{Channel: "weixin", ChatID: "u9", ChatType: "dm", UserID: "u9"},
 		MessageID: "m1", Kind: "text", Text: "帮我看看磁盘",

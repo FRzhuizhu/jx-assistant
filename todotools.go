@@ -289,7 +289,7 @@ func todoTaskCreateTool() Tool {
 			"新建一条待办事项或定时任务。任务分两类：executor=\"assistant\"（AI 任务，默认：到点把描述转交数字经理执行，用户说“记个待办/提醒我几点做某事”用这类；可用 target 指定执行目标：manager=数字经理（默认）/ task=新的工作任务（到点自动创建工作任务会话直接执行））与 executor=\"command\"（程序任务：到点在指定工作目录直接运行命令，需同时给 command 与 dir）。描述要写成自足的一段话（将来会原样派出去执行）。",
 			objSchema(map[string]any{
 				"title":       strProp("任务标题（简短一行）。"),
-				"description": strProp("任务描述：将来原样派发执行的完整需求，自足、不依赖聊天上下文。"),
+				"description": strProp("任务描述：将来原样派发执行的完整需求，自足、不依赖聊天上下文。**想让这条任务的执行结果推送到微信时，描述开头必须写固定标记「" + imTodoPushMark + "」**（如「" + imTodoPushMark + "每天早上 8 点汇报磁盘剩余空间」）；不写标记的任务结果只在桌面端出现（微信每天最多收 2 条这类推送）。"),
 				"schedule":    scheduleParam(),
 				"executor": map[string]any{
 					"type":        "string",

@@ -442,7 +442,7 @@ function imBindRender() {
   const rows = [
     ['渠道状态', ch ? (ch.state || '未知') : '未启用'],
     ['账号', (ch && (ch.accountId || ch.ownerId)) || '未绑定'],
-    ['白名单', `${ch ? (ch.allow || 0) : 0} 条${ch && ch.allow ? '' : '（0 条＝谁都不能下指令）'}`],
+    ['白名单', `${ch ? (ch.allow || 0) : 0} 条${ch && ch.allow ? '' : '（绑定账号自动放行；其他号会被拒）'}`],
     ['会话凭据', ch && ch.contextToken ? '已有（可发主动消息）' : '没有（平台不投递主动消息）'],
   ];
   let html = `<div class="im-card">${rows.map(([k, v]) =>

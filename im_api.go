@@ -345,7 +345,11 @@ func (a *App) handleIMSettings(w http.ResponseWriter, r *http.Request) {
 		a.Cfg.IM.Weixin.Enabled = *body.WeixinEnabled
 	}
 	if body.Allow != nil {
+		// 与自动信任（im_allow.go）抢同一字段：取同一把锁，免得「自动写入」
+		// 与「界面保存」各写一份、后写的把先写的覆盖掉。
+		imAllowWriteMu.Lock()
 		a.Cfg.IM.Weixin.Allow = imNormalizeAllow(body.Allow)
+		imAllowWriteMu.Unlock()
 	}
 	if body.TestUser != "" {
 		a.Cfg.IM.Weixin.TestUser = strings.TrimSpace(body.TestUser)

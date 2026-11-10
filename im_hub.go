@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -66,12 +67,75 @@ type imOutItem struct {
 }
 
 // imOutbox 每个 IM 会话一条串行发件队列（保证顺序 + 单条失败不拖累后续）。
+// 另记每个会话的连续失败次数与退避截止：平台开始拒发时（`code=-2 微信拒绝发送消息`
+// 就是被限流的信号），每轮都硬推只会加剧限流，所以连续失败到阈值就先停一会儿。
 type imOutbox struct {
 	mu     sync.Mutex
 	queues map[string]chan imOutItem
+	fails  map[string]int       // key=渠道|聊天 → 连续失败次数
+	until  map[string]time.Time // key=渠道|聊天 → 退避截止
 }
 
-func newIMOutbox() *imOutbox { return &imOutbox{queues: map[string]chan imOutItem{}} }
+func newIMOutbox() *imOutbox {
+	return &imOutbox{
+		queues: map[string]chan imOutItem{},
+		fails:  map[string]int{},
+		until:  map[string]time.Time{},
+	}
+}
+
+// 连续失败到这个次数就退避这么久（轻量：一次成功即清零）。
+const (
+	imPushBackoffAfter = 3
+	imPushBackoffFor   = 60 * time.Second
+)
+
+// imPushCooldown 返回该会话的退避剩余时间与连续失败次数。
+func (a *App) imPushCooldown(channel, chatID string) (time.Duration, int) {
+	out := a.imOutbox()
+	key := channel + "|" + chatID
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	left := time.Until(out.until[key])
+	if left < 0 {
+		left = 0
+	}
+	return left, out.fails[key]
+}
+
+// imPushNoteResult 记一次推送结果，返回记完之后的连续失败次数（成功清零）。
+func (a *App) imPushNoteResult(channel, chatID string, ok bool) int {
+	out := a.imOutbox()
+	key := channel + "|" + chatID
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if ok {
+		delete(out.fails, key)
+		delete(out.until, key)
+		return 0
+	}
+	out.fails[key]++
+	n := out.fails[key]
+	if n >= imPushBackoffAfter {
+		out.until[key] = time.Now().Add(imPushBackoffFor)
+	}
+	return n
+}
+
+// imPushErrCode 取错误里最能拿去查的那个码：优先平台原始码（ret/errcode，如 -2），
+// 其次协议层自己的 code（network/rate-limited…）。人话文案留在 imLogUpdate 里。
+func imPushErrCode(err error) string {
+	var we *weixinErr
+	if errors.As(err, &we) {
+		if we.ProviderCode != "" {
+			return we.ProviderCode
+		}
+		if we.Code != "" {
+			return we.Code
+		}
+	}
+	return "unknown"
+}
 
 // ---------- 入站 ----------
 
@@ -94,12 +158,20 @@ func (a *App) imOnInbound(in IMInbound) {
 		a.imSay(in.Conv, "群聊暂不支持：请私聊我，我才能按你的身份判断权限。")
 		return
 	}
-	// 白名单：空白名单 = 谁都不受理（fail closed）。把 id 回给用户，方便他去设置页填。
+	// 白名单：空白名单 = 谁都不受理（fail closed），但绑定者默认放行——三条自动
+	// 信任入口见 im_allow.go（绑定即写 owner / 启动补齐 / 下面这条兜底 TOFU）。
 	if !a.Cfg.imAllowWeixin(in.Conv.UserID) {
-		status, statusErr = imStatusRejected, "不在白名单"
-		log.Printf("[IM] 拒绝未授权账号 %s 的消息（白名单 %d 条）", maskIMID(in.Conv.UserID), a.Cfg.imAllowCount())
-		a.imSay(in.Conv, "未授权：请在助手「设置 · IM 接入」里把这个账号加入白名单。\n你的 id："+in.Conv.UserID)
-		return
+		if a.imAllowFirstSender(in.Conv.Channel, in.Conv.UserID) {
+			// 刚把你的号信任了：说清楚，并给「如果不是我」留出口（解绑）。
+			a.imSay(in.Conv, "已把你的账号加入白名单；如果不是你本人操作，请立即在桌面端解绑微信。")
+		} else {
+			status, statusErr = imStatusRejected, "不在白名单"
+			log.Printf("[IM] 拒绝未授权账号 %s 的消息（白名单 %d 条）", maskIMID(in.Conv.UserID), a.Cfg.imAllowCount())
+			a.imSay(in.Conv, "未授权：这个微信账号不在白名单里，消息没有处理。\n"+
+				"机器人只认绑定它的那个微信账号：请用扫码绑定的号发消息；要换号，在桌面端打开「IM」面板 →「绑定」抽屉里解除绑定后重新扫码。\n"+
+				"你的 id："+in.Conv.UserID)
+			return
+		}
 	}
 	text := strings.TrimSpace(in.Text)
 	if text == "" {
@@ -220,14 +292,24 @@ func imStateText(state string) string {
 
 // ---------- 出站 ----------
 
-// imOnEvent 消费执行事件流（挂在 sessionRun.publish 上，阶段 2 只关心「数字经理
-// 的最终答复」）。钩子在 publish 的订阅者锁之外调用：这里要读配置、查库、碰文件。
-func (a *App) imOnEvent(ev Event) {
+// imOnEvent 消费执行事件流（挂在 sessionRun.publish 上，只看「数字经理的最终答复」）。
+// 钩子在 publish 的订阅者锁之外调用：这里要读配置、查库、碰文件。
+//
+// origin 是**这一轮**的来源标记（`r.originOf()`，见 im_push.go 顶部）：只有
+// `im:weixin:<chatId>`（微信入站触发）与 `todo:weixin`（明确标记的定时任务）才推，
+// 桌面端/子任务/普通定时任务一律不推——推太多会被微信判骚扰并拒发。
+func (a *App) imOnEvent(ev Event, origin string) {
 	if a == nil || a.Cfg == nil || !a.Cfg.imWeixinOn() {
 		return
 	}
 	// 热路径：delta/reasoning 等高频事件也走这里，先做零成本判断。
 	if !imIsFinalAnswer(ev) {
+		return
+	}
+	// 来源闸：不是「微信问的」或「明确要求推微信的定时任务」就到此为止。
+	todoPush := origin == imOriginTodoWeixin
+	originChannel, originChat, fromIM := imParseOrigin(origin)
+	if !fromIM && !todoPush {
 		return
 	}
 	// 没有任何绑定就不必查库算「当前数字经理」。
@@ -236,14 +318,31 @@ func (a *App) imOnEvent(ev Event) {
 		return
 	}
 	cur := a.currentAssistantID()
-	if !imShouldPush(ev, cur) {
+	if !imShouldPush(ev, cur, origin) {
 		return
 	}
 	text := imCapPushText(strings.TrimSpace(ev.Message.Text()))
 	// 「桌面在线不推」是策略性跳过，不是故障——但也要在面板里留痕，否则用户
 	// 事后只会看到「微信没收到这条」，误以为是丢了。
 	quiet := a.imQuietNow()
-	for _, b := range binds {
+	// 微信问的就回给**问话的那个聊天**：别的绑定不该收到别人的答复。
+	// （定时任务不知道是谁问的，按绑定表全员推——它本来就是「推给人看」的。）
+	// 找不到对应绑定时宁可退回全员推，也别让微信里问的话一条答复都收不到。
+	targets := binds
+	if fromIM {
+		only := make([]imBinding, 0, 1)
+		for _, b := range binds {
+			if b.Channel == originChannel && b.ChatID == originChat {
+				only = append(only, b)
+			}
+		}
+		if len(only) > 0 {
+			targets = only
+		} else {
+			log.Printf("[IM] 来源聊天 %s 在绑定表里没有记录，按现有绑定推送", maskIMID(originChat))
+		}
+	}
+	for _, b := range targets {
 		if b.Channel != "weixin" {
 			continue
 		}
@@ -258,6 +357,17 @@ func (a *App) imOnEvent(ev Event) {
 			a.imLogAppend(imLogEntry{
 				Channel: b.Channel, ChatID: b.ChatID, Direction: imDirOut, Kind: imKindAnswer,
 				Text: text, Status: imStatusSkipped, Error: "桌面端在线，按「静默」设置未推送",
+				SessionID: cur, Seq: ev.Seq,
+			})
+			continue
+		}
+		// 定时任务每日闸：一个聊天一天最多 imTodoPushDailyMax 条，超了不发。
+		if todoPush && !a.imTodoPushAllow(b.ChatID) {
+			log.Printf("[IM] 定时推送超过每日上限（%d 条），已跳过（%s）", imTodoPushDailyMax, maskIMID(b.ChatID))
+			a.imLogAppend(imLogEntry{
+				Channel: b.Channel, ChatID: b.ChatID, Direction: imDirOut, Kind: imKindAnswer,
+				Text: text, Status: imStatusSkipped,
+				Error:     fmt.Sprintf("定时推送超过每日上限（%d 条），已跳过", imTodoPushDailyMax),
 				SessionID: cur, Seq: ev.Seq,
 			})
 			continue
@@ -279,11 +389,18 @@ func imIsFinalAnswer(ev Event) bool {
 	return strings.TrimSpace(ev.Message.Text()) != ""
 }
 
-// imShouldPush 在 imIsFinalAnswer 之上再加「是不是当前数字经理会话」：子会话/
-// 任务会话的过程不进聊天窗口——它们的结果本来就会经「派发回报」汇总进经理那一
-// 轮，经理的答复才是用户该看的。纯函数，单测直接覆盖。
-func imShouldPush(ev Event, curID string) bool {
+// imShouldPush 在 imIsFinalAnswer 之上再加两道闸：
+//  1. **来源**：只有微信入站触发的那一轮（`im:<渠道>:<chatId>`）或明确要求推微信
+//     的定时任务（`todo:weixin`）才推——桌面端/子任务/普通定时任务一律不推
+//     （2026-11-10 用户定的规则，见 im_push.go）；
+//  2. **是不是当前数字经理会话**：子会话/任务会话的过程不进聊天窗口——它们的
+//     结果本来就会经「派发回报」汇总进经理那一轮，经理的答复才是用户该看的。
+// 纯函数，单测直接覆盖。
+func imShouldPush(ev Event, curID, origin string) bool {
 	if !imIsFinalAnswer(ev) {
+		return false
+	}
+	if !imPushableOrigin(origin) {
 		return false
 	}
 	return curID != "" && ev.SessionID == curID
@@ -381,13 +498,26 @@ func (a *App) imOutbox() *imOutbox {
 // 但也不重试——答复是「当时的结论」，过期重发比丢更让人困惑）。
 func (a *App) imPushWorker(channel, chatID string, q chan imOutItem) {
 	for it := range q {
+		// 退避中：不硬推（平台已经在拒了，每轮再推只会加剧限流），留痕说明原因。
+		if wait, fails := a.imPushCooldown(channel, chatID); wait > 0 {
+			log.Printf("[IM] 推送退避中（%s 连续失败 %d 次，还剩 %s），本条未发送",
+				maskIMID(chatID), fails, wait.Round(time.Second))
+			a.imLogUpdate(it.logID, imStatusFailed,
+				fmt.Sprintf("推送退避中（连续失败 %d 次），本条未发送", fails))
+			continue
+		}
 		if err := a.imSendText(channel, chatID, it.text); err != nil {
-			log.Printf("[IM] 推送失败（%s/%s）: %v", channel, maskIMID(chatID), err)
+			fails := a.imPushNoteResult(channel, chatID, false)
+			// 日志里带上平台原始错误码与原文：「微信服务返回错误（-2）」这种
+			// 只有人话的版本，事后根本查不出是限流还是内容被拒。
+			log.Printf("[IM] 推送被拒 code=%s（%s/%s，连续 %d 次）: %v",
+				imPushErrCode(err), channel, maskIMID(chatID), fails, err)
 			a.imNotePush(channel, it.seq, false)
 			// 失败原因存人话（面板红字就显示这一句），别把原始 JSON 甩给用户
 			a.imLogUpdate(it.logID, imStatusFailed, imCutText(weixinErrorOf(err), 300))
 			continue
 		}
+		a.imPushNoteResult(channel, chatID, true)
 		// 成功也留一行：只看 lastSeq 分不清「推成功」与「根本没推」，真机联调
 		// 时这一点最要命（答复到底有没有出去，日志里必须能直接看到）。
 		log.Printf("[IM] 已推送 seq=%d → %s（会话 %s）", it.seq, maskIMID(chatID), it.sessionID)

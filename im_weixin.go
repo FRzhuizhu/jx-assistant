@@ -590,6 +590,8 @@ func (c *weixinChannel) Start(ctx context.Context) error {
 	c.mu.Unlock()
 	go c.run(runCtx)
 	log.Printf("[IM] 微信渠道开始长轮询（账号 %s）", maskIMID(acc.AccountID))
+	// 老用户升级补齐：白名单为空但凭据里有 owner → 自动写入，不用重新扫码。
+	c.app.imAllowOwnerOnStart("weixin", acc.OwnerID)
 	return nil
 }
 
@@ -1151,6 +1153,9 @@ func (c *weixinChannel) runLogin(ctx context.Context, lg *weixinLogin) {
 			c.state = "connecting"
 			c.mu.Unlock()
 			log.Printf("[IM] 微信绑定成功（账号 %s）", maskIMID(acc.AccountID))
+			// 绑定者默认放行：owner 是登录确认时平台给的，确定就是扫码的人。
+			// 不再要求用户去某个界面手填 id（见 im_allow.go 顶部说明）。
+			c.app.imAllowOwnerOnBind(acc.OwnerID)
 			c.finishLogin(lg, "confirmed", "")
 			// 绑好后立刻起轮询（同步 IM 配置开没开由调用方保证：扫码成功说明用户要它）
 			c.app.imEnableWeixin()

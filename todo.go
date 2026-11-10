@@ -1153,6 +1153,14 @@ func (s *todoScheduler) handToAssistant(task *TaskItem, record *RunRecord) (stri
 	d := s.app.deliverToSession(sess, text, kindAiUser, "todo")
 	if d.Started {
 		run := d.Run
+		// 带「【推送到微信】」标记的定时任务：给这一轮打 todo:weixin 来源，
+		// 出站才允许推到微信（每日还有上限，见 im_push.go）。判定基于任务定义
+		// 本身（描述开头），不看内容里有没有某个词；没标记的定时任务与桌面端
+		// 同等对待——不推。
+		if imTodoPushWanted(task.Description) {
+			run.setOrigin(imOriginTodoWeixin)
+			log.Printf("[待办] 任务 %s「%s」标记为推送到微信（本轮来源 %s）", task.ID, task.Title, imOriginTodoWeixin)
+		}
 		go func() {
 			defer s.app.finishRunOf(sess.ID, run) // 按身份收口：硬终结后开的新一轮不会被迟到收口误摘
 			// 转交即完成：任务记录不因这一轮的成败改写，失败只写日志（用户可在会话里看到原因）。

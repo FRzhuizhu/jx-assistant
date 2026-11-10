@@ -458,7 +458,9 @@ func (r *sessionRun) publish(ev Event) {
 	}
 	r.mu.Unlock()
 	if r.app != nil {
-		r.app.imOnEvent(ev)
+		// 把这一轮的来源标记一起带过去：出站要按「谁问的」决定推不推微信
+		// （im_push.go 的来源收口），挂错一层就会把桌面端的答复也推出去。
+		r.app.imOnEvent(ev, r.originOf())
 	}
 }
 
